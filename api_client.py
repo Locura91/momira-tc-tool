@@ -238,6 +238,36 @@ class TravelCompositorAPI:
     # ------------------------------------------------------------------
     # CLOSED TOUR UPLOADS
     # ------------------------------------------------------------------
+    def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
+        """
+        Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
+        full existing tour (name, itinerary, modalityCodes list, etc).
+        NOTE: the tour's own 'price' field is deprecated and always 0 -
+        real pricing lives per-option, fetched via get_closed_tour_option().
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_closed_tour_option(self, supplier_id: str, closed_tour_code: str, option_code: str) -> Dict[str, Any]:
+        """
+        Executes GET /closedtour/{supplierId}/{closedTourCode}/{optionCode}
+        — returns one specific option's full details, including its live
+        priceList. Use this before updating an option, to see exactly
+        what's currently there.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}/{option_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
     def create_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /closedtour/{supplierId} — creates main tour (draft, active: False)."""
         url = f"{self.api_base_url}/closedtour/{supplier_id}"
