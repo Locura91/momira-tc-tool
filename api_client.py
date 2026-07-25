@@ -238,6 +238,22 @@ class TravelCompositorAPI:
     # ------------------------------------------------------------------
     # CLOSED TOUR UPLOADS
     # ------------------------------------------------------------------
+    def get_all_suppliers(self) -> List[Dict[str, Any]]:
+        """
+        Executes GET /suppliers — returns the full list of ContractSupplierVO
+        for this operator (each has 'id', 'commercialName', 'legalName', etc).
+        Used to build a human-friendly supplier picker instead of requiring
+        people to know/type numeric supplier IDs by heart.
+        """
+        url = f"{self.api_base_url}/suppliers"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return []
+        data = res.json()
+        return data if isinstance(data, list) else []
+
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """
         Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
