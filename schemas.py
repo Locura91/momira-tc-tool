@@ -1,235 +1,289 @@
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field, validator
-import re
+import os
+import difflib
+import requests
+from typing import Dict, Any, Optional, List
+from dotenv import load_dotenv
 
-# ==========================================
-# 1. HUMAN PRE-CONFIGURATION SCHEMA
-# ==========================================
-class HumanPreConfig(BaseModel):
-    supplier_id: str = Field(..., example="48940", description="Numeric Travel Compositor Supplier ID, used in the URL path")
-    supplier_code: Optional[str] = Field(
-        None, example="Momira_CN_SC",
-        description="Value for the JSON body's 'supplier' field, if it differs from the numeric Supplier ID "
-                    "(confirmed these can be different values, e.g. a real tour showed supplier_id in the URL "
-                    "but 'Momira_CN_SC' as the body's supplier field). Defaults to Supplier ID if left blank."
-    )
-    provider_code: str = Field(..., example="ASW-1", description="Format: XXX-Number")
-    min_pax: int = Field(..., description="Must be 1 or 2")
-    max_pax: int = Field(..., description="Must be between 2 and 9")
-    currency: str = Field(..., example="EUR", description="ISO 3-letter currency code")
-    modality_code: str = Field(..., example="STANDARD_CABIN", description="Modality / Option Code")
-    on_request: bool = Field(True, description="True for On Request, False for Instant Confirmation")
-    
-    # System Hardcoded Defaults
-    user_id: str = "momiratravel-Christian"
-    min_child_age: int = 2
-    max_child_age: int = 12
-
-    @validator("provider_code")
-    def validate_provider_code(cls, v):
-        if not re.match(r"^[A-Z]{3}-\d+$", v):
-            raise ValueError("providerCode must strictly follow the format 'XXX-Number' (e.g., ASW-1)")
-        return v
-
-    @validator("min_pax")
-    def validate_min_pax(cls, v):
-        if v not in [1, 2]:
-            raise ValueError("minPax must be either 1 or 2")
-        return v
-
-    @validator("max_pax")
-    def validate_max_pax(cls, v):
-        if v not in range(2, 10):
-            raise ValueError("maxPax must be between 2 and 9")
-        return v
+load_dotenv()
 
 
-# ==========================================
-# 2. TRAVEL COMPOSITOR MAIN TOUR SCHEMA
-# ==========================================
-class DatasheetEN(BaseModel):
-    name: str
-    description: str
-    hotels: str = ""
-    voucherRemarks: str = ""
-    included: str
-    excluded: str
-    meetingPoint: str = ""
-    remarksTitle: str = "Policy"
-    remarksDescription: str = ""
-
-def build_datasheets(english: DatasheetEN, extra: Optional[Dict[str, DatasheetEN]] = None) -> Dict[str, DatasheetEN]:
+class TravelCompositorAPI:
     """
-    Travel Compositor stores 'datasheets' as a dynamic map keyed by
-    UPPERCASE language code, e.g. {"EN": {...}, "ES": {...}} - not a fixed
-    'en' field. This builds that structure; English is required, other
-    languages can be added later via `extra`.
+    Single, shared client for all Travel Compositor API interactions:
+    authentication, destination resolution, and closed-tour uploads.
+
+    This replaces the destination-resolution logic that used to be
+    duplicated (and inconsistent) across main.py, get_tc_destinations.py,
+    and step2_parser.py.
     """
-    result = {"EN": english}
-    if extra:
-        result.update(extra)
-    return result
 
-class CancellationRange(BaseModel):
-    days: int = 30
-    percentage: float = 0.0  # 0% penalty = 100% refundable 30+ days prior
+    def __init__(self):
+        self.api_base_url = os.getenv("TRAVELC_BASE_URL", "https://online.travelcompositor.com/resources").rstrip("/")
+        self.microsite_id = os.getenv("TRAVELC_MICROSITE_ID", "momiratravel")
+        self.username = os.getenv("TRAVELC_USERNAME", "")
+        self.password = os.getenv("TRAVELC_PASSWORD", "")
+        self.auth_token: Optional[str] = None
+        self._destination_cache: Optional[List[Dict[str, Any]]] = None
 
-class ItineraryItem(BaseModel):
-    code: Optional[str] = None       # per-stop code (confirmed present in real schema)
-    destination: str
-    nights: Optional[int] = None     # nights spent at this specific stop
-    description: dict = {}           # language-keyed, e.g. {"EN": "..."}
-    image: Optional[str] = None
-    hotels: Optional[str] = None     # free-text hotel description for this stop
-    hotelsId: List[str] = []
+    # ------------------------------------------------------------------
+    # AUTH
+    # ------------------------------------------------------------------
+    def authenticate(self, force: bool = False) -> str:
+        """
+        Logs in via POST /authentication/authenticate to obtain an active auth-token.
+        Set force=True to bypass the cached token and get a fresh one (e.g. after a 401).
+        """
+        if self.auth_token and not force:
+            return self.auth_token
 
-class MoneyVO(BaseModel):
-    amount: float
-    currency: str
+        url = f"{self.api_base_url}/authentication/authenticate"
+        payload = {
+            "username": self.username,
+            "password": self.password,
+            "micrositeId": self.microsite_id
+        }
+        headers = {"Content-Type": "application/json"}
 
-class ContractClosedTourPriceVO(BaseModel):
-    """
-    DEPRECATED per Travel Compositor's own docs: "price field is deprecated
-    and will be ignored. Prices are now loaded directly into each closed
-    tour option." Kept here only because real GET responses still show it
-    (legacy read compatibility) - do not bother populating this on write,
-    it has no effect. Real pricing lives in ContractClosedTourOptionVO.priceList.
-    """
-    singlePrice: Optional[MoneyVO] = None
-    doublePrice: Optional[MoneyVO] = None
-    triplePrice: Optional[MoneyVO] = None
-    quadruplePrice: Optional[MoneyVO] = None
-    tripleChildPercentageDiscount: Optional[float] = None
-    quadrupleChildPercentageDiscount: Optional[float] = None
+        print(f"🔑 Authenticating via POST {url}...")
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
 
-class ChildDiscount(BaseModel):
-    amount: float = 0.0
-    percentage: bool = True
+        if res.status_code == 200:
+            self.auth_token = res.headers.get("auth-token") or res.headers.get("Auth-Token")
+            if not self.auth_token and res.text:
+                try:
+                    data = res.json()
+                    self.auth_token = data.get("token") or data.get("authToken") or data.get("auth-token")
+                except Exception:
+                    self.auth_token = res.text.strip('"')
 
-class SupplementPriceVO(BaseModel):
-    singlePrice: float = 0.0
-    singleChildDiscount: Optional[ChildDiscount] = None
-    doublePrice: float = 0.0
-    doubleChildDiscount: Optional[ChildDiscount] = None
-    triplePrice: float = 0.0
-    tripleChildDiscount: Optional[ChildDiscount] = None
-    quadruplePrice: float = 0.0
-    quadrupleChildDiscount: Optional[ChildDiscount] = None
+            print("✅ Auth successful! Token acquired.")
+            return self.auth_token
+        else:
+            print(f"❌ Auth failed (Status {res.status_code}): {res.text}")
+            res.raise_for_status()
 
-class SupplementTranslation(BaseModel):
-    name: str
+    def get_headers(self) -> Dict[str, str]:
+        if not self.auth_token:
+            self.authenticate()
+        return {
+            "auth-token": self.auth_token,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
 
-class SupplementVO(BaseModel):
-    """
-    Confirmed against a real GET /closedtour/{supplierId}/{code} response
-    (supplier 449015, PEK-1) - e.g. optional excursions/meals like
-    'Day 3: Dinner at Haidilao Restaurant'.
-    """
-    modalityCodes: List[str] = []
-    translations: Dict[str, SupplementTranslation] = {}
-    price: Optional[SupplementPriceVO] = None
-    occupancyPrices: List[dict] = []
-    occupancyDiscounts: List[dict] = []
-    travelWindows: List[dict] = []
-    bookingWindows: List[dict] = []
-    mandatory: bool = False
-    commissionable: bool = True
-    refundable: bool = True
-    priceInPercentage: bool = False
-    free: bool = False
-    onRequest: bool = False
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Wraps requests.request() with automatic re-authentication if the
+        token has expired (401). Without this, an expired token mid-session
+        looks like a random "connection failure" instead of an auth issue.
+        """
+        kwargs.setdefault("timeout", 15)
+        res = requests.request(method, url, headers=self.get_headers(), **kwargs)
 
-class ContractClosedTourVO(BaseModel):
-    supplier: str
-    userId: str = "momiratravel-Christian"
-    code: str
-    providerCode: str
-    name: str
-    datasheets: Dict[str, DatasheetEN]
-    images: List[str] = []
-    itinerary: List[ItineraryItem] = []
-    startTime: str = ""
-    endTime: str = ""
-    minChildAge: int = 2
-    maxChildAge: int = 12
-    hotels: int = 1
-    transports: int = 0
-    currency: str
-    showHotelsFromDataSheet: bool = True
-    showItineraryDescription: bool = False
-    price: Optional[ContractClosedTourPriceVO] = None  # optional, no asterisk in real schema
-    nights: int
-    minPax: int
-    maxPax: int
-    modalityCodes: List[str] = []
-    daysAvailableBeforeRelease: int = 0
-    cancellationRanges: List[CancellationRange] = [CancellationRange()]
-    active: bool = False  # LOCKED to False for draft upload
-    downloadMode: str = "AUTOMATIC"
-    supplements: List[SupplementVO] = []
+        if res.status_code == 401:
+            print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
+            self.authenticate(force=True)
+            res = requests.request(method, url, headers=self.get_headers(), **kwargs)
 
+        return res
 
-# ==========================================
-# 3. TRAVEL COMPOSITOR CLOSED TOUR OPTION SCHEMA (Call 2)
-# ==========================================
-# POST /closedtour/{supplierId}/{closedTourCode}
-#
-# NOTE: The exact structure of individual `priceList` entries and
-# `translations` values wasn't provided yet. Modeled loosely as dicts for
-# now so validation doesn't break on real data - tighten these once we
-# have an example priceList item from Travel Compositor's docs/support.
-WEEKDAY_NAMES = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+    # ------------------------------------------------------------------
+    # DESTINATIONS  (the consolidated, correct resolver)
+    # ------------------------------------------------------------------
+    def _get_all_destinations(self, lang: str = "EN") -> List[Dict[str, Any]]:
+        """
+        Fetches and caches the FULL destination list for the microsite.
+        The Travel Compositor API has NO free-text search parameter
+        (only countryCode / iata filters exist) - this is the only
+        reliable way to match destinations by name.
+        """
+        if self._destination_cache is not None:
+            return self._destination_cache
 
-class StopSale(BaseModel):
-    start: str  # ISO date "YYYY-MM-DD"
-    end: str
+        url = f"{self.api_base_url}/destination/{self.microsite_id}"
+        res = self._request("GET", url, params={"lang": lang})
+        res.raise_for_status()
+        data = res.json()
 
-class QuantityPerDate(BaseModel):
-    date: str
-    manualSold: int = 0
-    initialCapacity: int = 0
-    onRequestManualSold: int = 0
-    onRequestInitialCapacity: int = 0
+        destinations = data.get("destination", []) if isinstance(data, dict) else data
+        self._destination_cache = destinations or []
+        print(f"📥 Cached {len(self._destination_cache)} destinations for '{self.microsite_id}'.")
+        return self._destination_cache
 
-class OptionTranslation(BaseModel):
-    name: Optional[str] = None
-    remarks: Optional[str] = None
+    def find_destinations_in_text(self, text: str, min_name_length: int = 4) -> List[Dict[str, Any]]:
+        """
+        Scans arbitrary text (e.g. a scraped web page heading or paragraph)
+        for mentions of any real Travel Compositor destination name, using
+        the full cached destination list. Matches on word boundaries to
+        avoid false positives from short/common names.
 
-class PriceListPriceVO(BaseModel):
-    """Same per-occupancy shape as the main tour's (deprecated) price block, but THIS one is live/used."""
-    singlePrice: Optional[MoneyVO] = None
-    doublePrice: Optional[MoneyVO] = None
-    triplePrice: Optional[MoneyVO] = None
-    quadruplePrice: Optional[MoneyVO] = None
-    tripleChildPercentageDiscount: Optional[float] = None
-    quadrupleChildPercentageDiscount: Optional[float] = None
+        Returns matches in the order their destination NAME first appears
+        in the text (useful for reconstructing itinerary order).
+        """
+        import re
+        destinations = self._get_all_destinations()
+        text_lower = text.lower()
 
-class PriceListEntry(BaseModel):
-    """
-    Confirmed against the real POST/PUT /closedtour/{supplierId}/{closedTourCode}
-    schema. NOTE the field names: startDate/endDate (not from/to), and prices
-    are nested MoneyVO objects (amount+currency), not flat numbers.
-    """
-    name: Optional[str] = None
-    startDate: str  # ISO date "YYYY-MM-DD"
-    endDate: str
-    price: PriceListPriceVO
+        candidates = []
+        for dest in destinations:
+            name = dest.get("name", "")
+            code = dest.get("code")
+            if not code or len(name) < min_name_length:
+                continue
+            match = re.search(r'\b' + re.escape(name.lower()) + r'\b', text_lower)
+            if match:
+                candidates.append((match.start(), code, name))
 
-class ContractClosedTourOptionVO(BaseModel):
-    id: Optional[int] = None
-    code: str
-    operationalDays: List[str] = WEEKDAY_NAMES.copy()  # weekday NAMES, e.g. "MONDAY" - confirmed real schema
-    stopSales: List[StopSale] = []
-    priceList: List[PriceListEntry] = Field(..., description="REQUIRED by the API - seasonal pricing matrix")
-    translations: Dict[str, OptionTranslation] = {}
-    quantityPerDay: int = 99
-    onRequestQuantityPerDay: Optional[int] = None
-    quantityPerDate: List[QuantityPerDate] = []
-    onRequest: bool = True
-    useAdditionalOnRequestQuota: bool = False
+        candidates.sort(key=lambda c: c[0])
+        seen = set()
+        results = []
+        for _, code, name in candidates:
+            if code not in seen:
+                seen.add(code)
+                results.append({"code": code, "name": name})
+        return results
 
-    @validator("priceList")
-    def priceList_not_empty(cls, v):
-        if not v:
-            raise ValueError("priceList is required by Travel Compositor and cannot be empty")
-        return v
+    def resolve_destination(self, query_term: str) -> Dict[str, Any]:
+        """
+        Resolves ANY destination input:
+          - Exact/custom codes (e.g. 'ASW', 'EDF-2') -> direct GET by ID
+          - Free-text names (e.g. 'Edfu', 'Kom Ombo') -> local match against
+            the cached full destination list (exact -> substring -> fuzzy)
+
+        Returns: {"tc_code": str, "name": str, "valid": bool, ...}
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return {"tc_code": None, "name": None, "valid": False}
+
+        # 1. Direct code lookup
+        code_candidate = clean_query.upper()
+        url_direct = f"{self.api_base_url}/destination/{self.microsite_id}/{code_candidate}"
+        try:
+            res = self._request("GET", url_direct, params={"lang": "EN"})
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict) and data.get("code"):
+                    code, name = data["code"], data.get("name", data["code"])
+                    print(f"✅ RESOLVED (by code): '{clean_query}' -> {code} ({name})")
+                    return {"tc_code": code, "name": name, "valid": True, "match_type": "code"}
+        except requests.RequestException as e:
+            print(f"⚠️ Direct code lookup failed for '{clean_query}': {e}")
+
+        # 2. Name matching against the cached full list
+        try:
+            destinations = self._get_all_destinations()
+        except requests.RequestException as e:
+            print(f"⚠️ Could not fetch destination list: {e}")
+            destinations = []
+
+        query_lower = clean_query.lower()
+
+        # 2a. Exact name match
+        for dest in destinations:
+            if dest.get("name", "").strip().lower() == query_lower:
+                code, name = dest.get("code"), dest.get("name")
+                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
+                return {"tc_code": code, "name": name, "valid": True, "match_type": "exact_name"}
+
+        # 2b. Substring match
+        matches = [d for d in destinations if query_lower in d.get("name", "").lower()]
+        if matches:
+            best = matches[0]
+            code, name = best.get("code"), best.get("name")
+            print(f"✅ RESOLVED (partial name, {len(matches)} candidates): '{clean_query}' -> {code} ({name})")
+            return {"tc_code": code, "name": name, "valid": True, "match_type": "partial_name", "alternatives": len(matches)}
+
+        # 2c. Fuzzy fallback (typos)
+        names = [d.get("name", "") for d in destinations if d.get("name")]
+        close = difflib.get_close_matches(clean_query, names, n=1, cutoff=0.75)
+        if close:
+            best = next(d for d in destinations if d.get("name") == close[0])
+            code, name = best.get("code"), best.get("name")
+            print(f"✅ RESOLVED (fuzzy): '{clean_query}' -> {code} ({name})")
+            return {"tc_code": code, "name": name, "valid": True, "match_type": "fuzzy"}
+
+        print(f"⚠️ Destination '{clean_query}' not found anywhere. Flagging as invalid.")
+        return {"tc_code": code_candidate, "name": clean_query, "valid": False, "match_type": "none"}
+
+    def lookup_destination_code(self, destination_id: str) -> str:
+        """
+        Backwards-compatible shim so existing callers (e.g. builder.py)
+        keep working. Internally now uses the full resolver instead of
+        a bare direct-code-only GET.
+        """
+        result = self.resolve_destination(destination_id)
+        return result["tc_code"]
+
+    def resolve_destinations_bulk(self, terms: List[str]) -> List[Dict[str, Any]]:
+        """Resolve a list of names/codes in one call, de-duplicated, in order."""
+        results = []
+        seen_codes = set()
+        for term in terms:
+            r = self.resolve_destination(term)
+            if r["tc_code"] and r["tc_code"] not in seen_codes:
+                seen_codes.add(r["tc_code"])
+                results.append(r)
+        return results
+
+    def test_connection_destination(self, test_dest_id: str = "ASW") -> Dict[str, Any]:
+        """Quick manual sanity check of the destination endpoint."""
+        result = self.resolve_destination(test_dest_id)
+        if result["valid"]:
+            print(f"✅ Connection OK. {test_dest_id} -> {result['tc_code']} ({result['name']})")
+        else:
+            print(f"❌ Could not resolve '{test_dest_id}'.")
+        return result
+
+    # ------------------------------------------------------------------
+    # CLOSED TOUR UPLOADS
+    # ------------------------------------------------------------------
+    def create_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /closedtour/{supplierId} — creates main tour (draft, active: False)."""
+        url = f"{self.api_base_url}/closedtour/{supplier_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /closedtour/{supplierId}/{closedTourCode} — pushes modality/pricing option."""
+        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /closedtour/{supplierId} — updates an EXISTING tour's
+        details (name, description, itinerary, etc). The payload's 'code'
+        field identifies which existing tour to update. Use create_closed_tour
+        (POST) instead when creating a brand-new tour.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /closedtour/{supplierId}/{closedTourCode} — updates an
+        EXISTING option (pricing, operational days, etc). The payload's
+        'code' field identifies which existing option to update. Use
+        create_closed_tour_option (POST) instead to add a brand-new option.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
