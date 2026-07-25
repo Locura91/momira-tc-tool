@@ -17,7 +17,20 @@ Rules:
 - Output ONLY valid JSON. No markdown code fences, no explanation, no preamble.
 - Never fabricate information that isn't present in the source document. Use empty string "" or empty list [] for anything you can't determine.
 - itinerary_destinations must be a list of plain place names in the order they're visited (e.g. "Aswan", "Luxor", "Kom Ombo") - NOT codes. Codes get resolved separately against the live destination database.
-- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers.
+- operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
+- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
+  {
+    "name": "optional label, e.g. the season or date range description",
+    "startDate": "YYYY-MM-DD",
+    "endDate": "YYYY-MM-DD",
+    "price": {
+      "singlePrice": {"amount": 0, "currency": "EUR"},
+      "doublePrice": {"amount": 0, "currency": "EUR"},
+      "triplePrice": {"amount": 0, "currency": "EUR"},
+      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+    }
+  }
+  If the document only gives a single arrival date per row (not a date range), use that same date for both startDate and endDate. Use the currency mentioned in the document.
 
 Output this exact JSON structure:
 {
@@ -30,7 +43,7 @@ Output this exact JSON structure:
   "policy_remarks": "",
   "itinerary_destinations": [],
   "nights": 0,
-  "operational_days": [1, 2, 3, 4, 5, 6, 7],
+  "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "price_list": []
 }"""
 
@@ -90,7 +103,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5") -> di
         "tour_name": "", "description": "", "hotels_text": "", "included": "",
         "excluded": "", "meeting_point": "", "policy_remarks": "",
         "itinerary_destinations": [], "nights": 0,
-        "operational_days": [1, 2, 3, 4, 5, 6, 7], "price_list": []
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"], "price_list": []
     }
     defaults.update(data)
 
