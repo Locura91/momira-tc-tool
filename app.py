@@ -70,7 +70,30 @@ st.caption("Every publish is created as a draft (active: false). Human verificat
 # Step 1: Human Pre-Configuration
 # ----------------------------------------------------------------------
 st.sidebar.header("Step 1 — Pre-Configuration")
-supplier_id = st.sidebar.text_input("Supplier code (numeric, ID from TravelC Supplier Info)", value="48940")
+
+if "suppliers_cache" not in st.session_state:
+    st.session_state.suppliers_cache = None
+
+if st.sidebar.button("🔄 Load supplier list (by name)"):
+    with st.spinner("Fetching suppliers from Travel Compositor..."):
+        st.session_state.suppliers_cache = client.get_all_suppliers()
+        if not st.session_state.suppliers_cache:
+            st.sidebar.error("Could not load suppliers - check connection, or enter the numeric ID manually below.")
+
+if st.session_state.suppliers_cache:
+    supplier_options = {
+        f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
+        for s in st.session_state.suppliers_cache
+    }
+    selected_label = st.sidebar.selectbox("Supplier (pick by name)", list(supplier_options.keys()))
+    supplier_id = str(supplier_options[selected_label])
+else:
+    supplier_id = st.sidebar.text_input(
+        "Supplier code (numeric, ID from TravelC Supplier Info)",
+        value="48940",
+        help="Click 'Load supplier list' above to pick by name instead of typing the numeric ID."
+    )
+
 provider_code = st.sidebar.text_input("ClosedTour Code (ABC-Number)", value="ASW-1")
 min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
 max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
