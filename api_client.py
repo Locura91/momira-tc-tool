@@ -257,3 +257,33 @@ class TravelCompositorAPI:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return res.json()
+
+    def update_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /closedtour/{supplierId} — updates an EXISTING tour's
+        details (name, description, itinerary, etc). The payload's 'code'
+        field identifies which existing tour to update. Use create_closed_tour
+        (POST) instead when creating a brand-new tour.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /closedtour/{supplierId}/{closedTourCode} — updates an
+        EXISTING option (pricing, operational days, etc). The payload's
+        'code' field identifies which existing option to update. Use
+        create_closed_tour_option (POST) instead to add a brand-new option.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
