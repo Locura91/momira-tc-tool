@@ -70,19 +70,12 @@ st.caption("Every publish is created as a draft (active: false). Human verificat
 # Step 1: Human Pre-Configuration
 # ----------------------------------------------------------------------
 st.sidebar.header("Step 1 — Pre-Configuration")
-supplier_id = st.sidebar.text_input("Supplier ID (numeric, used in the URL)", value="48940")
-supplier_code = st.sidebar.text_input(
-    "Supplier Code for body (optional)",
-    value="",
-    help="Some accounts use a different string code (e.g. 'Momira_CN_SC') in the payload's "
-         "'supplier' field than the numeric Supplier ID used in the URL. Leave blank to just "
-         "reuse the Supplier ID above."
-)
-provider_code = st.sidebar.text_input("Provider Code (XXX-Number)", value="ASW-1")
+supplier_id = st.sidebar.text_input("Supplier code (numeric, ID from TravelC Supplier Info)", value="48940")
+provider_code = st.sidebar.text_input("ClosedTour Code (ABC-Number)", value="ASW-1")
 min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
 max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
 currency = st.sidebar.text_input("Currency (ISO 3-letter)", value="EUR")
-modality_code = st.sidebar.text_input("Modality / Option Code", value="STANDARD_CABIN")
+modality_code = st.sidebar.text_input("Unique Modality Code", value="Standard")
 
 st.sidebar.divider()
 st.sidebar.subheader("Publish Action")
@@ -101,8 +94,43 @@ existing_tour_code = None
 if publish_action != "Create a brand-new tour (+ first option)":
     existing_tour_code = st.sidebar.text_input(
         "Existing Tour Code (from Travel Compositor)",
-        placeholder="e.g. TOUR-PEK-5"
+        placeholder="e.g. PEK-5"
     )
+
+    if st.sidebar.button("🔍 Check what's already online for this code"):
+        with st.spinner("Fetching from Travel Compositor..."):
+            tour_data = client.get_closed_tour(supplier_id, existing_tour_code)
+            st.session_state.fetched_tour = tour_data
+            st.session_state.fetched_option = None  # clear any previous option fetch
+
+    if st.session_state.get("fetched_tour"):
+        t = st.session_state.fetched_tour
+        if "error" in t:
+            st.sidebar.error(f"Not found or error: {t.get('message', t)}")
+        else:
+            st.sidebar.success(f"Found: **{t.get('name', '(no name)')}**")
+            existing_modalities = t.get("modalityCodes", [])
+            st.sidebar.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
+
+            if existing_modalities:
+                check_modality = st.sidebar.selectbox("Check pricing for modality:", existing_modalities)
+                if st.sidebar.button("🔍 Fetch this modality's live pricing"):
+                    with st.spinner("Fetching option..."):
+                        st.session_state.fetched_option = client.get_closed_tour_option(
+                            supplier_id, existing_tour_code, check_modality
+                        )
+
+            if st.session_state.get("fetched_option"):
+                opt = st.session_state.fetched_option
+                if "error" in opt:
+                    st.sidebar.error(f"Could not fetch option: {opt.get('message', opt)}")
+                else:
+                    with st.sidebar.expander("Live pricing for this modality", expanded=True):
+                        for row in opt.get("priceList", []):
+                            label = row.get("name") or ""
+                            st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
+                            st.json(row.get("price", {}))
+
 on_request = st.sidebar.checkbox("On Request", value=True)
 
 
@@ -216,7 +244,7 @@ if st.session_state.extracted:
     # ----------------------------------------------------------------------
     if st.button("🔎 Resolve Destinations & Build Payload", disabled=not price_list_valid):
         pre_config = HumanPreConfig(
-            supplier_id=supplier_id, supplier_code=supplier_code or None, provider_code=provider_code,
+            supplier_id=supplier_id, provider_code=provider_code,
             min_pax=min_pax, max_pax=max_pax, currency=currency,
             modality_code=modality_code, on_request=on_request
         )
