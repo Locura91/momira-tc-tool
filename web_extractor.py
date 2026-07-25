@@ -28,34 +28,41 @@ from builder import build_closed_tour_payloads
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 
 
-def get_price_list_interactively() -> list:
+def get_price_list_interactively(default_currency: str = "EUR") -> list:
     """
     Prompts a human for basic per-occupancy pricing, since this genuinely
-    can't be scraped from a marketing page. Enter as many rows as needed;
-    press Enter on an empty 'from date' to finish.
+    can't be scraped from a marketing page. Builds entries in the confirmed
+    real API shape: startDate/endDate + a nested price object with
+    per-occupancy MoneyVO (amount+currency) fields.
     """
     print("\n💶 No price list provided. Enter pricing now (required by the API).")
-    print("   Leave 'From date' empty and press Enter to finish.\n")
+    print("   Leave 'Start date' empty and press Enter to finish.\n")
     price_list = []
     while True:
-        from_date = input("  From date (YYYY-MM-DD, or blank to finish): ").strip()
-        if not from_date:
+        start_date = input("  Start date (YYYY-MM-DD, or blank to finish): ").strip()
+        if not start_date:
             break
-        to_date = input("  To date (YYYY-MM-DD): ").strip()
+        end_date = input("  End date (YYYY-MM-DD): ").strip()
+        name = input("  Label for this row (optional, e.g. 'Peak season'): ").strip()
         single = input("  Single price: ").strip()
         double = input("  Double price: ").strip()
         triple = input("  Triple price (blank if n/a): ").strip()
         quadruple = input("  Quadruple price (blank if n/a): ").strip()
-        entry = {
-            "from": from_date,
-            "to": to_date,
-            "singlePrice": float(single) if single else 0.0,
-            "doublePrice": float(double) if double else 0.0,
-        }
+        currency = input(f"  Currency [{default_currency}]: ").strip() or default_currency
+
+        price_block = {}
+        if single:
+            price_block["singlePrice"] = {"amount": float(single), "currency": currency}
+        if double:
+            price_block["doublePrice"] = {"amount": float(double), "currency": currency}
         if triple:
-            entry["triplePrice"] = float(triple)
+            price_block["triplePrice"] = {"amount": float(triple), "currency": currency}
         if quadruple:
-            entry["quadruplePrice"] = float(quadruple)
+            price_block["quadruplePrice"] = {"amount": float(quadruple), "currency": currency}
+
+        entry = {"startDate": start_date, "endDate": end_date, "price": price_block}
+        if name:
+            entry["name"] = name
         price_list.append(entry)
         print(f"  ✅ Added row: {entry}\n")
     return price_list
@@ -171,7 +178,7 @@ def main():
         with open(args.price_list_file, "r", encoding="utf-8") as f:
             extracted_data["price_list"] = json.load(f)
     elif args.publish:
-        extracted_data["price_list"] = get_price_list_interactively()
+        extracted_data["price_list"] = get_price_list_interactively(args.currency)
 
     pre_config = HumanPreConfig(
         supplier_id=args.supplier,
