@@ -93,8 +93,13 @@ publish_action = st.sidebar.radio(
 existing_tour_code = None
 if publish_action != "Create a brand-new tour (+ first option)":
     existing_tour_code = st.sidebar.text_input(
-        "Existing Tour Code (from Travel Compositor)",
-        placeholder="e.g. PEK-5"
+        "Existing Tour's real Code (NOT its ClosedTour/Provider Code)",
+        placeholder="e.g. CLOSEDTOUR-411099",
+        help="Travel Compositor's internal 'code' is often completely different from the "
+             "human-chosen ClosedTour Code (e.g. a tour with ClosedTour Code 'TNR-03' had "
+             "the real code 'CLOSEDTOUR-411099'). Check inside Travel Compositor's own "
+             "platform for the exact 'Code' field if unsure. For tours created through THIS "
+             "app, the code shown in the success message after publishing is the one to use here."
     )
 
     if st.sidebar.button("🔍 Check what's already online for this code"):
@@ -321,7 +326,10 @@ if st.session_state.extracted:
                     if "error" in result:
                         st.error(f"❌ Main tour creation failed: {result}")
                     else:
-                        st.success(f"✅ Main tour created: {result.get('code', payloads['main_tour_code'])}")
+                        real_code = result.get('code', payloads['main_tour_code'])
+                        st.success(f"✅ Main tour created with real Code: **{real_code}** "
+                                  f"— save this exact value, you'll need it for any future lookups, "
+                                  f"updates, or adding more modalities to this tour.")
                         option_result = client.create_closed_tour_option(
                             payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
                         )
