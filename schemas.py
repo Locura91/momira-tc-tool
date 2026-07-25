@@ -9,7 +9,7 @@ class HumanPreConfig(BaseModel):
     supplier_id: str = Field(..., example="48940", description="Travel C Supplier ID")
     provider_code: str = Field(..., example="ASW-1", description="Format: XXX-Number")
     min_pax: int = Field(..., description="Must be 1 or 2")
-    max_pax: int = Field(..., description="Must be 4, 5, 6, 7, 8, or 9")
+    max_pax: int = Field(..., description="Must be between 2 and 9")
     currency: str = Field(..., example="EUR", description="ISO 3-letter currency code")
     modality_code: str = Field(..., example="STANDARD_CABIN", description="Modality / Option Code")
     on_request: bool = Field(True, description="True for On Request, False for Instant Confirmation")
@@ -33,8 +33,8 @@ class HumanPreConfig(BaseModel):
 
     @validator("max_pax")
     def validate_max_pax(cls, v):
-        if v not in [4, 5, 6, 7, 8, 9]:
-            raise ValueError("maxPax must be one of: 4, 5, 6, 7, 8, 9")
+        if v not in range(2, 10):
+            raise ValueError("maxPax must be between 2 and 9")
         return v
 
 
