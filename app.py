@@ -73,9 +73,24 @@ st.sidebar.header("Step 1 — Pre-Configuration")
 supplier_id = st.sidebar.text_input("Supplier ID", value="48940")
 provider_code = st.sidebar.text_input("Provider Code (XXX-Number)", value="ASW-1")
 min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
-max_pax = st.sidebar.selectbox("Max Pax", [4, 5, 6, 7, 8, 9])
+max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
 currency = st.sidebar.text_input("Currency (ISO 3-letter)", value="EUR")
 modality_code = st.sidebar.text_input("Modality / Option Code", value="STANDARD_CABIN")
+
+st.sidebar.divider()
+st.sidebar.subheader("Multiple modalities?")
+adding_to_existing = st.sidebar.checkbox(
+    "Add this as a NEW modality/option to an ALREADY-PUBLISHED tour",
+    value=False,
+    help="Use this to add a second (or third...) pricing option to a tour you already created. "
+         "Skips creating a new main tour and just adds the option below to the existing one."
+)
+existing_tour_code = None
+if adding_to_existing:
+    existing_tour_code = st.sidebar.text_input(
+        "Existing Tour Code (from Travel Compositor)",
+        placeholder="e.g. TOUR-PEK-5"
+    )
 on_request = st.sidebar.checkbox("On Request", value=True)
 
 
@@ -200,7 +215,11 @@ if st.session_state.extracted:
 
         col3, col4 = st.columns(2)
         with col3:
-            st.subheader("Main Tour Payload (Call 1)")
+            if adding_to_existing:
+                st.subheader("Main Tour Payload (not sent - adding to existing tour)")
+                st.caption("Shown for reference only. Since 'Add to existing tour' is checked, Call 1 is skipped.")
+            else:
+                st.subheader("Main Tour Payload (Call 1)")
             st.json(payloads["main_tour_payload"])
         with col4:
             st.subheader("Tour Option Payload (Call 2)")
@@ -213,22 +232,47 @@ if st.session_state.extracted:
         # Step 5: Publish
         # ----------------------------------------------------------------------
         st.header("Step 5 — Publish")
-        can_publish = not payloads["unresolved_destinations"] and not payloads["tour_option_error"]
 
-        if not can_publish:
+        target_tour_code = existing_tour_code if adding_to_existing else payloads["main_tour_code"]
+        missing_existing_code = adding_to_existing and not existing_tour_code
+
+        can_publish = (
+            not payloads["unresolved_destinations"]
+            and not payloads["tour_option_error"]
+            and not missing_existing_code
+        )
+
+        if missing_existing_code:
+            st.info("Enter the Existing Tour Code in the sidebar before publishing.")
+        elif not can_publish:
             st.info("Resolve all destinations and fix pricing above before publishing.")
+
+        if adding_to_existing:
+            st.caption(f"This will ONLY create a new option under tour code: `{target_tour_code}`. "
+                       f"It will NOT create a new main tour.")
 
         if st.button("🚀 Publish Draft to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Publishing draft (active: false)..."):
-                result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
-                if "error" in result:
-                    st.error(f"❌ Main tour creation failed: {result}")
-                else:
-                    st.success(f"✅ Main tour created: {result.get('code', payloads['main_tour_code'])}")
+                if adding_to_existing:
+                    # Skip Call 1 entirely - just add the new option to the existing tour
                     option_result = client.create_closed_tour_option(
-                        payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
+                        payloads["supplier_id"], target_tour_code, payloads["tour_option_payload"]
                     )
                     if "error" in option_result:
                         st.error(f"❌ Tour option creation failed: {option_result}")
                     else:
-                        st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
+                        st.success(f"✅ New modality/option added to existing tour `{target_tour_code}`. "
+                                  f"Verify it inside Travel Compositor.")
+                else:
+                    result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
+                    if "error" in result:
+                        st.error(f"❌ Main tour creation failed: {result}")
+                    else:
+                        st.success(f"✅ Main tour created: {result.get('code', payloads['main_tour_code'])}")
+                        option_result = client.create_closed_tour_option(
+                            payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
+                        )
+                        if "error" in option_result:
+                            st.error(f"❌ Tour option creation failed: {option_result}")
+                        else:
+                            st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
