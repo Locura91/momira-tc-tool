@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from pydantic import ValidationError
-from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO
+from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES
 from api_client import TravelCompositorAPI
 
 def build_closed_tour_payloads(
@@ -45,7 +45,7 @@ def build_closed_tour_payloads(
     )
 
     main_tour = ContractClosedTourVO(
-        supplier=pre_config.supplier_id,
+        supplier=pre_config.supplier_code or pre_config.supplier_id,
         userId=pre_config.user_id,
         code=extracted_dmc_data.get("tour_code", f"TOUR-{pre_config.provider_code}"),
         providerCode=pre_config.provider_code,
@@ -74,7 +74,7 @@ def build_closed_tour_payloads(
     try:
         tour_option = ContractClosedTourOptionVO(
             code=pre_config.modality_code,
-            operationalDays=extracted_dmc_data.get("operational_days", [1, 2, 3, 4, 5, 6, 7]),
+            operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=[],
             priceList=extracted_dmc_data.get("price_list", []),
             onRequest=pre_config.on_request,
