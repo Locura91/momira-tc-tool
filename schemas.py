@@ -6,7 +6,13 @@ import re
 # 1. HUMAN PRE-CONFIGURATION SCHEMA
 # ==========================================
 class HumanPreConfig(BaseModel):
-    supplier_id: str = Field(..., example="48940", description="Travel C Supplier ID")
+    supplier_id: str = Field(..., example="48940", description="Numeric Travel Compositor Supplier ID, used in the URL path")
+    supplier_code: Optional[str] = Field(
+        None, example="Momira_CN_SC",
+        description="Value for the JSON body's 'supplier' field, if it differs from the numeric Supplier ID "
+                    "(confirmed these can be different values, e.g. a real tour showed supplier_id in the URL "
+                    "but 'Momira_CN_SC' as the body's supplier field). Defaults to Supplier ID if left blank."
+    )
     provider_code: str = Field(..., example="ASW-1", description="Format: XXX-Number")
     min_pax: int = Field(..., description="Must be 1 or 2")
     max_pax: int = Field(..., description="Must be between 2 and 9")
@@ -83,9 +89,11 @@ class MoneyVO(BaseModel):
 
 class ContractClosedTourPriceVO(BaseModel):
     """
-    Optional reference/base price on the main tour (Call 1).
-    NOT the bookable seasonal pricing matrix - that lives in
-    ContractClosedTourOptionVO.priceList (Call 2, required).
+    DEPRECATED per Travel Compositor's own docs: "price field is deprecated
+    and will be ignored. Prices are now loaded directly into each closed
+    tour option." Kept here only because real GET responses still show it
+    (legacy read compatibility) - do not bother populating this on write,
+    it has no effect. Real pricing lives in ContractClosedTourOptionVO.priceList.
     """
     singlePrice: Optional[MoneyVO] = None
     doublePrice: Optional[MoneyVO] = None
@@ -170,16 +178,53 @@ class ContractClosedTourVO(BaseModel):
 # `translations` values wasn't provided yet. Modeled loosely as dicts for
 # now so validation doesn't break on real data - tighten these once we
 # have an example priceList item from Travel Compositor's docs/support.
+WEEKDAY_NAMES = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+
+class StopSale(BaseModel):
+    start: str  # ISO date "YYYY-MM-DD"
+    end: str
+
+class QuantityPerDate(BaseModel):
+    date: str
+    manualSold: int = 0
+    initialCapacity: int = 0
+    onRequestManualSold: int = 0
+    onRequestInitialCapacity: int = 0
+
+class OptionTranslation(BaseModel):
+    name: Optional[str] = None
+    remarks: Optional[str] = None
+
+class PriceListPriceVO(BaseModel):
+    """Same per-occupancy shape as the main tour's (deprecated) price block, but THIS one is live/used."""
+    singlePrice: Optional[MoneyVO] = None
+    doublePrice: Optional[MoneyVO] = None
+    triplePrice: Optional[MoneyVO] = None
+    quadruplePrice: Optional[MoneyVO] = None
+    tripleChildPercentageDiscount: Optional[float] = None
+    quadrupleChildPercentageDiscount: Optional[float] = None
+
+class PriceListEntry(BaseModel):
+    """
+    Confirmed against the real POST/PUT /closedtour/{supplierId}/{closedTourCode}
+    schema. NOTE the field names: startDate/endDate (not from/to), and prices
+    are nested MoneyVO objects (amount+currency), not flat numbers.
+    """
+    name: Optional[str] = None
+    startDate: str  # ISO date "YYYY-MM-DD"
+    endDate: str
+    price: PriceListPriceVO
+
 class ContractClosedTourOptionVO(BaseModel):
     id: Optional[int] = None
     code: str
-    operationalDays: List[int] = [1, 2, 3, 4, 5, 6, 7]
-    stopSales: List[dict] = []
-    priceList: List[dict] = Field(..., description="REQUIRED by the API (marked with * in schema) - seasonal pricing matrix")
-    translations: Dict[str, dict] = {}
+    operationalDays: List[str] = WEEKDAY_NAMES.copy()  # weekday NAMES, e.g. "MONDAY" - confirmed real schema
+    stopSales: List[StopSale] = []
+    priceList: List[PriceListEntry] = Field(..., description="REQUIRED by the API - seasonal pricing matrix")
+    translations: Dict[str, OptionTranslation] = {}
     quantityPerDay: int = 99
     onRequestQuantityPerDay: Optional[int] = None
-    quantityPerDate: List[dict] = []
+    quantityPerDate: List[QuantityPerDate] = []
     onRequest: bool = True
     useAdditionalOnRequestQuota: bool = False
 
