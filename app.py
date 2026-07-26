@@ -469,13 +469,31 @@ if st.session_state.extracted:
                         st.success(f"✅ Main tour created with real Code: **{real_code}** "
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
-                        option_result = client.create_closed_tour_option(
-                            payloads["supplier_id"], real_code, payloads["tour_option_payload"]
-                        )
-                        if "error" in option_result:
-                            st.error(f"❌ Tour option creation failed: {option_result}")
+
+                        # Verify the tour is actually queryable before attempting to add an
+                        # option to it - defends against any delay between creation and
+                        # the tour becoming visible to subsequent calls.
+                        import time
+                        tour_confirmed = False
+                        for attempt in range(4):
+                            check = client.get_closed_tour(payloads["supplier_id"], real_code)
+                            if "error" not in check:
+                                tour_confirmed = True
+                                break
+                            time.sleep(1.5)
+
+                        if not tour_confirmed:
+                            st.error(f"❌ Tour `{real_code}` was created but isn't queryable yet after "
+                                    f"several attempts - something else is wrong. Try adding the option "
+                                    f"manually in a moment using 'Add a new option to an existing tour'.")
                         else:
-                            st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
+                            option_result = client.create_closed_tour_option(
+                                payloads["supplier_id"], real_code, payloads["tour_option_payload"]
+                            )
+                            if "error" in option_result:
+                                st.error(f"❌ Tour option creation failed: {option_result}")
+                            else:
+                                st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result = client.create_closed_tour_option(
