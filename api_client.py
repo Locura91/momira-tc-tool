@@ -1,335 +1,419 @@
+"""
+Review UI for the DMC -> Travel Compositor Closed Tour pipeline.
+
+Implements the master plan's Step 3: side-by-side original content vs.
+extracted/editable data, destination resolution status, and a single
+publish button that runs the two chained API calls (main tour + option),
+always as a draft ("active": false).
+
+Run with:
+    streamlit run app.py
+
+Reuses everything already built and tested:
+    - api_client.py       (auth, destination resolution, uploads)
+    - schemas.py          (validated payload models)
+    - builder.py           (combines pre-config + extracted data + destinations)
+    - document_reader.py  (PDF/Word/Excel -> raw text)
+    - ai_extractor.py     (raw text -> structured English data)
+    - web_extractor.py    (URL -> structured data, incl. destination scanning)
+"""
+import json
+import tempfile
 import os
-import difflib
-import requests
-from typing import Dict, Any, Optional, List
-from dotenv import load_dotenv
+import streamlit as st
 
-load_dotenv()
-
-
-class TravelCompositorAPI:
-    """
-    Single, shared client for all Travel Compositor API interactions:
-    authentication, destination resolution, and closed-tour uploads.
-
-    This replaces the destination-resolution logic that used to be
-    duplicated (and inconsistent) across main.py, get_tc_destinations.py,
-    and step2_parser.py.
-    """
-
-    def __init__(self):
-        self.api_base_url = os.getenv("TRAVELC_BASE_URL", "https://online.travelcompositor.com/resources").rstrip("/")
-        self.microsite_id = os.getenv("TRAVELC_MICROSITE_ID", "momiratravel")
-        self.username = os.getenv("TRAVELC_USERNAME", "")
-        self.password = os.getenv("TRAVELC_PASSWORD", "")
-        self.auth_token: Optional[str] = None
-        self._destination_cache: Optional[List[Dict[str, Any]]] = None
-
-    # ------------------------------------------------------------------
-    # AUTH
-    # ------------------------------------------------------------------
-    def authenticate(self, force: bool = False) -> str:
-        """
-        Logs in via POST /authentication/authenticate to obtain an active auth-token.
-        Set force=True to bypass the cached token and get a fresh one (e.g. after a 401).
-        """
-        if self.auth_token and not force:
-            return self.auth_token
-
-        url = f"{self.api_base_url}/authentication/authenticate"
-        payload = {
-            "username": self.username,
-            "password": self.password,
-            "micrositeId": self.microsite_id
-        }
-        headers = {"Content-Type": "application/json"}
-
-        print(f"🔑 Authenticating via POST {url}...")
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-
-        if res.status_code == 200:
-            self.auth_token = res.headers.get("auth-token") or res.headers.get("Auth-Token")
-            if not self.auth_token and res.text:
-                try:
-                    data = res.json()
-                    self.auth_token = data.get("token") or data.get("authToken") or data.get("auth-token")
-                except Exception:
-                    self.auth_token = res.text.strip('"')
-
-            print("✅ Auth successful! Token acquired.")
-            return self.auth_token
-        else:
-            print(f"❌ Auth failed (Status {res.status_code}): {res.text}")
-            res.raise_for_status()
-
-    def get_headers(self) -> Dict[str, str]:
-        if not self.auth_token:
-            self.authenticate()
-        return {
-            "auth-token": self.auth_token,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """
-        Wraps requests.request() with automatic re-authentication if the
-        token has expired (401). Without this, an expired token mid-session
-        looks like a random "connection failure" instead of an auth issue.
-        """
-        kwargs.setdefault("timeout", 15)
-        res = requests.request(method, url, headers=self.get_headers(), **kwargs)
-
-        if res.status_code == 401:
-            print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
-            self.authenticate(force=True)
-            res = requests.request(method, url, headers=self.get_headers(), **kwargs)
-
-        return res
-
-    # ------------------------------------------------------------------
-    # DESTINATIONS  (the consolidated, correct resolver)
-    # ------------------------------------------------------------------
-    def _get_all_destinations(self, lang: str = "EN") -> List[Dict[str, Any]]:
-        """
-        Fetches and caches the FULL destination list for the microsite.
-        The Travel Compositor API has NO free-text search parameter
-        (only countryCode / iata filters exist) - this is the only
-        reliable way to match destinations by name.
-        """
-        if self._destination_cache is not None:
-            return self._destination_cache
-
-        url = f"{self.api_base_url}/destination/{self.microsite_id}"
-        res = self._request("GET", url, params={"lang": lang})
-        res.raise_for_status()
-        data = res.json()
-
-        destinations = data.get("destination", []) if isinstance(data, dict) else data
-        self._destination_cache = destinations or []
-        print(f"📥 Cached {len(self._destination_cache)} destinations for '{self.microsite_id}'.")
-        return self._destination_cache
-
-    def find_destinations_in_text(self, text: str, min_name_length: int = 4) -> List[Dict[str, Any]]:
-        """
-        Scans arbitrary text (e.g. a scraped web page heading or paragraph)
-        for mentions of any real Travel Compositor destination name, using
-        the full cached destination list. Matches on word boundaries to
-        avoid false positives from short/common names.
-
-        Returns matches in the order their destination NAME first appears
-        in the text (useful for reconstructing itinerary order).
-        """
-        import re
-        destinations = self._get_all_destinations()
-        text_lower = text.lower()
-
-        candidates = []
-        for dest in destinations:
-            name = dest.get("name", "")
-            code = dest.get("code")
-            if not code or len(name) < min_name_length:
-                continue
-            match = re.search(r'\b' + re.escape(name.lower()) + r'\b', text_lower)
-            if match:
-                candidates.append((match.start(), code, name))
-
-        candidates.sort(key=lambda c: c[0])
-        seen = set()
-        results = []
-        for _, code, name in candidates:
-            if code not in seen:
-                seen.add(code)
-                results.append({"code": code, "name": name})
-        return results
-
-    def resolve_destination(self, query_term: str) -> Dict[str, Any]:
-        """
-        Resolves ANY destination input:
-          - Exact/custom codes (e.g. 'ASW', 'EDF-2') -> direct GET by ID
-          - Free-text names (e.g. 'Edfu', 'Kom Ombo') -> local match against
-            the cached full destination list (exact -> substring -> fuzzy)
-
-        Returns: {"tc_code": str, "name": str, "valid": bool, ...}
-        """
-        clean_query = (query_term or "").strip()
-        if not clean_query:
-            return {"tc_code": None, "name": None, "valid": False}
-
-        # 1. Direct code lookup
-        code_candidate = clean_query.upper()
-        url_direct = f"{self.api_base_url}/destination/{self.microsite_id}/{code_candidate}"
+# When deployed on Streamlit Community Cloud, credentials come from
+# st.secrets (entered via the dashboard) instead of a local .env file.
+# This copies them into environment variables so the existing
+# os.getenv() calls in api_client.py / ai_extractor.py work unchanged
+# whether running locally (.env) or centrally hosted (st.secrets).
+if hasattr(st, "secrets"):
+    for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
         try:
-            res = self._request("GET", url_direct, params={"lang": "EN"})
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, dict) and data.get("code"):
-                    code, name = data["code"], data.get("name", data["code"])
-                    print(f"✅ RESOLVED (by code): '{clean_query}' -> {code} ({name})")
-                    return {"tc_code": code, "name": name, "valid": True, "match_type": "code"}
-        except requests.RequestException as e:
-            print(f"⚠️ Direct code lookup failed for '{clean_query}': {e}")
+            if _key in st.secrets and _key not in os.environ:
+                os.environ[_key] = st.secrets[_key]
+        except Exception:
+            pass  # no secrets.toml present (e.g. running fully locally with .env) - fine, ignore
 
-        # 2. Name matching against the cached full list
-        try:
-            destinations = self._get_all_destinations()
-        except requests.RequestException as e:
-            print(f"⚠️ Could not fetch destination list: {e}")
-            destinations = []
+from api_client import TravelCompositorAPI
+from schemas import HumanPreConfig
+from builder import build_closed_tour_payloads
+from document_reader import extract_raw_text
+from ai_extractor import extract_structured_data
+from web_extractor import extract_from_url
+from pexels_client import search_images
 
-        query_lower = clean_query.lower()
+FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 
-        # 2a. Exact name match
-        for dest in destinations:
-            if dest.get("name", "").strip().lower() == query_lower:
-                code, name = dest.get("code"), dest.get("name")
-                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
-                return {"tc_code": code, "name": name, "valid": True, "match_type": "exact_name"}
+st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
-        # 2b. Substring match
-        matches = [d for d in destinations if query_lower in d.get("name", "").lower()]
-        if matches:
-            best = matches[0]
-            code, name = best.get("code"), best.get("name")
-            print(f"✅ RESOLVED (partial name, {len(matches)} candidates): '{clean_query}' -> {code} ({name})")
-            return {"tc_code": code, "name": name, "valid": True, "match_type": "partial_name", "alternatives": len(matches)}
 
-        # 2c. Fuzzy fallback (typos)
-        names = [d.get("name", "") for d in destinations if d.get("name")]
-        close = difflib.get_close_matches(clean_query, names, n=1, cutoff=0.75)
-        if close:
-            best = next(d for d in destinations if d.get("name") == close[0])
-            code, name = best.get("code"), best.get("name")
-            print(f"✅ RESOLVED (fuzzy): '{clean_query}' -> {code} ({name})")
-            return {"tc_code": code, "name": name, "valid": True, "match_type": "fuzzy"}
+# ----------------------------------------------------------------------
+# Session state setup
+# ----------------------------------------------------------------------
+if "client" not in st.session_state:
+    st.session_state.client = TravelCompositorAPI()
+if "extracted" not in st.session_state:
+    st.session_state.extracted = None
+if "raw_preview" not in st.session_state:
+    st.session_state.raw_preview = ""
+if "payloads" not in st.session_state:
+    st.session_state.payloads = None
 
-        print(f"⚠️ Destination '{clean_query}' not found anywhere. Flagging as invalid.")
-        return {"tc_code": code_candidate, "name": clean_query, "valid": False, "match_type": "none"}
+client = st.session_state.client
 
-    def lookup_destination_code(self, destination_id: str) -> str:
-        """
-        Backwards-compatible shim so existing callers (e.g. builder.py)
-        keep working. Internally now uses the full resolver instead of
-        a bare direct-code-only GET.
-        """
-        result = self.resolve_destination(destination_id)
-        return result["tc_code"]
+st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
+st.caption("Every publish is created as a draft (active: false). Human verification and final activation still happen inside Travel Compositor.")
 
-    def resolve_destinations_bulk(self, terms: List[str]) -> List[Dict[str, Any]]:
-        """Resolve a list of names/codes in one call, de-duplicated, in order."""
-        results = []
-        seen_codes = set()
-        for term in terms:
-            r = self.resolve_destination(term)
-            if r["tc_code"] and r["tc_code"] not in seen_codes:
-                seen_codes.add(r["tc_code"])
-                results.append(r)
-        return results
 
-    def test_connection_destination(self, test_dest_id: str = "ASW") -> Dict[str, Any]:
-        """Quick manual sanity check of the destination endpoint."""
-        result = self.resolve_destination(test_dest_id)
-        if result["valid"]:
-            print(f"✅ Connection OK. {test_dest_id} -> {result['tc_code']} ({result['name']})")
+# ----------------------------------------------------------------------
+# Step 1: Human Pre-Configuration
+# ----------------------------------------------------------------------
+st.sidebar.header("Step 1 — Pre-Configuration")
+
+if "suppliers_cache" not in st.session_state:
+    st.session_state.suppliers_cache = None
+
+if st.sidebar.button("🔄 Load supplier list (by name)"):
+    with st.spinner("Fetching suppliers from Travel Compositor..."):
+        st.session_state.suppliers_cache = client.get_all_suppliers()
+        if not st.session_state.suppliers_cache:
+            st.sidebar.error("Could not load suppliers - check connection, or enter the numeric ID manually below.")
+
+if st.session_state.suppliers_cache:
+    supplier_options = {
+        f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
+        for s in st.session_state.suppliers_cache
+    }
+    selected_label = st.sidebar.selectbox("Supplier (pick by name)", list(supplier_options.keys()))
+    supplier_id = str(supplier_options[selected_label])
+else:
+    supplier_id = st.sidebar.text_input(
+        "Supplier code (numeric, ID from TravelC Supplier Info)",
+        value="48940",
+        help="Click 'Load supplier list' above to pick by name instead of typing the numeric ID."
+    )
+
+provider_code = st.sidebar.text_input("ClosedTour Code (ABC-Number)", value="ASW-1")
+min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
+max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
+currency = st.sidebar.text_input("Currency (ISO 3-letter)", value="EUR")
+modality_code = st.sidebar.text_input("Unique Modality Code", value="Standard")
+
+st.sidebar.divider()
+st.sidebar.subheader("Publish Action")
+publish_action = st.sidebar.radio(
+    "What do you want to do?",
+    [
+        "Create a brand-new tour (+ first option)",
+        "Add a new option to an existing tour",
+        "Update an existing tour's details",
+        "Update an existing option",
+    ],
+    help="Travel Compositor uses POST for creating new things and PUT for updating "
+         "existing ones - this selector picks the right one automatically."
+)
+existing_tour_code = None
+if publish_action != "Create a brand-new tour (+ first option)":
+    existing_tour_code = st.sidebar.text_input(
+        "Existing Tour's real Code (NOT its ClosedTour/Provider Code)",
+        placeholder="e.g. CLOSEDTOUR-411099",
+        help="Travel Compositor's internal 'code' is often completely different from the "
+             "human-chosen ClosedTour Code (e.g. a tour with ClosedTour Code 'TNR-03' had "
+             "the real code 'CLOSEDTOUR-411099'). Check inside Travel Compositor's own "
+             "platform for the exact 'Code' field if unsure. For tours created through THIS "
+             "app, the code shown in the success message after publishing is the one to use here."
+    )
+
+    if st.sidebar.button("🔍 Check what's already online for this code"):
+        with st.spinner("Fetching from Travel Compositor..."):
+            tour_data = client.get_closed_tour(supplier_id, existing_tour_code)
+            st.session_state.fetched_tour = tour_data
+            st.session_state.fetched_option = None  # clear any previous option fetch
+
+    if st.session_state.get("fetched_tour"):
+        t = st.session_state.fetched_tour
+        if "error" in t:
+            st.sidebar.error(f"Not found or error: {t.get('message', t)}")
         else:
-            print(f"❌ Could not resolve '{test_dest_id}'.")
-        return result
+            st.sidebar.success(f"Found: **{t.get('name', '(no name)')}**")
+            existing_modalities = t.get("modalityCodes", [])
+            st.sidebar.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
 
-    # ------------------------------------------------------------------
-    # CLOSED TOUR UPLOADS
-    # ------------------------------------------------------------------
-    def get_all_suppliers(self) -> List[Dict[str, Any]]:
-        """
-        Executes GET /suppliers — returns the full list of ContractSupplierVO
-        for this operator (each has 'id', 'commercialName', 'legalName', etc).
-        Used to build a human-friendly supplier picker instead of requiring
-        people to know/type numeric supplier IDs by heart.
-        """
-        url = f"{self.api_base_url}/suppliers"
-        res = self._request("GET", url)
+            if existing_modalities:
+                check_modality = st.sidebar.selectbox("Check pricing for modality:", existing_modalities)
+                if st.sidebar.button("🔍 Fetch this modality's live pricing"):
+                    with st.spinner("Fetching option..."):
+                        st.session_state.fetched_option = client.get_closed_tour_option(
+                            supplier_id, existing_tour_code, check_modality
+                        )
 
-        if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return []
-        data = res.json()
-        return data if isinstance(data, list) else []
+            if st.session_state.get("fetched_option"):
+                opt = st.session_state.fetched_option
+                if "error" in opt:
+                    st.sidebar.error(f"Could not fetch option: {opt.get('message', opt)}")
+                else:
+                    with st.sidebar.expander("Live pricing for this modality", expanded=True):
+                        for row in opt.get("priceList", []):
+                            label = row.get("name") or ""
+                            st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
+                            st.json(row.get("price", {}))
 
-    def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
-        """
-        Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
-        full existing tour (name, itinerary, modalityCodes list, etc).
-        NOTE: the tour's own 'price' field is deprecated and always 0 -
-        real pricing lives per-option, fetched via get_closed_tour_option().
-        """
-        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
-        res = self._request("GET", url)
+on_request = st.sidebar.checkbox("On Request", value=True)
 
-        if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
 
-    def get_closed_tour_option(self, supplier_id: str, closed_tour_code: str, option_code: str) -> Dict[str, Any]:
-        """
-        Executes GET /closedtour/{supplierId}/{closedTourCode}/{optionCode}
-        — returns one specific option's full details, including its live
-        priceList. Use this before updating an option, to see exactly
-        what's currently there.
-        """
-        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}/{option_code}"
-        res = self._request("GET", url)
+# ----------------------------------------------------------------------
+# Step 2: Input source
+# ----------------------------------------------------------------------
+st.header("Step 2 — Input Source")
+source_type = st.radio("Source type", ["Web link", "Document upload (PDF / Word / Excel)"], horizontal=True)
 
-        if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
+if source_type == "Web link":
+    url = st.text_input("Product page URL")
+    if st.button("🔗 Extract from URL", disabled=not url):
+        with st.spinner("Scraping page and resolving destinations..."):
+            try:
+                data = extract_from_url(url, client)
+                st.session_state.extracted = data
+                st.session_state.raw_preview = f"Source URL:\n{url}\n\n(Original page content was scraped directly - see extracted fields on the right.)"
+                st.session_state.payloads = None
+                st.success("Extraction complete. Review and edit below.")
+            except Exception as e:
+                st.error(f"Extraction failed: {e}")
 
-    def create_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /closedtour/{supplierId} — creates main tour (draft, active: False)."""
-        url = f"{self.api_base_url}/closedtour/{supplier_id}"
-        res = self._request("POST", url, json=payload)
+else:
+    uploaded = st.file_uploader("Upload a DMC document", type=["pdf", "docx", "xlsx"])
+    if uploaded and st.button("📄 Extract from Document"):
+        with st.spinner("Reading document and running AI extraction (this calls the Claude API)..."):
+            try:
+                # Save to a real temp file since our readers work on file paths
+                suffix = os.path.splitext(uploaded.name)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(uploaded.getbuffer())
+                    tmp_path = tmp.name
 
-        if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
+                raw_text = extract_raw_text(tmp_path)
+                st.session_state.raw_preview = raw_text
+                data = extract_structured_data(raw_text)
+                data["image_urls"] = []  # documents don't have hosted URLs - human adds these below
+                st.session_state.extracted = data
+                st.session_state.payloads = None
+                os.remove(tmp_path)
+                st.success("Extraction complete. Review and edit below.")
+            except Exception as e:
+                st.error(f"Extraction failed: {e}")
 
-    def create_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /closedtour/{supplierId}/{closedTourCode} — pushes modality/pricing option."""
-        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
-        res = self._request("POST", url, json=payload)
 
-        if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
+# ----------------------------------------------------------------------
+# Step 3: Side-by-side review & edit
+# ----------------------------------------------------------------------
+if st.session_state.extracted:
+    data = st.session_state.extracted
 
-    def update_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """
-        Executes PUT /closedtour/{supplierId} — updates an EXISTING tour's
-        details (name, description, itinerary, etc). The payload's 'code'
-        field identifies which existing tour to update. Use create_closed_tour
-        (POST) instead when creating a brand-new tour.
-        """
-        url = f"{self.api_base_url}/closedtour/{supplier_id}"
-        res = self._request("PUT", url, json=payload)
+    st.header("Step 3 — Review & Edit")
+    col1, col2 = st.columns(2)
 
-        if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
+    with col1:
+        st.subheader("Original Source")
+        st.text_area("Raw content (read-only reference)", st.session_state.raw_preview, height=600, disabled=True)
 
-    def update_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
-        """
-        Executes PUT /closedtour/{supplierId}/{closedTourCode} — updates an
-        EXISTING option (pricing, operational days, etc). The payload's
-        'code' field identifies which existing option to update. Use
-        create_closed_tour_option (POST) instead to add a brand-new option.
-        """
-        url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
-        res = self._request("PUT", url, json=payload)
+    with col2:
+        st.subheader("Extracted Data (editable)")
+        data["tour_name"] = st.text_input("Tour name", data.get("tour_name", ""))
+        data["description"] = st.text_area("Description (HTML ok)", data.get("description", ""), height=140)
+        data["hotels_text"] = st.text_area("Hotels", data.get("hotels_text", ""), height=100)
+        data["included"] = st.text_area("Included", data.get("included", ""), height=100)
+        data["excluded"] = st.text_area("Excluded", data.get("excluded", ""), height=100)
+        data["meeting_point"] = st.text_input("Meeting point", data.get("meeting_point", ""))
+        data["policy_remarks"] = st.text_area("Policy remarks", data.get("policy_remarks", ""), height=80)
+        data["nights"] = st.number_input("Nights", min_value=1, value=int(data.get("nights", 1)))
 
-        if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
-            return {"error": res.status_code, "message": res.text}
-        return res.json()
+        dest_text = st.text_area(
+            "Itinerary destinations (one per line, in visit order)",
+            "\n".join(data.get("itinerary_destinations", [])),
+            height=120
+        )
+        data["itinerary_destinations"] = [d.strip() for d in dest_text.split("\n") if d.strip()]
+
+        images_text = st.text_area(
+            "Image URLs (one per line - documents need these added manually)",
+            "\n".join(data.get("image_urls", [])),
+            height=80
+        )
+        data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+        if data["image_urls"] == [FALLBACK_IMAGE]:
+            st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+
+        with st.expander("🖼️ Or search free stock photos (Pexels)"):
+            pexels_query = st.text_input(
+                "Search term", value=data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
+            )
+            if st.button("🔍 Search Pexels"):
+                with st.spinner("Searching Pexels..."):
+                    try:
+                        st.session_state.pexels_results = search_images(pexels_query)
+                    except Exception as e:
+                        st.session_state.pexels_results = None
+                        st.error(str(e))
+
+            if st.session_state.get("pexels_results"):
+                st.caption("Select images to add, then click 'Add selected below':")
+                pexels_cols = st.columns(3)
+                selected_pexels_urls = []
+                for i, photo in enumerate(st.session_state.pexels_results):
+                    with pexels_cols[i % 3]:
+                        st.image(photo["thumbnail"])
+                        if st.checkbox(f"Use (by {photo['photographer']})", key=f"pexels_pick_{i}"):
+                            selected_pexels_urls.append(photo["url"])
+
+                if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current + selected_pexels_urls
+                    st.rerun()
+
+    st.subheader("Pricing (required by Travel Compositor to publish)")
+    default_price_list = data.get("price_list") or [{
+        "name": "Example row - edit or delete",
+        "startDate": "2027-01-01",
+        "endDate": "2027-12-31",
+        "price": {
+            "singlePrice": {"amount": 0, "currency": currency},
+            "doublePrice": {"amount": 0, "currency": currency}
+        }
+    }]
+    price_list_json = st.text_area(
+        "priceList (JSON array) — fields: name (optional), startDate, endDate, "
+        "price.{singlePrice/doublePrice/triplePrice/quadruplePrice} each as {amount, currency}",
+        json.dumps(default_price_list, indent=2),
+        height=200
+    )
+    try:
+        data["price_list"] = json.loads(price_list_json)
+        price_list_valid = True
+    except json.JSONDecodeError as e:
+        st.error(f"priceList isn't valid JSON: {e}")
+        price_list_valid = False
+
+    # ----------------------------------------------------------------------
+    # Step 4: Build payloads (destination resolution happens here)
+    # ----------------------------------------------------------------------
+    if st.button("🔎 Resolve Destinations & Build Payload", disabled=not price_list_valid):
+        pre_config = HumanPreConfig(
+            supplier_id=supplier_id, provider_code=provider_code,
+            min_pax=min_pax, max_pax=max_pax, currency=currency,
+            modality_code=modality_code, on_request=on_request
+        )
+        with st.spinner("Resolving destinations against Travel Compositor..."):
+            st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
+            st.session_state.pre_config = pre_config
+
+    if st.session_state.payloads:
+        payloads = st.session_state.payloads
+
+        st.header("Step 4 — Destination Resolution & Payload Preview")
+
+        for item in payloads["main_tour_payload"]["itinerary"]:
+            st.write(f"✅ `{item['destination']}`")
+
+        if payloads["unresolved_destinations"]:
+            st.warning(f"⚠️ Unresolved destinations (fix in Step 3 and rebuild): {payloads['unresolved_destinations']}")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            if publish_action == "Create a brand-new tour (+ first option)":
+                st.subheader("Main Tour Payload (POST - Call 1)")
+            elif publish_action == "Update an existing tour's details":
+                st.subheader("Main Tour Payload (PUT - update)")
+            else:
+                st.subheader("Main Tour Payload (not sent this time)")
+                st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
+            st.json(payloads["main_tour_payload"])
+        with col4:
+            if publish_action in ("Create a brand-new tour (+ first option)", "Add a new option to an existing tour"):
+                st.subheader("Tour Option Payload (POST)")
+            elif publish_action == "Update an existing option":
+                st.subheader("Tour Option Payload (PUT - update)")
+            else:
+                st.subheader("Tour Option Payload (not sent this time)")
+            if payloads["tour_option_error"]:
+                st.error(f"Invalid: {payloads['tour_option_error']}")
+            else:
+                st.json(payloads["tour_option_payload"])
+
+        # ----------------------------------------------------------------------
+        # Step 5: Publish
+        # ----------------------------------------------------------------------
+        st.header("Step 5 — Publish")
+
+        creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
+        target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
+        missing_existing_code = not creating_new_tour and not existing_tour_code
+
+        can_publish = (
+            not payloads["unresolved_destinations"]
+            and not payloads["tour_option_error"]
+            and not missing_existing_code
+        )
+
+        if missing_existing_code:
+            st.info("Enter the Existing Tour Code in the sidebar before publishing.")
+        elif not can_publish:
+            st.info("Resolve all destinations and fix pricing above before publishing.")
+
+        action_descriptions = {
+            "Create a brand-new tour (+ first option)": "Will POST a new tour, then POST a new option.",
+            "Add a new option to an existing tour": f"Will POST a new option under existing tour `{target_tour_code}`. Main tour is untouched.",
+            "Update an existing tour's details": f"Will PUT (update) tour `{target_tour_code}`'s details. No option changes.",
+            "Update an existing option": f"Will PUT (update) the option under tour `{target_tour_code}`.",
+        }
+        st.caption(action_descriptions[publish_action])
+
+        if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
+            with st.spinner("Sending to Travel Compositor..."):
+
+                if publish_action == "Create a brand-new tour (+ first option)":
+                    result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
+                    if "error" in result:
+                        st.error(f"❌ Main tour creation failed: {result}")
+                    else:
+                        real_code = result.get('code', payloads['main_tour_code'])
+                        st.success(f"✅ Main tour created with real Code: **{real_code}** "
+                                  f"— save this exact value, you'll need it for any future lookups, "
+                                  f"updates, or adding more modalities to this tour.")
+                        option_result = client.create_closed_tour_option(
+                            payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
+                        )
+                        if "error" in option_result:
+                            st.error(f"❌ Tour option creation failed: {option_result}")
+                        else:
+                            st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
+
+                elif publish_action == "Add a new option to an existing tour":
+                    option_result = client.create_closed_tour_option(
+                        payloads["supplier_id"], target_tour_code, payloads["tour_option_payload"]
+                    )
+                    if "error" in option_result:
+                        st.error(f"❌ Tour option creation failed: {option_result}")
+                    else:
+                        st.success(f"✅ New option added to existing tour `{target_tour_code}`. Verify inside Travel Compositor.")
+
+                elif publish_action == "Update an existing tour's details":
+                    update_payload = dict(payloads["main_tour_payload"])
+                    update_payload["code"] = target_tour_code  # make sure we're updating the right tour
+                    result = client.update_closed_tour(payloads["supplier_id"], update_payload)
+                    if "error" in result:
+                        st.error(f"❌ Tour update failed: {result}")
+                    else:
+                        st.success(f"✅ Tour `{target_tour_code}` updated.")
+
+                elif publish_action == "Update an existing option":
+                    update_option_payload = dict(payloads["tour_option_payload"])
+                    update_option_payload["code"] = modality_code  # make sure we're updating the right option
+                    option_result = client.update_closed_tour_option(
+                        payloads["supplier_id"], target_tour_code, update_option_payload
+                    )
+                    if "error" in option_result:
+                        st.error(f"❌ Option update failed: {option_result}")
+                    else:
+                        st.success(f"✅ Option `{modality_code}` under tour `{target_tour_code}` updated.")
