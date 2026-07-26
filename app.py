@@ -96,7 +96,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-code-variant-fallback — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-occupancy-mapping — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -460,6 +460,11 @@ if st.session_state.extracted:
             st.error(f"stopSales isn't valid JSON: {e}")
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
+    if data.get("pricing_notes"):
+        st.warning(f"⚠️ **Pricing had to be approximated to fit the 4-slot Distribution schema:**\n\n"
+                  f"{data['pricing_notes']}\n\n"
+                  f"Review the priceList below carefully - some information may have been "
+                  f"simplified or dropped.")
     default_price_list = data.get("price_list") or [{
         "name": "Example row - edit or delete",
         "startDate": "2027-01-01",
