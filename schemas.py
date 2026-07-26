@@ -19,6 +19,7 @@ class HumanPreConfig(BaseModel):
     currency: str = Field(..., example="EUR", description="ISO 3-letter currency code")
     modality_code: str = Field(..., example="STANDARD_CABIN", description="Modality / Option Code")
     on_request: bool = Field(True, description="True for On Request, False for Instant Confirmation")
+    days_available_before_release: int = Field(0, description="How many days before departure this tour becomes bookable/visible")
     
     # System Hardcoded Defaults
     user_id: str = "momiratravel-Christian"
