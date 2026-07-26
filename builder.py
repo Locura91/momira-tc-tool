@@ -40,6 +40,11 @@ def build_closed_tour_payloads(
         if validated_itinerary[i].destination != validated_itinerary[i - 1].destination
     )
 
+    # Hotels = number of DIFFERENT hotels a client stays in, approximated as the number
+    # of unique destinations in the itinerary (e.g. Bangkok + Chiang Mai = 2, even if
+    # Bangkok appears twice - same city assumed same hotel unless told otherwise).
+    hotels_count = len(set(item.destination for item in validated_itinerary if item.destination))
+
     # 2. Build Main Tour Payload (ContractClosedTourVO)
     datasheet_en = DatasheetEN(
         name=extracted_dmc_data.get("tour_name", ""),
@@ -63,6 +68,7 @@ def build_closed_tour_payloads(
         images=extracted_dmc_data.get("image_urls", []),
         itinerary=validated_itinerary,
         transports=transports_count,
+        hotels=hotels_count,
         minChildAge=pre_config.min_child_age,
         maxChildAge=pre_config.max_child_age,
         currency=pre_config.currency,
