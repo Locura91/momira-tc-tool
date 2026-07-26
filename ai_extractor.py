@@ -107,8 +107,26 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
 
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Claude's response wasn't valid JSON ({e}). Raw response:\n{raw_response[:1000]}")
+    except json.JSONDecodeError:
+        pass  # try a fallback extraction below before giving up
+
+    # Fallback: the model may have added stray text before/after the JSON despite
+    # instructions not to. Try isolating just the outermost {...} block.
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        try:
+            return json.loads(cleaned[first_brace:last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+
+    stop_reason = getattr(response, "stop_reason", None)
+    hint = (
+        " The response appears to have been cut off (hit the token limit) - try a shorter "
+        "document/URL, or this may need a higher max_tokens setting."
+        if stop_reason == "max_tokens" else ""
+    )
+    raise RuntimeError(f"Claude's response wasn't valid JSON.{hint} Raw response:\n{raw_response[:1500]}")
 
 
 def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
@@ -150,7 +168,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 
     print(f"🤖 Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
-    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model)
+    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
 
     # Defensive defaults in case the model omits a key
     defaults = {
