@@ -40,10 +40,14 @@ def build_closed_tour_payloads(
         if validated_itinerary[i].destination != validated_itinerary[i - 1].destination
     )
 
-    # Hotels = number of DIFFERENT hotels a client stays in, approximated as the number
-    # of unique destinations in the itinerary (e.g. Bangkok + Chiang Mai = 2, even if
-    # Bangkok appears twice - same city assumed same hotel unless told otherwise).
-    hotels_count = len(set(item.destination for item in validated_itinerary if item.destination))
+    # Hotels = number of DIFFERENT accommodations the client actually stays in.
+    # Prefer the AI's own count (it understands e.g. "same cruise ship the whole
+    # way" = 1 hotel, not one per destination). Fall back to counting unique
+    # destinations only if that field wasn't provided at all.
+    if "hotels_count" in extracted_dmc_data:
+        hotels_count = extracted_dmc_data["hotels_count"]
+    else:
+        hotels_count = len(set(item.destination for item in validated_itinerary if item.destination))
 
     # 2. Build Main Tour Payload (ContractClosedTourVO)
     datasheet_en = DatasheetEN(
@@ -76,6 +80,7 @@ def build_closed_tour_payloads(
         minPax=pre_config.min_pax,
         maxPax=pre_config.max_pax,
         modalityCodes=[pre_config.modality_code],
+        daysAvailableBeforeRelease=pre_config.days_available_before_release,
         active=False  # LOCKED: Strictly upload as inactive/draft
     )
 
