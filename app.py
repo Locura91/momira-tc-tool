@@ -170,59 +170,44 @@ st.info("⬅️ **Before continuing: fill in Step 1 in the sidebar first** "
         "(Supplier, ClosedTour Code, Pax, Currency, Modality Code). "
         "Extraction works either way, but you'll need these correct before you can publish.")
 st.header("Step 2 — Input Source")
-source_type = st.radio("Source type", ["Web link", "Document upload (PDF / Word / Excel)"], horizontal=True)
+st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
+           "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
-if source_type == "Web link":
-    url = st.text_input("Product page URL")
-    if st.button("🔗 Extract from URL", disabled=not url):
-        with st.spinner("Fetching page and checking for multiple tour variants..."):
-            try:
-                raw_text = get_page_text(url)
-                variants = detect_tour_variants(raw_text)
-                if variants:
-                    st.session_state.pending_variants = variants
-                    st.session_state.pending_raw_text = raw_text
-                    st.session_state.pending_source = "url"
-                    st.session_state.pending_url = url
-                else:
-                    data = extract_structured_data(raw_text)
-                    data["image_urls"] = get_page_images(url)
-                    st.session_state.extracted = data
-                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-                    st.session_state.raw_preview = f"Source URL:\n{url}\n\n(Content was fetched and sent to AI extraction - see extracted fields on the right.)"
-                    st.session_state.payloads = None
-                    st.success("Extraction complete. Review and edit below.")
-            except Exception as e:
-                st.error(f"Extraction failed: {e}")
+url = st.text_input("Product page URL (optional)")
+uploaded = st.file_uploader("Upload a DMC document (optional)", type=["pdf", "docx", "xlsx"])
 
-else:
-    uploaded = st.file_uploader("Upload a DMC document", type=["pdf", "docx", "xlsx"])
-    if uploaded and st.button("📄 Extract from Document"):
-        with st.spinner("Reading document and checking for multiple tour variants..."):
-            try:
+if st.button("🔎 Extract", disabled=not (url or uploaded)):
+    with st.spinner("Gathering content and checking for multiple tour variants..."):
+        try:
+            combined_parts = []
+            if url:
+                combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+            if uploaded:
                 suffix = os.path.splitext(uploaded.name)[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
-
-                raw_text = extract_raw_text(tmp_path)
+                combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
                 os.remove(tmp_path)
-                variants = detect_tour_variants(raw_text)
-                if variants:
-                    st.session_state.pending_variants = variants
-                    st.session_state.pending_raw_text = raw_text
-                    st.session_state.pending_source = "document"
-                    st.session_state.pending_url = None
-                else:
-                    data = extract_structured_data(raw_text)
-                    data["image_urls"] = []  # documents don't have hosted URLs - human adds these below
-                    st.session_state.extracted = data
-                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-                    st.session_state.raw_preview = raw_text
-                    st.session_state.payloads = None
-                    st.success("Extraction complete. Review and edit below.")
-            except Exception as e:
-                st.error(f"Extraction failed: {e}")
+
+            raw_text = "\n\n".join(combined_parts)
+            variants = detect_tour_variants(raw_text)
+
+            if variants:
+                st.session_state.pending_variants = variants
+                st.session_state.pending_raw_text = raw_text
+                st.session_state.pending_url = url or None
+            else:
+                data = extract_structured_data(raw_text)
+                data["image_urls"] = get_page_images(url) if url else []
+                st.session_state.extracted = data
+                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                sources_desc = " + ".join(filter(None, [url, uploaded.name if uploaded else None]))
+                st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
+                st.session_state.payloads = None
+                st.success("Extraction complete. Review and edit below.")
+        except Exception as e:
+            st.error(f"Extraction failed: {e}")
 
 # Shared variant picker - shown whenever a fetch/read detected multiple distinct tours
 if st.session_state.get("pending_variants"):
@@ -236,12 +221,9 @@ if st.session_state.get("pending_variants"):
             chosen_label = variants[chosen_idx].get("label", "")
             data = extract_structured_data(st.session_state.pending_raw_text, variant_hint=chosen_label)
 
-            if st.session_state.pending_source == "url":
-                data["image_urls"] = get_page_images(st.session_state.pending_url)
-                preview = f"Source URL:\n{st.session_state.pending_url}\n\n(Extracted variant: {chosen_label})"
-            else:
-                data["image_urls"] = []
-                preview = st.session_state.pending_raw_text
+            pending_url = st.session_state.get("pending_url")
+            data["image_urls"] = get_page_images(pending_url) if pending_url else []
+            preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
             st.session_state.extracted = data
             st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
