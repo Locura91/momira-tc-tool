@@ -22,8 +22,11 @@ class HumanPreConfig(BaseModel):
     
     # System Hardcoded Defaults
     user_id: str = "momiratravel-Christian"
-    min_child_age: int = 2
-    max_child_age: int = 12
+    min_child_age: int = 0            # First Range (Infant) - system default
+    max_child_age: int = 2            # First Range (Infant) - system default
+    min_child_age_2nd_range: int = 2  # Second Range (Child) - system default
+    max_child_age_2nd_range: int = 12 # Second Range (Child) - system default
+    has_second_child_range: bool = True
 
     @validator("provider_code")
     def validate_provider_code(cls, v):
@@ -150,8 +153,11 @@ class ContractClosedTourVO(BaseModel):
     itinerary: List[ItineraryItem] = []
     startTime: str = ""
     endTime: str = ""
-    minChildAge: int = 2
-    maxChildAge: int = 12
+    minChildAge: int = 0             # First Range (Infant)
+    maxChildAge: int = 2             # First Range (Infant)
+    minChildAge2ndRange: int = 2     # Second Range (Child)
+    maxChildAge2ndRange: int = 12    # Second Range (Child)
+    hasSecondChildRange: bool = True
     hotels: int = 1
     transports: int = 0
     currency: str
