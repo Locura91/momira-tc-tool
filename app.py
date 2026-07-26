@@ -276,6 +276,9 @@ if st.session_state.extracted:
 
         if "images_text_value" not in st.session_state:
             st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+        if st.session_state.get("_pending_images_update") is not None:
+            st.session_state.images_text_value = st.session_state._pending_images_update
+            st.session_state._pending_images_update = None
 
         images_text = st.text_area(
             "Image URLs (one per line - documents need these added manually)",
@@ -312,7 +315,7 @@ if st.session_state.extracted:
                     current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
                     new_list = current + selected_pexels_urls
                     data["image_urls"] = new_list
-                    st.session_state.images_text_value = "\n".join(new_list)
+                    st.session_state._pending_images_update = "\n".join(new_list)
                     st.rerun()
 
     st.subheader("Departure Schedule")
