@@ -22,7 +22,7 @@ class HumanPreConfig(BaseModel):
     days_available_before_release: int = Field(30, description="How many days before departure this tour becomes bookable/visible")
     
     # System Hardcoded Defaults
-    user_id: str = "momiratravel-Christian"
+    user_id: str = "Christian"
     min_child_age: int = 0
     max_child_age: int = 12
 
@@ -142,7 +142,7 @@ class SupplementVO(BaseModel):
 
 class ContractClosedTourVO(BaseModel):
     supplier: str
-    userId: str = "momiratravel-Christian"
+    userId: str = "Christian"
     code: str
     providerCode: str
     name: str
