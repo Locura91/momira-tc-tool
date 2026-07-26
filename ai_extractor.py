@@ -55,6 +55,8 @@ Rules:
     }
   }
   If the document only gives a single arrival date per row (not a date range), use that same date for both startDate and endDate. Use the currency mentioned in the document.
+  IMPORTANT - occupancy/group-size-tiered pricing tables (columns like "1", "2", "3-5", "6-8", "9-14", "15-up" showing per-person price by TOTAL group size, not room-sharing): this schema only has 4 slots (single/double/triple/quadruple) tied to room-sharing, so a table with more than 4 tiers CANNOT be fully represented. Map tiers onto slots by closest fit: the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, the tier containing "4" (or the next one up) -> quadruplePrice, "1" -> singlePrice (omit if the source says N/A for 1 pax). Any tier beyond quadruple (e.g. "9-14", "15-up") CANNOT be included in price_list - instead, describe exactly what was approximated and what had to be dropped (with the real numbers) in the pricing_notes field, so a human can review before publishing. Never silently lose pricing information without flagging it there.
+- pricing_notes: leave empty UNLESS you had to approximate or drop something while fitting an occupancy/group-size pricing table into the 4-slot Distribution schema (see above) - in that case, explain exactly what was mapped where and what was dropped, including the real numbers, so the human can catch and adjust it.
 
 Output this exact JSON structure:
 {
@@ -70,6 +72,7 @@ Output this exact JSON structure:
   "nights": 0,
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
+  "pricing_notes": "",
   "price_list": []
 }"""
 
@@ -181,7 +184,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "excluded": "", "meeting_point": "", "policy_remarks": "",
         "itinerary_destinations": [], "nights": 0,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "schedule_notes": "", "stop_sales": [], "price_list": []
+        "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": []
     }
     defaults.update(data)
 
