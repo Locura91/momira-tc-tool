@@ -64,7 +64,7 @@ if "payloads" not in st.session_state:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-active-tour-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-direct-option-retry — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish is created as a draft (active: false). Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -477,44 +477,41 @@ if st.session_state.extracted:
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
 
-                        # Verify the tour is actually queryable before attempting to add an
-                        # option to it - kept as a safety net against any delay.
+                        # Retry the ACTUAL option-creation call directly, rather than probing
+                        # with a separate GET first - GET-visibility and write-capability may
+                        # follow different rules on Travel Compositor's side.
                         import time
-                        tour_confirmed = False
-                        for attempt in range(4):
-                            check = client.get_closed_tour(payloads["supplier_id"], real_code)
-                            if "error" not in check:
-                                tour_confirmed = True
-                                break
-                            time.sleep(1.5)
-
-                        if not tour_confirmed:
-                            st.error(f"❌ Tour `{real_code}` was created but isn't queryable yet after "
-                                    f"several attempts. Try adding the option manually shortly using "
-                                    f"'Add a new option to an existing tour'.")
-                        else:
+                        option_result = None
+                        for attempt in range(6):
                             option_result = client.create_closed_tour_option(
                                 payloads["supplier_id"], real_code, payloads["tour_option_payload"]
                             )
-                            if "error" in option_result:
-                                st.error(f"❌ Tour option creation failed: {option_result}\n\n"
-                                        f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
-                                        f"inactive tours aren't visible via the API. If this tour was "
-                                        f"deactivated some other way, reactivate it first and retry.")
+                            if "error" not in option_result:
+                                break
+                            time.sleep(2)
+
+                        if "error" in option_result:
+                            st.error(f"❌ Tour option creation failed after 6 attempts over ~12 seconds: "
+                                    f"{option_result}\n\n"
+                                    f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
+                                    f"inactive tours aren't visible via the API. The tour was created with "
+                                    f"active:true, but if this keeps failing, check inside Travel Compositor "
+                                    f"whether `{real_code}` shows as active, and try 'Add a new option to "
+                                    f"an existing tour' manually once confirmed.")
+                        else:
+                            st.success("✅ Tour option created.")
+                            # Switch back to inactive/draft, as required for final state.
+                            deactivate_payload = dict(creation_payload)
+                            deactivate_payload["active"] = False
+                            deactivate_payload["code"] = real_code
+                            deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
+                            if "error" in deactivate_result:
+                                st.warning(f"⚠️ Tour and option were created successfully, but switching "
+                                          f"the tour back to inactive/draft failed: {deactivate_result}. "
+                                          f"You may need to deactivate it manually inside Travel Compositor.")
                             else:
-                                st.success("✅ Tour option created.")
-                                # Switch back to inactive/draft, as required for final state.
-                                deactivate_payload = dict(creation_payload)
-                                deactivate_payload["active"] = False
-                                deactivate_payload["code"] = real_code
-                                deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
-                                if "error" in deactivate_result:
-                                    st.warning(f"⚠️ Tour and option were created successfully, but switching "
-                                              f"the tour back to inactive/draft failed: {deactivate_result}. "
-                                              f"You may need to deactivate it manually inside Travel Compositor.")
-                                else:
-                                    st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
-                                              f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
+                                st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
+                                          f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result = client.create_closed_tour_option(
