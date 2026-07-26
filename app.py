@@ -22,6 +22,7 @@ import tempfile
 import os
 import time
 import streamlit as st
+import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
@@ -52,7 +53,7 @@ ACTION_LABELS = {
 ACTION_FIELDS = {
     "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
     "add_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
-    "update_tour": ["existing_tour_code", "min_pax", "max_pax", "currency", "release_days"],
+    "update_tour": ["existing_tour_code", "release_days"],
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
 
@@ -96,7 +97,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-occupancy-mapping — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-friendly-pricing-table — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -190,6 +191,9 @@ else:
                 st.session_state.working_tour_code = working_code
                 if isinstance(fetched, dict) and "error" not in fetched:
                     st.session_state.fetched_tour_provider_code = fetched.get("providerCode", "")
+                    st.session_state.fetched_tour_min_pax = fetched.get("minPax")
+                    st.session_state.fetched_tour_max_pax = fetched.get("maxPax")
+                    st.session_state.fetched_tour_currency = fetched.get("currency")
 
         if st.session_state.get("fetched_tour"):
             t = st.session_state.fetched_tour
@@ -198,6 +202,10 @@ else:
             else:
                 working_code = st.session_state.get("working_tour_code") or existing_tour_code_in
                 st.success(f"Found: **{t.get('name', '(no name)')}** (using code `{working_code}`)")
+                if action == "update_tour":
+                    st.caption(f"Will reuse from this tour: Min Pax **{t.get('minPax')}**, "
+                              f"Max Pax **{t.get('maxPax')}**, Currency **{t.get('currency')}**, "
+                              f"ClosedTour Code **{t.get('providerCode')}**.")
                 existing_modalities = t.get("modalityCodes", [])
                 st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
                 if existing_modalities and "modality_code" in needed:
@@ -248,8 +256,16 @@ else:
         required_ok = False
     if "existing_tour_code" in needed and not existing_tour_code_in:
         required_ok = False
+    if action == "update_tour" and not st.session_state.get("fetched_tour_provider_code"):
+        required_ok = False
+        st.info("Click 'Check what's already online for this code' above first - this fetches the "
+               "existing Min/Max Pax, Currency, and ClosedTour Code so you don't have to re-enter them.")
 
     if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok):
+        if action == "update_tour":
+            min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
+            max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
+            currency_in = st.session_state.get("fetched_tour_currency") or ""
         st.session_state.cfg_provider_code = provider_code_in or ""
         st.session_state.cfg_min_pax = min_pax_in or 1
         st.session_state.cfg_max_pax = max_pax_in or 9
@@ -294,6 +310,12 @@ st.caption("Provide a URL, a document, or both. If you give both, information fr
 
 url = st.text_input("Product page URL (optional)")
 uploaded = st.file_uploader("Upload a DMC document (optional)", type=["pdf", "docx", "xlsx"])
+extraction_hint = st.text_input(
+    "Extraction hint (optional)",
+    placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
+    help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
+         "multiple room categories). Leave blank for normal extraction."
+)
 
 if st.button("🔎 Extract", disabled=not (url or uploaded)):
     with st.spinner("Gathering content and checking for multiple tour variants..."):
@@ -316,8 +338,9 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
                 st.session_state.pending_variants = variants
                 st.session_state.pending_raw_text = raw_text
                 st.session_state.pending_url = url or None
+                st.session_state.pending_hint = extraction_hint or None
             else:
-                data = extract_structured_data(raw_text)
+                data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
                 data["image_urls"] = get_page_images(url) if url else []
                 st.session_state.extracted = data
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
@@ -338,7 +361,10 @@ if st.session_state.get("pending_variants"):
         with st.spinner("Extracting full details for the selected variant..."):
             try:
                 chosen_label = variants[chosen_idx].get("label", "")
-                data = extract_structured_data(st.session_state.pending_raw_text, variant_hint=chosen_label)
+                data = extract_structured_data(
+                    st.session_state.pending_raw_text, variant_hint=chosen_label,
+                    human_hint=st.session_state.get("pending_hint")
+                )
 
                 pending_url = st.session_state.get("pending_url")
                 data["image_urls"] = get_page_images(pending_url) if pending_url else []
@@ -465,6 +491,7 @@ if st.session_state.extracted:
                   f"{data['pricing_notes']}\n\n"
                   f"Review the priceList below carefully - some information may have been "
                   f"simplified or dropped.")
+
     default_price_list = data.get("price_list") or [{
         "name": "Example row - edit or delete",
         "startDate": "2027-01-01",
@@ -474,18 +501,57 @@ if st.session_state.extracted:
             "doublePrice": {"amount": 0, "currency": currency}
         }
     }]
-    price_list_json = st.text_area(
-        "priceList (JSON array) — fields: name (optional), startDate, endDate, "
-        "price.{singlePrice/doublePrice/triplePrice/quadruplePrice} each as {amount, currency}",
-        json.dumps(default_price_list, indent=2),
-        height=200
+
+    price_df_rows = []
+    for entry in default_price_list:
+        price = entry.get("price", {}) or {}
+        def _amt(key):
+            block = price.get(key)
+            return block.get("amount") if isinstance(block, dict) else None
+        price_df_rows.append({
+            "Name": entry.get("name", ""),
+            "Start Date": entry.get("startDate", ""),
+            "End Date": entry.get("endDate", ""),
+            "Single": _amt("singlePrice"),
+            "Double": _amt("doublePrice"),
+            "Triple": _amt("triplePrice"),
+            "Quadruple": _amt("quadruplePrice"),
+        })
+
+    st.caption(f"Prices below are in **{currency or '(set Currency in Step 2)'}**. "
+              f"Leave a price blank if that occupancy isn't offered. Add/remove rows freely.")
+    price_df = pd.DataFrame(price_df_rows)
+    edited_price_df = st.data_editor(
+        price_df, num_rows="dynamic", use_container_width=True, key="price_editor"
     )
-    try:
-        data["price_list"] = json.loads(price_list_json)
-        price_list_valid = True
-    except json.JSONDecodeError as e:
-        st.error(f"priceList isn't valid JSON: {e}")
-        price_list_valid = False
+
+    def _row_to_price_entry(row):
+        price = {}
+        for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"),
+                         ("Triple", "triplePrice"), ("Quadruple", "quadruplePrice")]:
+            val = row.get(col)
+            if val is not None and not pd.isna(val):
+                price[key] = {"amount": float(val), "currency": currency}
+        entry = {
+            "startDate": str(row.get("Start Date", "")).strip(),
+            "endDate": str(row.get("End Date", "")).strip(),
+            "price": price
+        }
+        name = str(row.get("Name", "")).strip()
+        if name:
+            entry["name"] = name
+        return entry
+
+    data["price_list"] = [
+        _row_to_price_entry(row) for _, row in edited_price_df.iterrows()
+        if str(row.get("Start Date", "")).strip() and str(row.get("End Date", "")).strip()
+    ]
+    price_list_valid = len(data["price_list"]) > 0
+    if not price_list_valid:
+        st.error("Add at least one price row with both a Start Date and End Date.")
+
+    with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
+        st.json(data["price_list"])
 
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
@@ -512,7 +578,14 @@ if st.session_state.extracted:
             st.write(f"✅ `{item['destination']}`")
 
         if payloads["unresolved_destinations"]:
-            st.warning(f"⚠️ Unresolved destinations (fix in Step 4 and rebuild): {payloads['unresolved_destinations']}")
+            st.error(
+                f"🚫 **{len(payloads['unresolved_destinations'])} destination(s) could NOT be matched "
+                f"to a real Travel Compositor location:** {', '.join(payloads['unresolved_destinations'])}\n\n"
+                f"This means Travel Compositor doesn't recognize this place by that name - publishing "
+                f"would fail or create a wrong/broken itinerary stop. **To fix:** go back up to Step 4's "
+                f"'Itinerary destinations' box and either correct the spelling/name, or replace it with "
+                f"the exact name Travel Compositor uses, then click 'Resolve Destinations & Build Payload' again."
+            )
 
         col3, col4 = st.columns(2)
         with col3:
