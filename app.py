@@ -64,6 +64,7 @@ if "payloads" not in st.session_state:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
+st.caption("Build version: 2026-07-26-active-tour-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish is created as a draft (active: false). Human verification and final activation still happen inside Travel Compositor.")
 
 
