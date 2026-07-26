@@ -261,7 +261,9 @@ if st.session_state.extracted:
         data["hotels_text"] = st.text_area("Hotels", data.get("hotels_text", ""), height=100)
         data["included"] = st.text_area("Included", data.get("included", ""), height=100)
         data["excluded"] = st.text_area("Excluded", data.get("excluded", ""), height=100)
-        data["meeting_point"] = st.text_input("Meeting point", data.get("meeting_point", ""))
+        DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
+                                 "tour's starting city, in your hotel lobby.")
+        data["meeting_point"] = st.text_input("Meeting point", data.get("meeting_point") or DEFAULT_MEETING_POINT)
         data["policy_remarks"] = st.text_area("Policy remarks", data.get("policy_remarks", ""), height=80)
         data["nights"] = st.number_input("Nights", min_value=1, value=int(data.get("nights", 1)))
 
@@ -312,6 +314,34 @@ if st.session_state.extracted:
                     data["image_urls"] = new_list
                     st.session_state.images_text_value = "\n".join(new_list)
                     st.rerun()
+
+    st.subheader("Departure Schedule")
+    if data.get("schedule_notes"):
+        st.info(f"🔎 AI detected this note about departure timing in the source: \"{data['schedule_notes']}\" "
+                f"— use this to help set Operational Days and Stop Sales below correctly. "
+                f"This is NOT applied automatically - please verify and set the fields yourself.")
+
+    all_weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+    data["operational_days"] = st.multiselect(
+        "Operational Days (which weekdays this tour can depart on)",
+        all_weekdays,
+        default=data.get("operational_days", all_weekdays)
+    )
+
+    with st.expander("Stop Sales (block specific date ranges - e.g. for monthly-only or irregular departures)"):
+        st.caption("For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days above "
+                   "to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT the ones "
+                   "you want to allow. This mirrors how Travel Compositor represents irregular schedules today - "
+                   "it's manual because getting this wrong silently creates wrong bookable dates.")
+        stop_sales_json = st.text_area(
+            "stopSales (JSON array of {\"start\": \"YYYY-MM-DD\", \"end\": \"YYYY-MM-DD\"})",
+            json.dumps(data.get("stop_sales", []), indent=2),
+            height=100
+        )
+        try:
+            data["stop_sales"] = json.loads(stop_sales_json)
+        except json.JSONDecodeError as e:
+            st.error(f"stopSales isn't valid JSON: {e}")
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
     default_price_list = data.get("price_list") or [{
