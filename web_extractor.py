@@ -3,14 +3,20 @@ Extracts closed-tour product data from a supplier's web page (e.g. a
 MultiWander or Oberoi Hotels itinerary page) and publishes it as a draft
 to Travel Compositor.
 
-This replaces step3_uploader.py:
-  - No more hardcoded credentials -> uses TravelCompositorAPI (.env)
-  - No more 5-entry hardcoded IATA_LOOKUP -> uses the real 16,000+
-    destination list via api_client.find_destinations_in_text()
-  - No more hand-built payload dict -> routes through schemas.py /
-    builder.py, so it gets the same validation as every other input source
-  - By default this is a DRY RUN (prints the payload, does not upload).
-    Pass --publish to actually create the draft in Travel Compositor.
+This now uses the SAME AI-based extraction as documents (ai_extractor.py),
+instead of blind rule-based HTML scraping. This fixes two real problems
+found in testing:
+  1. Rule-based scraping breaks on messy pages (multiple itinerary
+     variants mixed together, JS-heavy menus, non-heading day structure).
+  2. It had no way to detect when a page describes MULTIPLE distinct tour
+     variants (e.g. a 3-night and 4-night version of the same Nile cruise)
+     bundled together - it would just blindly mix both together into one
+     confused tour. Now uses detect_tour_variants() first.
+
+Image URLs still need heuristic extraction (AI text-only extraction can't
+see <img> tags), so that part stays rule-based.
+
+By default this is a DRY RUN. Pass --publish to actually create the draft.
 
 Usage:
     python web_extractor.py <URL> --supplier 48940 --provider-code ASW-1 --currency EUR
@@ -24,6 +30,7 @@ from bs4 import BeautifulSoup
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
+from ai_extractor import extract_structured_data, detect_tour_variants
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 
@@ -68,89 +75,60 @@ def get_price_list_interactively(default_currency: str = "EUR") -> list:
     return price_list
 
 
-def extract_from_url(target_url: str, api_client: TravelCompositorAPI) -> dict:
-    """
-    Scrapes a product page and returns a dict shaped to match what
-    builder.build_closed_tour_payloads() expects in `extracted_dmc_data`.
-
-    NOTE: This is heuristic HTML scraping, not AI extraction. It's a
-    reasonable first pass for well-structured pages; genuinely messy
-    supplier pages will likely need the AI-extraction step (still to be
-    built) instead of, or in addition to, this.
-    """
-    print(f"📡 Scraping URL: {target_url}...")
+def get_page_text(target_url: str) -> str:
+    """Fetches a URL and returns clean, readable visible text for AI extraction."""
     headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(target_url, headers=headers, timeout=15)
     response.raise_for_status()
     soup = BeautifulSoup(response.content, "html.parser")
-
     main_content = soup.find("article") or soup.find("main") or soup
 
-    title_tag = main_content.find("h1") or soup.find("h1")
-    tour_name = title_tag.get_text(strip=True) if title_tag else "Untitled Tour"
+    for tag in main_content(["script", "style", "nav", "footer"]):
+        tag.decompose()
 
-    desc_paragraphs = [
-        p.get_text(strip=True) for p in main_content.find_all("p")
-        if len(p.get_text(strip=True)) > 50
-    ][:3]
-    full_description = "<p>" + "</p><p>".join(desc_paragraphs) + "</p>" if desc_paragraphs else f"<p>{tour_name}</p>"
+    return main_content.get_text(separator="\n", strip=True)
 
-    included_items = [
-        li.get_text(strip=True) for li in main_content.find_all("li")
-        if 15 < len(li.get_text(strip=True)) < 150
-    ][:8]
-    included_html = (
-        "<ul>" + "".join(f"<li>{item}</li>" for item in included_items) + "</ul>"
-        if included_items else "<ul><li>Accommodation as per itinerary</li></ul>"
-    )
+
+def get_page_images(target_url: str) -> list:
+    """
+    Heuristic-only image grab (AI text extraction can't see <img> tags).
+    Returns real hosted URLs found on the page, or a placeholder if none.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(target_url, headers=headers, timeout=15)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.content, "html.parser")
+    main_content = soup.find("article") or soup.find("main") or soup
 
     extracted_images = [
         img.get("src") for img in main_content.find_all("img")
         if img.get("src") and img.get("src").startswith("http") and "logo" not in img.get("src").lower()
     ]
-    final_images = extracted_images[:5] if extracted_images else [FALLBACK_IMAGE]
+    return extracted_images[:5] if extracted_images else [FALLBACK_IMAGE]
 
-    # Destination resolution: scan the ENTIRE content body (paragraphs, list
-    # items, and headings, in document order) for real destination names,
-    # using the actual Travel Compositor destination list. Destinations are
-    # often embedded inside day-by-day paragraphs (e.g. "Day 2: drive to
-    # Edfu via Esna"), not in headings - so we can't rely on headings alone.
-    itinerary_destination_names = []
-    text_blocks = main_content.find_all(["h2", "h3", "p", "li"])
-    for block in text_blocks:
-        block_text = block.get_text(strip=True)
-        if not block_text:
-            continue
-        matches = api_client.find_destinations_in_text(block_text)
-        for m in matches:
-            if not itinerary_destination_names or itinerary_destination_names[-1] != m["name"]:
-                itinerary_destination_names.append(m["name"])
 
-    if not itinerary_destination_names:
-        print("⚠️ No destinations recognized anywhere in the page content. "
-              "You'll need to add itinerary destinations manually before publishing.")
+def extract_from_url(target_url: str, api_client: TravelCompositorAPI,
+                      variant_hint: str = None, model: str = "claude-sonnet-5") -> dict:
+    """
+    Fetches a product page and uses AI extraction (same pipeline as
+    documents) to produce structured tour data matching what
+    builder.build_closed_tour_payloads() expects.
 
-    print("⚠️ NOTE: 'included'/'excluded' are extracted from ANY bullet list on the page "
-          "(this can pick up unrelated content like ship facilities lists). "
-          "Always review these in the Review UI before publishing.")
+    variant_hint: pass this if detect_tour_variants() found multiple tours
+    on this page and the human picked one - extraction will focus on just
+    that variant and ignore the others.
+    """
+    print(f"📡 Fetching URL: {target_url}...")
+    raw_text = get_page_text(target_url)
+    print(f"   Extracted {len(raw_text)} characters of visible text.")
 
-    nights = max(1, len(itinerary_destination_names) - 1) if itinerary_destination_names else 1
+    data = extract_structured_data(raw_text, model=model, variant_hint=variant_hint)
+    data["image_urls"] = get_page_images(target_url)
 
-    return {
-        "tour_name": tour_name,
-        "description": full_description,
-        "hotels_text": "",
-        "included": included_html,
-        "excluded": "<ul><li>International flights</li><li>Personal expenses</li></ul>",
-        "meeting_point": "",
-        "policy_remarks": "",
-        "image_urls": final_images,
-        # builder.py will resolve these names -> codes itself via api_client.resolve_destination()
-        "itinerary_destinations": itinerary_destination_names,
-        "nights": nights,
-        "operational_days": [1, 2, 3, 4, 5, 6, 7],
-        "price_list": []  # NOTE: priceList is REQUIRED by the API - must be filled before --publish will succeed
-    }
+    if not data.get("itinerary_destinations"):
+        print("⚠️ No destinations recognized. You'll need to add itinerary destinations manually before publishing.")
+
+    return data
 
 
 def main():
@@ -161,7 +139,7 @@ def main():
     parser.add_argument("--currency", default="EUR")
     parser.add_argument("--modality-code", default="STANDARD_CABIN")
     parser.add_argument("--min-pax", type=int, default=1, choices=[1, 2])
-    parser.add_argument("--max-pax", type=int, default=9, choices=[4, 5, 6, 7, 8, 9])
+    parser.add_argument("--max-pax", type=int, default=9, choices=range(2, 10))
     parser.add_argument("--on-request", action="store_true", default=True)
     parser.add_argument("--price-list-file", default=None,
                          help="Path to a JSON file containing the priceList array. "
@@ -172,7 +150,22 @@ def main():
 
     client = TravelCompositorAPI()
 
-    extracted_data = extract_from_url(args.url, client)
+    raw_text = get_page_text(args.url)
+    variants = detect_tour_variants(raw_text)
+    variant_hint = None
+    if variants:
+        print("\n⚠️ Multiple tour variants detected on this page:")
+        for i, v in enumerate(variants, 1):
+            print(f"  {i}. {v.get('label')} ({v.get('nights')} nights)")
+        choice = input("Which one do you want to extract? (enter number): ").strip()
+        try:
+            variant_hint = variants[int(choice) - 1]["label"]
+        except (ValueError, IndexError):
+            print("Invalid choice, defaulting to the first variant.")
+            variant_hint = variants[0]["label"]
+
+    extracted_data = extract_structured_data(raw_text, variant_hint=variant_hint)
+    extracted_data["image_urls"] = get_page_images(args.url)
 
     if args.price_list_file:
         with open(args.price_list_file, "r", encoding="utf-8") as f:
