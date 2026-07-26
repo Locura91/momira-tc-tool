@@ -3,6 +3,9 @@ from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES
 from api_client import TravelCompositorAPI
 
+DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
+                          "tour's starting city, in your hotel lobby.")
+
 def build_closed_tour_payloads(
     pre_config: HumanPreConfig,
     extracted_dmc_data: Dict[str, Any],
@@ -39,7 +42,7 @@ def build_closed_tour_payloads(
         voucherRemarks="",
         included=extracted_dmc_data.get("included", ""),
         excluded=extracted_dmc_data.get("excluded", ""),
-        meetingPoint=extracted_dmc_data.get("meeting_point", ""),
+        meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
         remarksTitle="Policy",
         remarksDescription=extracted_dmc_data.get("policy_remarks", "")
     )
@@ -78,7 +81,7 @@ def build_closed_tour_payloads(
         tour_option = ContractClosedTourOptionVO(
             code=pre_config.modality_code,
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
-            stopSales=[],
+            stopSales=extracted_dmc_data.get("stop_sales", []),
             priceList=extracted_dmc_data.get("price_list", []),
             onRequest=pre_config.on_request,
             quantityPerDay=99,
