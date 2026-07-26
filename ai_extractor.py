@@ -32,6 +32,7 @@ Rules:
 - description MUST be formatted as day-by-day HTML using this EXACT pattern (confirmed against a real published tour) - one block per day, each day title in bold, separated by an empty paragraph:
   <p><strong>Day 1: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p>...
   Keep going for every day in the itinerary. Regardless of how the source presents each day - a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), a bare bullet list, or already flowing prose - always REWRITE it into natural, engaging, SEO-strong flowing sentences for that day's paragraph, not a copy of the raw format. Use ONLY facts, places, and activities that are actually present in the source - never invent or add details, opening hours, prices, or claims that aren't there. The goal is better PROSE, not more information.
+  MEAL CODES: if the source indicates which meals are included each day (e.g. "[B, L, D]", "[-, L, D]", "Breakfast and lunch included"), add the SAME meal codes in parentheses right after that day's title, e.g. "Day 1: Short title (B, L)". Only include codes for meals actually mentioned for that day - if a day has no meals mentioned, add nothing in parentheses. Use these codes: B=Breakfast, L=Lunch, D=Dinner, P=Picnic (add other single-letter codes only if the source uses a different one you can map clearly). At the very END of the full description (after the last day's closing </p><p><br></p>), add ONE final legend paragraph explaining only the codes actually used anywhere in the description, e.g.: <p><em>B = Breakfast | L = Lunch | D = Dinner</em></p>. Omit any code not actually used. If the source gives no meal information at all, skip both the parenthetical codes and the legend entirely.
 - hotels_text MUST always follow this EXACT template (confirmed against a real published tour) - a fixed intro paragraph (always exactly this wording), then a bulleted list:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
@@ -154,7 +155,7 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     return variants
 
 
-def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None) -> dict:
+def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
     """
     Sends raw document text to Claude and returns structured, English,
     JSON-parsed tour data. Raises RuntimeError with a clear message if the
@@ -164,15 +165,24 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     variant_hint: if the source describes multiple tour variants and the
     human has picked one (via detect_tour_variants), pass its label here so
     the AI extracts ONLY that variant and ignores the others.
+
+    human_hint: free-text guidance from the human to steer extraction, e.g.
+    "use the German-language pricing table, not the English one" or
+    "focus on the Superior room category". Passed through as-is - keep it
+    short and specific for best results.
     """
     user_content = raw_text
+    prefix_parts = []
     if variant_hint:
-        user_content = (
+        prefix_parts.append(
             f"IMPORTANT: This document describes MULTIPLE tour variants. "
             f"Extract ONLY the following variant, and completely ignore any other "
-            f"variant/itinerary mentioned elsewhere in the text: {variant_hint}\n\n"
-            f"--- Source content ---\n{raw_text}"
+            f"variant/itinerary mentioned elsewhere in the text: {variant_hint}"
         )
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
     print(f"🤖 Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
