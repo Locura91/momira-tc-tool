@@ -64,7 +64,7 @@ if "payloads" not in st.session_state:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-direct-option-retry — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-closedtour-prefix-field — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish is created as a draft (active: false). Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -122,14 +122,20 @@ publish_action = st.sidebar.radio(
 )
 existing_tour_code = None
 if publish_action != "Create a brand-new tour (+ first option)":
-    existing_tour_code = st.sidebar.text_input(
-        "Existing Tour's real Code (NOT its ClosedTour/Provider Code)",
-        placeholder="e.g. CLOSEDTOUR-411099",
-        help="Travel Compositor's internal 'code' is often completely different from the "
-             "human-chosen ClosedTour Code (e.g. a tour with ClosedTour Code 'TNR-03' had "
-             "the real code 'CLOSEDTOUR-411099'). Check inside Travel Compositor's own "
-             "platform for the exact 'Code' field if unsure. For tours created through THIS "
-             "app, the code shown in the success message after publishing is the one to use here."
+    st.sidebar.caption("Existing Tour's real Code (NOT its ClosedTour/Provider Code):")
+    prefix_col, number_col = st.sidebar.columns([1, 1.4])
+    with prefix_col:
+        st.markdown("<div style='padding-top: 0.6rem; text-align: right;'>CLOSEDTOUR-</div>", unsafe_allow_html=True)
+    with number_col:
+        tour_code_number = st.text_input(
+            "Number", placeholder="e.g. 411099", label_visibility="collapsed"
+        )
+    existing_tour_code = f"CLOSEDTOUR-{tour_code_number.strip()}" if tour_code_number.strip() else ""
+    st.sidebar.caption(
+        "Travel Compositor's internal 'code' is often completely different from the "
+        "human-chosen ClosedTour Code (e.g. a tour with ClosedTour Code 'TNR-03' had "
+        "the real code 'CLOSEDTOUR-411099'). For tours created through THIS app, the "
+        "code shown in the success message after publishing is the one to use here."
     )
 
     if st.sidebar.button("🔍 Check what's already online for this code"):
