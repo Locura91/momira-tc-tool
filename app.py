@@ -56,6 +56,28 @@ ACTION_FIELDS = {
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
 
+def try_code_variants(call_fn, code):
+    """
+    Tries `code` as given, then falls back to toggling the 'CLOSEDTOUR-' prefix -
+    we've seen conflicting evidence about whether Travel Compositor's lookup
+    needs the ClosedTour/Provider Code or the internal CLOSEDTOUR-XXXXX code,
+    so try both rather than betting on just one.
+    Returns (result_dict, code_that_worked_or_None).
+    """
+    variants = [code]
+    if code.upper().startswith("CLOSEDTOUR-"):
+        variants.append(code[len("CLOSEDTOUR-"):])
+    else:
+        variants.append(f"CLOSEDTOUR-{code}")
+
+    result = None
+    for v in variants:
+        result = call_fn(v)
+        if "error" not in result:
+            return result, v
+    return result, None
+
+
 st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
 _defaults = {
@@ -74,7 +96,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-active-diagnostic — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-code-variant-fallback — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -148,33 +170,34 @@ else:
     release_days_in = 30
 
     if "existing_tour_code" in needed:
-        st.caption("Existing Tour's real Code (NOT its ClosedTour/Provider Code):")
-        prefix_col, number_col = st.columns([1, 3])
-        with prefix_col:
-            st.markdown("<div style='padding-top: 0.6rem; text-align: right;'>CLOSEDTOUR-</div>", unsafe_allow_html=True)
-        with number_col:
-            tour_code_number = st.text_input("Number", placeholder="e.g. 411099", label_visibility="collapsed")
-        existing_tour_code_in = f"CLOSEDTOUR-{tour_code_number.strip()}" if tour_code_number.strip() else ""
+        existing_tour_code_in = st.text_input(
+            "Existing Tour Code",
+            placeholder="e.g. BKK-1 (your own ClosedTour/Provider Code) or CLOSEDTOUR-411099",
+        ).strip()
         st.caption(
-            "Travel Compositor's internal 'code' is often different from the human-chosen "
-            "ClosedTour Code (e.g. ClosedTour Code 'TNR-03' had real code 'CLOSEDTOUR-411099'). "
-            "For tours created through THIS app, use the code shown in the success message after publishing."
+            "Try your own ClosedTour/Provider Code first (e.g. 'BKK-1') - the app will "
+            "automatically also try the internal 'CLOSEDTOUR-XXXXX' format as a fallback "
+            "if the first attempt doesn't work."
         )
 
         if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
             with st.spinner("Fetching from Travel Compositor..."):
-                st.session_state.fetched_tour = client.get_closed_tour(supplier_id, existing_tour_code_in)
+                fetched, working_code = try_code_variants(
+                    lambda c: client.get_closed_tour(supplier_id, c), existing_tour_code_in
+                )
+                st.session_state.fetched_tour = fetched
                 st.session_state.fetched_option = None
-                _fetched = st.session_state.fetched_tour
-                if isinstance(_fetched, dict) and "error" not in _fetched:
-                    st.session_state.fetched_tour_provider_code = _fetched.get("providerCode", "")
+                st.session_state.working_tour_code = working_code
+                if isinstance(fetched, dict) and "error" not in fetched:
+                    st.session_state.fetched_tour_provider_code = fetched.get("providerCode", "")
 
         if st.session_state.get("fetched_tour"):
             t = st.session_state.fetched_tour
             if "error" in t:
                 st.error(f"Not found or error: {t.get('message', t)}")
             else:
-                st.success(f"Found: **{t.get('name', '(no name)')}**")
+                working_code = st.session_state.get("working_tour_code") or existing_tour_code_in
+                st.success(f"Found: **{t.get('name', '(no name)')}** (using code `{working_code}`)")
                 existing_modalities = t.get("modalityCodes", [])
                 st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
                 if existing_modalities and "modality_code" in needed:
@@ -182,7 +205,7 @@ else:
                     if st.button("🔍 Fetch this modality's live pricing"):
                         with st.spinner("Fetching option..."):
                             st.session_state.fetched_option = client.get_closed_tour_option(
-                                supplier_id, existing_tour_code_in, check_modality
+                                supplier_id, working_code, check_modality
                             )
                     if st.session_state.get("fetched_option"):
                         opt = st.session_state.fetched_option
@@ -569,17 +592,33 @@ if st.session_state.extracted:
                             st.info(f"🔍 Diagnostic: Travel Compositor reports this tour's `active` field as "
                                    f"**{diag_check.get('active')}** (we sent `true`).")
 
+                        with st.expander("🔍 Full raw creation response (for deeper diagnosis)", expanded=True):
+                            st.json(result)
+
+                        # Try the human-chosen ClosedTour/Provider Code first (confirmed working
+                        # via direct API test), falling back to the internal 'code' if that fails -
+                        # we've seen conflicting evidence about which one Travel Compositor's
+                        # lookup actually uses, so don't bet everything on just one.
                         option_result = None
-                        for attempt in range(6):
-                            option_result = client.create_closed_tour_option(
-                                payloads["supplier_id"], real_code, payloads["tour_option_payload"]
-                            )
+                        used_code = None
+                        for candidate_code in [provider_code, real_code]:
+                            for attempt in range(3):
+                                option_result = client.create_closed_tour_option(
+                                    payloads["supplier_id"], candidate_code, payloads["tour_option_payload"]
+                                )
+                                if "error" not in option_result:
+                                    used_code = candidate_code
+                                    break
+                                time.sleep(2)
                             if "error" not in option_result:
                                 break
-                            time.sleep(2)
+
+                        if "error" not in option_result:
+                            st.caption(f"(Option succeeded using code: `{used_code}`)")
 
                         if "error" in option_result:
-                            st.error(f"❌ Tour option creation failed after 6 attempts over ~12 seconds: "
+                            st.error(f"❌ Tour option creation failed after trying both "
+                                    f"`{provider_code}` and `{real_code}`: "
                                     f"{option_result}\n\n"
                                     f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
                                     f"inactive tours aren't visible via the API. The tour was created with "
@@ -601,40 +640,48 @@ if st.session_state.extracted:
                                           f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
 
                 elif publish_action == "Add a new option to an existing tour":
-                    option_result = client.create_closed_tour_option(
-                        payloads["supplier_id"], target_tour_code, payloads["tour_option_payload"]
+                    option_result, used_code = try_code_variants(
+                        lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, payloads["tour_option_payload"]),
+                        target_tour_code
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Tour option creation failed: {option_result}\n\n"
+                        st.error(f"❌ Tour option creation failed (tried both `{target_tour_code}` and its "
+                                f"CLOSEDTOUR- variant): {option_result}\n\n"
                                 f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
                                 f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
                                 f"inside Travel Compositor first, then retry (you can switch it back "
                                 f"to inactive/draft afterward).")
                     else:
-                        st.success(f"✅ New option added to existing tour `{target_tour_code}`. Verify inside Travel Compositor.")
+                        st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
 
                 elif publish_action == "Update an existing tour's details":
                     update_payload = dict(payloads["main_tour_payload"])
                     update_payload["code"] = target_tour_code
-                    result = client.update_closed_tour(payloads["supplier_id"], update_payload)
+                    result, used_code = try_code_variants(
+                        lambda c: client.update_closed_tour(payloads["supplier_id"], {**update_payload, "code": c}),
+                        target_tour_code
+                    )
                     if "error" in result:
-                        st.error(f"❌ Tour update failed: {result}\n\n"
+                        st.error(f"❌ Tour update failed (tried both `{target_tour_code}` and its CLOSEDTOUR- "
+                                f"variant): {result}\n\n"
                                 f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
                                 f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
                                 f"inside Travel Compositor first, then retry.")
                     else:
-                        st.success(f"✅ Tour `{target_tour_code}` updated.")
+                        st.success(f"✅ Tour updated using code `{used_code}`.")
 
                 elif publish_action == "Update an existing option":
                     update_option_payload = dict(payloads["tour_option_payload"])
                     update_option_payload["code"] = modality_code
-                    option_result = client.update_closed_tour_option(
-                        payloads["supplier_id"], target_tour_code, update_option_payload
+                    option_result, used_code = try_code_variants(
+                        lambda c: client.update_closed_tour_option(payloads["supplier_id"], c, update_option_payload),
+                        target_tour_code
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Option update failed: {option_result}\n\n"
+                        st.error(f"❌ Option update failed (tried both `{target_tour_code}` and its CLOSEDTOUR- "
+                                f"variant): {option_result}\n\n"
                                 f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
                                 f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
                                 f"inside Travel Compositor first, then retry.")
                     else:
-                        st.success(f"✅ Option `{modality_code}` under tour `{target_tour_code}` updated.")
+                        st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
