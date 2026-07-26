@@ -74,7 +74,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-wizard-restructure — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-active-diagnostic — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -559,6 +559,15 @@ if st.session_state.extracted:
                         st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
+
+                        # DIAGNOSTIC: verify what Travel Compositor actually recorded for
+                        # 'active', rather than assuming it matches what we sent.
+                        diag_check = client.get_closed_tour(payloads["supplier_id"], real_code)
+                        if "error" in diag_check:
+                            st.warning(f"🔍 Diagnostic GET right after creation also failed: {diag_check}")
+                        else:
+                            st.info(f"🔍 Diagnostic: Travel Compositor reports this tour's `active` field as "
+                                   f"**{diag_check.get('active')}** (we sent `true`).")
 
                         option_result = None
                         for attempt in range(6):
