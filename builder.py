@@ -34,6 +34,12 @@ def build_closed_tour_payloads(
             )
         )
 
+    # Transports = number of destination CHANGES along the itinerary (not total stops)
+    transports_count = sum(
+        1 for i in range(1, len(validated_itinerary))
+        if validated_itinerary[i].destination != validated_itinerary[i - 1].destination
+    )
+
     # 2. Build Main Tour Payload (ContractClosedTourVO)
     datasheet_en = DatasheetEN(
         name=extracted_dmc_data.get("tour_name", ""),
@@ -56,11 +62,9 @@ def build_closed_tour_payloads(
         datasheets=build_datasheets(datasheet_en),
         images=extracted_dmc_data.get("image_urls", []),
         itinerary=validated_itinerary,
+        transports=transports_count,
         minChildAge=pre_config.min_child_age,
         maxChildAge=pre_config.max_child_age,
-        minChildAge2ndRange=pre_config.min_child_age_2nd_range,
-        maxChildAge2ndRange=pre_config.max_child_age_2nd_range,
-        hasSecondChildRange=pre_config.has_second_child_range,
         currency=pre_config.currency,
         nights=extracted_dmc_data.get("nights", 1),
         minPax=pre_config.min_pax,
