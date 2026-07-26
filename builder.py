@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from pydantic import ValidationError
-from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES
+from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation
 from api_client import TravelCompositorAPI
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
@@ -49,6 +49,22 @@ def build_closed_tour_payloads(
     else:
         hotels_count = len(set(item.destination for item in validated_itinerary if item.destination))
 
+    # Convert the simple flat supplement table into the confirmed real
+    # SupplementVO structure. A flat per-person price applies to both single
+    # and double occupancy (the common real-world pattern - e.g. an optional
+    # dinner costs the same whether traveling solo or as a couple); triple/
+    # quadruple stay at 0 unless a future refinement adds per-occupancy input.
+    supplements_list = []
+    for s in extracted_dmc_data.get("supplements", []):
+        price_val = float(s.get("price", 0) or 0)
+        supplements_list.append(SupplementVO(
+            translations={"EN": SupplementTranslation(name=s.get("name", ""))},
+            price=SupplementPriceVO(singlePrice=price_val, doublePrice=price_val),
+            mandatory=bool(s.get("mandatory", False)),
+            onRequest=bool(s.get("on_request", False)),
+            free=(price_val == 0),
+        ))
+
     # 2. Build Main Tour Payload (ContractClosedTourVO)
     datasheet_en = DatasheetEN(
         name=extracted_dmc_data.get("tour_name", ""),
@@ -73,6 +89,7 @@ def build_closed_tour_payloads(
         itinerary=validated_itinerary,
         transports=transports_count,
         hotels=hotels_count,
+        supplements=supplements_list,
         minChildAge=pre_config.min_child_age,
         maxChildAge=pre_config.max_child_age,
         currency=pre_config.currency,
