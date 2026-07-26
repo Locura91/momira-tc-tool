@@ -29,7 +29,7 @@ import streamlit as st
 # whether running locally (.env) or centrally hosted (st.secrets).
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
@@ -40,8 +40,9 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
 from document_reader import extract_raw_text
-from ai_extractor import extract_structured_data
-from web_extractor import extract_from_url
+from ai_extractor import extract_structured_data, detect_tour_variants
+from web_extractor import extract_from_url, get_page_text, get_page_images
+from pexels_client import search_images
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 
@@ -171,37 +172,80 @@ source_type = st.radio("Source type", ["Web link", "Document upload (PDF / Word 
 if source_type == "Web link":
     url = st.text_input("Product page URL")
     if st.button("🔗 Extract from URL", disabled=not url):
-        with st.spinner("Scraping page and resolving destinations..."):
+        with st.spinner("Fetching page and checking for multiple tour variants..."):
             try:
-                data = extract_from_url(url, client)
-                st.session_state.extracted = data
-                st.session_state.raw_preview = f"Source URL:\n{url}\n\n(Original page content was scraped directly - see extracted fields on the right.)"
-                st.session_state.payloads = None
-                st.success("Extraction complete. Review and edit below.")
+                raw_text = get_page_text(url)
+                variants = detect_tour_variants(raw_text)
+                if variants:
+                    st.session_state.pending_variants = variants
+                    st.session_state.pending_raw_text = raw_text
+                    st.session_state.pending_source = "url"
+                    st.session_state.pending_url = url
+                else:
+                    data = extract_structured_data(raw_text)
+                    data["image_urls"] = get_page_images(url)
+                    st.session_state.extracted = data
+                    st.session_state.raw_preview = f"Source URL:\n{url}\n\n(Content was fetched and sent to AI extraction - see extracted fields on the right.)"
+                    st.session_state.payloads = None
+                    st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
 
 else:
     uploaded = st.file_uploader("Upload a DMC document", type=["pdf", "docx", "xlsx"])
     if uploaded and st.button("📄 Extract from Document"):
-        with st.spinner("Reading document and running AI extraction (this calls the Claude API)..."):
+        with st.spinner("Reading document and checking for multiple tour variants..."):
             try:
-                # Save to a real temp file since our readers work on file paths
                 suffix = os.path.splitext(uploaded.name)[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
 
                 raw_text = extract_raw_text(tmp_path)
-                st.session_state.raw_preview = raw_text
-                data = extract_structured_data(raw_text)
-                data["image_urls"] = []  # documents don't have hosted URLs - human adds these below
-                st.session_state.extracted = data
-                st.session_state.payloads = None
                 os.remove(tmp_path)
-                st.success("Extraction complete. Review and edit below.")
+                variants = detect_tour_variants(raw_text)
+                if variants:
+                    st.session_state.pending_variants = variants
+                    st.session_state.pending_raw_text = raw_text
+                    st.session_state.pending_source = "document"
+                    st.session_state.pending_url = None
+                else:
+                    data = extract_structured_data(raw_text)
+                    data["image_urls"] = []  # documents don't have hosted URLs - human adds these below
+                    st.session_state.extracted = data
+                    st.session_state.raw_preview = raw_text
+                    st.session_state.payloads = None
+                    st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
+
+# Shared variant picker - shown whenever a fetch/read detected multiple distinct tours
+if st.session_state.get("pending_variants"):
+    variants = st.session_state.pending_variants
+    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to add?")
+    labels = [f"{v.get('label', 'Variant ' + str(i+1))} ({v.get('nights', '?')} nights)" for i, v in enumerate(variants)]
+    chosen_idx = st.radio("Pick one:", range(len(labels)), format_func=lambda i: labels[i])
+
+    if st.button("✅ Confirm and Extract Full Details"):
+        with st.spinner("Extracting full details for the selected variant..."):
+            chosen_label = variants[chosen_idx].get("label", "")
+            data = extract_structured_data(st.session_state.pending_raw_text, variant_hint=chosen_label)
+
+            if st.session_state.pending_source == "url":
+                data["image_urls"] = get_page_images(st.session_state.pending_url)
+                preview = f"Source URL:\n{st.session_state.pending_url}\n\n(Extracted variant: {chosen_label})"
+            else:
+                data["image_urls"] = []
+                preview = st.session_state.pending_raw_text
+
+            st.session_state.extracted = data
+            st.session_state.raw_preview = preview
+            st.session_state.payloads = None
+            st.session_state.pending_variants = None
+            st.session_state.pending_raw_text = None
+            st.session_state.pending_source = None
+            st.session_state.pending_url = None
+            st.rerun()
 
 
 # ----------------------------------------------------------------------
@@ -243,6 +287,33 @@ if st.session_state.extracted:
         data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
         if data["image_urls"] == [FALLBACK_IMAGE]:
             st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+
+        with st.expander("🖼️ Or search free stock photos (Pexels)"):
+            pexels_query = st.text_input(
+                "Search term", value=data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
+            )
+            if st.button("🔍 Search Pexels"):
+                with st.spinner("Searching Pexels..."):
+                    try:
+                        st.session_state.pexels_results = search_images(pexels_query)
+                    except Exception as e:
+                        st.session_state.pexels_results = None
+                        st.error(str(e))
+
+            if st.session_state.get("pexels_results"):
+                st.caption("Select images to add, then click 'Add selected below':")
+                pexels_cols = st.columns(3)
+                selected_pexels_urls = []
+                for i, photo in enumerate(st.session_state.pexels_results):
+                    with pexels_cols[i % 3]:
+                        st.image(photo["thumbnail"])
+                        if st.checkbox(f"Use (by {photo['photographer']})", key=f"pexels_pick_{i}"):
+                            selected_pexels_urls.append(photo["url"])
+
+                if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current + selected_pexels_urls
+                    st.rerun()
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
     default_price_list = data.get("price_list") or [{
