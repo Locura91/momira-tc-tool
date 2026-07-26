@@ -75,27 +75,30 @@ st.sidebar.markdown("## 🔴 Step 1 — Fill this in FIRST")
 if "suppliers_cache" not in st.session_state:
     st.session_state.suppliers_cache = None
 
-if st.sidebar.button("🔄 Load supplier list (by name)"):
-    with st.spinner("Fetching suppliers from Travel Compositor..."):
+# Always load the supplier list automatically - human picks by name, never
+# types a numeric ID directly, to avoid mistakes.
+if st.session_state.suppliers_cache is None:
+    with st.spinner("Loading supplier list from Travel Compositor..."):
         st.session_state.suppliers_cache = client.get_all_suppliers()
-        if not st.session_state.suppliers_cache:
-            st.sidebar.error("Could not load suppliers - check connection, or enter the numeric ID manually below.")
 
 if st.session_state.suppliers_cache:
     supplier_options = {
         f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
         for s in st.session_state.suppliers_cache
     }
-    selected_label = st.sidebar.selectbox("Supplier (pick by name)", list(supplier_options.keys()))
+    selected_label = st.sidebar.selectbox("Supplier (select by name)", list(supplier_options.keys()))
     supplier_id = str(supplier_options[selected_label])
+    if st.sidebar.button("🔄 Refresh supplier list"):
+        st.session_state.suppliers_cache = None
+        st.rerun()
 else:
-    supplier_id = st.sidebar.text_input(
-        "Supplier code (numeric, ID from TravelC Supplier Info)",
-        value="48940",
-        help="Click 'Load supplier list' above to pick by name instead of typing the numeric ID."
-    )
+    st.sidebar.error("Could not load the supplier list from Travel Compositor.")
+    if st.sidebar.button("🔄 Try again"):
+        st.rerun()
+    with st.sidebar.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
+        supplier_id = st.text_input("Supplier ID (numeric)", value="")
 
-provider_code = st.sidebar.text_input("ClosedTour Code (ABC-Number)", value="ASW-1")
+provider_code = st.sidebar.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
 min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
 max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
 currency = st.sidebar.text_input("Currency (ISO 3-letter)", value="EUR")
@@ -103,14 +106,16 @@ modality_code = st.sidebar.text_input("Unique Modality Code", value="Standard")
 
 st.sidebar.divider()
 st.sidebar.subheader("Publish Action")
+_publish_action_labels = {
+    "Create a brand-new tour (+ first option)": "1: Create new ClosedTour + 1 Modality",
+    "Add a new option to an existing tour": "2: Add new Modality to existing ClosedTour",
+    "Update an existing tour's details": "3: Update existing ClosedTour",
+    "Update an existing option": "4: Update existing ClosedTour Modality",
+}
 publish_action = st.sidebar.radio(
     "What do you want to do?",
-    [
-        "Create a brand-new tour (+ first option)",
-        "Add a new option to an existing tour",
-        "Update an existing tour's details",
-        "Update an existing option",
-    ],
+    list(_publish_action_labels.keys()),
+    format_func=lambda k: _publish_action_labels[k],
     help="Travel Compositor uses POST for creating new things and PUT for updating "
          "existing ones - this selector picks the right one automatically."
 )
