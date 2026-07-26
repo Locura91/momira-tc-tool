@@ -254,6 +254,22 @@ class TravelCompositorAPI:
         data = res.json()
         return data if isinstance(data, list) else []
 
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """
+        Executes GET /user/{micrositeId} — returns real, formally-registered
+        users for this microsite. Used to check whether a userId we send in
+        payloads (e.g. 'momiratravel-Christian') actually corresponds to a
+        real account, or is being silently ignored/replaced.
+        """
+        url = f"{self.api_base_url}/user/{self.microsite_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return []
+        data = res.json()
+        return data if isinstance(data, list) else []
+
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """
         Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
