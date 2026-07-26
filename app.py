@@ -171,9 +171,12 @@ on_request = st.sidebar.checkbox("On Request", value=True)
 # ----------------------------------------------------------------------
 # Step 2: Input source
 # ----------------------------------------------------------------------
-st.info("⬅️ **Before continuing: fill in Step 1 in the sidebar first** "
-        "(Supplier, ClosedTour Code, Pax, Currency, Modality Code). "
-        "Extraction works either way, but you'll need these correct before you can publish.")
+step1_complete = bool(supplier_id) and bool(provider_code.strip())
+if not step1_complete:
+    st.warning("⚠️ **Complete Step 1 in the sidebar first** — pick a Supplier and enter a "
+               "ClosedTour Code — before you can upload a document or paste a URL.")
+    st.stop()
+
 st.header("Step 2 — Input Source")
 st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
            "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
