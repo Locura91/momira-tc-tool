@@ -223,22 +223,25 @@ if st.session_state.get("pending_variants"):
 
     if st.button("✅ Confirm and Extract Full Details"):
         with st.spinner("Extracting full details for the selected variant..."):
-            chosen_label = variants[chosen_idx].get("label", "")
-            data = extract_structured_data(st.session_state.pending_raw_text, variant_hint=chosen_label)
+            try:
+                chosen_label = variants[chosen_idx].get("label", "")
+                data = extract_structured_data(st.session_state.pending_raw_text, variant_hint=chosen_label)
 
-            pending_url = st.session_state.get("pending_url")
-            data["image_urls"] = get_page_images(pending_url) if pending_url else []
-            preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
+                pending_url = st.session_state.get("pending_url")
+                data["image_urls"] = get_page_images(pending_url) if pending_url else []
+                preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
-            st.session_state.extracted = data
-            st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-            st.session_state.raw_preview = preview
-            st.session_state.payloads = None
-            st.session_state.pending_variants = None
-            st.session_state.pending_raw_text = None
-            st.session_state.pending_source = None
-            st.session_state.pending_url = None
-            st.rerun()
+                st.session_state.extracted = data
+                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                st.session_state.raw_preview = preview
+                st.session_state.payloads = None
+                st.session_state.pending_variants = None
+                st.session_state.pending_raw_text = None
+                st.session_state.pending_source = None
+                st.session_state.pending_url = None
+                st.rerun()
+            except Exception as e:
+                st.error(f"Extraction failed: {e}")
 
 
 # ----------------------------------------------------------------------
