@@ -29,6 +29,10 @@ Rules:
 - Translate ALL content into English, regardless of the source document's original language.
 - Output ONLY valid JSON. No markdown code fences, no explanation, no preamble.
 - Never fabricate information that isn't present in the source document. Use empty string "" or empty list [] for anything you can't determine.
+- description MUST be formatted as day-by-day HTML using this EXACT pattern (confirmed against a real published tour) - one block per day, each day title in bold, separated by an empty paragraph:
+  <p><strong>Day 1: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p>...
+  Keep going for every day in the itinerary. If the source only gives a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), summarize each day's activities into flowing sentences under that day's heading rather than copying the raw time table.
+- hotels_text: look specifically for hotel names, cabin/room categories (e.g. "Deluxe Cabin", "Superior Room"), star ratings, and nights per location. Format as HTML, e.g. "<p><strong>City - Hotel Name (4*)</strong> - Category | X nights</p>" repeated per stop. If the source describes a cruise ship's cabin categories instead of hotels, describe those here instead.
 - itinerary_destinations must be a list of plain place names in the order they're visited (e.g. "Aswan", "Luxor", "Kom Ombo") - NOT codes. Codes get resolved separately against the live destination database.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
