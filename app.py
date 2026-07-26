@@ -166,6 +166,12 @@ if publish_action != "Create a brand-new tour (+ first option)":
                             st.json(row.get("price", {}))
 
 on_request = st.sidebar.checkbox("On Request", value=True)
+days_available_before_release = st.sidebar.number_input(
+    "Release Day (days before departure this tour becomes bookable)",
+    min_value=0, value=0,
+    help="E.g. 0 = bookable any time up to departure. Ask: how many days before departure "
+         "should this tour first become available/visible for booking?"
+)
 
 
 # ----------------------------------------------------------------------
@@ -382,7 +388,8 @@ if st.session_state.extracted:
         pre_config = HumanPreConfig(
             supplier_id=supplier_id, provider_code=provider_code,
             min_pax=min_pax, max_pax=max_pax, currency=currency,
-            modality_code=modality_code, on_request=on_request
+            modality_code=modality_code, on_request=on_request,
+            days_available_before_release=days_available_before_release
         )
         with st.spinner("Resolving destinations against Travel Compositor..."):
             st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
@@ -462,7 +469,7 @@ if st.session_state.extracted:
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
                         option_result = client.create_closed_tour_option(
-                            payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
+                            payloads["supplier_id"], real_code, payloads["tour_option_payload"]
                         )
                         if "error" in option_result:
                             st.error(f"❌ Tour option creation failed: {option_result}")
