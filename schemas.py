@@ -165,7 +165,10 @@ class ContractClosedTourVO(BaseModel):
     modalityCodes: List[str] = []
     daysAvailableBeforeRelease: int = 0
     cancellationRanges: List[CancellationRange] = [CancellationRange()]
-    active: bool = False  # LOCKED to False for draft upload
+    active: bool = False  # Default/final state is inactive (draft). CONFIRMED: a tour must
+                          # be temporarily active:true to be visible for creating/updating its
+                          # options - see the create-new-tour flow in app.py, which creates
+                          # active, adds the option, then switches back to inactive.
     downloadMode: str = "AUTOMATIC"
     supplements: List[SupplementVO] = []
 
