@@ -70,7 +70,7 @@ st.caption("Every publish is created as a draft (active: false). Human verificat
 # ----------------------------------------------------------------------
 # Step 1: Human Pre-Configuration
 # ----------------------------------------------------------------------
-st.sidebar.header("Step 1 — Pre-Configuration")
+st.sidebar.markdown("## 🔴 Step 1 — Fill this in FIRST")
 
 if "suppliers_cache" not in st.session_state:
     st.session_state.suppliers_cache = None
@@ -166,6 +166,9 @@ on_request = st.sidebar.checkbox("On Request", value=True)
 # ----------------------------------------------------------------------
 # Step 2: Input source
 # ----------------------------------------------------------------------
+st.info("⬅️ **Before continuing: fill in Step 1 in the sidebar first** "
+        "(Supplier, ClosedTour Code, Pax, Currency, Modality Code). "
+        "Extraction works either way, but you'll need these correct before you can publish.")
 st.header("Step 2 — Input Source")
 source_type = st.radio("Source type", ["Web link", "Document upload (PDF / Word / Excel)"], horizontal=True)
 
@@ -185,6 +188,7 @@ if source_type == "Web link":
                     data = extract_structured_data(raw_text)
                     data["image_urls"] = get_page_images(url)
                     st.session_state.extracted = data
+                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                     st.session_state.raw_preview = f"Source URL:\n{url}\n\n(Content was fetched and sent to AI extraction - see extracted fields on the right.)"
                     st.session_state.payloads = None
                     st.success("Extraction complete. Review and edit below.")
@@ -213,6 +217,7 @@ else:
                     data = extract_structured_data(raw_text)
                     data["image_urls"] = []  # documents don't have hosted URLs - human adds these below
                     st.session_state.extracted = data
+                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                     st.session_state.raw_preview = raw_text
                     st.session_state.payloads = None
                     st.success("Extraction complete. Review and edit below.")
@@ -239,6 +244,7 @@ if st.session_state.get("pending_variants"):
                 preview = st.session_state.pending_raw_text
 
             st.session_state.extracted = data
+            st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
             st.session_state.raw_preview = preview
             st.session_state.payloads = None
             st.session_state.pending_variants = None
@@ -279,9 +285,12 @@ if st.session_state.extracted:
         )
         data["itinerary_destinations"] = [d.strip() for d in dest_text.split("\n") if d.strip()]
 
+        if "images_text_value" not in st.session_state:
+            st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+
         images_text = st.text_area(
             "Image URLs (one per line - documents need these added manually)",
-            "\n".join(data.get("image_urls", [])),
+            key="images_text_value",
             height=80
         )
         data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
@@ -312,7 +321,9 @@ if st.session_state.extracted:
 
                 if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
                     current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current + selected_pexels_urls
+                    new_list = current + selected_pexels_urls
+                    data["image_urls"] = new_list
+                    st.session_state.images_text_value = "\n".join(new_list)
                     st.rerun()
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
