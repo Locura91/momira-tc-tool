@@ -461,18 +461,23 @@ if st.session_state.extracted:
             with st.spinner("Sending to Travel Compositor..."):
 
                 if publish_action == "Create a brand-new tour (+ first option)":
-                    result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
+                    # CONFIRMED: a tour must be ACTIVE to be visible for any subsequent
+                    # operation (including adding its first option). We create it active,
+                    # add the option, then switch it back to inactive/draft as a final step.
+                    creation_payload = dict(payloads["main_tour_payload"])
+                    creation_payload["active"] = True
+
+                    result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
                     if "error" in result:
                         st.error(f"❌ Main tour creation failed: {result}")
                     else:
                         real_code = result.get('code', payloads['main_tour_code'])
-                        st.success(f"✅ Main tour created with real Code: **{real_code}** "
+                        st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
 
                         # Verify the tour is actually queryable before attempting to add an
-                        # option to it - defends against any delay between creation and
-                        # the tour becoming visible to subsequent calls.
+                        # option to it - kept as a safety net against any delay.
                         import time
                         tour_confirmed = False
                         for attempt in range(4):
@@ -484,23 +489,42 @@ if st.session_state.extracted:
 
                         if not tour_confirmed:
                             st.error(f"❌ Tour `{real_code}` was created but isn't queryable yet after "
-                                    f"several attempts - something else is wrong. Try adding the option "
-                                    f"manually in a moment using 'Add a new option to an existing tour'.")
+                                    f"several attempts. Try adding the option manually shortly using "
+                                    f"'Add a new option to an existing tour'.")
                         else:
                             option_result = client.create_closed_tour_option(
                                 payloads["supplier_id"], real_code, payloads["tour_option_payload"]
                             )
                             if "error" in option_result:
-                                st.error(f"❌ Tour option creation failed: {option_result}")
+                                st.error(f"❌ Tour option creation failed: {option_result}\n\n"
+                                        f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
+                                        f"inactive tours aren't visible via the API. If this tour was "
+                                        f"deactivated some other way, reactivate it first and retry.")
                             else:
-                                st.success("✅ Tour option created. Draft is ready — verify and activate it inside Travel Compositor.")
+                                st.success("✅ Tour option created.")
+                                # Switch back to inactive/draft, as required for final state.
+                                deactivate_payload = dict(creation_payload)
+                                deactivate_payload["active"] = False
+                                deactivate_payload["code"] = real_code
+                                deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
+                                if "error" in deactivate_result:
+                                    st.warning(f"⚠️ Tour and option were created successfully, but switching "
+                                              f"the tour back to inactive/draft failed: {deactivate_result}. "
+                                              f"You may need to deactivate it manually inside Travel Compositor.")
+                                else:
+                                    st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
+                                              f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result = client.create_closed_tour_option(
                         payloads["supplier_id"], target_tour_code, payloads["tour_option_payload"]
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Tour option creation failed: {option_result}")
+                        st.error(f"❌ Tour option creation failed: {option_result}\n\n"
+                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
+                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
+                                f"inside Travel Compositor first, then retry (you can switch it back "
+                                f"to inactive/draft afterward).")
                     else:
                         st.success(f"✅ New option added to existing tour `{target_tour_code}`. Verify inside Travel Compositor.")
 
@@ -509,7 +533,10 @@ if st.session_state.extracted:
                     update_payload["code"] = target_tour_code  # make sure we're updating the right tour
                     result = client.update_closed_tour(payloads["supplier_id"], update_payload)
                     if "error" in result:
-                        st.error(f"❌ Tour update failed: {result}")
+                        st.error(f"❌ Tour update failed: {result}\n\n"
+                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
+                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
+                                f"inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Tour `{target_tour_code}` updated.")
 
@@ -520,6 +547,9 @@ if st.session_state.extracted:
                         payloads["supplier_id"], target_tour_code, update_option_payload
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Option update failed: {option_result}")
+                        st.error(f"❌ Option update failed: {option_result}\n\n"
+                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
+                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
+                                f"inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Option `{modality_code}` under tour `{target_tour_code}` updated.")
