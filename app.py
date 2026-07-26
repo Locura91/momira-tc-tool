@@ -97,7 +97,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-supplements-and-overlap-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-user-diagnostic-raw-visibility — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -107,16 +107,20 @@ st.caption("Every publish respects the confirmed active/inactive workflow. Human
 with st.expander("🔍 Diagnostic: check real registered users (for the Creator/userId issue)"):
     if st.button("List real users from Travel Compositor"):
         with st.spinner("Fetching users..."):
-            users = client.get_all_users()
-            st.session_state.diag_users = users
-    if st.session_state.get("diag_users") is not None:
-        users = st.session_state.diag_users
+            raw_res = client._request("GET", f"{client.api_base_url}/user/{client.microsite_id}")
+            st.session_state.diag_status = raw_res.status_code
+            st.session_state.diag_raw_text = raw_res.text
+            try:
+                st.session_state.diag_users = raw_res.json() if raw_res.status_code == 200 else []
+            except Exception:
+                st.session_state.diag_users = []
+    if st.session_state.get("diag_status") is not None:
+        st.write(f"HTTP status: **{st.session_state.diag_status}**")
+        st.code(st.session_state.diag_raw_text[:2000], language="json")
+        users = st.session_state.get("diag_users") or []
         if users:
             st.write(f"Found {len(users)} real registered user(s):")
             st.json(users)
-        else:
-            st.warning("No users returned - either none exist, or this endpoint needs a different "
-                      "microsite/agency context than what we have. Check the raw error above if any.")
 
 st.header("Step 1 — What do you want to do?")
 
