@@ -168,8 +168,8 @@ if publish_action != "Create a brand-new tour (+ first option)":
 on_request = st.sidebar.checkbox("On Request", value=True)
 days_available_before_release = st.sidebar.number_input(
     "Release Day (days before departure this tour becomes bookable)",
-    min_value=0, value=0,
-    help="E.g. 0 = bookable any time up to departure. Ask: how many days before departure "
+    min_value=0, value=30,
+    help="Default 30 days before departure. Ask: how many days before departure "
          "should this tour first become available/visible for booking?"
 )
 
