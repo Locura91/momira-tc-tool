@@ -34,6 +34,7 @@ Rules:
   Keep going for every day in the itinerary. If the source only gives a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), summarize each day's activities into flowing sentences under that day's heading rather than copying the raw time table.
 - hotels_text: look specifically for hotel names, cabin/room categories (e.g. "Deluxe Cabin", "Superior Room"), star ratings, and nights per location. Format as HTML, e.g. "<p><strong>City - Hotel Name (4*)</strong> - Category | X nights</p>" repeated per stop. If the source describes a cruise ship's cabin categories instead of hotels, describe those here instead.
 - itinerary_destinations must be a list of plain place names in the order they're visited (e.g. "Aswan", "Luxor", "Kom Ombo") - NOT codes. Codes get resolved separately against the live destination database.
+- schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
   {
@@ -61,6 +62,7 @@ Output this exact JSON structure:
   "itinerary_destinations": [],
   "nights": 0,
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+  "schedule_notes": "",
   "price_list": []
 }"""
 
@@ -153,7 +155,8 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "tour_name": "", "description": "", "hotels_text": "", "included": "",
         "excluded": "", "meeting_point": "", "policy_remarks": "",
         "itinerary_destinations": [], "nights": 0,
-        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"], "price_list": []
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "schedule_notes": "", "stop_sales": [], "price_list": []
     }
     defaults.update(data)
 
