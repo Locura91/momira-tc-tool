@@ -1,10 +1,10 @@
 """
 Review UI for the DMC -> Travel Compositor Closed Tour pipeline.
 
-Implements the master plan's Step 3: side-by-side original content vs.
-extracted/editable data, destination resolution status, and a single
-publish button that runs the two chained API calls (main tour + option),
-always as a draft ("active": false).
+Restructured as a strict sequential wizard so the human always specifies
+WHAT they're doing (create/add-option/update-tour/update-option) and WHICH
+supplier/tour/modality BEFORE any extraction happens - avoids the mistake
+of extracting first and only later realizing the wrong action/tour was set.
 
 Run with:
     streamlit run app.py
@@ -20,13 +20,9 @@ Reuses everything already built and tested:
 import json
 import tempfile
 import os
+import time
 import streamlit as st
 
-# When deployed on Streamlit Community Cloud, credentials come from
-# st.secrets (entered via the dashboard) instead of a local .env file.
-# This copies them into environment variables so the existing
-# os.getenv() calls in api_client.py / ai_extractor.py work unchanged
-# whether running locally (.env) or centrally hosted (st.secrets).
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
                  "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
@@ -34,7 +30,7 @@ if hasattr(st, "secrets"):
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
         except Exception:
-            pass  # no secrets.toml present (e.g. running fully locally with .env) - fine, ignore
+            pass
 
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
@@ -45,153 +41,231 @@ from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
+ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+
+ACTION_LABELS = {
+    "create": "1: Create new ClosedTour + 1 Modality",
+    "add_option": "2: Add new Modality to existing ClosedTour",
+    "update_tour": "3: Update existing ClosedTour",
+    "update_option": "4: Update existing ClosedTour Modality",
+}
+ACTION_FIELDS = {
+    "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
+    "add_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
+    "update_tour": ["existing_tour_code", "min_pax", "max_pax", "currency", "release_days"],
+    "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
+}
 
 st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
+_defaults = {
+    "client": None, "extracted": None, "raw_preview": "", "payloads": None,
+    "suppliers_cache": None, "step1_confirmed": False, "step2_confirmed": False,
+    "cfg_action": None, "cfg_supplier_id": None, "cfg_provider_code": "",
+    "cfg_min_pax": 1, "cfg_max_pax": 9, "cfg_currency": "", "cfg_modality_code": "",
+    "cfg_on_request": True, "cfg_release_days": 30, "cfg_existing_tour_code": "",
+}
+for _k, _v in _defaults.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
-# ----------------------------------------------------------------------
-# Session state setup
-# ----------------------------------------------------------------------
-if "client" not in st.session_state:
+if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
-if "extracted" not in st.session_state:
-    st.session_state.extracted = None
-if "raw_preview" not in st.session_state:
-    st.session_state.raw_preview = ""
-if "payloads" not in st.session_state:
-    st.session_state.payloads = None
-
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-closedtour-prefix-field — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
-st.caption("Every publish is created as a draft (active: false). Human verification and final activation still happen inside Travel Compositor.")
+st.caption("Build version: 2026-07-26-wizard-restructure — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
 # ----------------------------------------------------------------------
-# Step 1: Human Pre-Configuration
+# STEP 1: What do you want to do? + Supplier
 # ----------------------------------------------------------------------
-st.sidebar.markdown("## 🔴 Step 1 — Fill this in FIRST")
+st.header("Step 1 — What do you want to do?")
 
-if "suppliers_cache" not in st.session_state:
-    st.session_state.suppliers_cache = None
-
-# Always load the supplier list automatically - human picks by name, never
-# types a numeric ID directly, to avoid mistakes.
-if st.session_state.suppliers_cache is None:
-    with st.spinner("Loading supplier list from Travel Compositor..."):
-        st.session_state.suppliers_cache = client.get_all_suppliers()
-
-if st.session_state.suppliers_cache:
-    supplier_options = {
-        f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
-        for s in st.session_state.suppliers_cache
-    }
-    selected_label = st.sidebar.selectbox("Supplier (select by name)", list(supplier_options.keys()))
-    supplier_id = str(supplier_options[selected_label])
-    if st.sidebar.button("🔄 Refresh supplier list"):
-        st.session_state.suppliers_cache = None
+if st.session_state.step1_confirmed:
+    st.success(f"✅ Action: **{ACTION_LABELS[st.session_state.cfg_action]}** | "
+               f"Supplier ID: **{st.session_state.cfg_supplier_id}**")
+    if st.button("🔄 Change action / supplier"):
+        st.session_state.step1_confirmed = False
+        st.session_state.step2_confirmed = False
         st.rerun()
 else:
-    st.sidebar.error("Could not load the supplier list from Travel Compositor.")
-    if st.sidebar.button("🔄 Try again"):
-        st.rerun()
-    with st.sidebar.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
-        supplier_id = st.text_input("Supplier ID (numeric)", value="")
-
-provider_code = st.sidebar.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
-min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
-max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
-currency = st.sidebar.text_input("Currency", value="", placeholder="e.g. EUR")
-modality_code = st.sidebar.text_input("Unique Modality Code", value="", placeholder="e.g. Standard Cruise/Tour etc.")
-
-st.sidebar.divider()
-st.sidebar.subheader("Publish Action")
-_publish_action_labels = {
-    "Create a brand-new tour (+ first option)": "1: Create new ClosedTour + 1 Modality",
-    "Add a new option to an existing tour": "2: Add new Modality to existing ClosedTour",
-    "Update an existing tour's details": "3: Update existing ClosedTour",
-    "Update an existing option": "4: Update existing ClosedTour Modality",
-}
-publish_action = st.sidebar.radio(
-    "What do you want to do?",
-    list(_publish_action_labels.keys()),
-    format_func=lambda k: _publish_action_labels[k],
-    help="Travel Compositor uses POST for creating new things and PUT for updating "
-         "existing ones - this selector picks the right one automatically."
-)
-existing_tour_code = None
-if publish_action != "Create a brand-new tour (+ first option)":
-    st.sidebar.caption("Existing Tour's real Code (NOT its ClosedTour/Provider Code):")
-    prefix_col, number_col = st.sidebar.columns([1, 1.4])
-    with prefix_col:
-        st.markdown("<div style='padding-top: 0.6rem; text-align: right;'>CLOSEDTOUR-</div>", unsafe_allow_html=True)
-    with number_col:
-        tour_code_number = st.text_input(
-            "Number", placeholder="e.g. 411099", label_visibility="collapsed"
-        )
-    existing_tour_code = f"CLOSEDTOUR-{tour_code_number.strip()}" if tour_code_number.strip() else ""
-    st.sidebar.caption(
-        "Travel Compositor's internal 'code' is often completely different from the "
-        "human-chosen ClosedTour Code (e.g. a tour with ClosedTour Code 'TNR-03' had "
-        "the real code 'CLOSEDTOUR-411099'). For tours created through THIS app, the "
-        "code shown in the success message after publishing is the one to use here."
+    action_key = st.radio(
+        "Choose one:",
+        list(ACTION_LABELS.keys()),
+        format_func=lambda k: ACTION_LABELS[k],
+        help="Travel Compositor uses POST for creating new things and PUT for updating existing ones."
     )
 
-    if st.sidebar.button("🔍 Check what's already online for this code"):
-        with st.spinner("Fetching from Travel Compositor..."):
-            tour_data = client.get_closed_tour(supplier_id, existing_tour_code)
-            st.session_state.fetched_tour = tour_data
-            st.session_state.fetched_option = None  # clear any previous option fetch
+    if st.session_state.suppliers_cache is None:
+        with st.spinner("Loading supplier list from Travel Compositor..."):
+            st.session_state.suppliers_cache = client.get_all_suppliers()
 
-    if st.session_state.get("fetched_tour"):
-        t = st.session_state.fetched_tour
-        if "error" in t:
-            st.sidebar.error(f"Not found or error: {t.get('message', t)}")
-        else:
-            st.sidebar.success(f"Found: **{t.get('name', '(no name)')}**")
-            existing_modalities = t.get("modalityCodes", [])
-            st.sidebar.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
+    supplier_id_choice = None
+    if st.session_state.suppliers_cache:
+        supplier_options = {
+            f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
+            for s in st.session_state.suppliers_cache
+        }
+        selected_label = st.selectbox("Supplier (select by name)", list(supplier_options.keys()))
+        supplier_id_choice = str(supplier_options[selected_label])
+        if st.button("🔄 Refresh supplier list"):
+            st.session_state.suppliers_cache = None
+            st.rerun()
+    else:
+        st.error("Could not load the supplier list from Travel Compositor.")
+        if st.button("🔄 Try again"):
+            st.rerun()
+        with st.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
+            supplier_id_choice = st.text_input("Supplier ID (numeric)", value="")
 
-            if existing_modalities:
-                check_modality = st.sidebar.selectbox("Check pricing for modality:", existing_modalities)
-                if st.sidebar.button("🔍 Fetch this modality's live pricing"):
-                    with st.spinner("Fetching option..."):
-                        st.session_state.fetched_option = client.get_closed_tour_option(
-                            supplier_id, existing_tour_code, check_modality
-                        )
+    if st.button("➡️ Continue to Step 2", type="primary", disabled=not supplier_id_choice):
+        st.session_state.cfg_action = action_key
+        st.session_state.cfg_supplier_id = supplier_id_choice
+        st.session_state.step1_confirmed = True
+        st.rerun()
 
-            if st.session_state.get("fetched_option"):
-                opt = st.session_state.fetched_option
-                if "error" in opt:
-                    st.sidebar.error(f"Could not fetch option: {opt.get('message', opt)}")
-                else:
-                    with st.sidebar.expander("Live pricing for this modality", expanded=True):
-                        for row in opt.get("priceList", []):
-                            label = row.get("name") or ""
-                            st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
-                            st.json(row.get("price", {}))
-
-on_request = st.sidebar.checkbox("On Request", value=True)
-days_available_before_release = st.sidebar.number_input(
-    "Release Day (days before departure this tour becomes bookable)",
-    min_value=0, value=30,
-    help="Default 30 days before departure. Ask: how many days before departure "
-         "should this tour first become available/visible for booking?"
-)
-
-
-# ----------------------------------------------------------------------
-# Step 2: Input source
-# ----------------------------------------------------------------------
-step1_complete = bool(supplier_id) and bool(provider_code.strip()) and bool(currency.strip()) and bool(modality_code.strip())
-if not step1_complete:
-    st.warning("⚠️ **Complete Step 1 in the sidebar first** — pick a Supplier, and enter a "
-               "ClosedTour Code, Currency, and Unique Modality Code — before you can upload "
-               "a document or paste a URL.")
     st.stop()
 
-st.header("Step 2 — Input Source")
+
+# ----------------------------------------------------------------------
+# STEP 2: Action-specific details
+# ----------------------------------------------------------------------
+st.header("Step 2 — Details for this action")
+action = st.session_state.cfg_action
+needed = ACTION_FIELDS[action]
+supplier_id = st.session_state.cfg_supplier_id
+
+if st.session_state.step2_confirmed:
+    st.success("✅ Step 2 details confirmed.")
+    if st.button("🔄 Change details"):
+        st.session_state.step2_confirmed = False
+        st.rerun()
+else:
+    provider_code_in = min_pax_in = max_pax_in = currency_in = modality_code_in = existing_tour_code_in = None
+    on_request_in = True
+    release_days_in = 30
+
+    if "existing_tour_code" in needed:
+        st.caption("Existing Tour's real Code (NOT its ClosedTour/Provider Code):")
+        prefix_col, number_col = st.columns([1, 3])
+        with prefix_col:
+            st.markdown("<div style='padding-top: 0.6rem; text-align: right;'>CLOSEDTOUR-</div>", unsafe_allow_html=True)
+        with number_col:
+            tour_code_number = st.text_input("Number", placeholder="e.g. 411099", label_visibility="collapsed")
+        existing_tour_code_in = f"CLOSEDTOUR-{tour_code_number.strip()}" if tour_code_number.strip() else ""
+        st.caption(
+            "Travel Compositor's internal 'code' is often different from the human-chosen "
+            "ClosedTour Code (e.g. ClosedTour Code 'TNR-03' had real code 'CLOSEDTOUR-411099'). "
+            "For tours created through THIS app, use the code shown in the success message after publishing."
+        )
+
+        if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
+            with st.spinner("Fetching from Travel Compositor..."):
+                st.session_state.fetched_tour = client.get_closed_tour(supplier_id, existing_tour_code_in)
+                st.session_state.fetched_option = None
+                _fetched = st.session_state.fetched_tour
+                if isinstance(_fetched, dict) and "error" not in _fetched:
+                    st.session_state.fetched_tour_provider_code = _fetched.get("providerCode", "")
+
+        if st.session_state.get("fetched_tour"):
+            t = st.session_state.fetched_tour
+            if "error" in t:
+                st.error(f"Not found or error: {t.get('message', t)}")
+            else:
+                st.success(f"Found: **{t.get('name', '(no name)')}**")
+                existing_modalities = t.get("modalityCodes", [])
+                st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
+                if existing_modalities and "modality_code" in needed:
+                    check_modality = st.selectbox("Check pricing for modality:", existing_modalities, key="check_modality_pick")
+                    if st.button("🔍 Fetch this modality's live pricing"):
+                        with st.spinner("Fetching option..."):
+                            st.session_state.fetched_option = client.get_closed_tour_option(
+                                supplier_id, existing_tour_code_in, check_modality
+                            )
+                    if st.session_state.get("fetched_option"):
+                        opt = st.session_state.fetched_option
+                        if "error" in opt:
+                            st.error(f"Could not fetch option: {opt.get('message', opt)}")
+                        else:
+                            with st.expander("Live pricing for this modality", expanded=True):
+                                for row in opt.get("priceList", []):
+                                    label = row.get("name") or ""
+                                    st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
+                                    st.json(row.get("price", {}))
+
+    if "provider_code" in needed:
+        provider_code_in = st.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
+    if "min_pax" in needed:
+        min_pax_in = st.selectbox("Min Pax", [1, 2])
+    if "max_pax" in needed:
+        max_pax_in = st.selectbox("Max Pax", list(range(2, 10)), index=7)
+    if "currency" in needed:
+        currency_in = st.text_input("Currency", value="", placeholder="e.g. EUR")
+    if "modality_code" in needed:
+        default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
+        label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
+        modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise/Tour etc.")
+    if "on_request" in needed:
+        on_request_in = st.checkbox("On Request", value=True)
+    if "release_days" in needed:
+        release_days_in = st.number_input(
+            "Release Day (days before departure this tour becomes bookable)",
+            min_value=0, value=30,
+            help="Default 30 days before departure."
+        )
+
+    required_ok = True
+    if "provider_code" in needed and not provider_code_in.strip():
+        required_ok = False
+    if "currency" in needed and not (currency_in or "").strip():
+        required_ok = False
+    if "modality_code" in needed and not (modality_code_in or "").strip():
+        required_ok = False
+    if "existing_tour_code" in needed and not existing_tour_code_in:
+        required_ok = False
+
+    if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok):
+        st.session_state.cfg_provider_code = provider_code_in or ""
+        st.session_state.cfg_min_pax = min_pax_in or 1
+        st.session_state.cfg_max_pax = max_pax_in or 9
+        st.session_state.cfg_currency = currency_in or ""
+        st.session_state.cfg_modality_code = modality_code_in or ""
+        st.session_state.cfg_on_request = on_request_in
+        st.session_state.cfg_release_days = release_days_in
+        st.session_state.cfg_existing_tour_code = existing_tour_code_in or ""
+        st.session_state.step2_confirmed = True
+        st.rerun()
+
+    if not required_ok:
+        st.info("Fill in all fields above to continue.")
+    st.stop()
+
+
+supplier_id = st.session_state.cfg_supplier_id
+provider_code = st.session_state.cfg_provider_code
+min_pax = st.session_state.cfg_min_pax
+max_pax = st.session_state.cfg_max_pax
+currency = st.session_state.cfg_currency
+modality_code = st.session_state.cfg_modality_code
+on_request = st.session_state.cfg_on_request
+days_available_before_release = st.session_state.cfg_release_days
+existing_tour_code = st.session_state.cfg_existing_tour_code
+
+_action_to_publish_label = {
+    "create": "Create a brand-new tour (+ first option)",
+    "add_option": "Add a new option to an existing tour",
+    "update_tour": "Update an existing tour's details",
+    "update_option": "Update an existing option",
+}
+publish_action = _action_to_publish_label[action]
+
+
+# ----------------------------------------------------------------------
+# STEP 3: Input source
+# ----------------------------------------------------------------------
+st.header("Step 3 — Input Source")
 st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
            "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
@@ -231,7 +305,6 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
         except Exception as e:
             st.error(f"Extraction failed: {e}")
 
-# Shared variant picker - shown whenever a fetch/read detected multiple distinct tours
 if st.session_state.get("pending_variants"):
     variants = st.session_state.pending_variants
     st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to add?")
@@ -254,7 +327,6 @@ if st.session_state.get("pending_variants"):
                 st.session_state.payloads = None
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
-                st.session_state.pending_source = None
                 st.session_state.pending_url = None
                 st.rerun()
             except Exception as e:
@@ -262,12 +334,12 @@ if st.session_state.get("pending_variants"):
 
 
 # ----------------------------------------------------------------------
-# Step 3: Side-by-side review & edit
+# STEP 4: Side-by-side review & edit
 # ----------------------------------------------------------------------
 if st.session_state.extracted:
     data = st.session_state.extracted
 
-    st.header("Step 3 — Review & Edit")
+    st.header("Step 4 — Review & Edit")
     col1, col2 = st.columns(2)
 
     with col1:
@@ -344,18 +416,16 @@ if st.session_state.extracted:
                 f"— use this to help set Operational Days and Stop Sales below correctly. "
                 f"This is NOT applied automatically - please verify and set the fields yourself.")
 
-    all_weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
     data["operational_days"] = st.multiselect(
         "Operational Days (which weekdays this tour can depart on)",
-        all_weekdays,
-        default=data.get("operational_days", all_weekdays)
+        ALL_WEEKDAYS,
+        default=data.get("operational_days", ALL_WEEKDAYS)
     )
 
     with st.expander("Stop Sales (block specific date ranges - e.g. for monthly-only or irregular departures)"):
         st.caption("For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days above "
                    "to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT the ones "
-                   "you want to allow. This mirrors how Travel Compositor represents irregular schedules today - "
-                   "it's manual because getting this wrong silently creates wrong bookable dates.")
+                   "you want to allow.")
         stop_sales_json = st.text_area(
             "stopSales (JSON array of {\"start\": \"YYYY-MM-DD\", \"end\": \"YYYY-MM-DD\"})",
             json.dumps(data.get("stop_sales", []), indent=2),
@@ -390,11 +460,13 @@ if st.session_state.extracted:
         price_list_valid = False
 
     # ----------------------------------------------------------------------
-    # Step 4: Build payloads (destination resolution happens here)
+    # STEP 5: Build payloads (destination resolution happens here)
     # ----------------------------------------------------------------------
     if st.button("🔎 Resolve Destinations & Build Payload", disabled=not price_list_valid):
+        _real_provider_code = st.session_state.get("fetched_tour_provider_code", "")
         pre_config = HumanPreConfig(
-            supplier_id=supplier_id, provider_code=provider_code,
+            supplier_id=supplier_id,
+            provider_code=provider_code or _real_provider_code or "XXX-1",
             min_pax=min_pax, max_pax=max_pax, currency=currency,
             modality_code=modality_code, on_request=on_request,
             days_available_before_release=days_available_before_release
@@ -406,13 +478,13 @@ if st.session_state.extracted:
     if st.session_state.payloads:
         payloads = st.session_state.payloads
 
-        st.header("Step 4 — Destination Resolution & Payload Preview")
+        st.header("Step 5 — Destination Resolution & Payload Preview")
 
         for item in payloads["main_tour_payload"]["itinerary"]:
             st.write(f"✅ `{item['destination']}`")
 
         if payloads["unresolved_destinations"]:
-            st.warning(f"⚠️ Unresolved destinations (fix in Step 3 and rebuild): {payloads['unresolved_destinations']}")
+            st.warning(f"⚠️ Unresolved destinations (fix in Step 4 and rebuild): {payloads['unresolved_destinations']}")
 
         col3, col4 = st.columns(2)
         with col3:
@@ -437,22 +509,30 @@ if st.session_state.extracted:
                 st.json(payloads["tour_option_payload"])
 
         # ----------------------------------------------------------------------
-        # Step 5: Publish
+        # STEP 6: Publish
         # ----------------------------------------------------------------------
-        st.header("Step 5 — Publish")
+        st.header("Step 6 — Publish")
 
         creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
         target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
         missing_existing_code = not creating_new_tour and not existing_tour_code
+        missing_provider_code_for_update = (
+            publish_action == "Update an existing tour's details"
+            and not st.session_state.get("fetched_tour_provider_code")
+        )
+        if missing_provider_code_for_update:
+            st.warning("⚠️ Go back to Step 2 and click 'Check what's already online for this code' first — "
+                      "without it, this update could overwrite the tour's real ClosedTour Code with a placeholder.")
 
         can_publish = (
             not payloads["unresolved_destinations"]
             and not payloads["tour_option_error"]
             and not missing_existing_code
+            and not missing_provider_code_for_update
         )
 
         if missing_existing_code:
-            st.info("Enter the Existing Tour Code in the sidebar before publishing.")
+            st.info("Existing Tour Code is missing - go back to Step 2.")
         elif not can_publish:
             st.info("Resolve all destinations and fix pricing above before publishing.")
 
@@ -468,9 +548,6 @@ if st.session_state.extracted:
             with st.spinner("Sending to Travel Compositor..."):
 
                 if publish_action == "Create a brand-new tour (+ first option)":
-                    # CONFIRMED: a tour must be ACTIVE to be visible for any subsequent
-                    # operation (including adding its first option). We create it active,
-                    # add the option, then switch it back to inactive/draft as a final step.
                     creation_payload = dict(payloads["main_tour_payload"])
                     creation_payload["active"] = True
 
@@ -483,10 +560,6 @@ if st.session_state.extracted:
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
 
-                        # Retry the ACTUAL option-creation call directly, rather than probing
-                        # with a separate GET first - GET-visibility and write-capability may
-                        # follow different rules on Travel Compositor's side.
-                        import time
                         option_result = None
                         for attempt in range(6):
                             option_result = client.create_closed_tour_option(
@@ -506,7 +579,6 @@ if st.session_state.extracted:
                                     f"an existing tour' manually once confirmed.")
                         else:
                             st.success("✅ Tour option created.")
-                            # Switch back to inactive/draft, as required for final state.
                             deactivate_payload = dict(creation_payload)
                             deactivate_payload["active"] = False
                             deactivate_payload["code"] = real_code
@@ -534,7 +606,7 @@ if st.session_state.extracted:
 
                 elif publish_action == "Update an existing tour's details":
                     update_payload = dict(payloads["main_tour_payload"])
-                    update_payload["code"] = target_tour_code  # make sure we're updating the right tour
+                    update_payload["code"] = target_tour_code
                     result = client.update_closed_tour(payloads["supplier_id"], update_payload)
                     if "error" in result:
                         st.error(f"❌ Tour update failed: {result}\n\n"
@@ -546,7 +618,7 @@ if st.session_state.extracted:
 
                 elif publish_action == "Update an existing option":
                     update_option_payload = dict(payloads["tour_option_payload"])
-                    update_option_payload["code"] = modality_code  # make sure we're updating the right option
+                    update_option_payload["code"] = modality_code
                     option_result = client.update_closed_tour_option(
                         payloads["supplier_id"], target_tour_code, update_option_payload
                     )
