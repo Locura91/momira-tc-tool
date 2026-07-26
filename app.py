@@ -97,13 +97,27 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-friendly-pricing-table — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-user-diagnostic — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
 # ----------------------------------------------------------------------
 # STEP 1: What do you want to do? + Supplier
 # ----------------------------------------------------------------------
+with st.expander("🔍 Diagnostic: check real registered users (for the Creator/userId issue)"):
+    if st.button("List real users from Travel Compositor"):
+        with st.spinner("Fetching users..."):
+            users = client.get_all_users()
+            st.session_state.diag_users = users
+    if st.session_state.get("diag_users") is not None:
+        users = st.session_state.diag_users
+        if users:
+            st.write(f"Found {len(users)} real registered user(s):")
+            st.json(users)
+        else:
+            st.warning("No users returned - either none exist, or this endpoint needs a different "
+                      "microsite/agency context than what we have. Check the raw error above if any.")
+
 st.header("Step 1 — What do you want to do?")
 
 if st.session_state.step1_confirmed:
