@@ -101,8 +101,8 @@ else:
 provider_code = st.sidebar.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
 min_pax = st.sidebar.selectbox("Min Pax", [1, 2])
 max_pax = st.sidebar.selectbox("Max Pax", list(range(2, 10)), index=7)  # defaults to 9
-currency = st.sidebar.text_input("Currency (ISO 3-letter)", value="EUR")
-modality_code = st.sidebar.text_input("Unique Modality Code", value="Standard")
+currency = st.sidebar.text_input("Currency", value="", placeholder="e.g. EUR")
+modality_code = st.sidebar.text_input("Unique Modality Code", value="", placeholder="e.g. Standard Cruise/Tour etc.")
 
 st.sidebar.divider()
 st.sidebar.subheader("Publish Action")
@@ -177,10 +177,11 @@ days_available_before_release = st.sidebar.number_input(
 # ----------------------------------------------------------------------
 # Step 2: Input source
 # ----------------------------------------------------------------------
-step1_complete = bool(supplier_id) and bool(provider_code.strip())
+step1_complete = bool(supplier_id) and bool(provider_code.strip()) and bool(currency.strip()) and bool(modality_code.strip())
 if not step1_complete:
-    st.warning("⚠️ **Complete Step 1 in the sidebar first** — pick a Supplier and enter a "
-               "ClosedTour Code — before you can upload a document or paste a URL.")
+    st.warning("⚠️ **Complete Step 1 in the sidebar first** — pick a Supplier, and enter a "
+               "ClosedTour Code, Currency, and Unique Modality Code — before you can upload "
+               "a document or paste a URL.")
     st.stop()
 
 st.header("Step 2 — Input Source")
