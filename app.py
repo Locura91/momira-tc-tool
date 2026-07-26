@@ -97,7 +97,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-user-diagnostic — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-supplements-and-overlap-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -564,8 +564,67 @@ if st.session_state.extracted:
     if not price_list_valid:
         st.error("Add at least one price row with both a Start Date and End Date.")
 
+    # Detect overlapping date ranges - Travel Compositor ADDS prices together
+    # for any rows with overlapping dates within one option, silently inflating
+    # the total. Catch this here regardless of whether it came from AI
+    # extraction or a manual edit to the table.
+    def _dates_overlap(a_start, a_end, b_start, b_end):
+        return a_start <= b_end and b_start <= a_end
+
+    overlaps_found = []
+    for i in range(len(data["price_list"])):
+        for j in range(i + 1, len(data["price_list"])):
+            r1, r2 = data["price_list"][i], data["price_list"][j]
+            if _dates_overlap(r1.get("startDate", ""), r1.get("endDate", ""), r2.get("startDate", ""), r2.get("endDate", "")):
+                overlaps_found.append((i, j))
+
+    if overlaps_found:
+        price_list_valid = False
+        st.error(
+            f"🚫 **Overlapping date ranges detected in {len(overlaps_found)} row pair(s) of the pricing "
+            f"table above.** Travel Compositor ADDS TOGETHER prices from rows with overlapping dates "
+            f"within one Modality - this would silently create a wrong, inflated price. Each date range "
+            f"in the table should be unique/non-overlapping. If you meant to set different prices for "
+            f"different occupancy (single/double/triple/quadruple) in the SAME period, that all belongs "
+            f"in ONE row, not separate rows."
+        )
+
     with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
         st.json(data["price_list"])
+
+    st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
+    st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
+              "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
+              "For a genuinely different core product (different cabin/route with its own full pricing), "
+              "use a separate Modality instead (Publish Action 2).")
+
+    default_supplements = data.get("supplements") or []
+    supp_df_rows = [
+        {
+            "Name": s.get("name", ""),
+            "Price (per person)": s.get("price", 0),
+            "Mandatory": s.get("mandatory", False),
+            "On Request": s.get("on_request", False),
+        }
+        for s in default_supplements
+    ]
+    supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
+        columns=["Name", "Price (per person)", "Mandatory", "On Request"]
+    )
+    edited_supp_df = st.data_editor(
+        supp_df, num_rows="dynamic", use_container_width=True, key="supplements_editor"
+    )
+
+    data["supplements"] = [
+        {
+            "name": str(row.get("Name", "")).strip(),
+            "price": float(row.get("Price (per person)", 0) or 0),
+            "mandatory": bool(row.get("Mandatory", False)),
+            "on_request": bool(row.get("On Request", False)),
+        }
+        for _, row in edited_supp_df.iterrows()
+        if str(row.get("Name", "")).strip()
+    ]
 
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
