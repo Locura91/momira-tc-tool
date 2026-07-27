@@ -6,5 +6,6 @@ pydantic
 beautifulsoup4
 anthropic
 pdfplumber
+pymupdf
 python-docx
 openpyxl
