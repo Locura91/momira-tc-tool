@@ -36,11 +36,10 @@ if hasattr(st, "secrets"):
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
-from document_reader import extract_raw_text, extract_images
+from document_reader import extract_raw_text
 from ai_extractor import extract_structured_data, detect_tour_variants, answer_clarification_question
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
-from catbox_client import upload_images
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -49,7 +48,7 @@ ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
     "create_no_modality": "2: Create new ClosedTour (Without Modality)",
     "add_option": "3: Add new Modality to existing ClosedTour",
-    "update_tour": "4: Update existing ClosedTour",
+    "update_tour": "4: Update existing ClosedTour (Not updating modality)",
     "update_option": "5: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
@@ -147,7 +146,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-catbox-no-api-key-needed — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-remove-catbox-manual-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -379,7 +378,6 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     with st.spinner("Gathering content and checking for multiple tour variants..."):
         try:
             combined_parts = []
-            doc_image_urls = []
             doc_names = []
             if url:
                 combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
@@ -390,18 +388,6 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
-
-                embedded_images = extract_images(tmp_path)
-                if embedded_images:
-                    with st.spinner(f"Uploading {len(embedded_images)} image(s) found in {uploaded.name}..."):
-                        try:
-                            new_urls = upload_images(embedded_images)
-                            doc_image_urls.extend(new_urls)
-                            if new_urls:
-                                st.caption(f"✅ Uploaded {len(new_urls)} image(s) from {uploaded.name} to Catbox.")
-                        except Exception as e:
-                            st.warning(f"Couldn't upload images from {uploaded.name}: {e}")
-
                 os.remove(tmp_path)
 
             raw_text = "\n\n".join(combined_parts)
@@ -412,10 +398,9 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 st.session_state.pending_raw_text = raw_text
                 st.session_state.pending_url = url or None
                 st.session_state.pending_hint = extraction_hint or None
-                st.session_state.pending_doc_images = doc_image_urls
             else:
                 data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                data["image_urls"] = (get_page_images(url) if url else []) + doc_image_urls
+                data["image_urls"] = get_page_images(url) if url else []
                 st.session_state.extracted = data
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                 sources_desc = " + ".join(filter(None, [url] + doc_names))
@@ -441,7 +426,7 @@ if st.session_state.get("pending_variants"):
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = (get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])
+                data["image_urls"] = get_page_images(pending_url) if pending_url else []
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
                 st.session_state.extracted = data
@@ -689,34 +674,52 @@ if st.session_state.extracted:
               "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
               "For a genuinely different core product (different cabin/route with its own full pricing), "
               "use a separate Modality instead (Publish Action 2).")
+    st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
+              "supplement only applies during a specific date range (e.g. a seasonal excursion).")
 
     default_supplements = data.get("supplements") or []
     supp_df_rows = [
         {
             "Name": s.get("name", ""),
             "Price (per person)": s.get("price", 0),
+            "Per Pax": s.get("per_pax", True),
             "Mandatory": s.get("mandatory", False),
             "On Request": s.get("on_request", False),
+            "Special Travel Start Date": s.get("travel_start_date", ""),
+            "Special Travel End Date": s.get("travel_end_date", ""),
         }
         for s in default_supplements
     ]
     supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
-        columns=["Name", "Price (per person)", "Mandatory", "On Request"]
+        columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
+                 "Special Travel Start Date", "Special Travel End Date"]
     )
     edited_supp_df = st.data_editor(
         supp_df, num_rows="dynamic", use_container_width=True, key="supplements_editor"
     )
 
-    data["supplements"] = [
-        {
-            "name": str(row.get("Name", "")).strip(),
-            "price": float(row.get("Price (per person)", 0) or 0),
+    supplements_missing_name = False
+    data["supplements"] = []
+    for _, row in edited_supp_df.iterrows():
+        name = str(row.get("Name", "")).strip()
+        price_given = row.get("Price (per person)", 0)
+        has_any_data = name or (price_given not in (0, "", None))
+        if not name and has_any_data:
+            supplements_missing_name = True
+            continue
+        if not name:
+            continue
+        data["supplements"].append({
+            "name": name,
+            "price": float(price_given or 0),
+            "per_pax": bool(row.get("Per Pax", True)),
             "mandatory": bool(row.get("Mandatory", False)),
             "on_request": bool(row.get("On Request", False)),
-        }
-        for _, row in edited_supp_df.iterrows()
-        if str(row.get("Name", "")).strip()
-    ]
+            "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
+            "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+        })
+    if supplements_missing_name:
+        st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
