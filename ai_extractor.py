@@ -395,30 +395,40 @@ Extract:
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
-- meeting_points: list of {"description": "plain place/location name"} - can be multiple if the source
-  mentions several valid starting points (e.g. different cities a rail pass can be used from).
+- meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
+  fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
+  place name so it can be properly located. If the source only says pickup is from the guest's own
+  hotel/accommodation (varies per guest, no fixed place - e.g. "Pick up from Accommodation") OR gives
+  no meeting point at all, use exactly {"description": "Hotel Lobby", "variable_location": true} as the
+  default - this matches the standard default used across all products, so it doesn't get incorrectly
+  geocoded as if it were one specific fixed location.
 - meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
 - duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
   (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
 - base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
   If only one price is given (no child/infant distinction), put it in base_adult_price and leave others 0.
+  If pricing is genuinely absent/blank in the source (e.g. a rate table with no values filled in yet),
+  leave these as 0 - do NOT invent numbers - and mention this clearly in pricing_notes.
 - child_age_min, child_age_max: the age range that counts as "child" pricing, if mentioned (else 6/12 as a common default).
 - disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
   type isn't allowed (rare) - otherwise all false.
 - operational_days: list of uppercase weekday names this is available, or all 7 if unclear/daily.
+- schedule_notes: if the source says operational days are NOT YET DETERMINED (e.g. "TBD by Operations",
+  "to be confirmed"), say so plainly here so the human knows operational_days is a placeholder default,
+  not a real confirmed schedule. Empty string otherwise.
 - time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
   gives specific time slots - empty list if not applicable.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
-- cancellation_days, cancellation_percentage: from any cancellation policy found (else default 30/100.0).
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
 - supplements: TRUE OPTIONAL add-ons OR seasonal/holiday price differences (e.g. a Christmas surcharge -
   model this as a dated supplement, NOT as a separate price, since this schema only supports ONE base
   price per modality). Each: {"name": "label", "adult_price": number, "children_price": number,
   "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
-  table forced onto adult/child/infant categories) - explain what, with real numbers, so a human can review.
+  table forced onto adult/child/infant categories, or pricing was genuinely absent from the source) -
+  explain what, with real numbers where available, so a human can review.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -427,7 +437,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "activity_type": "", "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "child_age_min": 6, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
-  "time_tables": [], "start_date": "", "end_date": "", "cancellation_days": 30, "cancellation_percentage": 100.0,
+  "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": ""
 }"""
 
@@ -447,8 +457,8 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", human_hin
         "child_age_min": 6, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
         "disallow_infant": False,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "time_tables": [], "start_date": "", "end_date": "", "cancellation_days": 30,
-        "cancellation_percentage": 100.0, "adult_taxes_amount": 0, "child_taxes_amount": 0,
+        "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
+        "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
     }
     for key, default in defaults.items():
@@ -459,21 +469,20 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", human_hin
 
 TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel
 Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
-extract ticket name, description, city, meeting points, or includes/excludes. The source is often
-just a pricing table for an ALREADY-EXISTING ticket.
+extract ticket name, description, city, meeting points, includes/excludes, or cancellation policy
+(cancellation and release timing belong to the TICKET itself, not the modality, and aren't touched
+when just adding/updating a modality). The source is often just a pricing table for an ALREADY-EXISTING ticket.
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
-start_date, end_date (this modality's validity window), operational_days, time_tables, cancellation_days,
-cancellation_percentage, supplements (for seasonal/holiday price differences - see full prompt's rules
-on this), pricing_notes.
+start_date, end_date (this modality's validity window), operational_days, time_tables,
+supplements (for seasonal/holiday price differences - see full prompt's rules on this), pricing_notes.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
   "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "child_age_min": 6, "child_age_max": 12, "start_date": "", "end_date": "",
   "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
-  "time_tables": [], "cancellation_days": 30, "cancellation_percentage": 100.0,
-  "supplements": [], "pricing_notes": ""
+  "time_tables": [], "supplements": [], "pricing_notes": ""
 }"""
 
 
@@ -489,7 +498,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 6, "child_age_max": 12, "start_date": "", "end_date": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "time_tables": [], "cancellation_days": 30, "cancellation_percentage": 100.0,
+        "time_tables": [],
         "supplements": [], "pricing_notes": "", "stop_sales": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
