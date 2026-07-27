@@ -19,6 +19,7 @@ def build_closed_tour_payloads(
     # 1. Resolve Destination Codes via Travel Compositor API
     validated_itinerary: List[ItineraryItem] = []
     unresolved_destinations: List[str] = []
+    itinerary_resolution: List[Dict[str, Any]] = []  # per-item status for clean UI display
     raw_locations = extracted_dmc_data.get("itinerary_destinations", [])
 
     for loc_name in raw_locations:
@@ -26,6 +27,12 @@ def build_closed_tour_payloads(
         if not result["valid"]:
             # Flag it instead of silently uploading a made-up code.
             unresolved_destinations.append(loc_name)
+        itinerary_resolution.append({
+            "input": loc_name,
+            "destination": result["tc_code"],
+            "resolved_name": result.get("name"),
+            "valid": result["valid"],
+        })
         validated_itinerary.append(
             ItineraryItem(
                 description={},
@@ -129,5 +136,6 @@ def build_closed_tour_payloads(
         "main_tour_payload": main_tour.dict(),
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
-        "unresolved_destinations": unresolved_destinations  # surface these in the Review UI before publishing
+        "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
+        "itinerary_resolution": itinerary_resolution  # per-item status for clean green/red UI display
     }
