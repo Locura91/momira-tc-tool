@@ -37,7 +37,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
 from document_reader import extract_raw_text
-from ai_extractor import extract_structured_data, detect_tour_variants, answer_clarification_question
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, answer_clarification_question
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
 
@@ -146,7 +146,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-remove-catbox-manual-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-lightweight-option-extraction — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -374,8 +374,11 @@ extraction_hint = st.text_input(
          "multiple room categories). Leave blank for normal extraction."
 )
 
+is_option_only = action in ("add_option", "update_option")
+
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
-    with st.spinner("Gathering content and checking for multiple tour variants..."):
+    spinner_msg = "Gathering pricing/schedule content..." if is_option_only else "Gathering content and checking for multiple tour variants..."
+    with st.spinner(spinner_msg):
         try:
             combined_parts = []
             doc_names = []
@@ -391,26 +394,38 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 os.remove(tmp_path)
 
             raw_text = "\n\n".join(combined_parts)
-            variants = detect_tour_variants(raw_text)
 
-            if variants:
-                st.session_state.pending_variants = variants
-                st.session_state.pending_raw_text = raw_text
-                st.session_state.pending_url = url or None
-                st.session_state.pending_hint = extraction_hint or None
-            else:
-                data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                data["image_urls"] = get_page_images(url) if url else []
+            if is_option_only:
+                # Lightweight path: no variant detection needed - we're adding
+                # pricing/schedule to an ALREADY-KNOWN modality, not identifying
+                # which tour variant this is.
+                data = extract_option_only_data(raw_text, human_hint=extraction_hint or None)
                 st.session_state.extracted = data
-                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                 sources_desc = " + ".join(filter(None, [url] + doc_names))
                 st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                 st.session_state.payloads = None
-                st.success("Extraction complete. Review and edit below.")
+                st.success("Pricing/schedule extraction complete. Review and edit below.")
+            else:
+                variants = detect_tour_variants(raw_text)
+
+                if variants:
+                    st.session_state.pending_variants = variants
+                    st.session_state.pending_raw_text = raw_text
+                    st.session_state.pending_url = url or None
+                    st.session_state.pending_hint = extraction_hint or None
+                else:
+                    data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
+                    data["image_urls"] = get_page_images(url) if url else []
+                    st.session_state.extracted = data
+                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                    sources_desc = " + ".join(filter(None, [url] + doc_names))
+                    st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
+                    st.session_state.payloads = None
+                    st.success("Extraction complete. Review and edit below.")
         except Exception as e:
             st.error(f"Extraction failed: {e}")
 
-if st.session_state.get("pending_variants"):
+if st.session_state.get("pending_variants") and not is_option_only:
     variants = st.session_state.pending_variants
     st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to add?")
     labels = [f"{v.get('label', 'Variant ' + str(i+1))} ({v.get('nights', '?')} nights)" for i, v in enumerate(variants)]
@@ -455,76 +470,82 @@ if st.session_state.extracted:
         st.text_area("Raw content (read-only reference)", st.session_state.raw_preview, height=600, disabled=True)
 
     with col2:
-        st.subheader("Extracted Data (click ✏️ to edit each field)")
-        DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
-                                 "tour's starting city, in your hotel lobby.")
-        if not data.get("meeting_point"):
-            data["meeting_point"] = DEFAULT_MEETING_POINT
+        if is_option_only:
+            st.subheader("Only pricing/schedule are needed for this action")
+            st.caption("Tour details (name, description, hotels, itinerary, supplements) are skipped "
+                      "entirely - they belong to the existing tour and aren't touched by adding/updating "
+                      "a Modality. Scroll down for Departure Schedule and Pricing.")
+        else:
+            st.subheader("Extracted Data (click ✏️ to edit each field)")
+            DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
+                                     "tour's starting city, in your hotel lobby.")
+            if not data.get("meeting_point"):
+                data["meeting_point"] = DEFAULT_MEETING_POINT
 
-        editable_field("Tour name", data, "tour_name", widget="text_input")
-        editable_field("Description (HTML ok)", data, "description", widget="text_area", height=200)
-        editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
-        editable_field("Included", data, "included", widget="text_area", height=120)
-        editable_field("Excluded", data, "excluded", widget="text_area", height=120)
-        editable_field("Meeting point", data, "meeting_point", widget="text_input")
-        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
-        editable_field("Nights", data, "nights", widget="number_input")
+            editable_field("Tour name", data, "tour_name", widget="text_input")
+            editable_field("Description (HTML ok)", data, "description", widget="text_area", height=200)
+            editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
+            editable_field("Included", data, "included", widget="text_area", height=120)
+            editable_field("Excluded", data, "excluded", widget="text_area", height=120)
+            editable_field("Meeting point", data, "meeting_point", widget="text_input")
+            editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
+            editable_field("Nights", data, "nights", widget="number_input")
 
-        st.markdown("**Itinerary destinations (in visit order)**")
-        dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
-        dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
-        edited_dest_df = st.data_editor(
-            dest_df, num_rows="dynamic", use_container_width=True, key="dest_editor",
-            column_config={"#": st.column_config.NumberColumn(disabled=True)}
-        )
-        data["itinerary_destinations"] = [
-            str(row["Destination"]).strip() for _, row in edited_dest_df.iterrows()
-            if str(row.get("Destination", "")).strip()
-        ]
-
-        if "images_text_value" not in st.session_state:
-            st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-        if st.session_state.get("_pending_images_update") is not None:
-            st.session_state.images_text_value = st.session_state._pending_images_update
-            st.session_state._pending_images_update = None
-
-        images_text = st.text_area(
-            "Image URLs (one per line - documents need these added manually)",
-            key="images_text_value",
-            height=80
-        )
-        data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
-        if data["image_urls"] == [FALLBACK_IMAGE]:
-            st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
-
-        with st.expander("🖼️ Or search free stock photos (Pexels)"):
-            pexels_query = st.text_input(
-                "Search term", value=data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
+            st.markdown("**Itinerary destinations (in visit order)**")
+            dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
+            dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
+            edited_dest_df = st.data_editor(
+                dest_df, num_rows="dynamic", use_container_width=True, key="dest_editor",
+                column_config={"#": st.column_config.NumberColumn(disabled=True)}
             )
-            if st.button("🔍 Search Pexels"):
-                with st.spinner("Searching Pexels..."):
-                    try:
-                        st.session_state.pexels_results = search_images(pexels_query)
-                    except Exception as e:
-                        st.session_state.pexels_results = None
-                        st.error(str(e))
+            data["itinerary_destinations"] = [
+                str(row["Destination"]).strip() for _, row in edited_dest_df.iterrows()
+                if str(row.get("Destination", "")).strip()
+            ]
 
-            if st.session_state.get("pexels_results"):
-                st.caption("Select images to add, then click 'Add selected below':")
-                pexels_cols = st.columns(3)
-                selected_pexels_urls = []
-                for i, photo in enumerate(st.session_state.pexels_results):
-                    with pexels_cols[i % 3]:
-                        st.image(photo["thumbnail"])
-                        if st.checkbox(f"Use (by {photo['photographer']})", key=f"pexels_pick_{i}"):
-                            selected_pexels_urls.append(photo["url"])
+            if "images_text_value" not in st.session_state:
+                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+            if st.session_state.get("_pending_images_update") is not None:
+                st.session_state.images_text_value = st.session_state._pending_images_update
+                st.session_state._pending_images_update = None
 
-                if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + selected_pexels_urls
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    st.rerun()
+            images_text = st.text_area(
+                "Image URLs (one per line - documents need these added manually)",
+                key="images_text_value",
+                height=80
+            )
+            data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+            if data["image_urls"] == [FALLBACK_IMAGE]:
+                st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+
+            with st.expander("🖼️ Or search free stock photos (Pexels)"):
+                pexels_query = st.text_input(
+                    "Search term", value=data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
+                )
+                if st.button("🔍 Search Pexels"):
+                    with st.spinner("Searching Pexels..."):
+                        try:
+                            st.session_state.pexels_results = search_images(pexels_query)
+                        except Exception as e:
+                            st.session_state.pexels_results = None
+                            st.error(str(e))
+
+                if st.session_state.get("pexels_results"):
+                    st.caption("Select images to add, then click 'Add selected below':")
+                    pexels_cols = st.columns(3)
+                    selected_pexels_urls = []
+                    for i, photo in enumerate(st.session_state.pexels_results):
+                        with pexels_cols[i % 3]:
+                            st.image(photo["thumbnail"])
+                            if st.checkbox(f"Use (by {photo['photographer']})", key=f"pexels_pick_{i}"):
+                                selected_pexels_urls.append(photo["url"])
+
+                    if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + selected_pexels_urls
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        st.rerun()
 
     st.subheader("Departure Schedule")
     if data.get("schedule_notes"):
@@ -669,57 +690,58 @@ if st.session_state.extracted:
     with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
         st.json(data["price_list"])
 
-    st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
-    st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
-              "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
-              "For a genuinely different core product (different cabin/route with its own full pricing), "
-              "use a separate Modality instead (Publish Action 2).")
-    st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
-              "supplement only applies during a specific date range (e.g. a seasonal excursion).")
+    if not is_option_only:
+        st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
+        st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
+                  "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
+                  "For a genuinely different core product (different cabin/route with its own full pricing), "
+                  "use a separate Modality instead (Publish Action 2).")
+        st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
+                  "supplement only applies during a specific date range (e.g. a seasonal excursion).")
 
-    default_supplements = data.get("supplements") or []
-    supp_df_rows = [
-        {
-            "Name": s.get("name", ""),
-            "Price (per person)": s.get("price", 0),
-            "Per Pax": s.get("per_pax", True),
-            "Mandatory": s.get("mandatory", False),
-            "On Request": s.get("on_request", False),
-            "Special Travel Start Date": s.get("travel_start_date", ""),
-            "Special Travel End Date": s.get("travel_end_date", ""),
-        }
-        for s in default_supplements
-    ]
-    supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
-        columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
-                 "Special Travel Start Date", "Special Travel End Date"]
-    )
-    edited_supp_df = st.data_editor(
-        supp_df, num_rows="dynamic", use_container_width=True, key="supplements_editor"
-    )
+        default_supplements = data.get("supplements") or []
+        supp_df_rows = [
+            {
+                "Name": s.get("name", ""),
+                "Price (per person)": s.get("price", 0),
+                "Per Pax": s.get("per_pax", True),
+                "Mandatory": s.get("mandatory", False),
+                "On Request": s.get("on_request", False),
+                "Special Travel Start Date": s.get("travel_start_date", ""),
+                "Special Travel End Date": s.get("travel_end_date", ""),
+            }
+            for s in default_supplements
+        ]
+        supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
+            columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
+                     "Special Travel Start Date", "Special Travel End Date"]
+        )
+        edited_supp_df = st.data_editor(
+            supp_df, num_rows="dynamic", use_container_width=True, key="supplements_editor"
+        )
 
-    supplements_missing_name = False
-    data["supplements"] = []
-    for _, row in edited_supp_df.iterrows():
-        name = str(row.get("Name", "")).strip()
-        price_given = row.get("Price (per person)", 0)
-        has_any_data = name or (price_given not in (0, "", None))
-        if not name and has_any_data:
-            supplements_missing_name = True
-            continue
-        if not name:
-            continue
-        data["supplements"].append({
-            "name": name,
-            "price": float(price_given or 0),
-            "per_pax": bool(row.get("Per Pax", True)),
-            "mandatory": bool(row.get("Mandatory", False)),
-            "on_request": bool(row.get("On Request", False)),
-            "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
-            "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
-        })
-    if supplements_missing_name:
-        st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+        supplements_missing_name = False
+        data["supplements"] = []
+        for _, row in edited_supp_df.iterrows():
+            name = str(row.get("Name", "")).strip()
+            price_given = row.get("Price (per person)", 0)
+            has_any_data = name or (price_given not in (0, "", None))
+            if not name and has_any_data:
+                supplements_missing_name = True
+                continue
+            if not name:
+                continue
+            data["supplements"].append({
+                "name": name,
+                "price": float(price_given or 0),
+                "per_pax": bool(row.get("Per Pax", True)),
+                "mandatory": bool(row.get("Mandatory", False)),
+                "on_request": bool(row.get("On Request", False)),
+                "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
+                "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+            })
+        if supplements_missing_name:
+            st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
