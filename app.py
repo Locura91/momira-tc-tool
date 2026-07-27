@@ -26,7 +26,7 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "IMGUR_CLIENT_ID"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
@@ -40,7 +40,7 @@ from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, detect_tour_variants, answer_clarification_question
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
-from imgur_client import upload_images
+from catbox_client import upload_images
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -147,7 +147,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-pencil-edit-multidoc-qa — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-catbox-no-api-key-needed — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -398,7 +398,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                             new_urls = upload_images(embedded_images)
                             doc_image_urls.extend(new_urls)
                             if new_urls:
-                                st.caption(f"✅ Uploaded {len(new_urls)} image(s) from {uploaded.name} to Imgur.")
+                                st.caption(f"✅ Uploaded {len(new_urls)} image(s) from {uploaded.name} to Catbox.")
                         except Exception as e:
                             st.warning(f"Couldn't upload images from {uploaded.name}: {e}")
 
