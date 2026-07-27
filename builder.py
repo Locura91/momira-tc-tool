@@ -41,6 +41,18 @@ def build_closed_tour_payloads(
             )
         )
 
+    # CONFIRMED Travel Compositor validation rule: the same destination CANNOT
+    # appear more than once CONSECUTIVELY (non-consecutive repeats, e.g. a tour
+    # returning to its starting city later, are fine and required to stay).
+    # Collapse any back-to-back duplicate stops - e.g. two consecutive
+    # overnight days at the same place should be ONE itinerary entry, not two.
+    collapsed_itinerary: List[ItineraryItem] = []
+    for item in validated_itinerary:
+        if collapsed_itinerary and collapsed_itinerary[-1].destination == item.destination:
+            continue  # skip - same as the immediately preceding stop
+        collapsed_itinerary.append(item)
+    validated_itinerary = collapsed_itinerary
+
     # Transports = number of destination CHANGES along the itinerary (not total stops)
     transports_count = sum(
         1 for i in range(1, len(validated_itinerary))
