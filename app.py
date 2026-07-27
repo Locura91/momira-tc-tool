@@ -47,10 +47,10 @@ ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDA
 
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
-    "create_no_modality": "1b: Create new ClosedTour (Without Modality)",
-    "add_option": "2: Add new Modality to existing ClosedTour",
-    "update_tour": "3: Update existing ClosedTour",
-    "update_option": "4: Update existing ClosedTour Modality",
+    "create_no_modality": "2: Create new ClosedTour (Without Modality)",
+    "add_option": "3: Add new Modality to existing ClosedTour",
+    "update_tour": "4: Update existing ClosedTour",
+    "update_option": "5: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
     "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
