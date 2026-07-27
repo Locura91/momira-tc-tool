@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation
+from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from api_client import TravelCompositorAPI
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
@@ -161,4 +162,128 @@ def build_closed_tour_payloads(
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
         "itinerary_resolution": itinerary_resolution  # per-item status for clean green/red UI display
+    }
+
+def build_ticket_payloads(
+    pre_config: TicketHumanPreConfig,
+    extracted_ticket_data: Dict[str, Any],
+    api_client: TravelCompositorAPI
+) -> Dict[str, Any]:
+    """
+    Mirrors build_closed_tour_payloads but for Tickets (excursions - single
+    destination, no overnight). Key structural differences, confirmed
+    against real data:
+      - ONE geolocation (lat/long) instead of a resolved itinerary list
+      - Pricing is per PASSENGER TYPE (adult/child/infant), not room occupancy
+      - Each Modality holds ONE price + ONE date range, not a seasonal array -
+        seasonal/holiday pricing goes through dated Supplements instead
+      - Supplements use a different shape (adult/child/infant price + dates)
+    """
+    city = extracted_ticket_data.get("city", "")
+    geoloc = api_client.resolve_destination_geolocation(city)
+
+    # Resolve each meeting point's own coordinates; fall back to the main
+    # city's coordinates if a specific meeting point can't be resolved on
+    # its own (e.g. "Tokyo Station" not being a distinct destination record).
+    meeting_points_out = []
+    for mp in extracted_ticket_data.get("meeting_points", []):
+        mp_desc = mp.get("description", mp) if isinstance(mp, dict) else str(mp)
+        mp_geo = api_client.resolve_destination_geolocation(mp_desc)
+        lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
+        lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
+        if lat is not None and lng is not None:
+            meeting_points_out.append(MeetingPointVO(description=mp_desc, latitude=lat, longitude=lng))
+
+    # Convert supplements (ticket-specific shape: per-passenger-type + dates)
+    supplements_list = []
+    for s in extracted_ticket_data.get("supplements", []):
+        supplements_list.append(TicketSupplementVO(
+            adultPriceSupplement=float(s.get("adult_price", 0) or 0),
+            childrenPriceSupplement=float(s.get("children_price", 0) or 0),
+            infantPriceSupplement=float(s.get("infant_price", 0) or 0),
+            startDate=s.get("travel_start_date", ""),
+            endDate=s.get("travel_end_date", ""),
+            translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
+        ))
+
+    datasheet_en = TicketDatasheetEN(
+        name=extracted_ticket_data.get("ticket_name", ""),
+        description=extracted_ticket_data.get("description", ""),
+        meetingPoint=extracted_ticket_data.get("meeting_point_summary", ""),
+        includes=extracted_ticket_data.get("includes", []),
+        excludes=extracted_ticket_data.get("excludes", []),
+        activityType=extracted_ticket_data.get("activity_type"),
+    )
+
+    main_ticket_error = None
+    main_ticket_payload = None
+    try:
+        main_ticket = ApiStaticContentTicketVO(
+            code=pre_config.ticket_code,
+            name=extracted_ticket_data.get("ticket_name", ""),
+            geolocation=GeolocationVO(
+                latitude=geoloc.get("latitude") or 0.0,
+                longitude=geoloc.get("longitude") or 0.0,
+            ),
+            city=city,
+            datasheets={"EN": datasheet_en},
+            currency=pre_config.currency,
+            imageUrls=extracted_ticket_data.get("image_urls", []),
+            adultTaxesAmount=float(extracted_ticket_data.get("adult_taxes_amount", 0) or 0),
+            childTaxesAmount=float(extracted_ticket_data.get("child_taxes_amount", 0) or 0),
+            infantTaxesAmount=float(extracted_ticket_data.get("infant_taxes_amount", 0) or 0),
+            daysAvailableBeforeRelease=pre_config.days_available_before_release,
+            duration=float(extracted_ticket_data.get("duration", 0) or 0),
+            durationType=extracted_ticket_data.get("duration_type", "HOURS"),
+            cancellationRanges=[TicketCancellationRange(
+                cancellationDays=extracted_ticket_data.get("cancellation_days", 30),
+                cancellationPercentage=extracted_ticket_data.get("cancellation_percentage", 100.0),
+            )],
+            meetingPoints=meeting_points_out,
+            active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
+        )
+        main_ticket_payload = main_ticket.dict()
+    except ValidationError as e:
+        main_ticket_error = str(e)
+
+    ticket_option_payload = None
+    ticket_option_error = None
+    try:
+        ticket_option = ContractTicketModalityVO(
+            code=pre_config.modality_code,
+            operationalDays=extracted_ticket_data.get("operational_days", WEEKDAY_NAMES.copy()),
+            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=None)},
+            supplements=supplements_list,
+            stopSales=extracted_ticket_data.get("stop_sales", []),
+            ticketsPerDay=99,
+            disallowChildren=bool(extracted_ticket_data.get("disallow_children", False)),
+            onRequest=pre_config.on_request,
+            disallowInfant=bool(extracted_ticket_data.get("disallow_infant", False)),
+            disallowAdult=bool(extracted_ticket_data.get("disallow_adult", False)),
+            startDate=extracted_ticket_data.get("start_date", ""),
+            endDate=extracted_ticket_data.get("end_date", ""),
+            baseAdultPrice=float(extracted_ticket_data.get("base_adult_price", 0) or 0),
+            baseChildrenPrice=float(extracted_ticket_data.get("base_children_price", 0) or 0),
+            baseInfantPrice=float(extracted_ticket_data.get("base_infant_price", 0) or 0),
+            maxPassengers=pre_config.max_passengers,
+            minPassengers=pre_config.min_passengers,
+            childAgeMin=extracted_ticket_data.get("child_age_min", 6),
+            childAgeMax=extracted_ticket_data.get("child_age_max", 12),
+            timeTables=extracted_ticket_data.get("time_tables", []),
+            duration=float(extracted_ticket_data.get("duration", 0) or 0),
+            durationType=extracted_ticket_data.get("duration_type", "HOURS"),
+        )
+        ticket_option_payload = ticket_option.dict()
+    except ValidationError as e:
+        ticket_option_error = str(e)
+
+    return {
+        "supplier_id": pre_config.supplier_id,
+        "main_ticket_code": f"TICKET-{pre_config.ticket_code}",  # our own guess, real code comes from the API response
+        "main_ticket_payload": main_ticket_payload,
+        "main_ticket_error": main_ticket_error,
+        "ticket_option_payload": ticket_option_payload,
+        "ticket_option_error": ticket_option_error,
+        "geolocation_resolved": geoloc.get("valid", False),
+        "geolocation_source": geoloc.get("source"),
     }
