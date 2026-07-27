@@ -179,7 +179,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-shorter-descriptions — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-sort-supplements-collapse-payloads — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -645,15 +645,19 @@ if st.session_state.extracted:
                   f"Review the priceList below carefully - some information may have been "
                   f"simplified or dropped.")
 
-    default_price_list = data.get("price_list") or [{
-        "name": "Example row - edit or delete",
-        "startDate": "2027-01-01",
-        "endDate": "2027-12-31",
-        "price": {
-            "singlePrice": {"amount": 0, "currency": currency},
-            "doublePrice": {"amount": 0, "currency": currency}
-        }
-    }]
+    default_price_list = sorted(
+        data.get("price_list") or [{
+            "name": "Example row - edit or delete",
+            "startDate": "2027-01-01",
+            "endDate": "2027-12-31",
+            "price": {
+                "singlePrice": {"amount": 0, "currency": currency},
+                "doublePrice": {"amount": 0, "currency": currency}
+            }
+        }],
+        key=lambda entry: entry.get("startDate", "")
+    )
+    data["price_list"] = default_price_list
 
     price_df_rows = []
     for entry in default_price_list:
@@ -760,31 +764,33 @@ if st.session_state.extracted:
             columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
                      "Special Travel Start Date", "Special Travel End Date"]
         )
-        edited_supp_df = st.data_editor(
-            supp_df, num_rows="dynamic", use_container_width=True, key="supplements_editor"
-        )
 
-        supplements_missing_name = False
-        data["supplements"] = []
-        for _, row in edited_supp_df.iterrows():
-            name = str(row.get("Name", "")).strip()
-            price_given = row.get("Price (per person)", 0)
-            has_any_data = name or (price_given not in (0, "", None))
-            if not name and has_any_data:
-                supplements_missing_name = True
-                continue
-            if not name:
-                continue
-            data["supplements"].append({
-                "name": name,
-                "price": float(price_given or 0),
-                "per_pax": bool(row.get("Per Pax", True)),
-                "mandatory": bool(row.get("Mandatory", False)),
-                "on_request": bool(row.get("On Request", False)),
-                "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
-                "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
-            })
-        if supplements_missing_name:
+        def _save_supplements(edited_df):
+            missing_name = False
+            new_supplements = []
+            for _, row in edited_df.iterrows():
+                name = str(row.get("Name", "")).strip()
+                price_given = row.get("Price (per person)", 0)
+                has_any_data = name or (price_given not in (0, "", None))
+                if not name and has_any_data:
+                    missing_name = True
+                    continue
+                if not name:
+                    continue
+                new_supplements.append({
+                    "name": name,
+                    "price": float(price_given or 0),
+                    "per_pax": bool(row.get("Per Pax", True)),
+                    "mandatory": bool(row.get("Mandatory", False)),
+                    "on_request": bool(row.get("On Request", False)),
+                    "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
+                    "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+                })
+            data["supplements"] = new_supplements
+            st.session_state._supplements_missing_name = missing_name
+
+        editable_table("Supplements", supp_df, "supplements", on_save=_save_supplements)
+        if st.session_state.get("_supplements_missing_name"):
             st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
@@ -859,24 +865,27 @@ if st.session_state.extracted:
         col3, col4 = st.columns(2)
         with col3:
             if publish_action == "Create a brand-new tour (+ first option)":
-                st.subheader("Main Tour Payload (POST - Call 1)")
+                title = "Main Tour Payload (POST - Call 1)"
             elif publish_action == "Update an existing tour's details":
-                st.subheader("Main Tour Payload (PUT - update)")
+                title = "Main Tour Payload (PUT - update)"
             else:
-                st.subheader("Main Tour Payload (not sent this time)")
-                st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
-            st.json(payloads["main_tour_payload"])
+                title = "Main Tour Payload (not sent this time)"
+            with st.expander(f"🔧 {title}", expanded=False):
+                if publish_action not in ("Create a brand-new tour (+ first option)", "Update an existing tour's details"):
+                    st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
+                st.json(payloads["main_tour_payload"])
         with col4:
             if publish_action in ("Create a brand-new tour (+ first option)", "Add a new option to an existing tour"):
-                st.subheader("Tour Option Payload (POST)")
+                title = "Tour Option Payload (POST)"
             elif publish_action == "Update an existing option":
-                st.subheader("Tour Option Payload (PUT - update)")
+                title = "Tour Option Payload (PUT - update)"
             else:
-                st.subheader("Tour Option Payload (not sent this time)")
+                title = "Tour Option Payload (not sent this time)"
             if payloads["tour_option_error"]:
                 st.error(f"Invalid: {payloads['tour_option_error']}")
             else:
-                st.json(payloads["tour_option_payload"])
+                with st.expander(f"🔧 {title}", expanded=False):
+                    st.json(payloads["tour_option_payload"])
 
         # ----------------------------------------------------------------------
         # STEP 6: Publish
