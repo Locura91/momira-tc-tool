@@ -37,7 +37,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, detect_tour_variants
+from ai_extractor import extract_structured_data, detect_tour_variants, answer_clarification_question
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
 from imgur_client import upload_images
@@ -47,16 +47,65 @@ ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDA
 
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
+    "create_no_modality": "1b: Create new ClosedTour (Without Modality)",
     "add_option": "2: Add new Modality to existing ClosedTour",
     "update_tour": "3: Update existing ClosedTour",
     "update_option": "4: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
     "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
+    "create_no_modality": ["provider_code", "min_pax", "max_pax", "currency", "release_days"],
     "add_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
     "update_tour": ["existing_tour_code", "release_days"],
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
+
+def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value=""):
+    """
+    Renders a field in READ-ONLY display mode by default, with a small
+    pencil button to switch it into an editable widget. Saving switches
+    back to display mode. Mutates data_dict[field_key] directly on save.
+    """
+    edit_flag_key = f"_editing_{field_key}"
+    if edit_flag_key not in st.session_state:
+        st.session_state[edit_flag_key] = False
+
+    current_value = data_dict.get(field_key, default_value)
+    if current_value in (None, ""):
+        current_value = default_value
+
+    if not st.session_state[edit_flag_key]:
+        vcol, bcol = st.columns([12, 1])
+        with vcol:
+            st.markdown(f"**{label}**")
+            if current_value:
+                st.markdown(
+                    f"<div style='white-space: pre-wrap; background:#f6f6f6; padding:8px; "
+                    f"border-radius:4px;'>{current_value}</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.caption("(empty)")
+        with bcol:
+            st.write("")
+            if st.button("✏️", key=f"pencil_{field_key}", help=f"Edit {label}"):
+                st.session_state[edit_flag_key] = True
+                st.rerun()
+    else:
+        widget_key = f"_widgetval_{field_key}"
+        if widget == "text_area":
+            new_value = st.text_area(label, value=current_value, height=height or 120, key=widget_key)
+        elif widget == "number_input":
+            new_value = st.number_input(label, min_value=1, value=int(current_value or 1), key=widget_key)
+        else:
+            new_value = st.text_input(label, value=current_value, key=widget_key)
+        if st.button("✅ Save", key=f"save_{field_key}", type="primary"):
+            data_dict[field_key] = new_value
+            st.session_state[edit_flag_key] = False
+            st.rerun()
+
+    return data_dict.get(field_key, default_value)
+
 
 def try_code_variants(call_fn, code):
     """
@@ -98,7 +147,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-consecutive-duplicate-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-pencil-edit-multidoc-qa — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -299,6 +348,7 @@ existing_tour_code = st.session_state.cfg_existing_tour_code
 
 _action_to_publish_label = {
     "create": "Create a brand-new tour (+ first option)",
+    "create_no_modality": "Create a brand-new tour (no modality yet)",
     "add_option": "Add a new option to an existing tour",
     "update_tour": "Update an existing tour's details",
     "update_option": "Update an existing option",
@@ -314,7 +364,10 @@ st.caption("Provide a URL, a document, or both. If you give both, information fr
            "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
 url = st.text_input("Product page URL (optional)")
-uploaded = st.file_uploader("Upload a DMC document (optional)", type=["pdf", "docx", "xlsx"])
+uploaded_files = st.file_uploader(
+    "Upload DMC document(s) (optional, multiple allowed)",
+    type=["pdf", "docx", "xlsx"], accept_multiple_files=True
+)
 extraction_hint = st.text_input(
     "Extraction hint (optional)",
     placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
@@ -322,14 +375,16 @@ extraction_hint = st.text_input(
          "multiple room categories). Leave blank for normal extraction."
 )
 
-if st.button("🔎 Extract", disabled=not (url or uploaded)):
+if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     with st.spinner("Gathering content and checking for multiple tour variants..."):
         try:
             combined_parts = []
             doc_image_urls = []
+            doc_names = []
             if url:
                 combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
-            if uploaded:
+            for uploaded in (uploaded_files or []):
+                doc_names.append(uploaded.name)
                 suffix = os.path.splitext(uploaded.name)[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded.getbuffer())
@@ -338,13 +393,14 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
 
                 embedded_images = extract_images(tmp_path)
                 if embedded_images:
-                    with st.spinner(f"Uploading {len(embedded_images)} image(s) found in the document..."):
+                    with st.spinner(f"Uploading {len(embedded_images)} image(s) found in {uploaded.name}..."):
                         try:
-                            doc_image_urls = upload_images(embedded_images)
-                            if doc_image_urls:
-                                st.caption(f"✅ Uploaded {len(doc_image_urls)} image(s) from the document to Imgur.")
+                            new_urls = upload_images(embedded_images)
+                            doc_image_urls.extend(new_urls)
+                            if new_urls:
+                                st.caption(f"✅ Uploaded {len(new_urls)} image(s) from {uploaded.name} to Imgur.")
                         except Exception as e:
-                            st.warning(f"Couldn't upload document images: {e}")
+                            st.warning(f"Couldn't upload images from {uploaded.name}: {e}")
 
                 os.remove(tmp_path)
 
@@ -362,7 +418,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
                 data["image_urls"] = (get_page_images(url) if url else []) + doc_image_urls
                 st.session_state.extracted = data
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-                sources_desc = " + ".join(filter(None, [url, uploaded.name if uploaded else None]))
+                sources_desc = " + ".join(filter(None, [url] + doc_names))
                 st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                 st.session_state.payloads = None
                 st.success("Extraction complete. Review and edit below.")
@@ -414,24 +470,32 @@ if st.session_state.extracted:
         st.text_area("Raw content (read-only reference)", st.session_state.raw_preview, height=600, disabled=True)
 
     with col2:
-        st.subheader("Extracted Data (editable)")
-        data["tour_name"] = st.text_input("Tour name", data.get("tour_name", ""))
-        data["description"] = st.text_area("Description (HTML ok)", data.get("description", ""), height=140)
-        data["hotels_text"] = st.text_area("Hotels", data.get("hotels_text", ""), height=100)
-        data["included"] = st.text_area("Included", data.get("included", ""), height=100)
-        data["excluded"] = st.text_area("Excluded", data.get("excluded", ""), height=100)
+        st.subheader("Extracted Data (click ✏️ to edit each field)")
         DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                                  "tour's starting city, in your hotel lobby.")
-        data["meeting_point"] = st.text_input("Meeting point", data.get("meeting_point") or DEFAULT_MEETING_POINT)
-        data["policy_remarks"] = st.text_area("Policy remarks", data.get("policy_remarks", ""), height=80)
-        data["nights"] = st.number_input("Nights", min_value=1, value=int(data.get("nights", 1)))
+        if not data.get("meeting_point"):
+            data["meeting_point"] = DEFAULT_MEETING_POINT
 
-        dest_text = st.text_area(
-            "Itinerary destinations (one per line, in visit order)",
-            "\n".join(data.get("itinerary_destinations", [])),
-            height=120
+        editable_field("Tour name", data, "tour_name", widget="text_input")
+        editable_field("Description (HTML ok)", data, "description", widget="text_area", height=200)
+        editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
+        editable_field("Included", data, "included", widget="text_area", height=120)
+        editable_field("Excluded", data, "excluded", widget="text_area", height=120)
+        editable_field("Meeting point", data, "meeting_point", widget="text_input")
+        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
+        editable_field("Nights", data, "nights", widget="number_input")
+
+        st.markdown("**Itinerary destinations (in visit order)**")
+        dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
+        dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
+        edited_dest_df = st.data_editor(
+            dest_df, num_rows="dynamic", use_container_width=True, key="dest_editor",
+            column_config={"#": st.column_config.NumberColumn(disabled=True)}
         )
-        data["itinerary_destinations"] = [d.strip() for d in dest_text.split("\n") if d.strip()]
+        data["itinerary_destinations"] = [
+            str(row["Destination"]).strip() for _, row in edited_dest_df.iterrows()
+            if str(row.get("Destination", "")).strip()
+        ]
 
         if "images_text_value" not in st.session_state:
             st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
@@ -657,7 +721,20 @@ if st.session_state.extracted:
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
     # ----------------------------------------------------------------------
-    if st.button("🔎 Resolve Destinations & Build Payload", disabled=not price_list_valid):
+    st.subheader("🤖 Ask AI a clarifying question (optional)")
+    st.caption("Ask about anything unclear in the source document before moving on. This does NOT "
+              "change any extracted data automatically - review the answer and edit fields yourself if needed.")
+    clarify_question = st.text_input("Your question", key="clarify_question_input",
+                                     placeholder="e.g. 'Does the single supplement apply to the Junior Suite too?'")
+    if st.button("Ask", disabled=not clarify_question.strip()):
+        with st.spinner("Thinking..."):
+            answer = answer_clarification_question(st.session_state.raw_preview, data, clarify_question)
+            st.session_state.clarify_answer = answer
+    if st.session_state.get("clarify_answer"):
+        st.info(st.session_state.clarify_answer)
+
+    if st.button("🔎 Resolve Destinations & Build Payload",
+                disabled=not (price_list_valid or action == "create_no_modality")):
         _real_provider_code = st.session_state.get("fetched_tour_provider_code", "")
         pre_config = HumanPreConfig(
             supplier_id=supplier_id,
@@ -704,7 +781,7 @@ if st.session_state.extracted:
 
         col3, col4 = st.columns(2)
         with col3:
-            if publish_action == "Create a brand-new tour (+ first option)":
+            if publish_action in ("Create a brand-new tour (+ first option)", "Create a brand-new tour (no modality yet)"):
                 st.subheader("Main Tour Payload (POST - Call 1)")
             elif publish_action == "Update an existing tour's details":
                 st.subheader("Main Tour Payload (PUT - update)")
@@ -717,9 +794,13 @@ if st.session_state.extracted:
                 st.subheader("Tour Option Payload (POST)")
             elif publish_action == "Update an existing option":
                 st.subheader("Tour Option Payload (PUT - update)")
+            elif publish_action == "Create a brand-new tour (no modality yet)":
+                st.subheader("Tour Option Payload (not sent - no modality yet)")
             else:
                 st.subheader("Tour Option Payload (not sent this time)")
-            if payloads["tour_option_error"]:
+            if publish_action == "Create a brand-new tour (no modality yet)":
+                st.caption("Add a Modality later using Action 2 once you have real pricing.")
+            elif payloads["tour_option_error"]:
                 st.error(f"Invalid: {payloads['tour_option_error']}")
             else:
                 st.json(payloads["tour_option_payload"])
@@ -729,7 +810,7 @@ if st.session_state.extracted:
         # ----------------------------------------------------------------------
         st.header("Step 6 — Publish")
 
-        creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
+        creating_new_tour = publish_action in ("Create a brand-new tour (+ first option)", "Create a brand-new tour (no modality yet)")
         target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
         missing_existing_code = not creating_new_tour and not existing_tour_code
         missing_provider_code_for_update = (
@@ -740,9 +821,11 @@ if st.session_state.extracted:
             st.warning("⚠️ Go back to Step 2 and click 'Check what's already online for this code' first — "
                       "without it, this update could overwrite the tour's real ClosedTour Code with a placeholder.")
 
+        skip_pricing_check = publish_action == "Create a brand-new tour (no modality yet)"
+
         can_publish = (
             not payloads["unresolved_destinations"]
-            and not payloads["tour_option_error"]
+            and (skip_pricing_check or not payloads["tour_option_error"])
             and not missing_existing_code
             and not missing_provider_code_for_update
         )
@@ -754,6 +837,7 @@ if st.session_state.extracted:
 
         action_descriptions = {
             "Create a brand-new tour (+ first option)": "Will POST a new tour, then POST a new option.",
+            "Create a brand-new tour (no modality yet)": "Will POST a new tour only - no Modality/pricing. Add one later via Action 2.",
             "Add a new option to an existing tour": f"Will POST a new option under existing tour `{target_tour_code}`. Main tour is untouched.",
             "Update an existing tour's details": f"Will PUT (update) tour `{target_tour_code}`'s details. No option changes.",
             "Update an existing option": f"Will PUT (update) the option under tour `{target_tour_code}`.",
@@ -763,7 +847,19 @@ if st.session_state.extracted:
         if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Sending to Travel Compositor..."):
 
-                if publish_action == "Create a brand-new tour (+ first option)":
+                if publish_action == "Create a brand-new tour (no modality yet)":
+                    result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
+                    if "error" in result:
+                        st.error(f"❌ Main tour creation failed: {result}")
+                    else:
+                        real_code = result.get('code', payloads['main_tour_code'])
+                        st.success(f"✅ Main tour created as inactive draft with real Code: **{real_code}** "
+                                  f"— save this exact value. Add a Modality later via Action 2 "
+                                  f"('Add new Modality to existing ClosedTour') once you have real pricing.")
+                        st.session_state.just_published_tour_code = real_code
+                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
+
+                elif publish_action == "Create a brand-new tour (+ first option)":
                     creation_payload = dict(payloads["main_tour_payload"])
                     creation_payload["active"] = True
 
@@ -775,18 +871,6 @@ if st.session_state.extracted:
                         st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
                                   f"— save this exact value, you'll need it for any future lookups, "
                                   f"updates, or adding more modalities to this tour.")
-
-                        # DIAGNOSTIC: verify what Travel Compositor actually recorded for
-                        # 'active', rather than assuming it matches what we sent.
-                        diag_check = client.get_closed_tour(payloads["supplier_id"], real_code)
-                        if "error" in diag_check:
-                            st.warning(f"🔍 Diagnostic GET right after creation also failed: {diag_check}")
-                        else:
-                            st.info(f"🔍 Diagnostic: Travel Compositor reports this tour's `active` field as "
-                                   f"**{diag_check.get('active')}** (we sent `true`).")
-
-                        with st.expander("🔍 Full raw creation response (for deeper diagnosis)", expanded=True):
-                            st.json(result)
 
                         # Try the human-chosen ClosedTour/Provider Code first (confirmed working
                         # via direct API test), falling back to the internal 'code' if that fails -
