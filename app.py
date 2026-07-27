@@ -37,7 +37,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
 from document_reader import extract_raw_text
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, answer_clarification_question
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, apply_clarification
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
 
@@ -56,6 +56,41 @@ ACTION_FIELDS = {
     "update_tour": ["existing_tour_code", "release_days"],
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
+
+def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
+    """
+    Shows a table in READ-ONLY display mode by default (clean st.dataframe),
+    with a pencil button to switch into an editable st.data_editor.
+    on_save(edited_df) is called with the final edited DataFrame BEFORE the
+    rerun happens (rerun halts execution immediately, so applying the data
+    inside this function - not after it returns - is required for the save
+    to actually persist).
+    """
+    edit_flag_key = f"_editing_table_{edit_key}"
+    if edit_flag_key not in st.session_state:
+        st.session_state[edit_flag_key] = False
+
+    if not st.session_state[edit_flag_key]:
+        tcol, bcol = st.columns([12, 1])
+        with tcol:
+            st.markdown(f"**{label}**")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        with bcol:
+            st.write("")
+            if st.button("✏️", key=f"pencil_table_{edit_key}", help=f"Edit {label}"):
+                st.session_state[edit_flag_key] = True
+                st.rerun()
+    else:
+        st.markdown(f"**{label}** (editing)")
+        edited = st.data_editor(
+            df, num_rows=num_rows, use_container_width=True,
+            key=f"editor_{edit_key}", column_config=column_config or {}
+        )
+        if st.button("✅ Save", key=f"save_table_{edit_key}", type="primary"):
+            on_save(edited)
+            st.session_state[edit_flag_key] = False
+            st.rerun()
+
 
 def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value=""):
     """
@@ -144,7 +179,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-remove-no-modality-action — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-27-six-fixes-batch — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -288,7 +323,11 @@ else:
     if "modality_code" in needed:
         default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
         label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
-        modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise/Tour etc.")
+        modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. StandardCruiseTour")
+        if "/" in (modality_code_in or "") or "\\" in (modality_code_in or ""):
+            st.error("🚫 The Modality Code cannot contain '/' or '\\\\' - it becomes part of a URL, and a "
+                    "slash breaks lookups (confirmed: this caused a real HTTP 400 error). Use a hyphen "
+                    "or space instead, e.g. 'Standard-Main deck'.")
     if "on_request" in needed:
         on_request_in = st.checkbox("On Request", value=True)
     if "release_days" in needed:
@@ -304,6 +343,8 @@ else:
     if "currency" in needed and not (currency_in or "").strip():
         required_ok = False
     if "modality_code" in needed and not (modality_code_in or "").strip():
+        required_ok = False
+    if "modality_code" in needed and ("/" in (modality_code_in or "") or "\\" in (modality_code_in or "")):
         required_ok = False
     if "existing_tour_code" in needed and not existing_tour_code_in:
         required_ok = False
@@ -488,17 +529,20 @@ if st.session_state.extracted:
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
             editable_field("Nights", data, "nights", widget="number_input")
 
-            st.markdown("**Itinerary destinations (in visit order)**")
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
-            edited_dest_df = st.data_editor(
-                dest_df, num_rows="dynamic", use_container_width=True, key="dest_editor",
+
+            def _save_destinations(edited_df):
+                data["itinerary_destinations"] = [
+                    str(row["Destination"]).strip() for _, row in edited_df.iterrows()
+                    if str(row.get("Destination", "")).strip()
+                ]
+
+            editable_table(
+                "Itinerary destinations (in visit order)", dest_df, "destinations",
+                on_save=_save_destinations,
                 column_config={"#": st.column_config.NumberColumn(disabled=True)}
             )
-            data["itinerary_destinations"] = [
-                str(row["Destination"]).strip() for _, row in edited_dest_df.iterrows()
-                if str(row.get("Destination", "")).strip()
-            ]
 
             if "images_text_value" not in st.session_state:
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
@@ -629,11 +673,6 @@ if st.session_state.extracted:
 
     st.caption(f"Prices below are in **{currency or '(set Currency in Step 2)'}**. "
               f"Leave a price blank if that occupancy isn't offered. Add/remove rows freely.")
-    price_df = pd.DataFrame(price_df_rows)
-    edited_price_df = st.data_editor(
-        price_df, num_rows="dynamic", use_container_width=True, key="price_editor"
-    )
-
     def _row_to_price_entry(row):
         price = {}
         for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"),
@@ -651,10 +690,18 @@ if st.session_state.extracted:
             entry["name"] = name
         return entry
 
-    data["price_list"] = [
-        _row_to_price_entry(row) for _, row in edited_price_df.iterrows()
-        if str(row.get("Start Date", "")).strip() and str(row.get("End Date", "")).strip()
-    ]
+    def _save_price_list(edited_df):
+        data["price_list"] = sorted(
+            [
+                _row_to_price_entry(row) for _, row in edited_df.iterrows()
+                if str(row.get("Start Date", "")).strip() and str(row.get("End Date", "")).strip()
+            ],
+            key=lambda entry: entry.get("startDate", "")
+        )
+
+    price_df = pd.DataFrame(price_df_rows)
+    editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
+
     price_list_valid = len(data["price_list"]) > 0
     if not price_list_valid:
         st.error("Add at least one price row with both a Start Date and End Date.")
@@ -743,17 +790,25 @@ if st.session_state.extracted:
     # ----------------------------------------------------------------------
     # STEP 5: Build payloads (destination resolution happens here)
     # ----------------------------------------------------------------------
-    st.subheader("🤖 Ask AI a clarifying question (optional)")
-    st.caption("Ask about anything unclear in the source document before moving on. This does NOT "
-              "change any extracted data automatically - review the answer and edit fields yourself if needed.")
-    clarify_question = st.text_input("Your question", key="clarify_question_input",
-                                     placeholder="e.g. 'Does the single supplement apply to the Junior Suite too?'")
-    if st.button("Ask", disabled=not clarify_question.strip()):
+    st.subheader("🤖 Tell AI what to fix or clarify (optional)")
+    st.caption("Ask a question, or tell it to fix something (e.g. 'the end date of season 1 should be "
+              "Sept 30, not Oct 10'). It applies real changes when you ask for them - always shows exactly "
+              "what changed so you can double-check.")
+    clarify_question = st.text_input("Your message", key="clarify_question_input",
+                                     placeholder="e.g. 'Fix season 1's end date to Sept 30' or 'Does this include the Junior Suite?'")
+    if st.button("Send", disabled=not clarify_question.strip()):
         with st.spinner("Thinking..."):
-            answer = answer_clarification_question(st.session_state.raw_preview, data, clarify_question)
-            st.session_state.clarify_answer = answer
-    if st.session_state.get("clarify_answer"):
-        st.info(st.session_state.clarify_answer)
+            result = apply_clarification(st.session_state.raw_preview, data, clarify_question)
+            st.session_state.clarify_result = result
+            if result.get("changes"):
+                for field_name, new_value in result["changes"].items():
+                    data[field_name] = new_value
+            st.rerun()
+    if st.session_state.get("clarify_result"):
+        r = st.session_state.clarify_result
+        st.info(r.get("summary", ""))
+        if r.get("changes"):
+            st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
 
     if st.button("🔎 Resolve Destinations & Build Payload",
                 disabled=not price_list_valid):
@@ -935,6 +990,8 @@ if st.session_state.extracted:
                                 f"to inactive/draft afterward).")
                     else:
                         st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
+                        st.session_state.just_published_tour_code = target_tour_code
+                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
 
                 elif publish_action == "Update an existing tour's details":
                     update_payload = dict(payloads["main_tour_payload"])
@@ -951,6 +1008,8 @@ if st.session_state.extracted:
                                 f"inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Tour updated using code `{used_code}`.")
+                        st.session_state.just_published_tour_code = target_tour_code
+                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
 
                 elif publish_action == "Update an existing option":
                     update_option_payload = dict(payloads["tour_option_payload"])
@@ -967,6 +1026,8 @@ if st.session_state.extracted:
                                 f"inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
+                        st.session_state.just_published_tour_code = target_tour_code
+                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
 
 # ----------------------------------------------------------------------
 # Post-publish follow-up: what next?
