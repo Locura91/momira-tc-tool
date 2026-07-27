@@ -228,7 +228,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 
     print(f"🤖 Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
-    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
+    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
 
     # Defensive defaults in case the model omits a key
     defaults = {
