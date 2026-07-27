@@ -26,7 +26,7 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "IMGUR_CLIENT_ID"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
@@ -36,10 +36,11 @@ if hasattr(st, "secrets"):
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
-from document_reader import extract_raw_text
+from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, detect_tour_variants
 from web_extractor import extract_from_url, get_page_text, get_page_images
 from pexels_client import search_images
+from imgur_client import upload_images
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -97,7 +98,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-26-cleanup-diagnostic — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-26-images-colors-schedule-followup — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -173,8 +174,10 @@ else:
     release_days_in = 30
 
     if "existing_tour_code" in needed:
+        prefill = st.session_state.pop("prefill_existing_tour_code", "")
         existing_tour_code_in = st.text_input(
             "Existing Tour Code",
+            value=prefill,
             placeholder="e.g. BKK-1 (your own ClosedTour/Provider Code) or CLOSEDTOUR-411099",
         ).strip()
         st.caption(
@@ -323,6 +326,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
     with st.spinner("Gathering content and checking for multiple tour variants..."):
         try:
             combined_parts = []
+            doc_image_urls = []
             if url:
                 combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
             if uploaded:
@@ -331,6 +335,17 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+
+                embedded_images = extract_images(tmp_path)
+                if embedded_images:
+                    with st.spinner(f"Uploading {len(embedded_images)} image(s) found in the document..."):
+                        try:
+                            doc_image_urls = upload_images(embedded_images)
+                            if doc_image_urls:
+                                st.caption(f"✅ Uploaded {len(doc_image_urls)} image(s) from the document to Imgur.")
+                        except Exception as e:
+                            st.warning(f"Couldn't upload document images: {e}")
+
                 os.remove(tmp_path)
 
             raw_text = "\n\n".join(combined_parts)
@@ -341,9 +356,10 @@ if st.button("🔎 Extract", disabled=not (url or uploaded)):
                 st.session_state.pending_raw_text = raw_text
                 st.session_state.pending_url = url or None
                 st.session_state.pending_hint = extraction_hint or None
+                st.session_state.pending_doc_images = doc_image_urls
             else:
                 data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                data["image_urls"] = get_page_images(url) if url else []
+                data["image_urls"] = (get_page_images(url) if url else []) + doc_image_urls
                 st.session_state.extracted = data
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                 sources_desc = " + ".join(filter(None, [url, uploaded.name if uploaded else None]))
@@ -369,7 +385,7 @@ if st.session_state.get("pending_variants"):
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = get_page_images(pending_url) if pending_url else []
+                data["image_urls"] = (get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
                 st.session_state.extracted = data
@@ -486,6 +502,30 @@ if st.session_state.extracted:
             data["stop_sales"] = json.loads(stop_sales_json)
         except json.JSONDecodeError as e:
             st.error(f"stopSales isn't valid JSON: {e}")
+
+    # Clear at-a-glance summary of what kind of schedule this actually is.
+    num_days = len(data.get("operational_days", []))
+    num_stop_sales = len(data.get("stop_sales", []))
+    if num_days == 0:
+        schedule_summary = ("⚠️ No Operational Days selected", "#f8d7da", "#721c24")
+    elif num_days == 7 and num_stop_sales == 0:
+        schedule_summary = ("🟢 DAILY departure - runs every day", "#d4edda", "#155724")
+    elif num_stop_sales > 0:
+        schedule_summary = (
+            f"🟠 SPECIFIC DATE departure - runs on {num_days} weekday(s) MINUS {num_stop_sales} "
+            f"blocked date range(s) (irregular/custom schedule)", "#fff3cd", "#856404"
+        )
+    else:
+        schedule_summary = (
+            f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
+            "#d1ecf1", "#0c5460"
+        )
+    label, bg, fg = schedule_summary
+    st.markdown(
+        f"<div style='background-color:{bg}; color:{fg}; padding:10px 14px; border-radius:4px; "
+        f"font-weight:bold; margin-bottom:10px;'>{label}</div>",
+        unsafe_allow_html=True
+    )
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
     if data.get("pricing_notes"):
@@ -635,8 +675,22 @@ if st.session_state.extracted:
 
         st.header("Step 5 — Destination Resolution & Payload Preview")
 
-        for item in payloads["main_tour_payload"]["itinerary"]:
-            st.write(f"✅ `{item['destination']}`")
+        st.subheader("Destination Check — verify these against Travel Compositor before publishing")
+        for res in payloads["itinerary_resolution"]:
+            if res["valid"]:
+                st.markdown(
+                    f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
+                    f"border-radius:4px; margin-bottom:4px;'>✅ <b>{res['input']}</b> → "
+                    f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                    f"border-radius:4px; margin-bottom:4px;'>❌ <b>{res['input']}</b> → NOT FOUND "
+                    f"in Travel Compositor</div>",
+                    unsafe_allow_html=True
+                )
 
         if payloads["unresolved_destinations"]:
             st.error(
@@ -777,6 +831,8 @@ if st.session_state.extracted:
                             else:
                                 st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
                                           f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
+                                st.session_state.just_published_tour_code = real_code
+                                st.session_state.just_published_supplier_id = payloads["supplier_id"]
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result, used_code = try_code_variants(
@@ -824,3 +880,37 @@ if st.session_state.extracted:
                                 f"inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
+
+# ----------------------------------------------------------------------
+# Post-publish follow-up: what next?
+# ----------------------------------------------------------------------
+if st.session_state.get("just_published_tour_code"):
+    st.divider()
+    st.subheader("✅ ClosedTour published — what would you like to do next?")
+    st.write(f"Just published: **{st.session_state.just_published_tour_code}** "
+            f"(Supplier {st.session_state.just_published_supplier_id})")
+
+    fcol1, fcol2 = st.columns(2)
+    with fcol1:
+        if st.button("🆕 Start a new import (different ClosedTour)", type="primary"):
+            keep_client = st.session_state.client
+            keep_suppliers = st.session_state.suppliers_cache
+            st.session_state.clear()
+            st.session_state.client = keep_client
+            st.session_state.suppliers_cache = keep_suppliers
+            st.rerun()
+    with fcol2:
+        if st.button("➕ Add another Modality to this same ClosedTour"):
+            prefill_tour_code = st.session_state.just_published_tour_code
+            prefill_supplier_id = st.session_state.just_published_supplier_id
+            keep_client = st.session_state.client
+            keep_suppliers = st.session_state.suppliers_cache
+            st.session_state.clear()
+            st.session_state.client = keep_client
+            st.session_state.suppliers_cache = keep_suppliers
+            st.session_state.cfg_action = "add_option"
+            st.session_state.cfg_supplier_id = prefill_supplier_id
+            st.session_state.cfg_existing_tour_code = prefill_tour_code
+            st.session_state.prefill_existing_tour_code = prefill_tour_code
+            st.session_state.step1_confirmed = True
+            st.rerun()
