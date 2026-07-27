@@ -310,7 +310,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     if human_hint:
         user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=4096)
+    data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
 
     defaults = {
         "price_list": [], "pricing_notes": "", "schedule_notes": "",
