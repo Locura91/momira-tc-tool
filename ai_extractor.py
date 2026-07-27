@@ -375,3 +375,129 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     print(f"✅ Extraction complete: '{defaults['tour_name']}' "
           f"({len(defaults['itinerary_destinations'])} destinations, {defaults['nights']} nights)")
     return defaults
+
+
+# ============================================================================
+# TICKET EXTRACTION (excursions - single destination, no overnight)
+# ============================================================================
+
+TICKET_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TICKET
+(an excursion/activity - single destination, no overnight stay) from a DMC supplier document.
+This is DIFFERENT from a multi-day tour: no itinerary, no day-by-day description, no room-occupancy
+pricing. Translate ALL content to English regardless of source language.
+
+Extract:
+- ticket_name: the excursion/activity name
+- description: a SINGLE HTML block (not day-by-day) describing what the experience involves,
+  written as natural, engaging prose. Use ONLY facts present in the source - never invent details.
+  Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+- city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
+  will be resolved to real coordinates separately, so use the exact place name as commonly known.
+- includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
+- excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- meeting_points: list of {"description": "plain place/location name"} - can be multiple if the source
+  mentions several valid starting points (e.g. different cities a rail pass can be used from).
+- meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
+- duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
+  (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
+- activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
+- base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
+  If only one price is given (no child/infant distinction), put it in base_adult_price and leave others 0.
+- child_age_min, child_age_max: the age range that counts as "child" pricing, if mentioned (else 6/12 as a common default).
+- disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
+  type isn't allowed (rare) - otherwise all false.
+- operational_days: list of uppercase weekday names this is available, or all 7 if unclear/daily.
+- time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
+  gives specific time slots - empty list if not applicable.
+- start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
+  source gives no clear range, use a wide default like today's year to 3 years out.
+- cancellation_days, cancellation_percentage: from any cancellation policy found (else default 30/100.0).
+- adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
+- supplements: TRUE OPTIONAL add-ons OR seasonal/holiday price differences (e.g. a Christmas surcharge -
+  model this as a dated supplement, NOT as a separate price, since this schema only supports ONE base
+  price per modality). Each: {"name": "label", "adult_price": number, "children_price": number,
+  "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
+- pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
+  table forced onto adult/child/infant categories) - explain what, with real numbers, so a human can review.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+  "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
+  "activity_type": "", "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+  "child_age_min": 6, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
+  "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
+  "time_tables": [], "start_date": "", "end_date": "", "cancellation_days": 30, "cancellation_percentage": 100.0,
+  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": ""
+}"""
+
+
+def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None) -> dict:
+    """Full extraction for a new Ticket + first Modality."""
+    user_content = raw_text
+    if human_hint:
+        user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+
+    defaults = {
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
+        "activity_type": None, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+        "child_age_min": 6, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
+        "disallow_infant": False,
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "time_tables": [], "start_date": "", "end_date": "", "cancellation_days": 30,
+        "cancellation_percentage": 100.0, "adult_taxes_amount": 0, "child_taxes_amount": 0,
+        "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    return data
+
+
+TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel
+Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
+extract ticket name, description, city, meeting points, or includes/excludes. The source is often
+just a pricing table for an ALREADY-EXISTING ticket.
+
+Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
+start_date, end_date (this modality's validity window), operational_days, time_tables, cancellation_days,
+cancellation_percentage, supplements (for seasonal/holiday price differences - see full prompt's rules
+on this), pricing_notes.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+  "child_age_min": 6, "child_age_max": 12, "start_date": "", "end_date": "",
+  "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
+  "time_tables": [], "cancellation_days": 30, "cancellation_percentage": 100.0,
+  "supplements": [], "pricing_notes": ""
+}"""
+
+
+def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None) -> dict:
+    """Lightweight extraction for adding/updating a Modality on an EXISTING Ticket."""
+    user_content = raw_text
+    if human_hint:
+        user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(TICKET_OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=4096)
+
+    defaults = {
+        "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+        "child_age_min": 6, "child_age_max": 12, "start_date": "", "end_date": "",
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "time_tables": [], "cancellation_days": 30, "cancellation_percentage": 100.0,
+        "supplements": [], "pricing_notes": "", "stop_sales": [],
+        # Defensive - fields main ticket payload construction still reads even if unused for this action
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
+        "activity_type": None, "disallow_adult": False, "disallow_children": False, "disallow_infant": False,
+        "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "image_urls": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    return data
