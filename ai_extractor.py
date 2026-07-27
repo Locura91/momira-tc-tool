@@ -37,7 +37,17 @@ Rules:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
 - hotels_count: the number of DIFFERENT accommodations/hotels the client actually stays in (count the bullets you just wrote in hotels_text - e.g. a cruise with one ship the whole way is 1, a land tour through 3 different-hotel cities is 3).
-- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price. For each one found, output: {"name": "short label", "price": per-person amount as a number, "mandatory": false, "on_request": false}. If nothing optional with its own price is mentioned, leave this as an empty list - don't invent any.
+- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price. For each one found, output:
+  {
+    "name": "clear, specific short label - always required, never leave blank",
+    "price": per-person amount as a number,
+    "per_pax": true if this charge applies per traveler (the normal case), false if the source says it's a flat/one-time charge regardless of group size,
+    "mandatory": true only if the source says this is required despite being listed separately (rare - most supplements are false),
+    "on_request": true if the source says this needs advance request/confirmation rather than being instantly bookable,
+    "travel_start_date": "YYYY-MM-DD" ONLY if this supplement is restricted to a specific date range (e.g. a seasonal excursion) - otherwise omit/empty string,
+    "travel_end_date": "YYYY-MM-DD" - same condition as above
+  }
+  If nothing optional with its own price is mentioned, leave this as an empty list - don't invent any.
 - itinerary_destinations must be a list of plain place names in the EXACT order they appear in the source, NOT codes - codes get resolved separately. CRITICAL: include EVERY stop mentioned in the day-by-day itinerary (use the day headers like "Day 2 | Ban Kao - Sai Yok" as your source of truth for which places to include - don't skip any of them), including the tour's return to its starting city if it ends there (e.g. a tour starting and ending in Bangkok must list "Bangkok" both at the start AND the end of this list) - never deduplicate or drop repeated destinations, the itinerary must mirror the real route exactly. Do NOT include the name of a ship, cruise vessel, train, or vehicle (e.g. "RV River Kwai") as if it were a destination - only real geographic places count.
   CRITICAL - CONFIRMED API RULE: never list the SAME destination twice in a row (consecutively) - if the itinerary stays overnight in the same place for multiple consecutive days (e.g. "Day 3: Siwa Oasis" and "Day 4: Siwa Oasis"), that's still only ONE entry in this list for that place, not one per day. Only add a new entry when the destination actually changes from the previous one. Repeating a destination LATER after visiting other places in between (non-consecutively) is fine and required if the route genuinely returns there.
 - included and excluded MUST be formatted as proper HTML bullet lists, one distinct item per bullet, matching this EXACT structure (confirmed against a real published tour) - never a single run-on sentence with semicolons:
@@ -195,6 +205,74 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
         return "".join(result_text_parts).strip() or "(No answer returned.)"
     except Exception as e:
         return f"Couldn't get an answer: {e}"
+
+
+OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel Compositor
+Modality/Option (ContractClosedTourOptionVO). This is NOT a full tour extraction - do NOT extract
+tour name, description, itinerary, hotels, included/excluded, meeting point, policy remarks, or
+supplements. The source is often just a pricing table.
+
+Extract ONLY:
+- price_list: the pricing table(s). Use this EXACT shape per entry (confirmed against the real API schema):
+  {
+    "name": "optional label, e.g. the season/date range description",
+    "startDate": "YYYY-MM-DD",
+    "endDate": "YYYY-MM-DD",
+    "price": {
+      "singlePrice": {"amount": 0, "currency": "EUR"},
+      "doublePrice": {"amount": 0, "currency": "EUR"},
+      "triplePrice": {"amount": 0, "currency": "EUR"},
+      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+    }
+  }
+  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
+  CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
+- pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a group-size table into the 4-slot schema - explain exactly what, with real numbers.
+- schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only.
+- operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} for any explicitly mentioned blackout/non-operating date ranges (e.g. dry-dock periods). Empty list if none mentioned.
+
+Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "price_list": [],
+  "pricing_notes": "",
+  "schedule_notes": "",
+  "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+  "stop_sales": []
+}"""
+
+
+def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None) -> dict:
+    """
+    Lightweight extraction for adding/updating a Modality to an EXISTING
+    ClosedTour - only pulls pricing/schedule fields (what
+    ContractClosedTourOptionVO actually needs), skipping tour-level fields
+    entirely (name, description, itinerary, hotels, supplements, etc).
+    Much smaller prompt/output than extract_structured_data - faster,
+    cheaper, and avoids re-deriving things that don't change per-option.
+    """
+    user_content = raw_text
+    if human_hint:
+        user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=4096)
+
+    defaults = {
+        "price_list": [], "pricing_notes": "", "schedule_notes": "",
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "stop_sales": [],
+        # Defensive: fields builder.py's main_tour_payload construction still
+        # reads, even though it's unused/not sent for option-only actions.
+        "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1,
+        "supplements": [], "included": "", "excluded": "", "meeting_point": "",
+        "policy_remarks": "", "itinerary_destinations": [], "nights": 1,
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    return data
 
 
 def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
