@@ -184,13 +184,23 @@ def build_ticket_payloads(
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
-    # its own (e.g. "Tokyo Station" not being a distinct destination record).
+    # its own (e.g. "Tokyo Station" not being a distinct destination record),
+    # or if it's explicitly a variable/guest-specific location (e.g. "pick up
+    # from your hotel") that was never a real geocodable place to begin with.
     meeting_points_out = []
     for mp in extracted_ticket_data.get("meeting_points", []):
-        mp_desc = mp.get("description", mp) if isinstance(mp, dict) else str(mp)
-        mp_geo = api_client.resolve_destination_geolocation(mp_desc)
-        lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
-        lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
+        if isinstance(mp, dict):
+            mp_desc = mp.get("description", "")
+            is_variable = bool(mp.get("variable_location", False))
+        else:
+            mp_desc, is_variable = str(mp), False
+
+        if is_variable:
+            lat, lng = geoloc.get("latitude"), geoloc.get("longitude")
+        else:
+            mp_geo = api_client.resolve_destination_geolocation(mp_desc)
+            lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
+            lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
         if lat is not None and lng is not None:
             meeting_points_out.append(MeetingPointVO(description=mp_desc, latitude=lat, longitude=lng))
 
@@ -209,7 +219,7 @@ def build_ticket_payloads(
     datasheet_en = TicketDatasheetEN(
         name=extracted_ticket_data.get("ticket_name", ""),
         description=extracted_ticket_data.get("description", ""),
-        meetingPoint=extracted_ticket_data.get("meeting_point_summary", ""),
+        meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
         includes=extracted_ticket_data.get("includes", []),
         excludes=extracted_ticket_data.get("excludes", []),
         activityType=extracted_ticket_data.get("activity_type"),
@@ -235,10 +245,7 @@ def build_ticket_payloads(
             daysAvailableBeforeRelease=pre_config.days_available_before_release,
             duration=float(extracted_ticket_data.get("duration", 0) or 0),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
-            cancellationRanges=[TicketCancellationRange(
-                cancellationDays=extracted_ticket_data.get("cancellation_days", 30),
-                cancellationPercentage=extracted_ticket_data.get("cancellation_percentage", 100.0),
-            )],
+            cancellationRanges=[TicketCancellationRange()],  # LOCKED default: always 30 days / 100%, matching ClosedTour's confirmed convention
             meetingPoints=meeting_points_out,
             active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
         )
@@ -269,6 +276,7 @@ def build_ticket_payloads(
             minPassengers=pre_config.min_passengers,
             childAgeMin=extracted_ticket_data.get("child_age_min", 6),
             childAgeMax=extracted_ticket_data.get("child_age_max", 12),
+            languages=extracted_ticket_data.get("languages") or ["EN"],
             timeTables=extracted_ticket_data.get("time_tables", []),
             duration=float(extracted_ticket_data.get("duration", 0) or 0),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
@@ -286,4 +294,9 @@ def build_ticket_payloads(
         "ticket_option_error": ticket_option_error,
         "geolocation_resolved": geoloc.get("valid", False),
         "geolocation_source": geoloc.get("source"),
+        "has_real_pricing": any([
+            extracted_ticket_data.get("base_adult_price", 0),
+            extracted_ticket_data.get("base_children_price", 0),
+            extracted_ticket_data.get("base_infant_price", 0),
+        ]),
     }
