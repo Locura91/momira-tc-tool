@@ -84,3 +84,79 @@ def extract_raw_text(file_path: str) -> str:
         )
     else:
         raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx")
+
+
+def extract_images_from_pdf(file_path: str, max_images: int = 5) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in a PDF."""
+    import fitz  # PyMuPDF
+
+    images = []
+    doc = fitz.open(file_path)
+    try:
+        for page_index in range(len(doc)):
+            if len(images) >= max_images:
+                break
+            page = doc[page_index]
+            for img in page.get_images(full=True):
+                if len(images) >= max_images:
+                    break
+                xref = img[0]
+                base_image = doc.extract_image(xref)
+                images.append((base_image["image"], base_image["ext"]))
+    finally:
+        doc.close()
+    return images
+
+
+def extract_images_from_docx(file_path: str, max_images: int = 5) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in a Word doc."""
+    import docx
+
+    doc = docx.Document(file_path)
+    images = []
+    for rel in doc.part.rels.values():
+        if len(images) >= max_images:
+            break
+        if "image" in rel.reltype:
+            ext = rel.target_ref.rsplit(".", 1)[-1] if "." in rel.target_ref else "png"
+            images.append((rel.target_part.blob, ext))
+    return images
+
+
+def extract_images_from_xlsx(file_path: str, max_images: int = 5) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in an Excel file."""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_path)
+    images = []
+    for ws in wb.worksheets:
+        if len(images) >= max_images:
+            break
+        for img in getattr(ws, "_images", []):
+            if len(images) >= max_images:
+                break
+            try:
+                data = img._data()
+                images.append((data, "png"))
+            except Exception:
+                continue
+    return images
+
+
+def extract_images(file_path: str, max_images: int = 5) -> list:
+    """
+    Dispatches to the right image extractor based on file extension.
+    Returns list of (image_bytes, extension) tuples, or an empty list if
+    the format isn't supported for image extraction or none are found.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == ".pdf":
+            return extract_images_from_pdf(file_path, max_images)
+        elif ext == ".docx":
+            return extract_images_from_docx(file_path, max_images)
+        elif ext == ".xlsx":
+            return extract_images_from_xlsx(file_path, max_images)
+    except Exception as e:
+        print(f"⚠️ Image extraction failed for {file_path}: {e}")
+    return []
