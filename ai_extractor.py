@@ -159,6 +159,44 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     return variants
 
 
+def answer_clarification_question(raw_text: str, current_data: dict, question: str, model: str = "claude-sonnet-5") -> str:
+    """
+    Answers a human's free-text question about the source document/current
+    extraction, using both as context. Returns plain text - does NOT modify
+    any extracted data automatically. The human reviews the answer and
+    applies any changes themselves via the editable fields.
+    """
+    system_prompt = (
+        "You are helping a human review data extracted from a travel document. "
+        "Answer their question clearly and concisely using ONLY the source document "
+        "and the current extracted data provided below as context. If the answer isn't "
+        "in the source, say so plainly rather than guessing. Do not output JSON - just "
+        "a direct, helpful answer in plain text/prose."
+    )
+    user_content = (
+        f"--- Source document text ---\n{raw_text[:15000]}\n\n"
+        f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:5000]}\n\n"
+        f"--- Human's question ---\n{question}"
+    )
+    result_text_parts = []
+    try:
+        from anthropic import Anthropic
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return "ANTHROPIC_API_KEY is not set - can't answer questions right now."
+        client = Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=model, max_tokens=1024, system=system_prompt,
+            messages=[{"role": "user", "content": user_content}]
+        )
+        for block in response.content:
+            if block.type == "text":
+                result_text_parts.append(block.text)
+        return "".join(result_text_parts).strip() or "(No answer returned.)"
+    except Exception as e:
+        return f"Couldn't get an answer: {e}"
+
+
 def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
     """
     Sends raw document text to Claude and returns structured, English,
