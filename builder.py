@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from pydantic import ValidationError
-from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation
+from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation
 from api_client import TravelCompositorAPI
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
@@ -76,12 +76,22 @@ def build_closed_tour_payloads(
     supplements_list = []
     for s in extracted_dmc_data.get("supplements", []):
         price_val = float(s.get("price", 0) or 0)
+        # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
+        # per-person amounts (that's what "per occupancy" means in this API).
+        # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
+        # have a confirmed API field for a genuinely flat/non-per-pax supplement
+        # charge - if you need that, verify with Travel Compositor directly.
+        travel_windows = []
+        if s.get("travel_start_date") and s.get("travel_end_date"):
+            travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
+
         supplements_list.append(SupplementVO(
             translations={"EN": SupplementTranslation(name=s.get("name", ""))},
             price=SupplementPriceVO(singlePrice=price_val, doublePrice=price_val),
             mandatory=bool(s.get("mandatory", False)),
             onRequest=bool(s.get("on_request", False)),
             free=(price_val == 0),
+            travelWindows=travel_windows,
         ))
 
     # 2. Build Main Tour Payload (ContractClosedTourVO)
@@ -134,6 +144,7 @@ def build_closed_tour_payloads(
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=extracted_dmc_data.get("stop_sales", []),
             priceList=extracted_dmc_data.get("price_list", []),
+            translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
             quantityPerDay=99,
             useAdditionalOnRequestQuota=False
