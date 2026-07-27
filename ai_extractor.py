@@ -310,7 +310,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     if human_hint:
         user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+    data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=4096)
 
     defaults = {
         "price_list": [], "pricing_notes": "", "schedule_notes": "",
@@ -359,7 +359,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 
     print(f"🤖 Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
-    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
 
     # Defensive defaults in case the model omits a key
     defaults = {
