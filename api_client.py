@@ -143,6 +143,73 @@ class TravelCompositorAPI:
                 results.append({"code": code, "name": name})
         return results
 
+    def resolve_destination_geolocation(self, query_term: str) -> Dict[str, Any]:
+        """
+        Reuses the SAME destination search/cache as resolve_destination(), but
+        for Tickets, which need latitude/longitude instead of a destination code.
+
+        NOT YET CONFIRMED against live data whether Travel Compositor's
+        destination records actually include coordinates - this attempts a
+        few common field name variants (latitude/longitude, lat/lng, lat/lon)
+        and clearly reports if none were found, so the human knows they may
+        need to enter coordinates manually as a fallback.
+
+        Returns: {"latitude": float|None, "longitude": float|None, "name": str,
+                   "valid": bool, "source": str}
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return {"latitude": None, "longitude": None, "name": None, "valid": False, "source": "empty_query"}
+
+        def _extract_coords(d: dict):
+            for lat_key, lng_key in [("latitude", "longitude"), ("lat", "lng"), ("lat", "lon")]:
+                if d.get(lat_key) is not None and d.get(lng_key) is not None:
+                    try:
+                        return float(d[lat_key]), float(d[lng_key])
+                    except (TypeError, ValueError):
+                        continue
+            return None, None
+
+        # 1. Direct code lookup (in case the human already has a TC destination code)
+        code_candidate = clean_query.upper()
+        url_direct = f"{self.api_base_url}/destination/{self.microsite_id}/{code_candidate}"
+        try:
+            res = self._request("GET", url_direct, params={"lang": "EN"})
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict) and data.get("code"):
+                    lat, lng = _extract_coords(data)
+                    return {
+                        "latitude": lat, "longitude": lng, "name": data.get("name", clean_query),
+                        "valid": lat is not None and lng is not None, "source": "direct_code"
+                    }
+        except requests.RequestException:
+            pass
+
+        # 2. Name search against the cached full list (same cache resolve_destination uses)
+        try:
+            destinations = self._get_all_destinations()
+        except requests.RequestException:
+            destinations = []
+
+        query_lower = clean_query.lower()
+        for dest in destinations:
+            if dest.get("name", "").strip().lower() == query_lower:
+                lat, lng = _extract_coords(dest)
+                return {
+                    "latitude": lat, "longitude": lng, "name": dest.get("name"),
+                    "valid": lat is not None and lng is not None, "source": "exact_name"
+                }
+        matches = [d for d in destinations if query_lower in d.get("name", "").lower()]
+        if matches:
+            lat, lng = _extract_coords(matches[0])
+            return {
+                "latitude": lat, "longitude": lng, "name": matches[0].get("name"),
+                "valid": lat is not None and lng is not None, "source": "partial_name"
+            }
+
+        return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "not_found"}
+
     def resolve_destination(self, query_term: str) -> Dict[str, Any]:
         """
         Resolves ANY destination input:
@@ -343,6 +410,81 @@ class TravelCompositorAPI:
         create_closed_tour_option (POST) instead to add a brand-new option.
         """
         url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    # ------------------------------------------------------------------
+    # TICKET UPLOADS (excursions - single destination, no overnight)
+    # Confirmed against real Swagger + live GET examples.
+    # ------------------------------------------------------------------
+    def get_tickets(self, supplier_id: str, first: int = 0, limit: int = 50) -> Dict[str, Any]:
+        """Executes GET /tickets/{supplierId} — returns paginated list of tickets for this supplier."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}"
+        merged_headers = {**self.get_headers(), "first": str(first), "limit": str(limit)}
+        res = requests.request("GET", url, headers=merged_headers, timeout=15)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_ticket(self, supplier_id: str, ticket_code: str) -> Dict[str, Any]:
+        """Executes GET /tickets/{supplierId}/{ticketCode} — returns the full existing ticket."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_ticket_option(self, supplier_id: str, ticket_code: str, option_code: str) -> Dict[str, Any]:
+        """Executes GET /tickets/{supplierId}/{ticketCode}/{optionCode} — returns a specific ticket modality."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}/{option_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /tickets/{supplierId} — creates a new ticket."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /tickets/{supplierId}/{ticketCode} — creates a new ticket option/modality."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes PUT /tickets/{supplierId} — updates an EXISTING ticket's details."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes PUT /tickets/{supplierId}/{ticketCode} — updates an EXISTING ticket option/modality."""
+        url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
