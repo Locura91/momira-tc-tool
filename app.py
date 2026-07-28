@@ -324,6 +324,24 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
 
         editable_table(f"Pricing - {current['code']}", price_df, f"mm_pricing_{idx}", on_save=_save_mm_price_list)
 
+        st.subheader(f"🤖 Tell AI what to fix - {current['code']}")
+        st.caption("Ask a question, or tell it to fix something (e.g. 'the price should be x3 for 3 "
+                  "nights, not the per-night rate'). Applies real changes when you ask for them.")
+        mm_clarify_q = st.text_input("Your message", key=f"mm_clarify_input_{idx}")
+        if st.button("Send", disabled=not mm_clarify_q.strip(), key=f"mm_clarify_send_{idx}"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.mm_raw_text, data, mm_clarify_q)
+                st.session_state[f"mm_clarify_result_{idx}"] = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                st.rerun()
+        if st.session_state.get(f"mm_clarify_result_{idx}"):
+            r = st.session_state[f"mm_clarify_result_{idx}"]
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this modality & Finish Review" if is_last else "✅ Confirm this modality & Continue →"
         if st.button(btn_label, type="primary", disabled=not data.get("price_list")):
@@ -836,19 +854,57 @@ def render_ticket_flow(client):
             unsafe_allow_html=True
         )
 
-        st.subheader(f"Pricing (per passenger type, in {currency or '(set Currency in Step 3)'})")
-        st.caption("A Ticket Modality holds ONE price + ONE validity date range (not a seasonal table). "
+        st.subheader(f"Pricing (in {currency or '(set Currency in Step 3)'})")
+        st.caption("A Ticket Modality holds ONE price setup + ONE validity date range (not a seasonal table). "
                   "For holiday/seasonal price differences, use dated Supplements below instead.")
-        pcol1, pcol2, pcol3 = st.columns(3)
-        with pcol1:
-            data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0,
-                                                        value=float(data.get("base_adult_price", 0) or 0), key="tk_adult_price")
-        with pcol2:
-            data["base_children_price"] = st.number_input("Child Price", min_value=0.0,
-                                                           value=float(data.get("base_children_price", 0) or 0), key="tk_child_price")
-        with pcol3:
-            data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0,
-                                                         value=float(data.get("base_infant_price", 0) or 0), key="tk_infant_price")
+
+        price_type = st.radio(
+            "Pricing Mode", ["DISTRIBUTION", "OCCUPANCY", "SERVICE"],
+            index=["DISTRIBUTION", "OCCUPANCY", "SERVICE"].index(data.get("price_type", "DISTRIBUTION")),
+            format_func=lambda x: {
+                "DISTRIBUTION": "Distribution - price per person (Adult/Child/Infant)",
+                "OCCUPANCY": "Occupancy - price varies by group size (infants free, not counted)",
+                "SERVICE": "Service - one flat total price regardless of headcount",
+            }[x],
+            key="tk_price_type"
+        )
+        data["price_type"] = price_type
+        if price_type != "DISTRIBUTION":
+            st.warning("⚠️ UNCONFIRMED whether Travel Compositor's API accepts this pricing mode for "
+                      "Tickets - ClosedTours are confirmed to only work via Distribution through the API "
+                      "(Occupancy there only works through their own admin UI, not the API). Test this "
+                      "carefully with a real publish before relying on it - Distribution is the safe default.")
+
+        if price_type == "DISTRIBUTION":
+            pcol1, pcol2, pcol3 = st.columns(3)
+            with pcol1:
+                data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0,
+                                                            value=float(data.get("base_adult_price", 0) or 0), key="tk_adult_price")
+            with pcol2:
+                data["base_children_price"] = st.number_input("Child Price", min_value=0.0,
+                                                               value=float(data.get("base_children_price", 0) or 0), key="tk_child_price")
+            with pcol3:
+                data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0,
+                                                             value=float(data.get("base_infant_price", 0) or 0), key="tk_infant_price")
+        elif price_type == "SERVICE":
+            data["base_service_price"] = st.number_input(
+                "Total Service Price (flat, regardless of group size)", min_value=0.0,
+                value=float(data.get("base_service_price", 0) or 0), key="tk_service_price"
+            )
+        elif price_type == "OCCUPANCY":
+            st.caption("One row per group-size tier, e.g. matching a source table like '1 / 2 / 3-5 / 6-8 / 9-14'. "
+                      "Field names here (minPax/maxPax/price) are a reasonable best guess, NOT confirmed against "
+                      "a real API response - verify carefully after a real test publish.")
+            occ_rows = [{"Min Pax": o.get("minPax", 1), "Max Pax": o.get("maxPax", 1), "Price": o.get("price", 0)}
+                       for o in data.get("occupancy_prices", [])] or [{"Min Pax": 1, "Max Pax": 1, "Price": 0}]
+            occ_df = pd.DataFrame(occ_rows)
+            def _save_occupancy(edf, data=data):
+                data["occupancy_prices"] = [
+                    {"minPax": int(r.get("Min Pax", 1) or 1), "maxPax": int(r.get("Max Pax", 1) or 1), "price": float(r.get("Price", 0) or 0)}
+                    for _, r in edf.iterrows()
+                ]
+            editable_table("Occupancy Price Tiers", occ_df, "tk_occupancy", on_save=_save_occupancy)
+
         dcol1, dcol2 = st.columns(2)
         with dcol1:
             data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key="tk_start_date")
@@ -858,6 +914,12 @@ def render_ticket_flow(client):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
         st.subheader("Optional Add-ons (Supplements)")
+        st.caption("⚠️ Ticket Supplements are always independently stackable - a customer can tick ANY "
+                  "combination, and prices simply add up. Only use this for simple add-ons everyone can "
+                  "combine freely (e.g. 'Audio guide - $5'). There's no 'on request' option here either. "
+                  "For anything that should be an ALTERNATIVE (only one of several choices) or needs "
+                  "special/on-request handling, create it as a SEPARATE Modality instead (Action 2: Add "
+                  "new Modality to existing Ticket) - never model it as a supplement.")
         supp_rows = [
             {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
              "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
@@ -878,7 +940,12 @@ def render_ticket_flow(client):
             data["supplements"] = new_supp
         editable_table("Supplements", supp_df, "tk_supplements", on_save=_save_tk_supplements)
 
-        price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
+        if price_type == "SERVICE":
+            price_valid = bool(data.get("base_service_price", 0))
+        elif price_type == "OCCUPANCY":
+            price_valid = bool(data.get("occupancy_prices")) and any(o.get("price", 0) for o in data.get("occupancy_prices", []))
+        else:
+            price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         if not price_valid:
             st.error("Add at least one non-zero price (Adult/Child/Infant) before continuing.")
 
@@ -1048,7 +1115,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-fix-image-preselection-bug — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-three-pricing-modes-plus-mm-ai — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
