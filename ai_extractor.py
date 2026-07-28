@@ -153,6 +153,42 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
     raise RuntimeError(f"Claude's response wasn't valid JSON.{hint} Raw response:\n{raw_response[:1500]}")
 
 
+MODALITY_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page describes pricing for
+MULTIPLE distinct room/cabin/ticket categories (e.g. "Standard Cabin", "Deluxe Cabin", "Suite" each with
+their own price table) for what is otherwise the SAME single tour/ticket product.
+
+This is DIFFERENT from checking for tour variants (different itineraries/durations) - here we're looking
+for multiple PRICING CATEGORIES within the same product that would each need to become a separate
+Modality/Option in Travel Compositor.
+
+Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
+{
+  "multiple_modalities": true or false,
+  "modalities": [
+    {"label": "short human-readable label, e.g. 'Standard Cabin'", "suggested_code": "e.g. Standard Cabin (no / + - characters)"}
+  ]
+}
+If there's only one pricing category (or pricing is a single flat table), set "multiple_modalities": false
+and "modalities": [] ."""
+
+
+def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """
+    Checks whether the source describes MULTIPLE distinct pricing
+    categories (room/cabin types) that should become separate Modalities,
+    as opposed to one single price table. Returns an empty list if only
+    one is found, or a list of {"label": ..., "suggested_code": ...} dicts.
+    """
+    print("🔎 Checking for multiple pricing categories/modalities in this content...")
+    result = _call_claude(MODALITY_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
+    modalities = result.get("modalities", []) if result.get("multiple_modalities") else []
+    if modalities:
+        print(f"⚠️ Detected {len(modalities)} distinct modalities: {[m.get('label') for m in modalities]}")
+    else:
+        print("✅ Only one pricing category detected.")
+    return modalities
+
+
 def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     """
     Checks whether the source text describes ONE tour or MULTIPLE distinct
