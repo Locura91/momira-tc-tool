@@ -144,7 +144,7 @@ def build_closed_tour_payloads(
             code=pre_config.modality_code,
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=extracted_dmc_data.get("stop_sales", []),
-            priceList=extracted_dmc_data.get("price_list", []),
+            priceList=sorted(extracted_dmc_data.get("price_list", []), key=lambda p: p.get("startDate", "")),
             translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
             quantityPerDay=99,
