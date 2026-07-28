@@ -280,6 +280,8 @@ class TicketDatasheetEN(BaseModel):
     name: str
     description: str  # HTML, same day-by-day-style rules don't apply (single description block)
     meetingPoint: str = ""
+    departureTime: str = ""  # confirmed real field via fuller Swagger - display text, e.g. "8:00 AM"
+    voucherRemarks: str = ""  # confirmed real field via fuller Swagger - shown on the customer's voucher
     includes: List[str] = []
     excludes: List[str] = []
     activityType: Optional[str] = None
@@ -303,7 +305,16 @@ class ApiStaticContentTicketVO(BaseModel):
     zipCode: Optional[str] = None
     datasheets: Dict[str, TicketDatasheetEN]  # keyed "EN" only, by our tool's design choice
     currency: str = "EUR"
-    productTypes: List[str] = ["MULTI"]
+    # "Engines" (Settings > Engine > Select Search Engines To Sell in the TC admin UI) - confirmed via
+    # a real screenshot to matter: a newly-created Ticket previously had NONE selected, requiring manual
+    # fixing in the admin UI. This default includes the confirmed-valid enum values that plausibly match
+    # what a real working Ticket had selected, excluding ones clearly tied to unrelated product types
+    # (insurance, memberships, giftcards, cruises, holidays/packages, AI trip planning).
+    productTypes: List[str] = [
+        "MULTI", "ONLY_TICKET", "EVENT_TICKET", "ONLY_TRANSFER", "ONLY_TRAIN", "ONLY_HOTEL",
+        "ONLY_HOUSE", "ONLY_FLIGHT", "FLIGHT_HOTEL", "FLIGHT_HOUSE", "ONLY_CAR", "GOLF",
+        "MAGIC_BOX", "ROUTING", "PRIVATE_TOUR", "TRIP_PLANNER", "GROUPS",
+    ]
     imageUrls: List[str] = []
     adultTaxesAmount: float = 0.0
     childTaxesAmount: float = 0.0
