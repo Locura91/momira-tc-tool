@@ -38,7 +38,22 @@ Rules:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
 - hotels_count: the number of DIFFERENT accommodations/hotels the client actually stays in (count the bullets you just wrote in hotels_text - e.g. a cruise with one ship the whole way is 1, a land tour through 3 different-hotel cities is 3).
-- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price. For each one found, output:
+- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price.
+  CRITICAL - MANDATORY peak season/holiday surcharges are NOT supplements (a supplement implies the
+  customer chooses to pay it - a mandatory surcharge doesn't). Two cases:
+  (a) The surcharge applies to the WHOLE TRIP/booking uniformly (e.g. "20% higher during Christmas") -
+      do NOT model this as a supplement at all. Instead, this must become a SEPARATE ROW in price_list
+      with the elevated price for that date range (see price_list rules below) - describe this clearly
+      in pricing_notes so the human knows an extra season row is needed.
+  (b) The surcharge is PER NIGHT/PER UNIT tied to a SPECIFIC hotel or component (e.g. "USD 11 per person
+      per night surcharge at the Deluxe Cabin during peak season") - THIS case can be modeled as a
+      supplement, but pre-calculate the TOTAL amount by multiplying the per-night rate by the actual
+      number of nights spent at that specific hotel/component (determine this from the day-by-day
+      itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total). Name the
+      supplement clearly with the calculation shown, e.g. "Peak season surcharge - Hotel X (2 nights)".
+      If the number of nights at that specific component genuinely can't be determined from the source,
+      say so plainly in pricing_notes rather than guessing.
+  For each TRUE supplement (optional add-on, or case (b) above), output:
   {
     "name": "clear, specific short label - always required, never leave blank",
     "price": per-person amount as a number,
@@ -54,6 +69,14 @@ Rules:
 - included and excluded MUST be formatted as proper HTML bullet lists, one distinct item per bullet, matching this EXACT structure (confirmed against a real published tour) - never a single run-on sentence with semicolons:
   <ul><li>First inclusion/exclusion item</li><li>Second item</li><li>Third item</li></ul>
   Split the source's inclusions/exclusions into separate, natural bullet points even if the source presents them as one paragraph.
+- policy_remarks: include genuinely relevant policy info such as child age policy, payment/deposit
+  schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include the source document's own
+  cancellation policy/terms here (e.g. "25% charged for cancellations 60-31 days before", "no-show =
+  100% fee", any tiered cancellation percentages/timelines). The actual cancellation policy is ALWAYS
+  fixed at 30 days / 100% regardless of what the source says, and including the source's different
+  wording here would be legally incorrect and contradict the real configured setting. If the source's
+  policy section is ONLY about cancellation, leave policy_remarks empty entirely rather than including
+  any of it.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
@@ -458,12 +481,19 @@ Extract:
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
-- supplements: TRUE OPTIONAL add-ons OR seasonal/holiday price differences (e.g. a Christmas surcharge -
-  model this as a dated supplement, NOT as a separate price, since this schema only supports ONE base
-  price per modality). Each: {"name": "label", "adult_price": number, "children_price": number,
+- supplements: TRUE OPTIONAL add-ons the customer chooses to pay for, OR mandatory per-night/per-component
+  seasonal surcharges tied to a SPECIFIC part of the experience (pre-calculate the total: rate x actual
+  nights/units, same rule as the full ClosedTour extraction). CRITICAL - Ticket Modalities only support
+  ONE base price + ONE date range (no seasonal array like ClosedTours have), so if the source describes
+  a MANDATORY surcharge that changes the WHOLE base price uniformly for a period (not per-night/
+  per-component), it CANNOT be represented as a dated supplement OR a pricing-table row here - flag this
+  clearly in pricing_notes instead, explaining the human likely needs a SEPARATE Modality (e.g. "Standard
+  - Peak Season") for that period, with its own base price and date range.
+  Each supplement: {"name": "label", "adult_price": number, "children_price": number,
   "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
-  table forced onto adult/child/infant categories, or pricing was genuinely absent from the source) -
+  table forced onto adult/child/infant categories, pricing was genuinely absent from the source, or a
+  mandatory whole-trip seasonal price difference couldn't be represented - see supplements rule above) -
   explain what, with real numbers where available, so a human can review.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
