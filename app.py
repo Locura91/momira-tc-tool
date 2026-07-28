@@ -34,16 +34,29 @@ if hasattr(st, "secrets"):
             pass
 
 from api_client import TravelCompositorAPI
-from schemas import HumanPreConfig
-from builder import build_closed_tour_payloads
+from schemas import HumanPreConfig, TicketHumanPreConfig
+from builder import build_closed_tour_payloads, build_ticket_payloads
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data
 from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from freeimage_client import upload_images as upload_images_freeimage
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+
+TICKET_ACTION_LABELS = {
+    "create": "1: Create new Ticket + 1 Modality",
+    "add_option": "2: Add new Modality to existing Ticket",
+    "update_ticket": "3: Update existing Ticket (Not updating modality)",
+    "update_option": "4: Update existing Ticket Modality",
+}
+TICKET_ACTION_FIELDS = {
+    "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "modality_code", "on_request", "release_days"],
+    "add_option": ["existing_ticket_code", "modality_code", "on_request"],
+    "update_ticket": ["existing_ticket_code", "min_passengers", "max_passengers", "release_days"],
+    "update_option": ["existing_ticket_code", "modality_code", "on_request"],
+}
 
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
@@ -371,6 +384,499 @@ def try_code_variants(call_fn, code):
     return result, None
 
 
+def render_ticket_flow(client):
+    """
+    Full Ticket wizard (Steps 1-6), mirroring the ClosedTour flow's proven
+    patterns but adapted for Tickets' real structural differences: one
+    geolocation instead of an itinerary, passenger-type pricing (adult/
+    child/infant) instead of room-occupancy, ONE price+date range per
+    Modality instead of a seasonal array, structured meeting points.
+    Uses tk_-prefixed session_state keys throughout to avoid any collision
+    with the ClosedTour flow's state.
+    """
+    if "tk_step1_confirmed" not in st.session_state:
+        st.session_state.tk_step1_confirmed = False
+    if "tk_step2_confirmed" not in st.session_state:
+        st.session_state.tk_step2_confirmed = False
+
+    # ------------------------------------------------------------------
+    # TICKET STEP 1: Action + Supplier
+    # ------------------------------------------------------------------
+    st.header("Ticket — Step 1: What do you want to do?")
+
+    if st.session_state.tk_step1_confirmed:
+        st.success(f"✅ Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
+                   f"Supplier ID: **{st.session_state.tk_cfg_supplier_id}**")
+        if st.button("🔄 Change action / supplier", key="tk_change_action"):
+            st.session_state.tk_step1_confirmed = False
+            st.session_state.tk_step2_confirmed = False
+            st.rerun()
+    else:
+        action_key = st.radio(
+            "Choose one:", list(TICKET_ACTION_LABELS.keys()),
+            format_func=lambda k: TICKET_ACTION_LABELS[k], key="tk_action_radio"
+        )
+        if st.session_state.suppliers_cache is None:
+            with st.spinner("Loading supplier list from Travel Compositor..."):
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+
+        supplier_id_choice = None
+        if st.session_state.suppliers_cache:
+            supplier_options = {
+                f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
+                for s in st.session_state.suppliers_cache
+            }
+            selected_label = st.selectbox("Supplier (select by name)", list(supplier_options.keys()), key="tk_supplier_select")
+            supplier_id_choice = str(supplier_options[selected_label])
+            if st.button("🔄 Refresh supplier list", key="tk_refresh_suppliers"):
+                st.session_state.suppliers_cache = None
+                st.rerun()
+        else:
+            st.error("Could not load the supplier list from Travel Compositor.")
+            with st.expander("⚠️ Emergency manual entry"):
+                supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tk_supplier_manual")
+
+        if st.button("➡️ Continue to Step 2", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
+            st.session_state.tk_cfg_action = action_key
+            st.session_state.tk_cfg_supplier_id = supplier_id_choice
+            st.session_state.tk_step1_confirmed = True
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # TICKET STEP 2: Action-specific details
+    # ------------------------------------------------------------------
+    st.header("Ticket — Step 2: Details for this action")
+    action = st.session_state.tk_cfg_action
+    needed = TICKET_ACTION_FIELDS[action]
+    supplier_id = st.session_state.tk_cfg_supplier_id
+
+    if st.session_state.tk_step2_confirmed:
+        st.success("✅ Step 2 details confirmed.")
+        if st.button("🔄 Change details", key="tk_change_details"):
+            st.session_state.tk_step2_confirmed = False
+            st.rerun()
+    else:
+        ticket_code_in = min_pass_in = max_pass_in = currency_in = modality_code_in = existing_ticket_code_in = None
+        on_request_in = False
+        release_days_in = 30
+
+        if "existing_ticket_code" in needed:
+            existing_ticket_code_in = st.text_input(
+                "Existing Ticket Code", placeholder="e.g. JAP-T1", key="tk_existing_code"
+            ).strip()
+
+            if st.button("🔍 Check what's already online for this code", disabled=not existing_ticket_code_in, key="tk_check_online"):
+                with st.spinner("Fetching from Travel Compositor..."):
+                    fetched = client.get_ticket(supplier_id, existing_ticket_code_in)
+                    st.session_state.tk_fetched_ticket = fetched
+                    st.session_state.tk_fetched_option = None
+                    if isinstance(fetched, dict) and "error" not in fetched:
+                        st.session_state.tk_fetched_currency = fetched.get("currency")
+
+            if st.session_state.get("tk_fetched_ticket"):
+                t = st.session_state.tk_fetched_ticket
+                if "error" in t:
+                    st.error(f"Not found or error: {t.get('message', t)}")
+                else:
+                    st.success(f"Found: **{t.get('name', '(no name)')}**")
+                    st.caption(f"Will reuse Currency **{t.get('currency')}** from this ticket.")
+                    existing_modalities = t.get("modalityCodes", [])
+                    st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
+
+        if "ticket_code" in needed:
+            ticket_code_in = st.text_input("Ticket Code", value="", placeholder="e.g. JAP-T1", key="tk_ticket_code")
+        if "min_passengers" in needed:
+            min_pass_in = st.selectbox("Min Passengers", [1, 2], key="tk_min_pass")
+        if "max_passengers" in needed:
+            max_pass_in = st.selectbox("Max Passengers", list(range(2, 21)), index=7, key="tk_max_pass")
+        if "currency" in needed:
+            currency_in = st.text_input("Currency", value="", placeholder="e.g. EUR", key="tk_currency")
+        if "modality_code" in needed:
+            default_modality = st.session_state.get("tk_check_modality_pick", "") if action == "update_option" else ""
+            label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
+            modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard 7 Days", key="tk_modality_code")
+            if any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
+                st.error("🚫 The Modality Code cannot contain '/', '\\\\', '+', or '-' - it becomes part of a URL. Use spaces instead.")
+        if "on_request" in needed:
+            on_request_in = st.checkbox("On Request", value=False, key="tk_on_request")
+        if "release_days" in needed:
+            release_days_in = st.number_input(
+                "Release Day (days before departure this ticket becomes bookable)",
+                min_value=0, value=30, key="tk_release_days"
+            )
+
+        required_ok = True
+        if "ticket_code" in needed and not (ticket_code_in or "").strip():
+            required_ok = False
+        if "currency" in needed and not (currency_in or "").strip():
+            required_ok = False
+        if "modality_code" in needed and not (modality_code_in or "").strip():
+            required_ok = False
+        if "modality_code" in needed and any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
+            required_ok = False
+        if "existing_ticket_code" in needed and not existing_ticket_code_in:
+            required_ok = False
+        if action in ("add_option", "update_ticket") and not st.session_state.get("tk_fetched_currency"):
+            required_ok = False
+            st.info("Click 'Check what's already online for this code' above first - this fetches the "
+                   "existing Currency so you don't have to re-enter it.")
+
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok, key="tk_continue2"):
+            if action in ("add_option", "update_ticket"):
+                currency_in = st.session_state.get("tk_fetched_currency") or ""
+            st.session_state.tk_cfg_ticket_code = ticket_code_in or ""
+            st.session_state.tk_cfg_min_passengers = min_pass_in or 1
+            st.session_state.tk_cfg_max_passengers = max_pass_in or 9
+            st.session_state.tk_cfg_currency = currency_in or ""
+            st.session_state.tk_cfg_modality_code = modality_code_in or ""
+            st.session_state.tk_cfg_on_request = on_request_in
+            st.session_state.tk_cfg_release_days = release_days_in
+            st.session_state.tk_cfg_existing_ticket_code = existing_ticket_code_in or ""
+            st.session_state.tk_step2_confirmed = True
+            st.rerun()
+        return
+
+    # From here: everything reads from confirmed tk_cfg_* values.
+    supplier_id = st.session_state.tk_cfg_supplier_id
+    ticket_code = st.session_state.tk_cfg_ticket_code
+    min_passengers = st.session_state.tk_cfg_min_passengers
+    max_passengers = st.session_state.tk_cfg_max_passengers
+    currency = st.session_state.tk_cfg_currency
+    modality_code = st.session_state.tk_cfg_modality_code
+    on_request = st.session_state.tk_cfg_on_request
+    release_days = st.session_state.tk_cfg_release_days
+    existing_ticket_code = st.session_state.tk_cfg_existing_ticket_code
+
+    _tk_action_to_publish_label = {
+        "create": "Create a brand-new ticket (+ first option)",
+        "add_option": "Add a new option to an existing ticket",
+        "update_ticket": "Update an existing ticket's details",
+        "update_option": "Update an existing ticket option",
+    }
+    publish_action = _tk_action_to_publish_label[action]
+    tk_is_option_only = action in ("add_option", "update_option")
+
+    # ------------------------------------------------------------------
+    # TICKET STEP 3: Input Source
+    # ------------------------------------------------------------------
+    st.header("Ticket — Step 3: Input Source")
+    tk_url = st.text_input("Product page URL (optional)", key="tk_url")
+    tk_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
+                                accept_multiple_files=True, key="tk_files")
+    tk_hint = st.text_input("Extraction hint (optional)", key="tk_hint")
+
+    if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
+        with st.spinner("Gathering content..."):
+            try:
+                combined_parts = []
+                doc_raw_images = []
+                doc_image_urls = []
+                if tk_url:
+                    combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
+                for uploaded in (tk_files or []):
+                    suffix = os.path.splitext(uploaded.name)[1]
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(uploaded.getbuffer())
+                        tmp_path = tmp.name
+                    combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                    embedded_images = extract_images(tmp_path)
+                    if embedded_images:
+                        for i, (img_bytes, ext) in enumerate(embedded_images):
+                            doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                        try:
+                            doc_image_urls.extend(upload_images_freeimage(embedded_images))
+                        except Exception:
+                            pass
+                    os.remove(tmp_path)
+
+                raw_text = "\n\n".join(combined_parts)
+
+                if tk_is_option_only:
+                    data = extract_ticket_option_only_data(raw_text, human_hint=tk_hint or None)
+                else:
+                    data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
+                    data["image_urls"] = (get_page_images(tk_url) if tk_url else []) + doc_image_urls
+
+                st.session_state.tk_extracted = data
+                st.session_state.tk_raw_preview = raw_text
+                st.session_state.tk_payloads = None
+                st.session_state.tk_doc_raw_images = doc_raw_images
+                st.success("Extraction complete. Review and edit below.")
+            except Exception as e:
+                st.error(f"Extraction failed: {e}")
+
+    # ------------------------------------------------------------------
+    # TICKET STEP 4: Review & Edit
+    # ------------------------------------------------------------------
+    if st.session_state.get("tk_extracted"):
+        data = st.session_state.tk_extracted
+        st.header("Ticket — Step 4: Review & Edit")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Original Source")
+            st.text_area("Raw content", st.session_state.tk_raw_preview, height=500, disabled=True, key="tk_raw_display")
+
+        with col2:
+            if tk_is_option_only:
+                st.subheader("Only pricing/schedule needed for this action")
+                st.caption("Ticket details (name, description, city, meeting points) are skipped - "
+                          "they belong to the existing ticket and aren't touched here.")
+            else:
+                st.subheader("Extracted Data (click ✏️ to edit)")
+                editable_field("Ticket name", data, "ticket_name", widget="text_input")
+                editable_field("Description", data, "description", widget="text_area", height=150)
+                editable_field("City", data, "city", widget="text_input")
+                editable_field("Duration (hours)", data, "duration", widget="number_input")
+
+                inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
+                def _save_tk_includes(edf, data=data):
+                    data["includes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
+                editable_table("Includes", inc_df, "tk_includes", on_save=_save_tk_includes)
+
+                exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
+                def _save_tk_excludes(edf, data=data):
+                    data["excludes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
+                editable_table("Excludes", exc_df, "tk_excludes", on_save=_save_tk_excludes)
+
+                mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
+                mp_df = pd.DataFrame(mp_default)
+                def _save_tk_mp(edf, data=data):
+                    data["meeting_points"] = [
+                        {"description": str(r["Description"]).strip(),
+                         "variable_location": str(r["Description"]).strip().lower() == "hotel lobby"}
+                        for _, r in edf.iterrows() if str(r.get("Description", "")).strip()
+                    ]
+                editable_table("Meeting Points", mp_df, "tk_meeting_points", on_save=_save_tk_mp)
+
+                images_text = st.text_area("Image URLs (one per line)", "\n".join(data.get("image_urls", [])), key="tk_images_text")
+                data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+
+                if st.session_state.get("tk_doc_raw_images"):
+                    with st.expander(f"📥 Download images found ({len(st.session_state.tk_doc_raw_images)})"):
+                        for fname, img_bytes in st.session_state.tk_doc_raw_images:
+                            st.download_button("⬇️ " + fname, data=img_bytes, file_name=fname, key=f"tk_dl_{fname}")
+
+        st.subheader("🤖 Tell AI what to fix or clarify (optional)")
+        tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
+        if st.button("Send", disabled=not tk_clarify_q.strip(), key="tk_clarify_send"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q)
+                st.session_state.tk_clarify_result = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                st.rerun()
+        if st.session_state.get("tk_clarify_result"):
+            r = st.session_state.tk_clarify_result
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
+
+        st.subheader("Departure Schedule")
+        if data.get("schedule_notes"):
+            st.info(f"🔎 {data['schedule_notes']}")
+        data["operational_days"] = st.multiselect("Operational Days", ALL_WEEKDAYS,
+                                                   default=data.get("operational_days", ALL_WEEKDAYS), key="tk_op_days")
+        with st.expander("Stop Sales"):
+            ss_json = st.text_area("stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key="tk_stop_sales")
+            try:
+                data["stop_sales"] = json.loads(ss_json)
+            except json.JSONDecodeError as e:
+                st.error(f"stopSales isn't valid JSON: {e}")
+
+        num_days = len(data.get("operational_days", []))
+        num_stops = len(data.get("stop_sales", []))
+        if num_days == 0:
+            sched_label, sched_bg, sched_fg = "⚠️ No Operational Days selected", "#f8d7da", "#721c24"
+        elif num_days == 7 and num_stops == 0:
+            sched_label, sched_bg, sched_fg = "🟢 DAILY departure - runs every day", "#d4edda", "#155724"
+        elif num_stops > 0:
+            sched_label, sched_bg, sched_fg = (
+                f"🟠 SPECIFIC DATE departure - {num_days} weekday(s) minus {num_stops} blocked range(s)",
+                "#fff3cd", "#856404"
+            )
+        else:
+            sched_label, sched_bg, sched_fg = (
+                f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
+                "#d1ecf1", "#0c5460"
+            )
+        st.markdown(
+            f"<div style='background-color:{sched_bg}; color:{sched_fg}; padding:10px 14px; "
+            f"border-radius:4px; font-weight:bold; margin-bottom:10px;'>{sched_label}</div>",
+            unsafe_allow_html=True
+        )
+
+        st.subheader(f"Pricing (per passenger type, in {currency or '(set Currency in Step 2)'})")
+        st.caption("A Ticket Modality holds ONE price + ONE validity date range (not a seasonal table). "
+                  "For holiday/seasonal price differences, use dated Supplements below instead.")
+        pcol1, pcol2, pcol3 = st.columns(3)
+        with pcol1:
+            data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0,
+                                                        value=float(data.get("base_adult_price", 0) or 0), key="tk_adult_price")
+        with pcol2:
+            data["base_children_price"] = st.number_input("Child Price", min_value=0.0,
+                                                           value=float(data.get("base_children_price", 0) or 0), key="tk_child_price")
+        with pcol3:
+            data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0,
+                                                         value=float(data.get("base_infant_price", 0) or 0), key="tk_infant_price")
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key="tk_start_date")
+        with dcol2:
+            data["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=data.get("end_date", ""), key="tk_end_date")
+        if data.get("pricing_notes"):
+            st.warning(f"⚠️ {data['pricing_notes']}")
+
+        st.subheader("Optional Add-ons (Supplements)")
+        supp_rows = [
+            {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
+             "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
+            for s in data.get("supplements", [])
+        ]
+        supp_df = pd.DataFrame(supp_rows) if supp_rows else pd.DataFrame(columns=["Name", "Adult", "Child", "Infant", "Start", "End"])
+        def _save_tk_supplements(edf, data=data):
+            new_supp = []
+            for _, r in edf.iterrows():
+                name = str(r.get("Name", "")).strip()
+                if not name:
+                    continue
+                new_supp.append({
+                    "name": name, "adult_price": float(r.get("Adult", 0) or 0),
+                    "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
+                    "travel_start_date": str(r.get("Start", "")).strip(), "travel_end_date": str(r.get("End", "")).strip(),
+                })
+            data["supplements"] = new_supp
+        editable_table("Supplements", supp_df, "tk_supplements", on_save=_save_tk_supplements)
+
+        price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
+        if not price_valid:
+            st.error("Add at least one non-zero price (Adult/Child/Infant) before continuing.")
+
+        if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not price_valid, key="tk_build_payload"):
+            pre_config = TicketHumanPreConfig(
+                supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                currency=currency, modality_code=modality_code, on_request=on_request,
+                days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+            )
+            with st.spinner("Resolving geolocation..."):
+                st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+
+        # ------------------------------------------------------------------
+        # TICKET STEP 5: Geolocation & Payload Preview
+        # ------------------------------------------------------------------
+        if st.session_state.get("tk_payloads"):
+            payloads = st.session_state.tk_payloads
+            st.header("Ticket — Step 5: Geolocation & Payload Preview")
+
+            if payloads["geolocation_resolved"]:
+                st.markdown(
+                    f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
+                    f"border-radius:4px;'>✅ Geolocation resolved (source: {payloads['geolocation_source']})</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
+                    "destination. Check/adjust the City field above and rebuild.</div>",
+                    unsafe_allow_html=True
+                )
+
+            with st.expander("🔧 Main Ticket Payload", expanded=False):
+                if payloads["main_ticket_error"]:
+                    st.error(f"Invalid: {payloads['main_ticket_error']}")
+                else:
+                    st.json(payloads["main_ticket_payload"])
+            with st.expander("🔧 Ticket Option Payload", expanded=False):
+                if payloads["ticket_option_error"]:
+                    st.error(f"Invalid: {payloads['ticket_option_error']}")
+                else:
+                    st.json(payloads["ticket_option_payload"])
+
+            # ------------------------------------------------------------------
+            # TICKET STEP 6: Publish
+            # ------------------------------------------------------------------
+            st.header("Ticket — Step 6: Publish")
+            creating_new = publish_action == "Create a brand-new ticket (+ first option)"
+            target_ticket_code = payloads["main_ticket_code"] if creating_new else existing_ticket_code
+            can_publish = not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
+
+            action_descriptions = {
+                "Create a brand-new ticket (+ first option)": "Will POST a new ticket, then POST a new option.",
+                "Add a new option to an existing ticket": f"Will POST a new option under existing ticket `{target_ticket_code}`.",
+                "Update an existing ticket's details": f"Will PUT (update) ticket `{target_ticket_code}`'s details.",
+                "Update an existing ticket option": f"Will PUT (update) the option under ticket `{target_ticket_code}`.",
+            }
+            st.caption(action_descriptions[publish_action])
+
+            if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary", key="tk_publish_btn"):
+                with st.spinner("Publishing..."):
+                    if publish_action == "Create a brand-new ticket (+ first option)":
+                        creation_payload = dict(payloads["main_ticket_payload"])
+                        creation_payload["active"] = True
+                        result = client.create_ticket(supplier_id, creation_payload)
+                        if "error" in result:
+                            st.error(f"❌ Ticket creation failed: {result}")
+                        else:
+                            real_code = result.get("code", payloads["main_ticket_code"])
+                            st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
+
+                            option_result = None
+                            for attempt in range(6):
+                                option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
+                                if "error" not in option_result:
+                                    break
+                                time.sleep(2)
+
+                            if "error" in option_result:
+                                st.error(f"❌ Ticket option creation failed after 6 attempts: {option_result}\n\n"
+                                        f"💡 Note: adjustments to a Ticket require it to be ACTIVE - inactive "
+                                        f"tickets aren't visible via the API.")
+                            else:
+                                st.success("✅ Ticket option created.")
+                                deactivate_payload = dict(creation_payload)
+                                deactivate_payload["active"] = False
+                                deactivate_payload["code"] = real_code
+                                deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
+                                if "error" in deactivate_result:
+                                    st.warning(f"⚠️ Ticket and option created successfully, but switching back "
+                                              f"to inactive/draft failed: {deactivate_result}.")
+                                else:
+                                    st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
+                                              f"Ready for human review — activate it inside Travel Compositor when ready.")
+
+                    elif publish_action == "Add a new option to an existing ticket":
+                        result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
+                        if "error" in result:
+                            st.error(f"❌ Failed: {result}\n\n💡 Note: adjustments require the Ticket to be "
+                                    f"ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                        else:
+                            st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
+
+                    elif publish_action == "Update an existing ticket's details":
+                        update_payload = dict(payloads["main_ticket_payload"])
+                        update_payload["code"] = target_ticket_code
+                        result = client.update_ticket(supplier_id, update_payload)
+                        if "error" in result:
+                            st.error(f"❌ Update failed: {result}\n\n💡 Note: adjustments require the Ticket "
+                                    f"to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                        else:
+                            st.success(f"✅ Ticket `{target_ticket_code}` updated.")
+
+                    elif publish_action == "Update an existing ticket option":
+                        update_option_payload = dict(payloads["ticket_option_payload"])
+                        update_option_payload["code"] = modality_code
+                        result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
+                        if "error" in result:
+                            st.error(f"❌ Option update failed: {result}\n\n💡 Note: adjustments require the "
+                                    f"Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                        else:
+                            st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
+
+
+
 st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
 _defaults = {
@@ -389,8 +895,41 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-multi-modality-batch — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-ticket-ui-complete — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
+
+
+# ----------------------------------------------------------------------
+# STEP 0: Product Type - Ticket or ClosedTour?
+# ----------------------------------------------------------------------
+if "product_type" not in st.session_state:
+    st.session_state.product_type = None
+
+if st.session_state.product_type is not None:
+    ptcol1, ptcol2 = st.columns([5, 1])
+    with ptcol1:
+        st.success(f"✅ Working on: **{st.session_state.product_type}**")
+    with ptcol2:
+        if st.button("🔄 Switch"):
+            for key in list(st.session_state.keys()):
+                if key not in ("client", "suppliers_cache"):
+                    del st.session_state[key]
+            st.session_state.product_type = None
+            st.rerun()
+
+if st.session_state.product_type is None:
+    st.header("Step 0 — What do you want to work on?")
+    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket"], key="pt_choice_radio")
+    st.caption("ClosedTour = multi-day tour (itinerary, room-occupancy pricing). "
+              "Ticket = single-destination excursion/activity, no overnight, passenger-type pricing.")
+    if st.button("➡️ Continue", type="primary"):
+        st.session_state.product_type = pt_choice
+        st.rerun()
+    st.stop()
+
+if st.session_state.product_type == "Ticket":
+    render_ticket_flow(client)
+    st.stop()
 
 
 # ----------------------------------------------------------------------
