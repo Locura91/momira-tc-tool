@@ -37,7 +37,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig
 from builder import build_closed_tour_payloads, build_ticket_payloads
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants
 from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from freeimage_client import upload_images as upload_images_freeimage
@@ -400,9 +400,9 @@ def render_ticket_flow(client):
         st.session_state.tk_step2_confirmed = False
 
     # ------------------------------------------------------------------
-    # TICKET STEP 1: Action + Supplier
+    # TICKET STEP 2: Action + Supplier
     # ------------------------------------------------------------------
-    st.header("Ticket — Step 1: What do you want to do?")
+    st.header("Ticket — Step 2: What do you want to do?")
 
     if st.session_state.tk_step1_confirmed:
         st.success(f"✅ Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
@@ -436,7 +436,7 @@ def render_ticket_flow(client):
             with st.expander("⚠️ Emergency manual entry"):
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tk_supplier_manual")
 
-        if st.button("➡️ Continue to Step 2", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
             st.session_state.tk_cfg_action = action_key
             st.session_state.tk_cfg_supplier_id = supplier_id_choice
             st.session_state.tk_step1_confirmed = True
@@ -444,15 +444,15 @@ def render_ticket_flow(client):
         return
 
     # ------------------------------------------------------------------
-    # TICKET STEP 2: Action-specific details
+    # TICKET STEP 3: Action-specific details
     # ------------------------------------------------------------------
-    st.header("Ticket — Step 2: Details for this action")
+    st.header("Ticket — Step 3: Details for this action")
     action = st.session_state.tk_cfg_action
     needed = TICKET_ACTION_FIELDS[action]
     supplier_id = st.session_state.tk_cfg_supplier_id
 
     if st.session_state.tk_step2_confirmed:
-        st.success("✅ Step 2 details confirmed.")
+        st.success("✅ Step 3 details confirmed.")
         if st.button("🔄 Change details", key="tk_change_details"):
             st.session_state.tk_step2_confirmed = False
             st.rerun()
@@ -522,7 +522,7 @@ def render_ticket_flow(client):
             st.info("Click 'Check what's already online for this code' above first - this fetches the "
                    "existing Currency so you don't have to re-enter it.")
 
-        if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok, key="tk_continue2"):
+        if st.button("➡️ Continue to Step 4", type="primary", disabled=not required_ok, key="tk_continue2"):
             if action in ("add_option", "update_ticket"):
                 currency_in = st.session_state.get("tk_fetched_currency") or ""
             st.session_state.tk_cfg_ticket_code = ticket_code_in or ""
@@ -558,9 +558,9 @@ def render_ticket_flow(client):
     tk_is_option_only = action in ("add_option", "update_option")
 
     # ------------------------------------------------------------------
-    # TICKET STEP 3: Input Source
+    # TICKET STEP 4: Input Source
     # ------------------------------------------------------------------
-    st.header("Ticket — Step 3: Input Source")
+    st.header("Ticket — Step 4: Input Source")
     tk_url = st.text_input("Product page URL (optional)", key="tk_url")
     tk_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
                                 accept_multiple_files=True, key="tk_files")
@@ -594,24 +594,64 @@ def render_ticket_flow(client):
 
                 if tk_is_option_only:
                     data = extract_ticket_option_only_data(raw_text, human_hint=tk_hint or None)
+                    st.session_state.tk_extracted = data
+                    st.session_state.tk_raw_preview = raw_text
+                    st.session_state.tk_payloads = None
+                    st.session_state.tk_doc_raw_images = doc_raw_images
+                    st.success("Extraction complete. Review and edit below.")
                 else:
-                    data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
-                    data["image_urls"] = (get_page_images(tk_url) if tk_url else []) + doc_image_urls
-
-                st.session_state.tk_extracted = data
-                st.session_state.tk_raw_preview = raw_text
-                st.session_state.tk_payloads = None
-                st.session_state.tk_doc_raw_images = doc_raw_images
-                st.success("Extraction complete. Review and edit below.")
+                    excursions = detect_ticket_variants(raw_text)
+                    if excursions:
+                        st.session_state.tk_pending_variants = excursions
+                        st.session_state.tk_pending_raw_text = raw_text
+                        st.session_state.tk_pending_hint = tk_hint or None
+                        st.session_state.tk_pending_url = tk_url or None
+                        st.session_state.tk_pending_doc_images = doc_image_urls
+                        st.session_state.tk_pending_doc_raw_images = doc_raw_images
+                    else:
+                        data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
+                        data["image_urls"] = (get_page_images(tk_url) if tk_url else []) + doc_image_urls
+                        st.session_state.tk_extracted = data
+                        st.session_state.tk_raw_preview = raw_text
+                        st.session_state.tk_payloads = None
+                        st.session_state.tk_doc_raw_images = doc_raw_images
+                        st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
 
+    if st.session_state.get("tk_pending_variants"):
+        excursions = st.session_state.tk_pending_variants
+        st.warning(f"⚠️ This content describes {len(excursions)} distinct excursions — which one do you want to add?")
+        labels = [e.get("label", f"Excursion {i+1}") for i, e in enumerate(excursions)]
+        tk_chosen_idx = st.radio("Pick one:", range(len(labels)), format_func=lambda i: labels[i], key="tk_variant_radio")
+
+        if st.button("✅ Confirm and Extract Full Details", key="tk_confirm_variant"):
+            with st.spinner("Extracting full details for the selected excursion..."):
+                try:
+                    chosen_label = excursions[tk_chosen_idx].get("label", "")
+                    data = extract_ticket_data(
+                        st.session_state.tk_pending_raw_text, variant_hint=chosen_label,
+                        human_hint=st.session_state.get("tk_pending_hint")
+                    )
+                    tk_pending_url = st.session_state.get("tk_pending_url")
+                    data["image_urls"] = (get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])
+
+                    st.session_state.tk_extracted = data
+                    st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
+                    st.session_state.tk_payloads = None
+                    st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
+                    st.session_state.tk_pending_variants = None
+                    st.session_state.tk_pending_raw_text = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+
     # ------------------------------------------------------------------
-    # TICKET STEP 4: Review & Edit
+    # TICKET STEP 5: Review & Edit
     # ------------------------------------------------------------------
     if st.session_state.get("tk_extracted"):
         data = st.session_state.tk_extracted
-        st.header("Ticket — Step 4: Review & Edit")
+        st.header("Ticket — Step 5: Review & Edit")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -708,7 +748,7 @@ def render_ticket_flow(client):
             unsafe_allow_html=True
         )
 
-        st.subheader(f"Pricing (per passenger type, in {currency or '(set Currency in Step 2)'})")
+        st.subheader(f"Pricing (per passenger type, in {currency or '(set Currency in Step 3)'})")
         st.caption("A Ticket Modality holds ONE price + ONE validity date range (not a seasonal table). "
                   "For holiday/seasonal price differences, use dated Supplements below instead.")
         pcol1, pcol2, pcol3 = st.columns(3)
@@ -764,11 +804,11 @@ def render_ticket_flow(client):
                 st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
 
         # ------------------------------------------------------------------
-        # TICKET STEP 5: Geolocation & Payload Preview
+        # TICKET STEP 6: Geolocation & Payload Preview
         # ------------------------------------------------------------------
         if st.session_state.get("tk_payloads"):
             payloads = st.session_state.tk_payloads
-            st.header("Ticket — Step 5: Geolocation & Payload Preview")
+            st.header("Ticket — Step 6: Geolocation & Payload Preview")
 
             if payloads["geolocation_resolved"]:
                 st.markdown(
@@ -796,9 +836,9 @@ def render_ticket_flow(client):
                     st.json(payloads["ticket_option_payload"])
 
             # ------------------------------------------------------------------
-            # TICKET STEP 6: Publish
+            # TICKET STEP 7: Publish
             # ------------------------------------------------------------------
-            st.header("Ticket — Step 6: Publish")
+            st.header("Ticket — Step 7: Publish")
             creating_new = publish_action == "Create a brand-new ticket (+ first option)"
             target_ticket_code = payloads["main_ticket_code"] if creating_new else existing_ticket_code
             can_publish = not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
@@ -895,7 +935,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-policy-and-surcharge-rules — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-renumber-and-ticket-variants — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -918,7 +958,7 @@ if st.session_state.product_type is not None:
             st.rerun()
 
 if st.session_state.product_type is None:
-    st.header("Step 0 — What do you want to work on?")
+    st.header("Step 1 — What do you want to work on?")
     pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket"], key="pt_choice_radio")
     st.caption("ClosedTour = multi-day tour (itinerary, room-occupancy pricing). "
               "Ticket = single-destination excursion/activity, no overnight, passenger-type pricing.")
@@ -933,11 +973,11 @@ if st.session_state.product_type == "Ticket":
 
 
 # ----------------------------------------------------------------------
-# STEP 1: What do you want to do? + Supplier
+# STEP 2: What do you want to do? + Supplier
 # ----------------------------------------------------------------------
 
 
-st.header("Step 1 — What do you want to do?")
+st.header("Step 2 — What do you want to do?")
 
 if st.session_state.step1_confirmed:
     st.success(f"✅ Action: **{ACTION_LABELS[st.session_state.cfg_action]}** | "
@@ -976,7 +1016,7 @@ else:
         with st.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
             supplier_id_choice = st.text_input("Supplier ID (numeric)", value="")
 
-    if st.button("➡️ Continue to Step 2", type="primary", disabled=not supplier_id_choice):
+    if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice):
         st.session_state.cfg_action = action_key
         st.session_state.cfg_supplier_id = supplier_id_choice
         st.session_state.step1_confirmed = True
@@ -986,15 +1026,15 @@ else:
 
 
 # ----------------------------------------------------------------------
-# STEP 2: Action-specific details
+# STEP 3: Action-specific details
 # ----------------------------------------------------------------------
-st.header("Step 2 — Details for this action")
+st.header("Step 3 — Details for this action")
 action = st.session_state.cfg_action
 needed = ACTION_FIELDS[action]
 supplier_id = st.session_state.cfg_supplier_id
 
 if st.session_state.step2_confirmed:
-    st.success("✅ Step 2 details confirmed.")
+    st.success("✅ Step 3 details confirmed.")
     if st.button("🔄 Change details"):
         st.session_state.step2_confirmed = False
         st.rerun()
@@ -1102,7 +1142,7 @@ else:
         st.info("Click 'Check what's already online for this code' above first - this fetches the "
                "existing tour's Currency (and for updates, Min/Max Pax too) so you don't have to re-enter them.")
 
-    if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok):
+    if st.button("➡️ Continue to Step 4", type="primary", disabled=not required_ok):
         if action == "update_tour":
             min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
             max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
@@ -1145,9 +1185,9 @@ publish_action = _action_to_publish_label[action]
 
 
 # ----------------------------------------------------------------------
-# STEP 3: Input source
+# STEP 4: Input source
 # ----------------------------------------------------------------------
-st.header("Step 3 — Input Source")
+st.header("Step 4 — Input Source")
 st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
            "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
@@ -1206,10 +1246,10 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                             if new_urls:
                                 st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
                             if len(new_urls) < len(embedded_images):
-                                st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 4).")
+                                st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 5).")
                         except Exception as e:
                             st.caption(f"ℹ️ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
-                                      f"{uploaded.name} will be available to download instead (see Step 4).")
+                                      f"{uploaded.name} will be available to download instead (see Step 5).")
 
                 os.remove(tmp_path)
 
@@ -1282,12 +1322,12 @@ if st.session_state.get("pending_variants") and not is_option_only:
 
 
 # ----------------------------------------------------------------------
-# STEP 4: Side-by-side review & edit
+# STEP 5: Side-by-side review & edit
 # ----------------------------------------------------------------------
 if st.session_state.extracted:
     data = st.session_state.extracted
 
-    st.header("Step 4 — Review & Edit")
+    st.header("Step 5 — Review & Edit")
     col1, col2 = st.columns(2)
 
     with col1:
@@ -1474,7 +1514,7 @@ if st.session_state.extracted:
             "Quadruple": _amt("quadruplePrice"),
         })
 
-    st.caption(f"Prices below are in **{currency or '(set Currency in Step 2)'}**. "
+    st.caption(f"Prices below are in **{currency or '(set Currency in Step 3)'}**. "
               f"Leave a price blank if that occupancy isn't offered. Add/remove rows freely.")
     def _row_to_price_entry(row):
         price = {}
@@ -1593,7 +1633,7 @@ if st.session_state.extracted:
             st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
-    # STEP 5: Build payloads (destination resolution happens here)
+    # STEP 6: Build payloads (destination resolution happens here)
     # ----------------------------------------------------------------------
     st.subheader("🤖 Tell AI what to fix or clarify (optional)")
     st.caption("Ask a question, or tell it to fix something (e.g. 'the end date of season 1 should be "
@@ -1632,7 +1672,7 @@ if st.session_state.extracted:
     if st.session_state.payloads:
         payloads = st.session_state.payloads
 
-        st.header("Step 5 — Destination Resolution & Payload Preview")
+        st.header("Step 6 — Destination Resolution & Payload Preview")
 
         st.subheader("Destination Check — verify these against Travel Compositor before publishing")
         for res in payloads["itinerary_resolution"]:
@@ -1656,7 +1696,7 @@ if st.session_state.extracted:
                 f"🚫 **{len(payloads['unresolved_destinations'])} destination(s) could NOT be matched "
                 f"to a real Travel Compositor location:** {', '.join(payloads['unresolved_destinations'])}\n\n"
                 f"This means Travel Compositor doesn't recognize this place by that name - publishing "
-                f"would fail or create a wrong/broken itinerary stop. **To fix:** go back up to Step 4's "
+                f"would fail or create a wrong/broken itinerary stop. **To fix:** go back up to Step 5's "
                 f"'Itinerary destinations' box and either correct the spelling/name, or replace it with "
                 f"the exact name Travel Compositor uses, then click 'Resolve Destinations & Build Payload' again."
             )
@@ -1687,9 +1727,9 @@ if st.session_state.extracted:
                     st.json(payloads["tour_option_payload"])
 
         # ----------------------------------------------------------------------
-        # STEP 6: Publish
+        # STEP 7: Publish
         # ----------------------------------------------------------------------
-        st.header("Step 6 — Publish")
+        st.header("Step 7 — Publish")
 
         creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
         target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
@@ -1699,7 +1739,7 @@ if st.session_state.extracted:
             and not st.session_state.get("fetched_tour_provider_code")
         )
         if missing_provider_code_for_update:
-            st.warning("⚠️ Go back to Step 2 and click 'Check what's already online for this code' first — "
+            st.warning("⚠️ Go back to Step 3 and click 'Check what's already online for this code' first — "
                       "without it, this update could overwrite the tour's real ClosedTour Code with a placeholder.")
 
         can_publish = (
@@ -1710,7 +1750,7 @@ if st.session_state.extracted:
         )
 
         if missing_existing_code:
-            st.info("Existing Tour Code is missing - go back to Step 2.")
+            st.info("Existing Tour Code is missing - go back to Step 3.")
         elif not can_publish:
             st.info("Resolve all destinations and fix pricing above before publishing.")
 
