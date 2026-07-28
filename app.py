@@ -741,6 +741,24 @@ def render_ticket_flow(client):
                 editable_field("City", data, "city", widget="text_input")
                 editable_field("Duration (hours)", data, "duration", widget="number_input")
 
+                st.markdown("**Engines (Search Engines to Sell through)**")
+                st.caption("⚠️ This defaults to a broad, informed guess based on a real screenshot - not "
+                          "certain to be exactly right. Review before publishing; you can also fix this "
+                          "afterward in Travel Compositor under Settings > Engine.")
+                ALL_ENGINE_OPTIONS = [
+                    "MULTI", "GROUPS", "ONLY_HOTEL", "ONLY_HOUSE", "ONLY_FLIGHT", "ONLY_TRAIN",
+                    "FLIGHT_HOTEL", "FLIGHT_HOUSE", "ONLY_TICKET", "EVENT_TICKET", "GOLF", "ONLY_CAR",
+                    "ONLY_TRANSFER", "HOLIDAYS", "GIFTCARD", "EXTERNAL_SEARCH_BOX", "GIFT_BOX", "ROUTING",
+                    "PRIVATE_TOUR", "MAGIC_BOX", "CRUISES", "AI_TRIP", "MEMBERSHIP", "ONLY_INSURANCE",
+                    "ONLY_ITEM", "TRIP_PLANNER",
+                ]
+                default_engines = data.get("product_types") or [
+                    "MULTI", "ONLY_TICKET", "EVENT_TICKET", "ONLY_TRANSFER", "ONLY_TRAIN", "ONLY_HOTEL",
+                    "ONLY_HOUSE", "ONLY_FLIGHT", "FLIGHT_HOTEL", "FLIGHT_HOUSE", "ONLY_CAR", "GOLF",
+                    "MAGIC_BOX", "ROUTING", "PRIVATE_TOUR", "TRIP_PLANNER", "GROUPS",
+                ]
+                data["product_types"] = st.multiselect("Selected Engines", ALL_ENGINE_OPTIONS, default=default_engines, key="tk_product_types")
+
                 inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_includes(edf, data=data):
                     data["includes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
@@ -892,18 +910,35 @@ def render_ticket_flow(client):
                 value=float(data.get("base_service_price", 0) or 0), key="tk_service_price"
             )
         elif price_type == "OCCUPANCY":
-            st.caption("One row per group-size tier, e.g. matching a source table like '1 / 2 / 3-5 / 6-8 / 9-14'. "
-                      "Field names here (minPax/maxPax/price) are a reasonable best guess, NOT confirmed against "
-                      "a real API response - verify carefully after a real test publish.")
-            occ_rows = [{"Min Pax": o.get("minPax", 1), "Max Pax": o.get("maxPax", 1), "Price": o.get("price", 0)}
-                       for o in data.get("occupancy_prices", [])] or [{"Min Pax": 1, "Max Pax": 1, "Price": 0}]
+            st.caption("Confirmed real field names now (from Travel Compositor's fuller schema): each row is "
+                      "an EXACT number of paying passengers (not a range) with its price - infants are always "
+                      "free and excluded automatically. If your source shows a range like '3-5' at one price, "
+                      "add ONE row per exact number (3, 4, and 5) all with that same price - use the button "
+                      "below to auto-expand a range for you.")
+            occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 1), "Price": o.get("amount", 0)}
+                       for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 1, "Price": 0}]
             occ_df = pd.DataFrame(occ_rows)
             def _save_occupancy(edf, data=data):
                 data["occupancy_prices"] = [
-                    {"minPax": int(r.get("Min Pax", 1) or 1), "maxPax": int(r.get("Max Pax", 1) or 1), "price": float(r.get("Price", 0) or 0)}
+                    {"occupancy": int(r.get("Occupancy (exact # pax)", 1) or 1), "amount": float(r.get("Price", 0) or 0)}
                     for _, r in edf.iterrows()
                 ]
             editable_table("Occupancy Price Tiers", occ_df, "tk_occupancy", on_save=_save_occupancy)
+
+            with st.expander("🔢 Auto-expand a range (e.g. '3-5' at one price) into individual rows"):
+                rcol1, rcol2, rcol3 = st.columns(3)
+                with rcol1:
+                    range_start = st.number_input("From", min_value=1, value=1, key="tk_occ_range_start")
+                with rcol2:
+                    range_end = st.number_input("To", min_value=1, value=1, key="tk_occ_range_end")
+                with rcol3:
+                    range_price = st.number_input("Price (same for all)", min_value=0.0, value=0.0, key="tk_occ_range_price")
+                if st.button("➕ Add this range as individual rows", key="tk_occ_range_add") and range_end >= range_start:
+                    existing = list(data.get("occupancy_prices", []))
+                    for n in range(int(range_start), int(range_end) + 1):
+                        existing.append({"occupancy": n, "amount": range_price})
+                    data["occupancy_prices"] = existing
+                    st.rerun()
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
@@ -943,7 +978,7 @@ def render_ticket_flow(client):
         if price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
         elif price_type == "OCCUPANCY":
-            price_valid = bool(data.get("occupancy_prices")) and any(o.get("price", 0) for o in data.get("occupancy_prices", []))
+            price_valid = bool(data.get("occupancy_prices")) and any(o.get("amount", 0) for o in data.get("occupancy_prices", []))
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         if not price_valid:
@@ -1115,7 +1150,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-three-pricing-modes-plus-mm-ai — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-occupancy-fix-and-engines — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
