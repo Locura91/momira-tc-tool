@@ -903,9 +903,26 @@ def render_ticket_flow(client):
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
                     "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
-                    "destination. Check/adjust the City field above and rebuild.</div>",
+                    "destination.</div>",
                     unsafe_allow_html=True
                 )
+                st.caption("Enter coordinates manually (e.g. look up the city on Google Maps, right-click "
+                          "the pin → coordinates are shown), then rebuild the payload.")
+                gcol1, gcol2 = st.columns(2)
+                with gcol1:
+                    manual_lat = st.number_input("Latitude", value=0.0, format="%.6f", key="tk_manual_lat")
+                with gcol2:
+                    manual_lng = st.number_input("Longitude", value=0.0, format="%.6f", key="tk_manual_lng")
+                if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo"):
+                    data["manual_latitude"] = manual_lat
+                    data["manual_longitude"] = manual_lng
+                    pre_config = TicketHumanPreConfig(
+                        supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                        currency=currency, modality_code=modality_code, on_request=on_request,
+                        days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                    )
+                    st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                    st.rerun()
 
             with st.expander("🔧 Main Ticket Payload", expanded=False):
                 if payloads["main_ticket_error"]:
@@ -1018,7 +1035,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-pixabay-and-ticket-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-manual-geolocation-fallback — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
