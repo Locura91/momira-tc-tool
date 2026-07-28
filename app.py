@@ -387,6 +387,13 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
     if st.button(f"🔍 Search {source_label}", key=f"{state_prefix}_search_btn"):
         with st.spinner(f"Searching {source_label}..."):
             try:
+                # Clear any previous selection checkboxes before showing new
+                # results - otherwise a checkbox key reused at the same grid
+                # position could inherit a stale "checked" state from an
+                # earlier, completely different search result.
+                for key in list(st.session_state.keys()):
+                    if key.startswith(f"{state_prefix}_pick_"):
+                        del st.session_state[key]
                 st.session_state[f"{state_prefix}_results"] = search_fn(query)
             except Exception as e:
                 st.session_state[f"{state_prefix}_results"] = None
@@ -397,9 +404,10 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
         cols = st.columns(3)
         selected_urls = []
         for i, photo in enumerate(st.session_state[f"{state_prefix}_results"]):
+            photo_key = abs(hash(photo["url"]))  # content-based, not position-based - never collides across different searches
             with cols[i % 3]:
                 st.image(photo["thumbnail"])
-                if st.checkbox(f"Use (by {photo['photographer']})", key=f"{state_prefix}_pick_{i}"):
+                if st.checkbox(f"Use (by {photo['photographer']})", value=False, key=f"{state_prefix}_pick_{photo_key}"):
                     selected_urls.append(photo["url"])
 
         if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
@@ -899,6 +907,8 @@ def render_ticket_flow(client):
                     f"border-radius:4px;'>✅ Geolocation resolved (source: {payloads['geolocation_source']})</div>",
                     unsafe_allow_html=True
                 )
+                if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
+                    st.caption("Geocoding data © OpenStreetMap contributors")
             else:
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
@@ -910,10 +920,13 @@ def render_ticket_flow(client):
                           "the pin → coordinates are shown), then rebuild the payload.")
                 gcol1, gcol2 = st.columns(2)
                 with gcol1:
-                    manual_lat = st.number_input("Latitude", value=0.0, format="%.6f", key="tk_manual_lat")
+                    manual_lat = st.number_input("Latitude", value=None, format="%.6f", key="tk_manual_lat", placeholder="e.g. 27.394900")
                 with gcol2:
-                    manual_lng = st.number_input("Longitude", value=0.0, format="%.6f", key="tk_manual_lng")
-                if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo"):
+                    manual_lng = st.number_input("Longitude", value=None, format="%.6f", key="tk_manual_lng", placeholder="e.g. 33.678400")
+                manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
+                if manual_lat == 0 and manual_lng == 0:
+                    st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
+                if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
                     data["manual_latitude"] = manual_lat
                     data["manual_longitude"] = manual_lng
                     pre_config = TicketHumanPreConfig(
@@ -1035,7 +1048,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-manual-geolocation-fallback — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-fix-image-preselection-bug — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
