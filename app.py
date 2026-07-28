@@ -153,12 +153,13 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
     return data_dict.get(field_key, default_value)
 
 
-def render_multi_modality_flow(client):
+def render_multi_modality_flow(client, url=None, uploaded_files=None):
     """
     Queue-based flow for adding MULTIPLE modalities from one shared source:
-    1. Gather raw text once, auto-detect distinct pricing categories (+ let
-       the human add more manually)
-    2. Review each one individually - its OWN focused AI extraction (via a
+    1. Reuse the URL/document(s) already provided above (no re-entry), auto-detect
+       distinct pricing categories, and let the human explicitly SELECT which
+       detected ones to actually include (+ add more manually if needed)
+    2. Review each SELECTED one individually - its OWN focused AI extraction (via a
        per-item hint), so modalities never get mixed up with each other
     3. Publish all of them SEQUENTIALLY, one real POST call at a time, each
        with its own clear success/failure status (not one opaque batch call)
@@ -172,21 +173,18 @@ def render_multi_modality_flow(client):
     on_request = st.session_state.cfg_on_request
 
     # ------------------------------------------------------------------
-    # PHASE 1: gather source + detect modalities
+    # PHASE 1: detect modalities from the source already provided above
     # ------------------------------------------------------------------
     if st.session_state.mm_phase == "gather":
-        mm_url = st.text_input("Product page URL (optional)", key="mm_url")
-        mm_files = st.file_uploader(
-            "Upload DMC document(s) (optional, multiple allowed)",
-            type=["pdf", "docx", "xlsx"], accept_multiple_files=True, key="mm_files"
-        )
-        if st.button("🔎 Detect Modalities", disabled=not (mm_url or mm_files)):
+        if not (url or uploaded_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Detect Modalities", disabled=not (url or uploaded_files)):
             with st.spinner("Gathering content and detecting distinct pricing categories..."):
                 try:
                     combined_parts = []
-                    if mm_url:
-                        combined_parts.append(f"--- SOURCE: WEB PAGE ({mm_url}) ---\n{get_page_text(mm_url)}")
-                    for uploaded in (mm_files or []):
+                    if url:
+                        combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+                    for uploaded in (uploaded_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
@@ -197,16 +195,16 @@ def render_multi_modality_flow(client):
                     raw_text = "\n\n".join(combined_parts)
                     detected = detect_multiple_modalities(raw_text)
 
-                    queue = []
+                    candidates = []
                     for m in detected:
                         raw_code = (m.get("suggested_code") or m.get("label") or "").strip()
                         clean_code = "".join(c for c in raw_code if c not in "/\\+-")
-                        queue.append({"code": clean_code, "hint": m.get("label", ""), "data": None, "confirmed": False})
-                    if not queue:
-                        queue = [{"code": "", "hint": "", "data": None, "confirmed": False}]
+                        candidates.append({"code": clean_code, "hint": m.get("label", ""), "selected": True})
+                    if not candidates:
+                        candidates = [{"code": "", "hint": "", "selected": True}]
 
                     st.session_state.mm_raw_text = raw_text
-                    st.session_state.mm_queue = queue
+                    st.session_state.mm_candidates = candidates
                     st.session_state.mm_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
@@ -214,30 +212,44 @@ def render_multi_modality_flow(client):
         return
 
     # ------------------------------------------------------------------
-    # PHASE 2: confirm/edit the queue of modalities before reviewing any of them
+    # PHASE 2: explicitly SELECT which detected modalities to include
     # ------------------------------------------------------------------
     if st.session_state.mm_phase == "prepare_queue":
-        st.subheader("Modalities detected - review the list before continuing")
-        st.caption("Edit codes/hints, remove any that don't apply, or add more rows manually. "
-                  "Each row becomes its own focused extraction pass.")
+        st.subheader("Modalities detected - select which ones to include")
+        st.caption("Untick any that don't apply - only SELECTED modalities will be reviewed and published. "
+                  "Edit codes/hints as needed, or add more rows manually.")
 
-        queue_df = pd.DataFrame([{"Modality Code": q["code"], "Focus Hint": q["hint"]} for q in st.session_state.mm_queue])
-        edited = st.data_editor(queue_df, num_rows="dynamic", use_container_width=True, key="mm_queue_editor")
+        candidates = st.session_state.mm_candidates
+        for i, cand in enumerate(candidates):
+            ccol1, ccol2, ccol3 = st.columns([1, 3, 3])
+            with ccol1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mm_sel_{i}")
+            with ccol2:
+                cand["code"] = st.text_input("Modality Code", value=cand["code"], key=f"mm_code_{i}")
+            with ccol3:
+                cand["hint"] = st.text_input("Focus Hint", value=cand["hint"], key=f"mm_hint_{i}")
+
+        if st.button("➕ Add another modality manually"):
+            candidates.append({"code": "", "hint": "", "selected": True})
+            st.rerun()
 
         invalid_codes = []
         new_queue = []
-        for _, row in edited.iterrows():
-            code = str(row.get("Modality Code", "")).strip()
-            hint = str(row.get("Focus Hint", "")).strip()
+        for cand in candidates:
+            if not cand["selected"]:
+                continue
+            code = cand["code"].strip()
             if not code:
                 continue
             if any(c in code for c in ["/", "\\", "+", "-"]):
                 invalid_codes.append(code)
                 continue
-            new_queue.append({"code": code, "hint": hint, "data": None, "confirmed": False})
+            new_queue.append({"code": code, "hint": cand["hint"].strip(), "data": None, "confirmed": False})
 
         if invalid_codes:
             st.error(f"🚫 These codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
+
+        st.caption(f"**{len(new_queue)}** modality(ies) selected to review and publish.")
 
         if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
             st.session_state.mm_queue = new_queue
@@ -356,7 +368,7 @@ def render_multi_modality_flow(client):
                         st.success(f"✅ **{q['code']}**: published successfully (code `{used_code}`).")
 
         if st.button("🆕 Start a new batch"):
-            for key in ["mm_phase", "mm_raw_text", "mm_queue", "mm_queue_index"]:
+            for key in ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"]:
                 st.session_state.pop(key, None)
             st.rerun()
         return
@@ -948,7 +960,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-languages-times-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-multimodality-and-time-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1227,7 +1239,7 @@ if action == "add_option":
     )
 
 if multi_modality_mode:
-    render_multi_modality_flow(client)
+    render_multi_modality_flow(client, url=url, uploaded_files=uploaded_files)
     st.stop()
 
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
@@ -1371,9 +1383,9 @@ if st.session_state.extracted:
 
             tcol1, tcol2 = st.columns(2)
             with tcol1:
-                data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional)", value=data.get("start_time", ""), key="ct_start_time")
+                data["start_time"] = st.text_input("Start Time (HH:MM, optional)", value=data.get("start_time", ""), key="ct_start_time")
             with tcol2:
-                data["end_time"] = st.text_input("End Time (HH:MM:SS, optional)", value=data.get("end_time", ""), key="ct_end_time")
+                data["end_time"] = st.text_input("End Time (HH:MM, optional)", value=data.get("end_time", ""), key="ct_end_time")
 
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
