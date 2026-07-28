@@ -69,6 +69,15 @@ Rules:
 - included and excluded MUST be formatted as proper HTML bullet lists, one distinct item per bullet, matching this EXACT structure (confirmed against a real published tour) - never a single run-on sentence with semicolons:
   <ul><li>First inclusion/exclusion item</li><li>Second item</li><li>Third item</li></ul>
   Split the source's inclusions/exclusions into separate, natural bullet points even if the source presents them as one paragraph.
+  GUIDE LANGUAGE RULE: if the source mentions a base/standard guide language (most often English, e.g.
+  "English-speaking guide" or just "local guide" with no language stated - assume English if genuinely
+  unstated but a guide is included), make sure "English-speaking guide" (or the stated base language)
+  is one of the included bullets explicitly - don't leave it implicit. If the source ALSO mentions OTHER
+  languages are available (e.g. "German or French speaking guide subject to availability", "other
+  languages on request"), do NOT add those to included/excluded - instead add EACH alternate language as
+  its own entry in supplements (see below) so guests clearly see they can request a different language,
+  e.g. {"name": "German-speaking guide (upon request)", "price": 0 unless a price is stated, "on_request": true}.
+  The goal is always maximum clarity for the guest: what's the standard language, and what other options exist.
 - policy_remarks: include genuinely relevant policy info such as child age policy, payment/deposit
   schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include the source document's own
   cancellation policy/terms here (e.g. "25% charged for cancellations 60-31 days before", "no-show =
@@ -77,6 +86,7 @@ Rules:
   wording here would be legally incorrect and contradict the real configured setting. If the source's
   policy section is ONLY about cancellation, leave policy_remarks empty entirely rather than including
   any of it.
+- start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00"). Leave both as empty strings if no specific time is stated.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
@@ -109,6 +119,7 @@ Output this exact JSON structure:
   "policy_remarks": "",
   "itinerary_destinations": [],
   "nights": 0,
+  "start_time": "", "end_time": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
@@ -425,7 +436,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     defaults = {
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
         "excluded": "", "meeting_point": "", "policy_remarks": "",
-        "itinerary_destinations": [], "nights": 0,
+        "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": []
     }
@@ -453,6 +464,11 @@ Extract:
 - city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
+  GUIDE LANGUAGE RULE (same principle as tours): if a base/standard guide language is mentioned (usually
+  English), make sure it's explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are
+  available (e.g. "German/French on request"), do NOT list them here - add each as its own supplement
+  instead (see below) so guests clearly see the option, e.g. {"name": "German-speaking guide (upon
+  request)", "adult_price": 0 unless a price is stated, "children_price": 0, "infant_price": 0}.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
   fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
