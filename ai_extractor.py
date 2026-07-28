@@ -518,6 +518,14 @@ Extract:
       with anything else.
   Each supplement: {"name": "label", "adult_price": number, "children_price": number,
   "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
+- occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used (this is
+  separate from the default Distribution mode). If the source has a group-size-tiered price table
+  (columns like "1", "2", "3-5", "6-8"), extract it here instead of forcing it into base_adult_price.
+  CONFIRMED REAL SHAPE: each entry is {"occupancy": exact integer headcount, "amount": price for that
+  exact headcount} - occupancy is an EXACT number, NOT a range. If the source shows a range at one
+  price (e.g. "3-5" = $87), EXPAND it into one entry per exact number: {"occupancy":3,"amount":87},
+  {"occupancy":4,"amount":87}, {"occupancy":5,"amount":87}. Infants are always free and excluded from
+  occupancy counts - don't create entries for them. Leave empty for standard Distribution-mode pricing.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
   table forced onto adult/child/infant categories, pricing was genuinely absent from the source, a
   mandatory whole-trip seasonal price difference couldn't be represented, or an alternative/on-request
@@ -529,6 +537,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
   "activity_type": "", "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+  "occupancy_prices": [],
   "child_age_min": 6, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
