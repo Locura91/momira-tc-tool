@@ -49,8 +49,11 @@ Rules:
       per night surcharge at the Deluxe Cabin during peak season") - THIS case can be modeled as a
       supplement, but pre-calculate the TOTAL amount by multiplying the per-night rate by the actual
       number of nights spent at that specific hotel/component (determine this from the day-by-day
-      itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total). Name the
-      supplement clearly with the calculation shown, e.g. "Peak season surcharge - Hotel X (2 nights)".
+      itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total).
+      CRITICAL SELF-CHECK - this exact multiplication has been missed before: before finalizing the
+      supplement price, explicitly verify you multiplied rate x nights and did NOT just copy the
+      per-night rate as if it were the total. State the calculation in the name so it's checkable by a
+      human, e.g. "Peak season surcharge - Hotel X (2 nights x $11 = $22)".
       If the number of nights at that specific component genuinely can't be determined from the source,
       say so plainly in pricing_notes rather than guessing.
   For each TRUE supplement (optional add-on, or case (b) above), output:
@@ -497,20 +500,29 @@ Extract:
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
-- supplements: TRUE OPTIONAL add-ons the customer chooses to pay for, OR mandatory per-night/per-component
-  seasonal surcharges tied to a SPECIFIC part of the experience (pre-calculate the total: rate x actual
-  nights/units, same rule as the full ClosedTour extraction). CRITICAL - Ticket Modalities only support
-  ONE base price + ONE date range (no seasonal array like ClosedTours have), so if the source describes
-  a MANDATORY surcharge that changes the WHOLE base price uniformly for a period (not per-night/
-  per-component), it CANNOT be represented as a dated supplement OR a pricing-table row here - flag this
-  clearly in pricing_notes instead, explaining the human likely needs a SEPARATE Modality (e.g. "Standard
-  - Peak Season") for that period, with its own base price and date range.
+- supplements: ONLY genuinely simple, ALWAYS-AVAILABLE, independently-stackable optional add-ons (e.g.
+  "Add English audio guide - $5", "Extra photo package - $15"). CONFIRMED REAL CONSTRAINTS - Ticket
+  Supplements are structurally different from ClosedTour ones:
+  (1) There is NO "on request" concept for Ticket supplements at all - never describe one as needing
+      special confirmation/availability check, since the schema has no field for that.
+  (2) Supplements are independently stackable - the customer can tick ANY combination of them, and
+      their prices simply ADD UP. NEVER create two or more supplements that are meant to be mutually
+      EXCLUSIVE alternatives (e.g. two different "peak season surcharge" options, or "Option A" vs
+      "Option B" pricing) - a customer could select both by mistake and get double-charged. If the
+      source describes alternative/exclusive options, or anything needing on-request handling, this
+      must become a SEPARATE MODALITY instead - flag this clearly in pricing_notes, explaining what
+      the separate modality should be (e.g. "Create a second Modality 'Deluxe with private guide' for
+      this on-request option - it cannot be a supplement").
+  (3) Mandatory per-night/per-component seasonal surcharges (pre-calculate the total: rate x actual
+      nights/units) are still fine as supplements, since they always apply uniformly and don't compete
+      with anything else.
   Each supplement: {"name": "label", "adult_price": number, "children_price": number,
   "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
-  table forced onto adult/child/infant categories, pricing was genuinely absent from the source, or a
-  mandatory whole-trip seasonal price difference couldn't be represented - see supplements rule above) -
-  explain what, with real numbers where available, so a human can review.
+  table forced onto adult/child/infant categories, pricing was genuinely absent from the source, a
+  mandatory whole-trip seasonal price difference couldn't be represented, or an alternative/on-request
+  option needs to become a separate Modality - see supplements rule above) - explain what, with real
+  numbers where available, so a human can review.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -585,6 +597,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
+        "price_type": "DISTRIBUTION", "base_service_price": 0, "occupancy_prices": [],
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -600,7 +613,7 @@ when just adding/updating a modality). The source is often just a pricing table 
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
-supplements (for seasonal/holiday price differences - see full prompt's rules on this), pricing_notes.
+supplements (simple, always-available, stackable add-ons only - never exclusive alternatives or on-request items, see full prompt's rules on this), pricing_notes.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -625,6 +638,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "time_tables": [],
         "supplements": [], "pricing_notes": "", "stop_sales": [],
+        "price_type": "DISTRIBUTION", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
