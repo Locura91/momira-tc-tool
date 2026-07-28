@@ -182,7 +182,12 @@ def build_ticket_payloads(
       - Supplements use a different shape (adult/child/infant price + dates)
     """
     city = extracted_ticket_data.get("city", "")
-    geoloc = api_client.resolve_destination_geolocation(city)
+    manual_lat = extracted_ticket_data.get("manual_latitude")
+    manual_lng = extracted_ticket_data.get("manual_longitude")
+    if manual_lat is not None and manual_lng is not None:
+        geoloc = {"latitude": float(manual_lat), "longitude": float(manual_lng), "name": city, "valid": True, "source": "manual override"}
+    else:
+        geoloc = api_client.resolve_destination_geolocation(city)
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
