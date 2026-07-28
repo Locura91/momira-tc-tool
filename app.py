@@ -26,7 +26,7 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
@@ -36,10 +36,11 @@ if hasattr(st, "secrets"):
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig
 from builder import build_closed_tour_payloads
-from document_reader import extract_raw_text
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, apply_clarification
-from web_extractor import extract_from_url, get_page_text, get_page_images
+from document_reader import extract_raw_text, extract_images
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification
+from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
+from freeimage_client import upload_images as upload_images_freeimage
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -52,7 +53,7 @@ ACTION_LABELS = {
 }
 ACTION_FIELDS = {
     "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
-    "add_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
+    "add_option": ["existing_tour_code", "modality_code", "on_request"],
     "update_tour": ["existing_tour_code", "release_days"],
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
@@ -139,6 +140,215 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
     return data_dict.get(field_key, default_value)
 
 
+def render_multi_modality_flow(client):
+    """
+    Queue-based flow for adding MULTIPLE modalities from one shared source:
+    1. Gather raw text once, auto-detect distinct pricing categories (+ let
+       the human add more manually)
+    2. Review each one individually - its OWN focused AI extraction (via a
+       per-item hint), so modalities never get mixed up with each other
+    3. Publish all of them SEQUENTIALLY, one real POST call at a time, each
+       with its own clear success/failure status (not one opaque batch call)
+    """
+    if "mm_phase" not in st.session_state:
+        st.session_state.mm_phase = "gather"
+
+    supplier_id = st.session_state.cfg_supplier_id
+    existing_tour_code = st.session_state.cfg_existing_tour_code
+    currency = st.session_state.cfg_currency
+    on_request = st.session_state.cfg_on_request
+
+    # ------------------------------------------------------------------
+    # PHASE 1: gather source + detect modalities
+    # ------------------------------------------------------------------
+    if st.session_state.mm_phase == "gather":
+        mm_url = st.text_input("Product page URL (optional)", key="mm_url")
+        mm_files = st.file_uploader(
+            "Upload DMC document(s) (optional, multiple allowed)",
+            type=["pdf", "docx", "xlsx"], accept_multiple_files=True, key="mm_files"
+        )
+        if st.button("🔎 Detect Modalities", disabled=not (mm_url or mm_files)):
+            with st.spinner("Gathering content and detecting distinct pricing categories..."):
+                try:
+                    combined_parts = []
+                    if mm_url:
+                        combined_parts.append(f"--- SOURCE: WEB PAGE ({mm_url}) ---\n{get_page_text(mm_url)}")
+                    for uploaded in (mm_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        os.remove(tmp_path)
+
+                    raw_text = "\n\n".join(combined_parts)
+                    detected = detect_multiple_modalities(raw_text)
+
+                    queue = []
+                    for m in detected:
+                        raw_code = (m.get("suggested_code") or m.get("label") or "").strip()
+                        clean_code = "".join(c for c in raw_code if c not in "/\\+-")
+                        queue.append({"code": clean_code, "hint": m.get("label", ""), "data": None, "confirmed": False})
+                    if not queue:
+                        queue = [{"code": "", "hint": "", "data": None, "confirmed": False}]
+
+                    st.session_state.mm_raw_text = raw_text
+                    st.session_state.mm_queue = queue
+                    st.session_state.mm_phase = "prepare_queue"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: confirm/edit the queue of modalities before reviewing any of them
+    # ------------------------------------------------------------------
+    if st.session_state.mm_phase == "prepare_queue":
+        st.subheader("Modalities detected - review the list before continuing")
+        st.caption("Edit codes/hints, remove any that don't apply, or add more rows manually. "
+                  "Each row becomes its own focused extraction pass.")
+
+        queue_df = pd.DataFrame([{"Modality Code": q["code"], "Focus Hint": q["hint"]} for q in st.session_state.mm_queue])
+        edited = st.data_editor(queue_df, num_rows="dynamic", use_container_width=True, key="mm_queue_editor")
+
+        invalid_codes = []
+        new_queue = []
+        for _, row in edited.iterrows():
+            code = str(row.get("Modality Code", "")).strip()
+            hint = str(row.get("Focus Hint", "")).strip()
+            if not code:
+                continue
+            if any(c in code for c in ["/", "\\", "+", "-"]):
+                invalid_codes.append(code)
+                continue
+            new_queue.append({"code": code, "hint": hint, "data": None, "confirmed": False})
+
+        if invalid_codes:
+            st.error(f"🚫 These codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
+
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+            st.session_state.mm_queue = new_queue
+            st.session_state.mm_queue_index = 0
+            st.session_state.mm_phase = "reviewing"
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 3: review each modality individually, one at a time
+    # ------------------------------------------------------------------
+    if st.session_state.mm_phase == "reviewing":
+        idx = st.session_state.mm_queue_index
+        queue = st.session_state.mm_queue
+        current = queue[idx]
+
+        st.subheader(f"Reviewing modality {idx + 1} of {len(queue)}: **{current['code']}**")
+        st.progress((idx) / len(queue))
+
+        if current["data"] is None:
+            with st.spinner(f"Extracting pricing/schedule focused on '{current['hint'] or current['code']}'..."):
+                current["data"] = extract_option_only_data(st.session_state.mm_raw_text, human_hint=current["hint"])
+
+        data = current["data"]
+
+        data["operational_days"] = st.multiselect(
+            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mm_days_{idx}"
+        )
+        with st.expander("Stop Sales"):
+            stop_sales_json = st.text_area(
+                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mm_stops_{idx}"
+            )
+            try:
+                data["stop_sales"] = json.loads(stop_sales_json)
+            except json.JSONDecodeError as e:
+                st.error(f"stopSales isn't valid JSON: {e}")
+
+        default_price_list = sorted(
+            data.get("price_list") or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
+                                        "price": {"singlePrice": {"amount": 0, "currency": currency},
+                                                 "doublePrice": {"amount": 0, "currency": currency}}}],
+            key=lambda e: e.get("startDate", "")
+        )
+        price_df_rows = []
+        for entry in default_price_list:
+            price = entry.get("price", {}) or {}
+            def _amt(key, price=price):
+                block = price.get(key)
+                return block.get("amount") if isinstance(block, dict) else None
+            price_df_rows.append({"Name": entry.get("name", ""), "Start Date": entry.get("startDate", ""),
+                                  "End Date": entry.get("endDate", ""), "Single": _amt("singlePrice"),
+                                  "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
+        price_df = pd.DataFrame(price_df_rows)
+
+        def _save_mm_price_list(edited_df, data=data, currency=currency):
+            def _row_to_entry(row):
+                price = {}
+                for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"), ("Triple", "triplePrice"), ("Quadruple", "quadruplePrice")]:
+                    val = row.get(col)
+                    if val is not None and not pd.isna(val):
+                        price[key] = {"amount": float(val), "currency": currency}
+                entry = {"startDate": str(row.get("Start Date", "")).strip(), "endDate": str(row.get("End Date", "")).strip(), "price": price}
+                name = str(row.get("Name", "")).strip()
+                if name:
+                    entry["name"] = name
+                return entry
+            data["price_list"] = sorted(
+                [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "")).strip() and str(r.get("End Date", "")).strip()],
+                key=lambda e: e.get("startDate", "")
+            )
+
+        editable_table(f"Pricing - {current['code']}", price_df, f"mm_pricing_{idx}", on_save=_save_mm_price_list)
+
+        is_last = idx == len(queue) - 1
+        btn_label = "✅ Confirm this modality & Finish Review" if is_last else "✅ Confirm this modality & Continue →"
+        if st.button(btn_label, type="primary", disabled=not data.get("price_list")):
+            current["confirmed"] = True
+            if is_last:
+                st.session_state.mm_phase = "publishing"
+            else:
+                st.session_state.mm_queue_index += 1
+            st.rerun()
+        if not data.get("price_list"):
+            st.info("Add at least one price row before continuing.")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 4: publish all confirmed modalities, ONE BY ONE
+    # ------------------------------------------------------------------
+    if st.session_state.mm_phase == "publishing":
+        queue = st.session_state.mm_queue
+        st.subheader(f"Ready to publish {len(queue)} modalities - one by one")
+        for q in queue:
+            st.write(f"- **{q['code']}** ({len(q['data'].get('price_list', []))} price row(s))")
+
+        if st.button("🚀 Publish all (one by one)", type="primary"):
+            for q in queue:
+                with st.spinner(f"Publishing '{q['code']}'..."):
+                    pre_config = HumanPreConfig(
+                        supplier_id=supplier_id,
+                        provider_code=st.session_state.get("fetched_tour_provider_code") or "XXX-1",
+                        min_pax=1, max_pax=9, currency=currency,
+                        modality_code=q["code"], on_request=on_request
+                    )
+                    payloads = build_closed_tour_payloads(pre_config, q["data"], client)
+                    if payloads["tour_option_error"]:
+                        st.error(f"❌ **{q['code']}**: invalid payload - {payloads['tour_option_error']}")
+                        continue
+                    result, used_code = try_code_variants(
+                        lambda c: client.create_closed_tour_option(supplier_id, c, payloads["tour_option_payload"]),
+                        existing_tour_code
+                    )
+                    if "error" in result:
+                        st.error(f"❌ **{q['code']}**: failed - {result}")
+                    else:
+                        st.success(f"✅ **{q['code']}**: published successfully (code `{used_code}`).")
+
+        if st.button("🆕 Start a new batch"):
+            for key in ["mm_phase", "mm_raw_text", "mm_queue", "mm_queue_index"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+        return
+
+
 def try_code_variants(call_fn, code):
     """
     Tries `code` as given, then falls back to toggling the 'CLOSEDTOUR-' prefix -
@@ -179,7 +389,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-27-sort-supplements-collapse-payloads — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-multi-modality-batch — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -323,11 +533,11 @@ else:
     if "modality_code" in needed:
         default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
         label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
-        modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. StandardCruiseTour")
-        if "/" in (modality_code_in or "") or "\\" in (modality_code_in or ""):
-            st.error("🚫 The Modality Code cannot contain '/' or '\\\\' - it becomes part of a URL, and a "
-                    "slash breaks lookups (confirmed: this caused a real HTTP 400 error). Use a hyphen "
-                    "or space instead, e.g. 'Standard-Main deck'.")
+        modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise")
+        if any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
+            st.error("🚫 The Modality Code cannot contain '/', '\\\\', '+', or '-' - it becomes part of a URL, "
+                    "and these characters can break lookups (confirmed: a slash already caused a real HTTP "
+                    "400 error). Use spaces instead, e.g. 'Standard Cruise'.")
     if "on_request" in needed:
         on_request_in = st.checkbox("On Request", value=True)
     if "release_days" in needed:
@@ -344,19 +554,21 @@ else:
         required_ok = False
     if "modality_code" in needed and not (modality_code_in or "").strip():
         required_ok = False
-    if "modality_code" in needed and ("/" in (modality_code_in or "") or "\\" in (modality_code_in or "")):
+    if "modality_code" in needed and ("/" in (modality_code_in or "") or "\\" in (modality_code_in or "") or "+" in (modality_code_in or "") or "-" in (modality_code_in or "")):
         required_ok = False
     if "existing_tour_code" in needed and not existing_tour_code_in:
         required_ok = False
-    if action == "update_tour" and not st.session_state.get("fetched_tour_provider_code"):
+    if action in ("update_tour", "add_option") and not st.session_state.get("fetched_tour_provider_code"):
         required_ok = False
         st.info("Click 'Check what's already online for this code' above first - this fetches the "
-               "existing Min/Max Pax, Currency, and ClosedTour Code so you don't have to re-enter them.")
+               "existing tour's Currency (and for updates, Min/Max Pax too) so you don't have to re-enter them.")
 
     if st.button("➡️ Continue to Step 3", type="primary", disabled=not required_ok):
         if action == "update_tour":
             min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
             max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
+            currency_in = st.session_state.get("fetched_tour_currency") or ""
+        elif action == "add_option":
             currency_in = st.session_state.get("fetched_tour_currency") or ""
         st.session_state.cfg_provider_code = provider_code_in or ""
         st.session_state.cfg_min_pax = min_pax_in or 1
@@ -414,6 +626,18 @@ extraction_hint = st.text_input(
 
 is_option_only = action in ("add_option", "update_option")
 
+multi_modality_mode = False
+if action == "add_option":
+    multi_modality_mode = st.checkbox(
+        "📦 I'm adding MULTIPLE modalities from this same source",
+        help="The app will detect distinct pricing categories (e.g. Standard/Deluxe cabin) from one "
+             "shared document/URL, and let you review + publish each one individually, one at a time."
+    )
+
+if multi_modality_mode:
+    render_multi_modality_flow(client)
+    st.stop()
+
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     spinner_msg = "Gathering pricing/schedule content..." if is_option_only else "Gathering content and checking for multiple tour variants..."
     with st.spinner(spinner_msg):
@@ -422,6 +646,8 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
             doc_names = []
             if url:
                 combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+            doc_image_urls = []
+            doc_raw_images = []  # [(filename, bytes), ...] - always kept as a guaranteed fallback
             for uploaded in (uploaded_files or []):
                 doc_names.append(uploaded.name)
                 suffix = os.path.splitext(uploaded.name)[1]
@@ -429,6 +655,23 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+
+                embedded_images = extract_images(tmp_path)
+                if embedded_images:
+                    for i, (img_bytes, ext) in enumerate(embedded_images):
+                        doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                    with st.spinner(f"Trying to auto-upload {len(embedded_images)} image(s) from {uploaded.name}..."):
+                        try:
+                            new_urls = upload_images_freeimage(embedded_images)
+                            doc_image_urls.extend(new_urls)
+                            if new_urls:
+                                st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
+                            if len(new_urls) < len(embedded_images):
+                                st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 4).")
+                        except Exception as e:
+                            st.caption(f"ℹ️ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
+                                      f"{uploaded.name} will be available to download instead (see Step 4).")
+
                 os.remove(tmp_path)
 
             raw_text = "\n\n".join(combined_parts)
@@ -442,6 +685,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 sources_desc = " + ".join(filter(None, [url] + doc_names))
                 st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                 st.session_state.payloads = None
+                st.session_state.doc_raw_images = doc_raw_images
                 st.success("Pricing/schedule extraction complete. Review and edit below.")
             else:
                 variants = detect_tour_variants(raw_text)
@@ -451,14 +695,17 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.pending_raw_text = raw_text
                     st.session_state.pending_url = url or None
                     st.session_state.pending_hint = extraction_hint or None
+                    st.session_state.pending_doc_images = doc_image_urls
+                    st.session_state.pending_doc_raw_images = doc_raw_images
                 else:
                     data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                    data["image_urls"] = get_page_images(url) if url else []
+                    data["image_urls"] = (get_page_images(url) if url else []) + doc_image_urls
                     st.session_state.extracted = data
                     st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
+                    st.session_state.doc_raw_images = doc_raw_images
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
             st.error(f"Extraction failed: {e}")
@@ -479,13 +726,14 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = get_page_images(pending_url) if pending_url else []
+                data["image_urls"] = (get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
                 st.session_state.extracted = data
                 st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                 st.session_state.raw_preview = preview
                 st.session_state.payloads = None
+                st.session_state.doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
                 st.session_state.pending_url = None
@@ -558,6 +806,18 @@ if st.session_state.extracted:
             data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
             if data["image_urls"] == [FALLBACK_IMAGE]:
                 st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+
+            if st.session_state.get("doc_raw_images"):
+                with st.expander(f"📥 Download images found in your document(s) ({len(st.session_state.doc_raw_images)} found)"):
+                    st.caption("These were extracted from your document. Download any you need, host them "
+                              "wherever you normally do (or wherever auto-upload didn't already work), then "
+                              "paste the resulting URL into the Image URLs box above.")
+                    for fname, img_bytes in st.session_state.doc_raw_images:
+                        dcol1, dcol2 = st.columns([1, 3])
+                        with dcol1:
+                            st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"dl_{fname}")
+                        with dcol2:
+                            st.caption(fname)
 
             with st.expander("🖼️ Or search free stock photos (Pexels)"):
                 pexels_query = st.text_input(
