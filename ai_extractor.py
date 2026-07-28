@@ -508,11 +508,54 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 }"""
 
 
-def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None) -> dict:
+TICKET_VARIANT_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page describes ONE
+excursion/activity/ticket, or MULTIPLE distinct excursions bundled together in the same document (e.g.
+a "City Tour", a "Desert Safari", and a "Snorkeling Trip" all described in one PDF).
+
+Only count it as multiple if they are genuinely DIFFERENT excursions a customer would choose between -
+not just different pricing tiers, room/seat categories, or optional add-ons for the SAME single excursion.
+
+Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
+{
+  "multiple_excursions": true or false,
+  "excursions": [
+    {"label": "short human-readable label, e.g. 'City Tour in El Gouna'"}
+  ]
+}
+If there is only one excursion, set "multiple_excursions": false and "excursions": [] ."""
+
+
+def detect_ticket_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """
+    Checks whether the source describes MULTIPLE distinct excursions/
+    activities bundled in one document, as opposed to just one ticket.
+    Returns an empty list if only one is found, or a list of
+    {"label": ...} dicts if genuinely multiple are found.
+    """
+    print("🔎 Checking for multiple excursions/tickets in this content...")
+    result = _call_claude(TICKET_VARIANT_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
+    excursions = result.get("excursions", []) if result.get("multiple_excursions") else []
+    if excursions:
+        print(f"⚠️ Detected {len(excursions)} distinct excursions: {[e.get('label') for e in excursions]}")
+    else:
+        print("✅ Only one excursion detected.")
+    return excursions
+
+
+def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
     """Full extraction for a new Ticket + first Modality."""
     user_content = raw_text
+    prefix_parts = []
+    if variant_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE distinct excursions/tickets. "
+            f"Extract ONLY the following one, and completely ignore any other excursion "
+            f"mentioned elsewhere in the text: {variant_hint}"
+        )
     if human_hint:
-        user_content = f"IMPORTANT - human guidance for this extraction: {human_hint}\n\n--- Source content ---\n{raw_text}"
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
     data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
 
