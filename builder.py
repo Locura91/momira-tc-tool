@@ -3,6 +3,7 @@ from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from api_client import TravelCompositorAPI
+from geocoding_client import geocode
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
@@ -187,7 +188,12 @@ def build_ticket_payloads(
     if manual_lat is not None and manual_lng is not None:
         geoloc = {"latitude": float(manual_lat), "longitude": float(manual_lng), "name": city, "valid": True, "source": "manual override"}
     else:
-        geoloc = api_client.resolve_destination_geolocation(city)
+        geo_result = geocode(city)
+        geoloc = {
+            "latitude": geo_result["latitude"], "longitude": geo_result["longitude"],
+            "name": geo_result.get("display_name") or city, "valid": geo_result["valid"],
+            "source": "OpenStreetMap/Nominatim" if geo_result["valid"] else "not_found",
+        }
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
@@ -205,7 +211,7 @@ def build_ticket_payloads(
         if is_variable:
             lat, lng = geoloc.get("latitude"), geoloc.get("longitude")
         else:
-            mp_geo = api_client.resolve_destination_geolocation(mp_desc)
+            mp_geo = geocode(f"{mp_desc}, {city}" if city else mp_desc)
             lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
             lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
         if lat is not None and lng is not None:
@@ -239,8 +245,8 @@ def build_ticket_payloads(
             code=pre_config.ticket_code,
             name=extracted_ticket_data.get("ticket_name", ""),
             geolocation=GeolocationVO(
-                latitude=geoloc.get("latitude") or 0.0,
-                longitude=geoloc.get("longitude") or 0.0,
+                latitude=geoloc.get("latitude") if geoloc.get("latitude") is not None else None,
+                longitude=geoloc.get("longitude") if geoloc.get("longitude") is not None else None,
             ),
             city=city,
             datasheets={"EN": datasheet_en},
