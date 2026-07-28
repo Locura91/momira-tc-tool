@@ -54,7 +54,7 @@ TICKET_ACTION_LABELS = {
 TICKET_ACTION_FIELDS = {
     "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "modality_code", "on_request", "release_days"],
     "add_option": ["existing_ticket_code", "modality_code", "on_request"],
-    "update_ticket": ["existing_ticket_code", "min_passengers", "max_passengers", "release_days"],
+    "update_ticket": ["existing_ticket_code", "release_days"],
     "update_option": ["existing_ticket_code", "modality_code", "on_request"],
 }
 
@@ -960,7 +960,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-multimodality-and-time-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-self-test-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
