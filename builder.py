@@ -229,10 +229,13 @@ def build_ticket_payloads(
             translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
         ))
 
+    time_tables_list = extracted_ticket_data.get("time_tables", [])
     datasheet_en = TicketDatasheetEN(
         name=extracted_ticket_data.get("ticket_name", ""),
         description=extracted_ticket_data.get("description", ""),
         meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
+        departureTime=time_tables_list[0] if time_tables_list else "",
+        voucherRemarks=extracted_ticket_data.get("voucher_remarks", ""),
         includes=extracted_ticket_data.get("includes", []),
         excludes=extracted_ticket_data.get("excludes", []),
         activityType=extracted_ticket_data.get("activity_type"),
@@ -241,7 +244,7 @@ def build_ticket_payloads(
     main_ticket_error = None
     main_ticket_payload = None
     try:
-        main_ticket = ApiStaticContentTicketVO(
+        main_ticket_kwargs = dict(
             code=pre_config.ticket_code,
             name=extracted_ticket_data.get("ticket_name", ""),
             geolocation=GeolocationVO(
@@ -262,6 +265,9 @@ def build_ticket_payloads(
             meetingPoints=meeting_points_out,
             active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
         )
+        if extracted_ticket_data.get("product_types"):
+            main_ticket_kwargs["productTypes"] = extracted_ticket_data["product_types"]
+        main_ticket = ApiStaticContentTicketVO(**main_ticket_kwargs)
         main_ticket_payload = main_ticket.dict()
     except ValidationError as e:
         main_ticket_error = str(e)
