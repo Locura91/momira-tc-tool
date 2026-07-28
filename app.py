@@ -26,7 +26,7 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY", "PIXABAY_API_KEY"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 os.environ[_key] = st.secrets[_key]
@@ -40,6 +40,7 @@ from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants
 from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
+from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
@@ -374,6 +375,38 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         return
 
 
+def render_stock_photo_picker(source_label, search_fn, default_query, state_prefix):
+    """
+    Renders search input + button + thumbnail grid + selection checkboxes
+    for a stock photo source (Pexels, Pixabay, etc). Returns the list of
+    newly selected URLs if 'Add selected' was just clicked this run,
+    otherwise None - caller decides how to merge/apply (different products
+    use slightly different underlying image_urls update patterns).
+    """
+    query = st.text_input("Search term", value=default_query, key=f"{state_prefix}_query")
+    if st.button(f"🔍 Search {source_label}", key=f"{state_prefix}_search_btn"):
+        with st.spinner(f"Searching {source_label}..."):
+            try:
+                st.session_state[f"{state_prefix}_results"] = search_fn(query)
+            except Exception as e:
+                st.session_state[f"{state_prefix}_results"] = None
+                st.error(str(e))
+
+    if st.session_state.get(f"{state_prefix}_results"):
+        st.caption("Select images to add, then click 'Add selected below':")
+        cols = st.columns(3)
+        selected_urls = []
+        for i, photo in enumerate(st.session_state[f"{state_prefix}_results"]):
+            with cols[i % 3]:
+                st.image(photo["thumbnail"])
+                if st.checkbox(f"Use (by {photo['photographer']})", key=f"{state_prefix}_pick_{i}"):
+                    selected_urls.append(photo["url"])
+
+        if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
+            return selected_urls
+    return None
+
+
 def try_code_variants(call_fn, code):
     """
     Tries `code` as given, then falls back to toggling the 'CLOSEDTOUR-' prefix -
@@ -702,8 +735,33 @@ def render_ticket_flow(client):
                     ]
                 editable_table("Meeting Points", mp_df, "tk_meeting_points", on_save=_save_tk_mp)
 
-                images_text = st.text_area("Image URLs (one per line)", "\n".join(data.get("image_urls", [])), key="tk_images_text")
+                if "tk_images_text_value" not in st.session_state:
+                    st.session_state.tk_images_text_value = "\n".join(data.get("image_urls", []))
+                if st.session_state.get("_tk_pending_images_update") is not None:
+                    st.session_state.tk_images_text_value = st.session_state._tk_pending_images_update
+                    st.session_state._tk_pending_images_update = None
+
+                images_text = st.text_area("Image URLs (one per line)", key="tk_images_text_value")
                 data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+
+                default_tk_img_query = data.get("ticket_name", "") or data.get("city", "")
+                with st.expander("🖼️ Or search free stock photos (Pexels)"):
+                    tk_newly_selected = render_stock_photo_picker("Pexels", search_images, default_tk_img_query, "tk_pexels")
+                    if tk_newly_selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + tk_newly_selected
+                        data["image_urls"] = new_list
+                        st.session_state._tk_pending_images_update = "\n".join(new_list)
+                        st.rerun()
+
+                with st.expander("🖼️ Or search free stock photos (Pixabay)"):
+                    tk_newly_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_tk_img_query, "tk_pixabay")
+                    if tk_newly_selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + tk_newly_selected
+                        data["image_urls"] = new_list
+                        st.session_state._tk_pending_images_update = "\n".join(new_list)
+                        st.rerun()
 
                 if st.session_state.get("tk_doc_raw_images"):
                     with st.expander(f"📥 Download images found ({len(st.session_state.tk_doc_raw_images)})"):
@@ -960,7 +1018,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-self-test-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-pixabay-and-ticket-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1429,34 +1487,24 @@ if st.session_state.extracted:
                         with dcol2:
                             st.caption(fname)
 
+            default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
             with st.expander("🖼️ Or search free stock photos (Pexels)"):
-                pexels_query = st.text_input(
-                    "Search term", value=data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
-                )
-                if st.button("🔍 Search Pexels"):
-                    with st.spinner("Searching Pexels..."):
-                        try:
-                            st.session_state.pexels_results = search_images(pexels_query)
-                        except Exception as e:
-                            st.session_state.pexels_results = None
-                            st.error(str(e))
+                newly_selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
+                if newly_selected:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    new_list = current + newly_selected
+                    data["image_urls"] = new_list
+                    st.session_state._pending_images_update = "\n".join(new_list)
+                    st.rerun()
 
-                if st.session_state.get("pexels_results"):
-                    st.caption("Select images to add, then click 'Add selected below':")
-                    pexels_cols = st.columns(3)
-                    selected_pexels_urls = []
-                    for i, photo in enumerate(st.session_state.pexels_results):
-                        with pexels_cols[i % 3]:
-                            st.image(photo["thumbnail"])
-                            if st.checkbox(f"Use (by {photo['photographer']})", key=f"pexels_pick_{i}"):
-                                selected_pexels_urls.append(photo["url"])
-
-                    if st.button("➕ Add selected to Image URLs") and selected_pexels_urls:
-                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + selected_pexels_urls
-                        data["image_urls"] = new_list
-                        st.session_state._pending_images_update = "\n".join(new_list)
-                        st.rerun()
+            with st.expander("🖼️ Or search free stock photos (Pixabay)"):
+                newly_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
+                if newly_selected:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    new_list = current + newly_selected
+                    data["image_urls"] = new_list
+                    st.session_state._pending_images_update = "\n".join(new_list)
+                    st.rerun()
 
     st.subheader("Departure Schedule")
     if data.get("schedule_notes"):
