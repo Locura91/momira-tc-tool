@@ -119,6 +119,8 @@ def build_closed_tour_payloads(
         itinerary=validated_itinerary,
         transports=transports_count,
         hotels=hotels_count,
+        startTime=extracted_dmc_data.get("start_time", ""),
+        endTime=extracted_dmc_data.get("end_time", ""),
         supplements=supplements_list,
         minChildAge=pre_config.min_child_age,
         maxChildAge=pre_config.max_child_age,
