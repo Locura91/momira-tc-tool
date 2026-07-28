@@ -714,6 +714,16 @@ def render_ticket_flow(client):
             if r.get("changes"):
                 st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
 
+        st.markdown("**Start Time(s)**")
+        st.caption("A Ticket can have multiple valid start times (e.g. a 09:00 and a 14:00 departure). "
+                  "If the document doesn't state one, please add at least one manually.")
+        tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+        def _save_tk_timetables(edf, data=data):
+            data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+        editable_table("Start Time(s)", tt_df, "tk_timetables", on_save=_save_tk_timetables)
+        if not data.get("time_tables"):
+            st.warning("⚠️ No start time set for this Ticket yet - add at least one above before publishing.")
+
         st.subheader("Departure Schedule")
         if data.get("schedule_notes"):
             st.info(f"🔎 {data['schedule_notes']}")
@@ -794,7 +804,10 @@ def render_ticket_flow(client):
         if not price_valid:
             st.error("Add at least one non-zero price (Adult/Child/Infant) before continuing.")
 
-        if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not price_valid, key="tk_build_payload"):
+        time_valid = bool(data.get("time_tables"))
+        can_build = price_valid and time_valid
+
+        if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
                 supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
                 currency=currency, modality_code=modality_code, on_request=on_request,
@@ -935,7 +948,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-renumber-and-ticket-variants — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-languages-times-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1355,6 +1368,12 @@ if st.session_state.extracted:
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
             editable_field("Nights", data, "nights", widget="number_input")
+
+            tcol1, tcol2 = st.columns(2)
+            with tcol1:
+                data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional)", value=data.get("start_time", ""), key="ct_start_time")
+            with tcol2:
+                data["end_time"] = st.text_input("End Time (HH:MM:SS, optional)", value=data.get("end_time", ""), key="ct_end_time")
 
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
