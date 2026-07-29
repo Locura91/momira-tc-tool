@@ -650,7 +650,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
                     candidates = []
                     for e in detected:
-                        candidates.append({"label": e.get("label", ""), "ticket_code": "", "modality_code": "Standard", "selected": True})
+                        candidates.append({
+                            "label": e.get("label", ""), "ticket_code": "",
+                            "modality_code": "Standard Private" if e.get("is_private") else "Standard",
+                            "selected": True
+                        })
                     if not candidates:
                         candidates = [{"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True}]
 
@@ -1182,6 +1186,7 @@ def render_ticket_flow(client):
                     st.session_state.tk_extracted = data
                     st.session_state.tk_raw_preview = raw_text
                     st.session_state.tk_payloads = None
+                    st.session_state.tk_geo_confirmed = False
                     st.session_state.tk_doc_raw_images = doc_raw_images
                     st.success("Extraction complete. Review and edit below.")
                 else:
@@ -1195,10 +1200,11 @@ def render_ticket_flow(client):
                         st.session_state.tk_pending_doc_raw_images = doc_raw_images
                     else:
                         data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
-                        data["image_urls"] = []
+                        data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                         st.session_state.tk_extracted = data
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
+                        st.session_state.tk_geo_confirmed = False
                         st.session_state.tk_doc_raw_images = doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
                         st.success("Extraction complete. Review and edit below.")
@@ -1220,11 +1226,12 @@ def render_ticket_flow(client):
                         human_hint=st.session_state.get("tk_pending_hint")
                     )
                     tk_pending_url = st.session_state.get("tk_pending_url")
-                    data["image_urls"] = []
+                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
 
                     st.session_state.tk_extracted = data
                     st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
                     st.session_state.tk_payloads = None
+                    st.session_state.tk_geo_confirmed = False
                     st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
                     st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
                     st.session_state.tk_pending_variants = None
@@ -1255,6 +1262,13 @@ def render_ticket_flow(client):
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
                 editable_field("Description", data, "description", widget="text_area", height=150)
                 editable_field("City", data, "city", widget="text_input")
+
+                if data.get("is_private") and "private" not in (modality_code or "").lower():
+                    st.info(f"💡 This excursion is described as **PRIVATE** in the source - a genuine "
+                           f"selling point. Your current Modality Code is `{modality_code}` - consider "
+                           f"going back to Step 3 (Details) and adding \"Private\" to it if you'd like "
+                           f"this reflected there.")
+
                 editable_field("Duration (hours)", data, "duration", widget="number_input")
 
                 acol1, acol2 = st.columns(2)
@@ -1615,13 +1629,24 @@ def render_ticket_flow(client):
             st.header("Ticket — Step 6: Geolocation & Payload Preview")
 
             if payloads["geolocation_resolved"]:
+                lat, lng = payloads["geolocation_latitude"], payloads["geolocation_longitude"]
+                maps_link = f"https://www.google.com/maps?q={lat},{lng}"
                 st.markdown(
-                    f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
-                    f"border-radius:4px;'>✅ Geolocation resolved (source: {payloads['geolocation_source']})</div>",
+                    f"<div style='background-color:#d4edda; color:#155724; padding:10px 14px; "
+                    f"border-radius:4px;'>📍 Resolved location: <strong>{payloads['geolocation_name'] or '(no name)'}</strong>"
+                    f"<br>Coordinates: {lat:.6f}, {lng:.6f} (source: {payloads['geolocation_source']})</div>",
                     unsafe_allow_html=True
                 )
+                st.markdown(f"[🗺️ Open in Google Maps to verify]({maps_link})")
                 if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
                     st.caption("Geocoding data © OpenStreetMap contributors")
+
+                st.session_state.tk_geo_confirmed = st.checkbox(
+                    "✅ I've checked this location on the map and it's correct for this ticket",
+                    value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
+                )
+                if not st.session_state.tk_geo_confirmed:
+                    st.info("👆 Please verify the location above before publishing.")
             else:
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
@@ -1648,6 +1673,7 @@ def render_ticket_flow(client):
                         days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                     )
                     st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                    st.session_state.tk_geo_confirmed = False
                     st.rerun()
 
             with st.expander("🔧 Main Ticket Payload", expanded=False):
@@ -1667,7 +1693,12 @@ def render_ticket_flow(client):
             st.header("Ticket — Step 7: Publish")
             creating_new = publish_action == "Create a brand-new ticket (+ first option)"
             target_ticket_code = payloads["main_ticket_code"] if creating_new else existing_ticket_code
-            can_publish = not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
+            can_publish = (
+                not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
+                and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
+            )
+            if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
+                st.warning("⚠️ Confirm the location above (checkbox in Step 6) before you can publish.")
 
             action_descriptions = {
                 "Create a brand-new ticket (+ first option)": "Will POST a new ticket, then POST a new option.",
@@ -1847,7 +1878,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-multi-ticket-code-validation-and-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-human-checks-geolocation — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -2205,7 +2236,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.pending_doc_raw_images = doc_raw_images
                 else:
                     data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                    data["image_urls"] = []  # human picks from candidates below, doesn't get them auto-included
+                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                     st.session_state.extracted = data
                     st.session_state.images_text_value = ""
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
@@ -2233,7 +2264,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = []
+                data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
                 st.session_state.extracted = data
