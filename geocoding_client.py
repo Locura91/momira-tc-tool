@@ -26,6 +26,52 @@ _cache = {}
 _last_request_time = [0.0]
 
 
+def geocode_search(query: str, limit: int = 5) -> list:
+    """
+    Returns up to `limit` candidate results for a place name, each:
+    {"latitude": float, "longitude": float, "display_name": str, "type": str}
+    Unlike geocode() (which silently trusts the single top result), this lets
+    a human see several options and pick the genuinely correct one - useful
+    when a broad place name (e.g. "Bali") could resolve to several very
+    different points depending on which entity Nominatim's ranking picks.
+    Cached per unique (query, limit) to respect the 1 request/second policy.
+    """
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return []
+
+    cache_key = (clean_query.lower(), limit)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    elapsed = time.time() - _last_request_time[0]
+    if elapsed < 1.1:
+        time.sleep(1.1 - elapsed)
+
+    try:
+        res = requests.get(
+            NOMINATIM_URL,
+            params={"q": clean_query, "format": "json", "limit": limit, "addressdetails": 0},
+            headers={"User-Agent": USER_AGENT},
+            timeout=10
+        )
+        _last_request_time[0] = time.time()
+        results = []
+        if res.status_code == 200:
+            for item in res.json():
+                results.append({
+                    "latitude": float(item["lat"]),
+                    "longitude": float(item["lon"]),
+                    "display_name": item.get("display_name", ""),
+                    "type": item.get("type", ""),
+                })
+    except Exception:
+        results = []
+
+    _cache[cache_key] = results
+    return results
+
+
 def geocode(query: str) -> dict:
     """
     Returns {"latitude": float|None, "longitude": float|None,
