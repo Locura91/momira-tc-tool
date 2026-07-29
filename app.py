@@ -1469,18 +1469,31 @@ def render_ticket_flow(client):
 
         supplier_id_choice = None
         if st.session_state.suppliers_cache:
-            supplier_options = {
-                f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
-                for s in st.session_state.suppliers_cache
-            }
-            selected_label = st.selectbox("Supplier (select by name)", list(supplier_options.keys()), key="tk_supplier_select")
-            supplier_id_choice = str(supplier_options[selected_label])
+            # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
+            # the human to explicitly choose a real Momira supplier instead of
+            # any other supplier that happens to exist in the account.
+            momira_suppliers = [
+                s for s in st.session_state.suppliers_cache
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+            ]
+            if not momira_suppliers:
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
+                        "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")
+            else:
+                supplier_options = {
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                    for s in momira_suppliers
+                }
+                selected_label = st.selectbox("Supplier (Momira_ only)", list(supplier_options.keys()), key="tk_supplier_select")
+                supplier_id_choice = str(supplier_options[selected_label])
             if st.button("🔄 Refresh supplier list", key="tk_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
                 st.rerun()
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
             with st.expander("⚠️ Emergency manual entry"):
+                st.caption("Bypasses the Momira_ check above - only use this if you've already confirmed the "
+                          "numeric ID belongs to a real Momira_ supplier.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tk_supplier_manual")
 
         if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
@@ -1634,7 +1647,10 @@ def render_ticket_flow(client):
             help="The app will detect distinct excursions in this document, let you pick which ones to "
                  "create, then review and publish each one individually, one at a time."
         )
-    if multi_ticket_mode:
+    if multi_ticket_mode or st.session_state.get("mt_phase"):
+        # Also route here once a batch is seeded from the single-flow's own
+        # variant picker below (picking 2+ excursions there jumps straight
+        # into this same batch flow) - not just when the checkbox above was ticked.
         render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files)
         return
 
@@ -1698,32 +1714,91 @@ def render_ticket_flow(client):
 
     if st.session_state.get("tk_pending_variants"):
         excursions = st.session_state.tk_pending_variants
-        st.warning(f"⚠️ This content describes {len(excursions)} distinct excursions — which one do you want to add?")
-        labels = [e.get("label", f"Excursion {i+1}") for i, e in enumerate(excursions)]
-        tk_chosen_idx = st.radio("Pick one:", range(len(labels)), format_func=lambda i: labels[i], key="tk_variant_radio")
+        st.warning(f"⚠️ This content describes {len(excursions)} distinct excursions — which one(s) do you want to add?")
+        st.caption("Tick just one to continue in the normal single-Ticket flow below, or tick several to create "
+                  "them all as separate Tickets in one batch (you'll assign each its own Code next).")
 
-        if st.button("✅ Confirm and Extract Full Details", key="tk_confirm_variant"):
-            with st.spinner("Extracting full details for the selected excursion..."):
-                try:
-                    chosen_label = excursions[tk_chosen_idx].get("label", "")
-                    data = extract_ticket_data(
-                        st.session_state.tk_pending_raw_text, variant_hint=chosen_label,
-                        human_hint=st.session_state.get("tk_pending_hint")
-                    )
+        if "tk_pending_variant_selection" not in st.session_state:
+            st.session_state.tk_pending_variant_selection = [
+                {"label": e.get("label", f"Excursion {i+1}"), "selected": False,
+                 "ticket_code": "", "modality_code": "Standard Private" if e.get("is_private") else "Standard"}
+                for i, e in enumerate(excursions)
+            ]
+        tkpv_selection = st.session_state.tk_pending_variant_selection
+
+        for i, sel in enumerate(tkpv_selection):
+            sel["selected"] = st.checkbox(sel["label"], value=sel["selected"], key=f"tkpv_sel_{i}")
+
+        tkpv_num_selected = sum(1 for s in tkpv_selection if s["selected"])
+
+        if tkpv_num_selected > 1:
+            st.caption("Multiple selected - each needs its own Ticket Code and Modality Code:")
+            for i, sel in enumerate(tkpv_selection):
+                if not sel["selected"]:
+                    continue
+                tkpvcol1, tkpvcol2 = st.columns(2)
+                with tkpvcol1:
+                    sel["ticket_code"] = st.text_input(f"Ticket Code — {sel['label']}", value=sel["ticket_code"], key=f"tkpv_code_{i}", placeholder="e.g. BALI-T1")
+                with tkpvcol2:
+                    sel["modality_code"] = st.text_input(f"Modality Code — {sel['label']}", value=sel["modality_code"], key=f"tkpv_modcode_{i}")
+
+        tkpv_btn_label = "✅ Confirm and Extract Full Details" if tkpv_num_selected <= 1 else f"✅ Confirm and Start Batch Review ({tkpv_num_selected} tickets)"
+        if st.button(tkpv_btn_label, key="tk_confirm_variant", disabled=tkpv_num_selected == 0):
+            if tkpv_num_selected <= 1:
+                with st.spinner("Extracting full details for the selected excursion..."):
+                    try:
+                        chosen = next(s for s in tkpv_selection if s["selected"])
+                        chosen_label = chosen["label"]
+                        data = extract_ticket_data(
+                            st.session_state.tk_pending_raw_text, variant_hint=chosen_label,
+                            human_hint=st.session_state.get("tk_pending_hint")
+                        )
+                        tk_pending_url = st.session_state.get("tk_pending_url")
+                        data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+
+                        st.session_state.tk_extracted = data
+                        st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
+                        st.session_state.tk_payloads = None
+                        st.session_state.tk_geo_confirmed = False
+                        st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
+                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
+                        st.session_state.tk_pending_variants = None
+                        st.session_state.tk_pending_raw_text = None
+                        st.session_state.tk_pending_variant_selection = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Extraction failed: {e}")
+            else:
+                tkpv_missing = [s["label"] for s in tkpv_selection if s["selected"] and (not s["ticket_code"].strip() or not s["modality_code"].strip())]
+                tkpv_invalid = [s["modality_code"] for s in tkpv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
+                tkpv_codes_seen = {}
+                for s in tkpv_selection:
+                    if s["selected"] and s["ticket_code"].strip():
+                        tkpv_codes_seen.setdefault(s["ticket_code"].strip(), []).append(s["label"])
+                tkpv_dupes = {c: labs for c, labs in tkpv_codes_seen.items() if len(labs) > 1}
+                if tkpv_missing:
+                    st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
+                elif tkpv_invalid:
+                    st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {tkpv_invalid}")
+                elif tkpv_dupes:
+                    st.error(f"🚫 These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
+                else:
                     tk_pending_url = st.session_state.get("tk_pending_url")
-                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
-
-                    st.session_state.tk_extracted = data
-                    st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
-                    st.session_state.tk_payloads = None
-                    st.session_state.tk_geo_confirmed = False
-                    st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
-                    st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
+                    new_mt_queue = [
+                        {"label": s["label"], "ticket_code": s["ticket_code"].strip(), "modality_code": s["modality_code"].strip(),
+                         "data": None, "confirmed": False}
+                        for s in tkpv_selection if s["selected"]
+                    ]
+                    st.session_state.mt_raw_text = st.session_state.tk_pending_raw_text
+                    st.session_state.mt_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
+                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
+                    st.session_state.mt_queue = new_mt_queue
+                    st.session_state.mt_queue_index = 0
+                    st.session_state.mt_phase = "reviewing"
                     st.session_state.tk_pending_variants = None
                     st.session_state.tk_pending_raw_text = None
+                    st.session_state.tk_pending_variant_selection = None
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Extraction failed: {e}")
 
     # ------------------------------------------------------------------
     # TICKET STEP 5: Review & Edit
@@ -1735,7 +1810,13 @@ def render_ticket_flow(client):
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original Source")
-            st.text_area("Raw content", st.session_state.tk_raw_preview, height=500, disabled=True, key="tk_raw_display")
+            # NOTE: was a disabled st.text_area - disabled form elements can't
+            # receive real browser focus, so selecting/copying text from one
+            # can leak keystrokes to Streamlit's global keyboard shortcuts
+            # (e.g. "c" = Clear Cache), popping up an unwanted dialog while
+            # copying. st.code() renders as plain read-only text (not a form
+            # control), has its own built-in copy button, and isn't affected.
+            st.code(st.session_state.tk_raw_preview, language=None, height=500)
 
         with col2:
             if tk_is_option_only:
@@ -2494,12 +2575,23 @@ else:
 
     supplier_id_choice = None
     if st.session_state.suppliers_cache:
-        supplier_options = {
-            f"{s.get('commercialName') or s.get('legalName') or '(unnamed)'} — ID {s.get('id')}": s.get("id")
-            for s in st.session_state.suppliers_cache
-        }
-        selected_label = st.selectbox("Supplier (select by name)", list(supplier_options.keys()))
-        supplier_id_choice = str(supplier_options[selected_label])
+        # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
+        # the human to explicitly choose a real Momira supplier instead of
+        # any other supplier that happens to exist in the account.
+        momira_suppliers = [
+            s for s in st.session_state.suppliers_cache
+            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+        ]
+        if not momira_suppliers:
+            st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
+                    "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")
+        else:
+            supplier_options = {
+                f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                for s in momira_suppliers
+            }
+            selected_label = st.selectbox("Supplier (Momira_ only)", list(supplier_options.keys()))
+            supplier_id_choice = str(supplier_options[selected_label])
         if st.button("🔄 Refresh supplier list"):
             st.session_state.suppliers_cache = None
             st.rerun()
@@ -2508,6 +2600,8 @@ else:
         if st.button("🔄 Try again"):
             st.rerun()
         with st.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
+            st.caption("Bypasses the Momira_ check above - only use this if you've already confirmed the "
+                      "numeric ID belongs to a real Momira_ supplier.")
             supplier_id_choice = st.text_input("Supplier ID (numeric)", value="")
 
     if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice):
@@ -2733,7 +2827,10 @@ if multi_modality_mode:
     render_multi_modality_flow(client, url=url, uploaded_files=uploaded_files)
     st.stop()
 
-if multi_tour_mode:
+if multi_tour_mode or st.session_state.get("mct_phase"):
+    # Also route here once a batch is seeded from the single-flow's own
+    # variant picker below (picking 2+ variants there jumps straight into
+    # this same batch flow) - not just when the checkbox above was ticked.
     render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files)
     st.stop()
 
@@ -2814,35 +2911,96 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
 
 if st.session_state.get("pending_variants") and not is_option_only:
     variants = st.session_state.pending_variants
-    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to add?")
-    labels = [f"{v.get('label', 'Variant ' + str(i+1))} ({v.get('nights', '?')} nights)" for i, v in enumerate(variants)]
-    chosen_idx = st.radio("Pick one:", range(len(labels)), format_func=lambda i: labels[i])
+    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one(s) do you want to add?")
+    st.caption("Tick just one to continue in the normal single-tour flow below, or tick several to create "
+              "them all as separate ClosedTours in one batch (you'll assign each its own Code next).")
 
-    if st.button("✅ Confirm and Extract Full Details"):
-        with st.spinner("Extracting full details for the selected variant..."):
-            try:
-                chosen_label = variants[chosen_idx].get("label", "")
-                data = extract_structured_data(
-                    st.session_state.pending_raw_text, variant_hint=chosen_label,
-                    human_hint=st.session_state.get("pending_hint")
-                )
+    if "pending_variant_selection" not in st.session_state:
+        st.session_state.pending_variant_selection = [
+            {"label": v.get("label", f"Variant {i+1}"), "nights": v.get("nights"), "selected": False,
+             "tour_code": "", "modality_code": "Standard"}
+            for i, v in enumerate(variants)
+        ]
+    pv_selection = st.session_state.pending_variant_selection
 
+    for i, sel in enumerate(pv_selection):
+        nights_note = f" ({sel['nights']} nights)" if sel.get("nights") else ""
+        sel["selected"] = st.checkbox(f"{sel['label']}{nights_note}", value=sel["selected"], key=f"pv_sel_{i}")
+
+    pv_num_selected = sum(1 for s in pv_selection if s["selected"])
+
+    if pv_num_selected > 1:
+        st.caption("Multiple selected - each needs its own ClosedTour/Provider Code and Modality Code:")
+        for i, sel in enumerate(pv_selection):
+            if not sel["selected"]:
+                continue
+            pvcol1, pvcol2 = st.columns(2)
+            with pvcol1:
+                sel["tour_code"] = st.text_input(f"ClosedTour/Provider Code — {sel['label']}", value=sel["tour_code"], key=f"pv_code_{i}", placeholder="e.g. BKK-1")
+            with pvcol2:
+                sel["modality_code"] = st.text_input(f"Modality Code — {sel['label']}", value=sel["modality_code"], key=f"pv_modcode_{i}")
+
+    pv_btn_label = "✅ Confirm and Extract Full Details" if pv_num_selected <= 1 else f"✅ Confirm and Start Batch Review ({pv_num_selected} tours)"
+    if st.button(pv_btn_label, disabled=pv_num_selected == 0):
+        if pv_num_selected <= 1:
+            with st.spinner("Extracting full details for the selected variant..."):
+                try:
+                    chosen = next(s for s in pv_selection if s["selected"])
+                    chosen_label = chosen["label"]
+                    data = extract_structured_data(
+                        st.session_state.pending_raw_text, variant_hint=chosen_label,
+                        human_hint=st.session_state.get("pending_hint")
+                    )
+
+                    pending_url = st.session_state.get("pending_url")
+                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                    preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
+
+                    st.session_state.extracted = data
+                    st.session_state.images_text_value = ""
+                    st.session_state.raw_preview = preview
+                    st.session_state.payloads = None
+                    st.session_state.doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
+                    st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
+                    st.session_state.pending_variants = None
+                    st.session_state.pending_raw_text = None
+                    st.session_state.pending_url = None
+                    st.session_state.pending_variant_selection = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+        else:
+            pv_missing = [s["label"] for s in pv_selection if s["selected"] and (not s["tour_code"].strip() or not s["modality_code"].strip())]
+            pv_invalid = [s["modality_code"] for s in pv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
+            pv_codes_seen = {}
+            for s in pv_selection:
+                if s["selected"] and s["tour_code"].strip():
+                    pv_codes_seen.setdefault(s["tour_code"].strip(), []).append(s["label"])
+            pv_dupes = {c: labs for c, labs in pv_codes_seen.items() if len(labs) > 1}
+            if pv_missing:
+                st.error(f"🚫 These selected variants are missing a ClosedTour Code or Modality Code: {pv_missing}")
+            elif pv_invalid:
+                st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {pv_invalid}")
+            elif pv_dupes:
+                st.error(f"🚫 These ClosedTour Codes are used by more than one selected variant: {list(pv_dupes.keys())}")
+            else:
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
-                preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
-
-                st.session_state.extracted = data
-                st.session_state.images_text_value = ""
-                st.session_state.raw_preview = preview
-                st.session_state.payloads = None
-                st.session_state.doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
-                st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
+                new_mct_queue = [
+                    {"label": s["label"], "tour_code": s["tour_code"].strip(), "modality_code": s["modality_code"].strip(),
+                     "data": None, "confirmed": False}
+                    for s in pv_selection if s["selected"]
+                ]
+                st.session_state.mct_raw_text = st.session_state.pending_raw_text
+                st.session_state.mct_doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
+                st.session_state.mct_hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
+                st.session_state.mct_queue = new_mct_queue
+                st.session_state.mct_queue_index = 0
+                st.session_state.mct_phase = "reviewing"
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
                 st.session_state.pending_url = None
+                st.session_state.pending_variant_selection = None
                 st.rerun()
-            except Exception as e:
-                st.error(f"Extraction failed: {e}")
 
 
 # ----------------------------------------------------------------------
@@ -2856,7 +3014,10 @@ if st.session_state.extracted:
 
     with col1:
         st.subheader("Original Source")
-        st.text_area("Raw content (read-only reference)", st.session_state.raw_preview, height=600, disabled=True)
+        # NOTE: was a disabled st.text_area - see the identical fix + explanation
+        # in render_ticket_flow's Step 5 for why that caused the "copying text
+        # pops up a Clear Cache dialog" bug.
+        st.code(st.session_state.raw_preview, language=None, height=600)
 
     with col2:
         if is_option_only:
