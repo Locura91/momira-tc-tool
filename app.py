@@ -623,6 +623,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             with st.spinner("Gathering content and detecting distinct excursions..."):
                 try:
                     combined_parts = []
+                    doc_raw_images = []
+                    doc_image_urls = []
+                    seen_image_hashes = set()
                     if tk_url:
                         combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
                     for uploaded in (tk_files or []):
@@ -631,6 +634,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
                         combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        remaining_budget = 12 - len(doc_raw_images)
+                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
+                        if embedded_images:
+                            for i, (img_bytes, ext) in enumerate(embedded_images):
+                                doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                            try:
+                                doc_image_urls.extend(upload_images_freeimage(embedded_images))
+                            except Exception:
+                                pass
                         os.remove(tmp_path)
 
                     raw_text = "\n\n".join(combined_parts)
@@ -644,6 +656,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
                     st.session_state.mt_raw_text = raw_text
                     st.session_state.mt_candidates = candidates
+                    st.session_state.mt_doc_raw_images = doc_raw_images
+                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
                     st.session_state.mt_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
@@ -675,25 +689,40 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             st.rerun()
 
         invalid_codes = []
+        missing_codes = []
         new_queue = []
+        seen_ticket_codes = {}
         for cand in candidates:
             if not cand["selected"]:
                 continue
             code = cand["ticket_code"].strip()
             mod_code = cand["modality_code"].strip()
             if not code or not mod_code:
+                missing_codes.append(cand["label"] or "(unnamed excursion)")
                 continue
             if any(c in mod_code for c in ["/", "\\", "+", "-"]):
                 invalid_codes.append(mod_code)
                 continue
+            seen_ticket_codes.setdefault(code, []).append(cand["label"] or "(unnamed excursion)")
             new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None, "confirmed": False})
 
+        duplicate_codes = {code: labels for code, labels in seen_ticket_codes.items() if len(labels) > 1}
+
+        if missing_codes:
+            st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
+                    f"excluded - enter one for each before continuing: {missing_codes}")
         if invalid_codes:
             st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
+        if duplicate_codes:
+            for code, labels in duplicate_codes.items():
+                st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
+                        f"- each Ticket needs its own unique code.")
 
-        st.caption(f"**{len(new_queue)}** ticket(s) ready to review.")
+        ready_to_review = new_queue and not missing_codes and not duplicate_codes
+        st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
+                  "Fix the issues above before continuing.")
 
-        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not ready_to_review):
             st.session_state.mt_queue = new_queue
             st.session_state.mt_queue_index = 0
             st.session_state.mt_phase = "reviewing"
@@ -721,6 +750,44 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         editable_field("Ticket name", data, "ticket_name", widget="text_input")
         editable_field("Description", data, "description", widget="text_area", height=120)
         editable_field("City", data, "city", widget="text_input")
+
+        st.markdown(f"**Images for {current['label'] or current['ticket_code']}**")
+        if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
+            st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
+                      "image below (Travel Compositor requires at least one image per Ticket).")
+        else:
+            st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
+
+        if st.session_state.get("mt_hosted_image_candidates"):
+            with st.expander(f"🖼️ Images found in your document/page ({len(st.session_state.mt_hosted_image_candidates)})"):
+                mt_url_selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
+                if mt_url_selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + mt_url_selected
+                    st.rerun()
+
+        if st.session_state.get("mt_doc_raw_images"):
+            with st.expander(f"📥 Images needing hosting ({len(st.session_state.mt_doc_raw_images)})"):
+                mt_doc_added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
+                if mt_doc_added:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + [mt_doc_added]
+                    st.rerun()
+
+        mt_default_query = current["label"] or data.get("ticket_name", "") or data.get("city", "")
+        with st.expander("🖼️ Search free stock photos (Pexels)"):
+            mt_pexels_selected = render_stock_photo_picker("Pexels", search_images, mt_default_query, f"mt_pexels_{idx}")
+            if mt_pexels_selected:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + mt_pexels_selected
+                st.rerun()
+        with st.expander("🖼️ Search free stock photos (Pixabay)"):
+            mt_pixabay_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
+            if mt_pixabay_selected:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + mt_pixabay_selected
+                st.rerun()
+
         editable_field("Duration (hours)", data, "duration", widget="number_input")
 
         acol1, acol2 = st.columns(2)
@@ -868,7 +935,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}`.")
 
         if st.button("🆕 Start a new batch"):
-            for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index"]:
+            for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
+                       "mt_doc_raw_images", "mt_hosted_image_candidates"]:
                 st.session_state.pop(key, None)
             st.rerun()
         return
@@ -1779,7 +1847,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-fix-multi-ticket-missing-image — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-multi-ticket-code-validation-and-images — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
