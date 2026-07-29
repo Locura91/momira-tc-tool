@@ -994,7 +994,8 @@ def render_ticket_flow(client):
                         tmp.write(uploaded.getbuffer())
                         tmp_path = tmp.name
                     combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
-                    embedded_images = extract_images(tmp_path, seen_hashes=seen_image_hashes)
+                    remaining_budget = 12 - len(doc_raw_images)
+                    embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
                     if embedded_images:
                         for i, (img_bytes, ext) in enumerate(embedded_images):
                             doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
@@ -1582,7 +1583,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-fix-followup-and-policy-remarks — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-image-limit-12 — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1883,7 +1884,8 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     tmp_path = tmp.name
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
 
-                embedded_images = extract_images(tmp_path, seen_hashes=seen_image_hashes)
+                remaining_budget = 12 - len(doc_raw_images)
+                embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
                 if embedded_images:
                     for i, (img_bytes, ext) in enumerate(embedded_images):
                         doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
