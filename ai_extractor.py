@@ -496,9 +496,17 @@ Extract:
   (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
 - base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
-  If only one price is given (no child/infant distinction), put it in base_adult_price and leave others 0.
+  CRITICAL RULE for base_children_price specifically: if children are allowed (not disallow_children) but
+  the source gives only ONE price with no distinct child rate, set base_children_price EQUAL to
+  base_adult_price - NOT 0. A price of 0 specifically means "this passenger type travels free", so only
+  use 0 if the source EXPLICITLY says children are free/complimentary, or if disallow_children is true.
+  Simply not mentioning a separate child price is NOT the same as saying children are free - it means
+  they pay the standard (adult) rate, which is the far more common real-world case.
+  base_infant_price commonly IS genuinely 0 by convention (infants often travel free) - only set it
+  non-zero if the source states an actual infant price.
   If pricing is genuinely absent/blank in the source (e.g. a rate table with no values filled in yet),
-  leave these as 0 - do NOT invent numbers - and mention this clearly in pricing_notes.
+  leave base_adult_price (and therefore base_children_price too, per the rule above) as 0 - do NOT invent
+  numbers - and mention this clearly in pricing_notes.
 - child_age_min, child_age_max: the age range that counts as "child" pricing, AND/OR any stated age
   eligibility restriction (e.g. "children must be at least 12", "not applicable for children under 12
   years old", "minimum age: 12", "age limit: 12"). Both kinds of language should populate these fields -
@@ -638,6 +646,13 @@ when just adding/updating a modality). The source is often just a pricing table 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
 supplements (simple, always-available, stackable add-ons only - never exclusive alternatives or on-request items, see full prompt's rules on this), pricing_notes.
+
+CRITICAL RULE for base_children_price: if the source gives only ONE price with no distinct child rate,
+set base_children_price EQUAL to base_adult_price - NOT 0. A price of 0 specifically means "this
+passenger type travels free" - only use 0 if the source EXPLICITLY says children are free/complimentary.
+Not mentioning a separate child price is NOT the same as children being free - it means they pay the
+standard rate. base_infant_price commonly IS genuinely 0 by convention - only set it non-zero if the
+source states an actual infant price.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
