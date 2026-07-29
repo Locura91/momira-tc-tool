@@ -324,7 +324,12 @@ def build_ticket_payloads(
         base_service_price = float(extracted_ticket_data.get("base_service_price", 0) or 0)
         occupancy_prices = extracted_ticket_data.get("occupancy_prices", [])
         if selected_price_type != "DISTRIBUTION":
-            base_adult_price = 0.0
+            # baseAdultPrice is REQUIRED on ContractTicketModalityVO regardless
+            # of price mode (schemas.py: Field(...)) - confirmed the real API
+            # rejects 0 here even when the actual price lives elsewhere
+            # (Occupancy table / Service flat total). Use 1 as a harmless
+            # nonzero placeholder rather than a real per-adult charge.
+            base_adult_price = 1.0
             base_children_price = 0.0
             base_infant_price = 0.0
         if selected_price_type != "SERVICE":
