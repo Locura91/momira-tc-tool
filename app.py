@@ -1104,8 +1104,8 @@ def render_ticket_flow(client):
                                                              value=int(data.get("child_age_max", 12) or 12), key="tk_max_child_age")
 
                 st.markdown("**Engines (Search Engines to Sell through)**")
-                st.caption("⚠️ This defaults to a broad, informed guess based on a real screenshot - not "
-                          "certain to be exactly right. Review before publishing; you can also fix this "
+                st.caption("⚠️ This defaults to a broad, reasonable set - not guaranteed to be exactly right "
+                          "for every ticket type. Review before publishing; you can also adjust this "
                           "afterward in Travel Compositor under Settings > Engine.")
                 ALL_ENGINE_OPTIONS = [
                     "MULTI", "GROUPS", "ONLY_HOTEL", "ONLY_HOUSE", "ONLY_FLIGHT", "ONLY_TRAIN",
@@ -1298,11 +1298,10 @@ def render_ticket_flow(client):
                 value=float(data.get("base_service_price", 0) or 0), key="tk_service_price"
             )
         elif price_type == "OCCUPANCY":
-            st.caption("Confirmed real field names now (from Travel Compositor's fuller schema): each row is "
-                      "an EXACT number of paying passengers (not a range) with its price - infants are always "
-                      "free and excluded automatically. If your source shows a range like '3-5' at one price, "
-                      "add ONE row per exact number (3, 4, and 5) all with that same price - use the button "
-                      "below to auto-expand a range for you.")
+            st.caption("Each row is an EXACT number of paying passengers (not a range) with its price - "
+                      "infants are always free and excluded automatically. If your source shows a range "
+                      "like '3-5' at one price, add ONE row per exact number (3, 4, and 5) all with that "
+                      "same price - use the button below to auto-expand a range for you.")
             occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 1), "Price": o.get("amount", 0)}
                        for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 1, "Price": 0}]
             occ_df = pd.DataFrame(occ_rows)
@@ -1599,7 +1598,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-fix-child-age-extraction — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-full-review-clarity-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
