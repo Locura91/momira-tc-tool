@@ -851,6 +851,56 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
+        st.markdown(f"**➕ Additional Modalities for {current['label'] or current['ticket_code']} (optional)**")
+        st.caption("Add more variants of THIS ticket now (e.g. one per guide language) - all get created "
+                  "together with this ticket's single deactivation, so you don't need to manually reactivate "
+                  "it afterward. Common case: different guide languages must each be their own Modality, "
+                  "never a supplement.")
+        if "extra_modalities" not in current:
+            current["extra_modalities"] = []
+
+        for j, mod in enumerate(current["extra_modalities"]):
+            st.markdown(f"*Modality {j + 2}*")
+            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
+            with mcol1:
+                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"mt_extramod_code_{idx}_{j}")
+            with mcol2:
+                mod["hint"] = st.text_input("Focus Hint (e.g. 'German Speaking Guide')", value=mod["hint"], key=f"mt_extramod_hint_{idx}_{j}")
+            with mcol3:
+                st.write("")
+                if st.button("🗑️ Remove", key=f"mt_extramod_remove_{idx}_{j}"):
+                    current["extra_modalities"].pop(j)
+                    st.rerun()
+
+            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
+                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
+
+            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mt_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
+                with st.spinner("Extracting..."):
+                    mod["data"] = extract_ticket_option_only_data(st.session_state.mt_raw_text, human_hint=mod["hint"])
+                    st.rerun()
+
+            if mod["data"]:
+                epcol1, epcol2, epcol3 = st.columns(3)
+                with epcol1:
+                    mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"mt_extramod_adult_{idx}_{j}")
+                with epcol2:
+                    mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"mt_extramod_child_{idx}_{j}")
+                with epcol3:
+                    mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"mt_extramod_infant_{idx}_{j}")
+                edcol1, edcol2 = st.columns(2)
+                with edcol1:
+                    mod["data"]["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=mod["data"].get("start_date", data.get("start_date", "")), key=f"mt_extramod_start_{idx}_{j}")
+                with edcol2:
+                    mod["data"]["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=mod["data"].get("end_date", data.get("end_date", "")), key=f"mt_extramod_end_{idx}_{j}")
+            else:
+                st.info("Click 'Extract pricing' above to get started for this modality.")
+            st.divider()
+
+        if st.button("➕ Add another Modality", key=f"mt_add_extramod_{idx}"):
+            current["extra_modalities"].append({"code": "", "hint": "", "data": None})
+            st.rerun()
+
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
         if st.button("Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
@@ -890,7 +940,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         queue = st.session_state.mt_queue
         st.subheader(f"Ready to publish {len(queue)} Tickets - one by one")
         for q in queue:
-            st.write(f"- **{q['ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}")
+            extra_count = len(q.get("extra_modalities", []))
+            extra_note = f" + {extra_count} additional modalit{'y' if extra_count == 1 else 'ies'}" if extra_count else ""
+            st.write(f"- **{q['ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}{extra_note}")
 
         if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
@@ -927,6 +979,28 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     if "error" in option_result:
                         show_publish_error(f"create **{q['ticket_code']}**'s option (created as `{real_code}`)", option_result)
                         continue
+                    else:
+                        st.success(f"✅ **{q['ticket_code']}**: base modality '{q['modality_code']}' created.")
+
+                    for mod in q.get("extra_modalities", []):
+                        if not mod.get("code") or not mod.get("data"):
+                            st.warning(f"⚠️ **{q['ticket_code']}**: skipped an extra modality - missing code or pricing data.")
+                            continue
+                        with st.spinner(f"Creating '{q['ticket_code']}' modality '{mod['code']}'..."):
+                            mod_pre_config = TicketHumanPreConfig(
+                                supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
+                                modality_code=mod["code"], on_request=on_request,
+                                days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                            )
+                            mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
+                            if mod_payloads["ticket_option_error"]:
+                                show_publish_error(f"prepare **{q['ticket_code']}** modality '{mod['code']}'", mod_payloads["ticket_option_error"])
+                                continue
+                            mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
+                            if "error" in mod_option_result:
+                                show_publish_error(f"create **{q['ticket_code']}** modality '{mod['code']}'", mod_option_result)
+                            else:
+                                st.success(f"✅ **{q['ticket_code']}**: modality '{mod['code']}' created.")
 
                     deactivate_payload = dict(creation_payload)
                     deactivate_payload["active"] = False
@@ -1580,7 +1654,10 @@ def render_ticket_flow(client):
                   "combine freely (e.g. 'Audio guide - $5'). There's no 'on request' option here either. "
                   "For anything that should be an ALTERNATIVE (only one of several choices) or needs "
                   "special/on-request handling, create it as a SEPARATE Modality instead (Action 2: Add "
-                  "new Modality to existing Ticket) - never model it as a supplement.")
+                  "new Modality to existing Ticket) - never model it as a supplement. **This includes "
+                  "different guide languages** - if the source shows separate full price tables per "
+                  "language (English/German/French/etc.), each one is its own Modality with its own real "
+                  "price, never a small add-on fee.")
         supp_rows = [
             {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
              "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
@@ -1878,7 +1955,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-human-checks-geolocation — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-language-modality-rule-and-batch-multimodality — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
