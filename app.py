@@ -863,8 +863,9 @@ def render_ticket_flow(client):
         release_days_in = 30
 
         if "existing_ticket_code" in needed:
+            tk_prefill = st.session_state.pop("tk_prefill_existing_ticket_code", "")
             existing_ticket_code_in = st.text_input(
-                "Existing Ticket Code", placeholder="e.g. JAP-T1", key="tk_existing_code"
+                "Existing Ticket Code", value=tk_prefill, placeholder="e.g. JAP-T1", key="tk_existing_code"
             ).strip()
 
             if st.button("🔍 Check what's already online for this code", disabled=not existing_ticket_code_in, key="tk_check_online"):
@@ -1471,6 +1472,9 @@ def render_ticket_flow(client):
                                 else:
                                     st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
                                               f"Ready for human review — activate it inside Travel Compositor when ready.")
+                                    st.session_state.tk_just_published_code = real_code
+                                    st.session_state.tk_just_published_supplier_id = supplier_id
+                                    st.session_state.tk_just_published_is_inactive = True
 
                     elif publish_action == "Add a new option to an existing ticket":
                         result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
@@ -1479,6 +1483,9 @@ def render_ticket_flow(client):
                                     f"ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
+                            st.session_state.tk_just_published_code = target_ticket_code
+                            st.session_state.tk_just_published_supplier_id = supplier_id
+                            st.session_state.tk_just_published_is_inactive = False
 
                     elif publish_action == "Update an existing ticket's details":
                         update_payload = dict(payloads["main_ticket_payload"])
@@ -1489,6 +1496,9 @@ def render_ticket_flow(client):
                                     f"to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ Ticket `{target_ticket_code}` updated.")
+                            st.session_state.tk_just_published_code = target_ticket_code
+                            st.session_state.tk_just_published_supplier_id = supplier_id
+                            st.session_state.tk_just_published_is_inactive = False
 
                     elif publish_action == "Update an existing ticket option":
                         update_option_payload = dict(payloads["ticket_option_payload"])
@@ -1499,6 +1509,58 @@ def render_ticket_flow(client):
                                     f"Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
+                            st.session_state.tk_just_published_code = target_ticket_code
+                            st.session_state.tk_just_published_supplier_id = supplier_id
+                            st.session_state.tk_just_published_is_inactive = False
+
+    if st.session_state.get("tk_just_published_code"):
+        st.divider()
+        st.subheader("✅ Ticket published — what would you like to do next?")
+        st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
+                f"(Supplier {st.session_state.tk_just_published_supplier_id})")
+
+        if st.session_state.get("tk_just_published_is_inactive"):
+            st.warning("⚠️ **This Ticket is now INACTIVE.** It was created, given its first Modality, then "
+                      "switched back to draft/inactive for your review — this is expected. To add more "
+                      "Modalities or make further changes, first **activate it manually inside Travel "
+                      "Compositor**, then come back and use 'Add new Modality to existing Ticket'.")
+            if st.button("🆕 Start a new import (different Ticket)", type="primary", key="tk_new_import_inactive"):
+                keep_client = st.session_state.client
+                keep_suppliers = st.session_state.suppliers_cache
+                keep_product_type = st.session_state.product_type
+                st.session_state.clear()
+                st.session_state.client = keep_client
+                st.session_state.suppliers_cache = keep_suppliers
+                st.session_state.product_type = keep_product_type
+                st.rerun()
+        else:
+            fcol1, fcol2 = st.columns(2)
+            with fcol1:
+                if st.button("🆕 Start a new import (different Ticket)", type="primary", key="tk_new_import_active"):
+                    keep_client = st.session_state.client
+                    keep_suppliers = st.session_state.suppliers_cache
+                    keep_product_type = st.session_state.product_type
+                    st.session_state.clear()
+                    st.session_state.client = keep_client
+                    st.session_state.suppliers_cache = keep_suppliers
+                    st.session_state.product_type = keep_product_type
+                    st.rerun()
+            with fcol2:
+                if st.button("➕ Add another Modality to this same Ticket", key="tk_add_modality_followup"):
+                    prefill_ticket_code = st.session_state.tk_just_published_code
+                    prefill_supplier_id = st.session_state.tk_just_published_supplier_id
+                    keep_client = st.session_state.client
+                    keep_suppliers = st.session_state.suppliers_cache
+                    keep_product_type = st.session_state.product_type
+                    st.session_state.clear()
+                    st.session_state.client = keep_client
+                    st.session_state.suppliers_cache = keep_suppliers
+                    st.session_state.product_type = keep_product_type
+                    st.session_state.tk_cfg_action = "add_option"
+                    st.session_state.tk_cfg_supplier_id = prefill_supplier_id
+                    st.session_state.tk_cfg_existing_ticket_code = prefill_ticket_code
+                    st.session_state.tk_step1_confirmed = True
+                    st.rerun()
 
 
 
@@ -1520,7 +1582,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-multi-ticket-batch — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-fix-followup-and-policy-remarks — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -2427,6 +2489,7 @@ if st.session_state.extracted:
                                           f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
                                 st.session_state.just_published_tour_code = real_code
                                 st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                                st.session_state.just_published_is_inactive = True
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result, used_code = try_code_variants(
@@ -2444,6 +2507,7 @@ if st.session_state.extracted:
                         st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
                         st.session_state.just_published_tour_code = target_tour_code
                         st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                        st.session_state.just_published_is_inactive = False
 
                 elif publish_action == "Update an existing tour's details":
                     update_payload = dict(payloads["main_tour_payload"])
@@ -2462,6 +2526,7 @@ if st.session_state.extracted:
                         st.success(f"✅ Tour updated using code `{used_code}`.")
                         st.session_state.just_published_tour_code = target_tour_code
                         st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                        st.session_state.just_published_is_inactive = False
 
                 elif publish_action == "Update an existing option":
                     update_option_payload = dict(payloads["tour_option_payload"])
@@ -2480,6 +2545,7 @@ if st.session_state.extracted:
                         st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
                         st.session_state.just_published_tour_code = target_tour_code
                         st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                        st.session_state.just_published_is_inactive = False
 
 # ----------------------------------------------------------------------
 # Post-publish follow-up: what next?
@@ -2490,27 +2556,46 @@ if st.session_state.get("just_published_tour_code"):
     st.write(f"Just published: **{st.session_state.just_published_tour_code}** "
             f"(Supplier {st.session_state.just_published_supplier_id})")
 
-    fcol1, fcol2 = st.columns(2)
-    with fcol1:
+    if st.session_state.get("just_published_is_inactive"):
+        st.warning("⚠️ **This ClosedTour is now INACTIVE.** It was created, given its first Modality, then "
+                  "switched back to draft/inactive for your review — this is expected. To add more "
+                  "Modalities or make further changes, first **activate it manually inside Travel "
+                  "Compositor**, then come back and use 'Add new Modality to existing ClosedTour'.")
         if st.button("🆕 Start a new import (different ClosedTour)", type="primary"):
             keep_client = st.session_state.client
             keep_suppliers = st.session_state.suppliers_cache
+            keep_product_type = st.session_state.product_type
             st.session_state.clear()
             st.session_state.client = keep_client
             st.session_state.suppliers_cache = keep_suppliers
+            st.session_state.product_type = keep_product_type
             st.rerun()
-    with fcol2:
-        if st.button("➕ Add another Modality to this same ClosedTour"):
-            prefill_tour_code = st.session_state.just_published_tour_code
-            prefill_supplier_id = st.session_state.just_published_supplier_id
-            keep_client = st.session_state.client
-            keep_suppliers = st.session_state.suppliers_cache
-            st.session_state.clear()
-            st.session_state.client = keep_client
-            st.session_state.suppliers_cache = keep_suppliers
-            st.session_state.cfg_action = "add_option"
-            st.session_state.cfg_supplier_id = prefill_supplier_id
-            st.session_state.cfg_existing_tour_code = prefill_tour_code
-            st.session_state.prefill_existing_tour_code = prefill_tour_code
-            st.session_state.step1_confirmed = True
-            st.rerun()
+    else:
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            if st.button("🆕 Start a new import (different ClosedTour)", type="primary"):
+                keep_client = st.session_state.client
+                keep_suppliers = st.session_state.suppliers_cache
+                keep_product_type = st.session_state.product_type
+                st.session_state.clear()
+                st.session_state.client = keep_client
+                st.session_state.suppliers_cache = keep_suppliers
+                st.session_state.product_type = keep_product_type
+                st.rerun()
+        with fcol2:
+            if st.button("➕ Add another Modality to this same ClosedTour"):
+                prefill_tour_code = st.session_state.just_published_tour_code
+                prefill_supplier_id = st.session_state.just_published_supplier_id
+                keep_client = st.session_state.client
+                keep_suppliers = st.session_state.suppliers_cache
+                keep_product_type = st.session_state.product_type
+                st.session_state.clear()
+                st.session_state.client = keep_client
+                st.session_state.suppliers_cache = keep_suppliers
+                st.session_state.product_type = keep_product_type
+                st.session_state.cfg_action = "add_option"
+                st.session_state.cfg_supplier_id = prefill_supplier_id
+                st.session_state.cfg_existing_tour_code = prefill_tour_code
+                st.session_state.prefill_existing_tour_code = prefill_tour_code
+                st.session_state.step1_confirmed = True
+                st.rerun()
