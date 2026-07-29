@@ -395,6 +395,62 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         return
 
 
+def render_url_image_picker(image_urls, state_prefix):
+    """
+    Shows a thumbnail grid + checkboxes for images that are ALREADY hosted
+    URLs (e.g. scraped from a web page) - same picker pattern as the stock
+    photo search, just without a search step since the URLs are already known.
+    Returns the list of newly selected URLs if 'Add selected' was clicked
+    this run, otherwise None.
+    """
+    if not image_urls:
+        return None
+    st.caption("Select images to add, then click 'Add selected':")
+    cols = st.columns(3)
+    selected_urls = []
+    for i, url in enumerate(image_urls):
+        photo_key = abs(hash(url))  # content-based, never collides across different sets of results
+        with cols[i % 3]:
+            st.image(url)
+            if st.checkbox("Use this image", value=False, key=f"{state_prefix}_pick_{photo_key}"):
+                selected_urls.append(url)
+    if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
+        return selected_urls
+    return None
+
+
+def render_doc_image_picker(doc_raw_images, state_prefix):
+    """
+    Shows a thumbnail grid for images extracted from an uploaded document
+    (raw bytes, not yet hosted anywhere). Each has its own 'Upload & Add'
+    button (uploads via freeimage.host, then adds the resulting URL) plus a
+    download button as a guaranteed fallback if upload isn't set up/fails.
+    Returns a newly-added URL if an upload just succeeded this run, else None.
+    """
+    if not doc_raw_images:
+        return None
+    st.caption("Images found in your document(s). Upload one to host it and add the URL automatically, "
+              "or download it to host manually elsewhere.")
+    cols = st.columns(3)
+    newly_added_url = None
+    for i, (fname, img_bytes) in enumerate(doc_raw_images):
+        photo_key = abs(hash(fname + str(len(img_bytes))))  # content-based, stable per unique image
+        with cols[i % 3]:
+            st.image(img_bytes, caption=fname)
+            if st.button("☁️ Upload & Add", key=f"{state_prefix}_upload_{photo_key}"):
+                try:
+                    url = upload_images_freeimage([(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg")])
+                    if url:
+                        newly_added_url = url[0]
+                        st.success("Uploaded!")
+                    else:
+                        st.error("Upload returned no URL.")
+                except Exception as e:
+                    st.error(f"Upload failed: {e}")
+            st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"{state_prefix}_dl_{photo_key}")
+    return newly_added_url
+
+
 def render_stock_photo_picker(source_label, search_fn, default_query, state_prefix):
     """
     Renders search input + button + thumbnail grid + selection checkboxes
@@ -455,6 +511,278 @@ def try_code_variants(call_fn, code):
         if "error" not in result:
             return result, v
     return result, None
+
+
+def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files):
+    """
+    Batch flow for creating MULTIPLE full Tickets from one document that
+    describes several distinct excursions:
+    1. Reuse the URL/document(s) already provided above, detect distinct
+       excursions, let the human explicitly SELECT which to create + assign
+       each its own Ticket Code and Modality Code
+    2. Review each SELECTED one individually - its OWN focused AI extraction
+       (via a per-item hint), so excursions never get mixed up
+    3. Publish all of them SEQUENTIALLY - each gets its own full
+       create-ticket -> create-option -> deactivate sequence, with its own
+       clear success/failure status (not one opaque batch call)
+    """
+    if "mt_phase" not in st.session_state:
+        st.session_state.mt_phase = "gather"
+
+    # ------------------------------------------------------------------
+    # PHASE 1: detect excursions from the source already provided above
+    # ------------------------------------------------------------------
+    if st.session_state.mt_phase == "gather":
+        if not (tk_url or tk_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Detect Excursions", disabled=not (tk_url or tk_files)):
+            with st.spinner("Gathering content and detecting distinct excursions..."):
+                try:
+                    combined_parts = []
+                    if tk_url:
+                        combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
+                    for uploaded in (tk_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        os.remove(tmp_path)
+
+                    raw_text = "\n\n".join(combined_parts)
+                    detected = detect_ticket_variants(raw_text)
+
+                    candidates = []
+                    for e in detected:
+                        candidates.append({"label": e.get("label", ""), "ticket_code": "", "modality_code": "Standard", "selected": True})
+                    if not candidates:
+                        candidates = [{"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True}]
+
+                    st.session_state.mt_raw_text = raw_text
+                    st.session_state.mt_candidates = candidates
+                    st.session_state.mt_phase = "prepare_queue"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Detection failed: {e}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: explicitly SELECT which excursions to create as Tickets
+    # ------------------------------------------------------------------
+    if st.session_state.mt_phase == "prepare_queue":
+        st.subheader("Excursions detected - select which ones to create as Tickets")
+        st.caption("Untick any that don't apply - only SELECTED excursions will be reviewed and published. "
+                  "Each needs its own unique Ticket Code and a valid Modality Code (no / \\ + -).")
+
+        candidates = st.session_state.mt_candidates
+        for i, cand in enumerate(candidates):
+            ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
+            with ccol1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mt_sel_{i}")
+            with ccol2:
+                cand["label"] = st.text_input("Excursion", value=cand["label"], key=f"mt_label_{i}")
+            with ccol3:
+                cand["ticket_code"] = st.text_input("Ticket Code", value=cand["ticket_code"], key=f"mt_code_{i}", placeholder="e.g. BALI-T1")
+            with ccol4:
+                cand["modality_code"] = st.text_input("Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}")
+
+        if st.button("➕ Add another excursion manually"):
+            candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True})
+            st.rerun()
+
+        invalid_codes = []
+        new_queue = []
+        for cand in candidates:
+            if not cand["selected"]:
+                continue
+            code = cand["ticket_code"].strip()
+            mod_code = cand["modality_code"].strip()
+            if not code or not mod_code:
+                continue
+            if any(c in mod_code for c in ["/", "\\", "+", "-"]):
+                invalid_codes.append(mod_code)
+                continue
+            new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None, "confirmed": False})
+
+        if invalid_codes:
+            st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
+
+        st.caption(f"**{len(new_queue)}** ticket(s) ready to review.")
+
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+            st.session_state.mt_queue = new_queue
+            st.session_state.mt_queue_index = 0
+            st.session_state.mt_phase = "reviewing"
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 3: review each selected ticket individually, one at a time
+    # ------------------------------------------------------------------
+    if st.session_state.mt_phase == "reviewing":
+        idx = st.session_state.mt_queue_index
+        queue = st.session_state.mt_queue
+        current = queue[idx]
+
+        st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: **{current['label'] or current['ticket_code']}** (code: {current['ticket_code']})")
+        st.progress(idx / len(queue))
+
+        if current["data"] is None:
+            with st.spinner(f"Extracting details focused on '{current['label']}'..."):
+                current["data"] = extract_ticket_data(st.session_state.mt_raw_text, variant_hint=current["label"])
+                current["data"]["image_urls"] = []
+
+        data = current["data"]
+
+        editable_field("Ticket name", data, "ticket_name", widget="text_input")
+        editable_field("Description", data, "description", widget="text_area", height=120)
+        editable_field("City", data, "city", widget="text_input")
+        editable_field("Duration (hours)", data, "duration", widget="number_input")
+
+        inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
+        def _save_mt_includes(edf, data=data):
+            data["includes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
+        editable_table("Includes", inc_df, f"mt_includes_{idx}", on_save=_save_mt_includes)
+
+        exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
+        def _save_mt_excludes(edf, data=data):
+            data["excludes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
+        editable_table("Excludes", exc_df, f"mt_excludes_{idx}", on_save=_save_mt_excludes)
+
+        mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
+        mp_df = pd.DataFrame(mp_default)
+        def _save_mt_mp(edf, data=data):
+            data["meeting_points"] = [
+                {"description": str(r["Description"]).strip(), "variable_location": str(r["Description"]).strip().lower() == "hotel lobby"}
+                for _, r in edf.iterrows() if str(r.get("Description", "")).strip()
+            ]
+        editable_table("Meeting Points", mp_df, f"mt_mp_{idx}", on_save=_save_mt_mp)
+
+        st.markdown("**Start Time(s)**")
+        tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+        def _save_mt_timetables(edf, data=data):
+            data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+        editable_table("Start Time(s)", tt_df, f"mt_timetables_{idx}", on_save=_save_mt_timetables)
+        if not data.get("time_tables"):
+            st.warning("⚠️ No start time set yet - add at least one above before continuing.")
+
+        data["operational_days"] = st.multiselect(
+            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mt_op_days_{idx}"
+        )
+
+        st.markdown(f"**Pricing (Distribution mode, in {currency})**")
+        st.caption("Batch mode uses Distribution pricing only, for simplicity - use the normal single-Ticket "
+                  "Create flow afterward if you need Occupancy or Service pricing for a specific one.")
+        pcol1, pcol2, pcol3 = st.columns(3)
+        with pcol1:
+            data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(data.get("base_adult_price", 0) or 0), key=f"mt_adult_{idx}")
+        with pcol2:
+            data["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(data.get("base_children_price", 0) or 0), key=f"mt_child_{idx}")
+        with pcol3:
+            data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(data.get("base_infant_price", 0) or 0), key=f"mt_infant_{idx}")
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key=f"mt_start_date_{idx}")
+        with dcol2:
+            data["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=data.get("end_date", ""), key=f"mt_end_date_{idx}")
+        if data.get("pricing_notes"):
+            st.warning(f"⚠️ {data['pricing_notes']}")
+
+        st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
+        mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
+        if st.button("Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.mt_raw_text, data, mt_clarify_q)
+                st.session_state[f"mt_clarify_result_{idx}"] = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                st.rerun()
+        if st.session_state.get(f"mt_clarify_result_{idx}"):
+            r = st.session_state[f"mt_clarify_result_{idx}"]
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
+
+        price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
+        time_valid = bool(data.get("time_tables"))
+        can_continue = price_valid and time_valid
+
+        is_last = idx == len(queue) - 1
+        btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
+        if st.button(btn_label, type="primary", disabled=not can_continue):
+            current["confirmed"] = True
+            if is_last:
+                st.session_state.mt_phase = "publishing"
+            else:
+                st.session_state.mt_queue_index += 1
+            st.rerun()
+        if not price_valid:
+            st.info("Add at least one non-zero price before continuing.")
+        if not time_valid:
+            st.info("Add at least one Start Time before continuing.")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 4: publish all confirmed Tickets, ONE BY ONE
+    # ------------------------------------------------------------------
+    if st.session_state.mt_phase == "publishing":
+        queue = st.session_state.mt_queue
+        st.subheader(f"Ready to publish {len(queue)} Tickets - one by one")
+        for q in queue:
+            st.write(f"- **{q['ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}")
+
+        if st.button("🚀 Publish all (one by one)", type="primary"):
+            for q in queue:
+                with st.spinner(f"Publishing '{q['ticket_code']}'..."):
+                    pre_config = TicketHumanPreConfig(
+                        supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
+                        modality_code=q["modality_code"], on_request=on_request,
+                        days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                    )
+                    payloads = build_ticket_payloads(pre_config, q["data"], client)
+                    if payloads["main_ticket_error"] or payloads["ticket_option_error"]:
+                        st.error(f"❌ **{q['ticket_code']}**: invalid payload - "
+                                f"{payloads['main_ticket_error'] or payloads['ticket_option_error']}")
+                        continue
+                    if not payloads["geolocation_resolved"]:
+                        st.error(f"❌ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
+                                f"field and create this one individually via the normal Create flow instead.")
+                        continue
+
+                    creation_payload = dict(payloads["main_ticket_payload"])
+                    creation_payload["active"] = True
+                    result = client.create_ticket(supplier_id, creation_payload)
+                    if "error" in result:
+                        st.error(f"❌ **{q['ticket_code']}**: creation failed - {result}")
+                        continue
+                    real_code = result.get("code", payloads["main_ticket_code"])
+
+                    option_result = None
+                    for attempt in range(6):
+                        option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
+                        if "error" not in option_result:
+                            break
+                        time.sleep(2)
+                    if "error" in option_result:
+                        st.error(f"❌ **{q['ticket_code']}** (created as `{real_code}`): option creation failed - {option_result}")
+                        continue
+
+                    deactivate_payload = dict(creation_payload)
+                    deactivate_payload["active"] = False
+                    deactivate_payload["code"] = real_code
+                    deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
+                    if "error" in deactivate_result:
+                        st.warning(f"⚠️ **{q['ticket_code']}**: created and published, but switching back to "
+                                  f"inactive failed - {deactivate_result}")
+                    else:
+                        st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}`.")
+
+        if st.button("🆕 Start a new batch"):
+            for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+        return
 
 
 def render_ticket_flow(client):
@@ -639,12 +967,24 @@ def render_ticket_flow(client):
                                 accept_multiple_files=True, key="tk_files")
     tk_hint = st.text_input("Extraction hint (optional)", key="tk_hint")
 
+    multi_ticket_mode = False
+    if action == "create":
+        multi_ticket_mode = st.checkbox(
+            "📦 This document describes MULTIPLE excursions - I want to create several as separate Tickets",
+            help="The app will detect distinct excursions in this document, let you pick which ones to "
+                 "create, then review and publish each one individually, one at a time."
+        )
+    if multi_ticket_mode:
+        render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files)
+        return
+
     if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
         with st.spinner("Gathering content..."):
             try:
                 combined_parts = []
                 doc_raw_images = []
                 doc_image_urls = []
+                seen_image_hashes = set()
                 if tk_url:
                     combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
                 for uploaded in (tk_files or []):
@@ -653,7 +993,7 @@ def render_ticket_flow(client):
                         tmp.write(uploaded.getbuffer())
                         tmp_path = tmp.name
                     combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
-                    embedded_images = extract_images(tmp_path)
+                    embedded_images = extract_images(tmp_path, seen_hashes=seen_image_hashes)
                     if embedded_images:
                         for i, (img_bytes, ext) in enumerate(embedded_images):
                             doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
@@ -683,11 +1023,12 @@ def render_ticket_flow(client):
                         st.session_state.tk_pending_doc_raw_images = doc_raw_images
                     else:
                         data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
-                        data["image_urls"] = (get_page_images(tk_url) if tk_url else []) + doc_image_urls
+                        data["image_urls"] = []
                         st.session_state.tk_extracted = data
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
                         st.session_state.tk_doc_raw_images = doc_raw_images
+                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
                         st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
@@ -707,12 +1048,13 @@ def render_ticket_flow(client):
                         human_hint=st.session_state.get("tk_pending_hint")
                     )
                     tk_pending_url = st.session_state.get("tk_pending_url")
-                    data["image_urls"] = (get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])
+                    data["image_urls"] = []
 
                     st.session_state.tk_extracted = data
                     st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
                     st.session_state.tk_payloads = None
                     st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
+                    st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
                     st.session_state.tk_pending_variants = None
                     st.session_state.tk_pending_raw_text = None
                     st.rerun()
@@ -809,10 +1151,25 @@ def render_ticket_flow(client):
                         st.session_state._tk_pending_images_update = "\n".join(new_list)
                         st.rerun()
 
+                if st.session_state.get("tk_hosted_image_candidates"):
+                    with st.expander(f"🖼️ Images found ({len(st.session_state.tk_hosted_image_candidates)}) - from the page/document", expanded=True):
+                        tk_url_selected = render_url_image_picker(st.session_state.tk_hosted_image_candidates, "tk_found_images")
+                        if tk_url_selected:
+                            current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                            new_list = current + tk_url_selected
+                            data["image_urls"] = new_list
+                            st.session_state._tk_pending_images_update = "\n".join(new_list)
+                            st.rerun()
+
                 if st.session_state.get("tk_doc_raw_images"):
-                    with st.expander(f"📥 Download images found ({len(st.session_state.tk_doc_raw_images)})"):
-                        for fname, img_bytes in st.session_state.tk_doc_raw_images:
-                            st.download_button("⬇️ " + fname, data=img_bytes, file_name=fname, key=f"tk_dl_{fname}")
+                    with st.expander(f"📥 Images extracted from your document(s) ({len(st.session_state.tk_doc_raw_images)}) - need hosting"):
+                        tk_doc_added = render_doc_image_picker(st.session_state.tk_doc_raw_images, "tk_doc_images")
+                        if tk_doc_added:
+                            current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                            new_list = current + [tk_doc_added]
+                            data["image_urls"] = new_list
+                            st.session_state._tk_pending_images_update = "\n".join(new_list)
+                            st.rerun()
 
         st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
@@ -1163,7 +1520,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-fix-starttime-format — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-multi-ticket-batch — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1455,6 +1812,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
             doc_image_urls = []
             doc_raw_images = []  # [(filename, bytes), ...] - always kept as a guaranteed fallback
+            seen_image_hashes = set()  # shared across all documents in this batch, so a logo repeated across files is only extracted once
             for uploaded in (uploaded_files or []):
                 doc_names.append(uploaded.name)
                 suffix = os.path.splitext(uploaded.name)[1]
@@ -1463,7 +1821,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     tmp_path = tmp.name
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
 
-                embedded_images = extract_images(tmp_path)
+                embedded_images = extract_images(tmp_path, seen_hashes=seen_image_hashes)
                 if embedded_images:
                     for i, (img_bytes, ext) in enumerate(embedded_images):
                         doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
@@ -1506,13 +1864,14 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.pending_doc_raw_images = doc_raw_images
                 else:
                     data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                    data["image_urls"] = (get_page_images(url) if url else []) + doc_image_urls
+                    data["image_urls"] = []  # human picks from candidates below, doesn't get them auto-included
                     st.session_state.extracted = data
-                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                    st.session_state.images_text_value = ""
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
                     st.session_state.doc_raw_images = doc_raw_images
+                    st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(url) if url else []) + doc_image_urls))
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
             st.error(f"Extraction failed: {e}")
@@ -1533,14 +1892,15 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = (get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])
+                data["image_urls"] = []
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
 
                 st.session_state.extracted = data
-                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                st.session_state.images_text_value = ""
                 st.session_state.raw_preview = preview
                 st.session_state.payloads = None
                 st.session_state.doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
+                st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
                 st.session_state.pending_url = None
@@ -1620,17 +1980,25 @@ if st.session_state.extracted:
             if data["image_urls"] == [FALLBACK_IMAGE]:
                 st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
 
+            if st.session_state.get("hosted_image_candidates"):
+                with st.expander(f"🖼️ Images found ({len(st.session_state.hosted_image_candidates)}) - from the page/document", expanded=True):
+                    newly_selected = render_url_image_picker(st.session_state.hosted_image_candidates, "found_images")
+                    if newly_selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + newly_selected
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        st.rerun()
+
             if st.session_state.get("doc_raw_images"):
-                with st.expander(f"📥 Download images found in your document(s) ({len(st.session_state.doc_raw_images)} found)"):
-                    st.caption("These were extracted from your document. Download any you need, host them "
-                              "wherever you normally do (or wherever auto-upload didn't already work), then "
-                              "paste the resulting URL into the Image URLs box above.")
-                    for fname, img_bytes in st.session_state.doc_raw_images:
-                        dcol1, dcol2 = st.columns([1, 3])
-                        with dcol1:
-                            st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"dl_{fname}")
-                        with dcol2:
-                            st.caption(fname)
+                with st.expander(f"📥 Images extracted from your document(s) ({len(st.session_state.doc_raw_images)}) - need hosting"):
+                    newly_added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")
+                    if newly_added:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + [newly_added]
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        st.rerun()
 
             default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
             with st.expander("🖼️ Or search free stock photos (Pexels)"):
