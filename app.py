@@ -1163,7 +1163,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-fix-ai-clarification-truncation — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-fix-starttime-format — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1586,9 +1586,9 @@ if st.session_state.extracted:
 
             tcol1, tcol2 = st.columns(2)
             with tcol1:
-                data["start_time"] = st.text_input("Start Time (HH:MM, optional)", value=data.get("start_time", ""), key="ct_start_time")
+                data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional - e.g. 08:00:00)", value=data.get("start_time", ""), key="ct_start_time")
             with tcol2:
-                data["end_time"] = st.text_input("End Time (HH:MM, optional)", value=data.get("end_time", ""), key="ct_end_time")
+                data["end_time"] = st.text_input("End Time (HH:MM:SS, optional - e.g. 18:00:00)", value=data.get("end_time", ""), key="ct_end_time")
 
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
