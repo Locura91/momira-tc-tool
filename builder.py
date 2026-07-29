@@ -116,24 +116,31 @@ def build_closed_tour_payloads(
         ))
 
     # 2. Build Main Tour Payload (ContractClosedTourVO)
+    # NOTE: these fields are required `str`/`list` types on DatasheetEN /
+    # ContractClosedTourVO. `.get(key, default)` only falls back to `default`
+    # when the key is ABSENT - if the AI extraction explicitly returned
+    # `None`, `.get()` still returns None and pydantic raises a
+    # ValidationError. `or <fallback>` below guards against that (same class
+    # of bug that used to crash the Ticket path unguarded - see
+    # build_ticket_payloads below).
     datasheet_en = DatasheetEN(
-        name=extracted_dmc_data.get("tour_name", ""),
-        description=extracted_dmc_data.get("description", ""),
-        hotels=extracted_dmc_data.get("hotels_text", ""),
+        name=extracted_dmc_data.get("tour_name") or "",
+        description=extracted_dmc_data.get("description") or "",
+        hotels=extracted_dmc_data.get("hotels_text") or "",
         voucherRemarks="",
-        included=extracted_dmc_data.get("included", ""),
-        excluded=extracted_dmc_data.get("excluded", ""),
+        included=extracted_dmc_data.get("included") or "",
+        excluded=extracted_dmc_data.get("excluded") or "",
         meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
         remarksTitle="Policy",
-        remarksDescription=extracted_dmc_data.get("policy_remarks", "")
+        remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
     )
 
     main_tour = ContractClosedTourVO(
         supplier=pre_config.supplier_code or pre_config.supplier_id,
         userId=pre_config.user_id,
-        code=extracted_dmc_data.get("tour_code", f"TOUR-{pre_config.provider_code}"),
+        code=extracted_dmc_data.get("tour_code") or f"TOUR-{pre_config.provider_code}",
         providerCode=pre_config.provider_code,
-        name=extracted_dmc_data.get("tour_name", ""),
+        name=extracted_dmc_data.get("tour_name") or "",
         datasheets=build_datasheets(datasheet_en),
         images=extracted_dmc_data.get("image_urls", []),
         itinerary=validated_itinerary,
@@ -249,20 +256,27 @@ def build_ticket_payloads(
         ))
 
     time_tables_list = extracted_ticket_data.get("time_tables", [])
-    datasheet_en = TicketDatasheetEN(
-        name=extracted_ticket_data.get("ticket_name", ""),
-        description=extracted_ticket_data.get("description", ""),
-        meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
-        departureTime=time_tables_list[0] if time_tables_list else "",
-        voucherRemarks=extracted_ticket_data.get("voucher_remarks", ""),
-        includes=extracted_ticket_data.get("includes", []),
-        excludes=extracted_ticket_data.get("excludes", []),
-        activityType=extracted_ticket_data.get("activity_type"),
-    )
 
     main_ticket_error = None
     main_ticket_payload = None
     try:
+        # NOTE: TicketDatasheetEN.name/description are required `str` fields.
+        # `.get(key, default)` only applies the default when the key is ABSENT -
+        # if the AI extraction explicitly returned `None` for a field, `.get()`
+        # still returns None and pydantic raises ValidationError. That crash
+        # used to happen here, outside any try/except, and took down the whole
+        # batch/app. It's now caught below (via `or ""`  defensive coercion
+        # plus this try block), and reported as a per-item error instead.
+        datasheet_en = TicketDatasheetEN(
+            name=extracted_ticket_data.get("ticket_name") or "",
+            description=extracted_ticket_data.get("description") or "",
+            meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
+            departureTime=time_tables_list[0] if time_tables_list else "",
+            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or "",
+            includes=extracted_ticket_data.get("includes") or [],
+            excludes=extracted_ticket_data.get("excludes") or [],
+            activityType=extracted_ticket_data.get("activity_type"),
+        )
         main_ticket_kwargs = dict(
             code=pre_config.ticket_code,
             name=extracted_ticket_data.get("ticket_name", ""),
@@ -294,6 +308,30 @@ def build_ticket_payloads(
     ticket_option_payload = None
     ticket_option_error = None
     try:
+        # Pricing is 3 mutually-exclusive modes (DISTRIBUTION/OCCUPANCY/SERVICE).
+        # The API doesn't ignore the fields belonging to the two UNSELECTED
+        # modes - it validates/stores whatever is sent. Historically all three
+        # fields were sent unconditionally, so switching modes in the UI left
+        # stale values (e.g. an old Distribution adult price) sitting in the
+        # payload alongside the new Occupancy/Service data and caused
+        # conflicts. Zero out the two unselected modes' fields here, based on
+        # the actually-selected price_type, regardless of what's still
+        # sitting in the extracted/session data.
+        selected_price_type = extracted_ticket_data.get("price_type") or "OCCUPANCY"
+        base_adult_price = float(extracted_ticket_data.get("base_adult_price", 0) or 0)
+        base_children_price = float(extracted_ticket_data.get("base_children_price", 0) or 0)
+        base_infant_price = float(extracted_ticket_data.get("base_infant_price", 0) or 0)
+        base_service_price = float(extracted_ticket_data.get("base_service_price", 0) or 0)
+        occupancy_prices = extracted_ticket_data.get("occupancy_prices", [])
+        if selected_price_type != "DISTRIBUTION":
+            base_adult_price = 0.0
+            base_children_price = 0.0
+            base_infant_price = 0.0
+        if selected_price_type != "SERVICE":
+            base_service_price = 0.0
+        if selected_price_type != "OCCUPANCY":
+            occupancy_prices = []
+
         ticket_option = ContractTicketModalityVO(
             code=pre_config.modality_code,
             operationalDays=extracted_ticket_data.get("operational_days", WEEKDAY_NAMES.copy()),
@@ -307,12 +345,12 @@ def build_ticket_payloads(
             disallowAdult=bool(extracted_ticket_data.get("disallow_adult", False)),
             startDate=extracted_ticket_data.get("start_date", ""),
             endDate=extracted_ticket_data.get("end_date", ""),
-            baseAdultPrice=float(extracted_ticket_data.get("base_adult_price", 0) or 0),
-            baseChildrenPrice=float(extracted_ticket_data.get("base_children_price", 0) or 0),
-            baseInfantPrice=float(extracted_ticket_data.get("base_infant_price", 0) or 0),
-            baseServicePrice=float(extracted_ticket_data.get("base_service_price", 0) or 0),
-            occupancyPrices=extracted_ticket_data.get("occupancy_prices", []),
-            priceType=extracted_ticket_data.get("price_type", "DISTRIBUTION"),
+            baseAdultPrice=base_adult_price,
+            baseChildrenPrice=base_children_price,
+            baseInfantPrice=base_infant_price,
+            baseServicePrice=base_service_price,
+            occupancyPrices=occupancy_prices,
+            priceType=selected_price_type,
             maxPassengers=pre_config.max_passengers,
             minPassengers=pre_config.min_passengers,
             childAgeMin=extracted_ticket_data.get("child_age_min", 6),
