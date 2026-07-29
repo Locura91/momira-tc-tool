@@ -377,14 +377,14 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     )
                     payloads = build_closed_tour_payloads(pre_config, q["data"], client)
                     if payloads["tour_option_error"]:
-                        st.error(f"❌ **{q['code']}**: invalid payload - {payloads['tour_option_error']}")
+                        show_publish_error(f"prepare **{q['code']}**'s payload", payloads['tour_option_error'])
                         continue
                     result, used_code = try_code_variants(
                         lambda c: client.create_closed_tour_option(supplier_id, c, payloads["tour_option_payload"]),
                         existing_tour_code
                     )
                     if "error" in result:
-                        st.error(f"❌ **{q['code']}**: failed - {result}")
+                        show_publish_error(f"publish **{q['code']}**", result)
                     else:
                         st.success(f"✅ **{q['code']}**: published successfully (code `{used_code}`).")
 
@@ -489,6 +489,43 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
         if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
             return selected_urls
     return None
+
+
+def show_publish_error(context_label, raw_error):
+    """
+    Shows a simple, human-readable error summary by default - extracted from
+    Travel Compositor's own nested error message when possible - with the
+    full raw technical detail available in an expander for anyone who needs
+    to see or report the exact API response.
+    """
+    extracted_detail = None
+    try:
+        if isinstance(raw_error, dict) and "message" in raw_error:
+            inner = raw_error["message"]
+            if isinstance(inner, str):
+                try:
+                    inner_parsed = json.loads(inner)
+                    if isinstance(inner_parsed, dict) and "error" in inner_parsed:
+                        errs = inner_parsed["error"]
+                        extracted_detail = " / ".join(str(e) for e in errs) if isinstance(errs, list) else str(errs)
+                except (json.JSONDecodeError, TypeError):
+                    extracted_detail = inner
+            else:
+                extracted_detail = str(inner)
+        elif isinstance(raw_error, str):
+            # e.g. a Pydantic validation error - often multi-line, so keep the summary to the first line
+            first_line = raw_error.strip().split("\n")[0]
+            extracted_detail = first_line + ("..." if "\n" in raw_error.strip() else "")
+    except Exception:
+        pass
+
+    if extracted_detail:
+        st.error(f"❌ Couldn't {context_label}: {extracted_detail}")
+    else:
+        st.error(f"❌ Couldn't {context_label}.")
+
+    with st.expander("🔧 Technical details"):
+        st.code(str(raw_error))
 
 
 def try_code_variants(call_fn, code):
@@ -750,8 +787,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     )
                     payloads = build_ticket_payloads(pre_config, q["data"], client)
                     if payloads["main_ticket_error"] or payloads["ticket_option_error"]:
-                        st.error(f"❌ **{q['ticket_code']}**: invalid payload - "
-                                f"{payloads['main_ticket_error'] or payloads['ticket_option_error']}")
+                        show_publish_error(f"prepare **{q['ticket_code']}**'s payload",
+                                          payloads['main_ticket_error'] or payloads['ticket_option_error'])
                         continue
                     if not payloads["geolocation_resolved"]:
                         st.error(f"❌ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
@@ -762,7 +799,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     creation_payload["active"] = True
                     result = client.create_ticket(supplier_id, creation_payload)
                     if "error" in result:
-                        st.error(f"❌ **{q['ticket_code']}**: creation failed - {result}")
+                        show_publish_error(f"create **{q['ticket_code']}**", result)
                         continue
                     real_code = result.get("code", payloads["main_ticket_code"])
 
@@ -773,7 +810,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             break
                         time.sleep(2)
                     if "error" in option_result:
-                        st.error(f"❌ **{q['ticket_code']}** (created as `{real_code}`): option creation failed - {option_result}")
+                        show_publish_error(f"create **{q['ticket_code']}**'s option (created as `{real_code}`)", option_result)
                         continue
 
                     deactivate_payload = dict(creation_payload)
@@ -1460,7 +1497,7 @@ def render_ticket_flow(client):
                         creation_payload["active"] = True
                         result = client.create_ticket(supplier_id, creation_payload)
                         if "error" in result:
-                            st.error(f"❌ Ticket creation failed: {result}")
+                            show_publish_error("create the ticket", result)
                         else:
                             real_code = result.get("code", payloads["main_ticket_code"])
                             st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
@@ -1473,9 +1510,8 @@ def render_ticket_flow(client):
                                 time.sleep(2)
 
                             if "error" in option_result:
-                                st.error(f"❌ Ticket option creation failed after 6 attempts: {option_result}\n\n"
-                                        f"💡 Note: adjustments to a Ticket require it to be ACTIVE - inactive "
-                                        f"tickets aren't visible via the API.")
+                                show_publish_error("create the ticket option after 6 attempts", option_result)
+                                st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
                             else:
                                 st.success("✅ Ticket option created.")
                                 deactivate_payload = dict(creation_payload)
@@ -1495,8 +1531,8 @@ def render_ticket_flow(client):
                     elif publish_action == "Add a new option to an existing ticket":
                         result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
                         if "error" in result:
-                            st.error(f"❌ Failed: {result}\n\n💡 Note: adjustments require the Ticket to be "
-                                    f"ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                            show_publish_error("add the option", result)
+                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
                             st.session_state.tk_just_published_code = target_ticket_code
@@ -1508,8 +1544,8 @@ def render_ticket_flow(client):
                         update_payload["code"] = target_ticket_code
                         result = client.update_ticket(supplier_id, update_payload)
                         if "error" in result:
-                            st.error(f"❌ Update failed: {result}\n\n💡 Note: adjustments require the Ticket "
-                                    f"to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                            show_publish_error("update the ticket", result)
+                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ Ticket `{target_ticket_code}` updated.")
                             st.session_state.tk_just_published_code = target_ticket_code
@@ -1521,8 +1557,8 @@ def render_ticket_flow(client):
                         update_option_payload["code"] = modality_code
                         result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
                         if "error" in result:
-                            st.error(f"❌ Option update failed: {result}\n\n💡 Note: adjustments require the "
-                                    f"Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                            show_publish_error("update the option", result)
+                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                         else:
                             st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
                             st.session_state.tk_just_published_code = target_ticket_code
@@ -1598,7 +1634,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-full-review-clarity-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-simplified-error-display — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -2462,7 +2498,7 @@ if st.session_state.extracted:
 
                     result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
                     if "error" in result:
-                        st.error(f"❌ Main tour creation failed: {result}")
+                        show_publish_error("create the main tour", result)
                     else:
                         real_code = result.get('code', payloads['main_tour_code'])
                         st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
@@ -2491,14 +2527,11 @@ if st.session_state.extracted:
                             st.caption(f"(Option succeeded using code: `{used_code}`)")
 
                         if "error" in option_result:
-                            st.error(f"❌ Tour option creation failed after trying both "
-                                    f"`{provider_code}` and `{real_code}`: "
-                                    f"{option_result}\n\n"
-                                    f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
-                                    f"inactive tours aren't visible via the API. The tour was created with "
-                                    f"active:true, but if this keeps failing, check inside Travel Compositor "
-                                    f"whether `{real_code}` shows as active, and try 'Add a new option to "
-                                    f"an existing tour' manually once confirmed.")
+                            show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result)
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                   f"aren't visible via the API. The tour was created with active:true, but if "
+                                   f"this keeps failing, check inside Travel Compositor whether `{real_code}` "
+                                   f"shows as active, and try 'Add a new option to an existing tour' manually once confirmed.")
                         else:
                             st.success("✅ Tour option created.")
                             deactivate_payload = dict(creation_payload)
@@ -2522,12 +2555,10 @@ if st.session_state.extracted:
                         target_tour_code
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Tour option creation failed (tried both `{target_tour_code}` and its "
-                                f"CLOSEDTOUR- variant): {option_result}\n\n"
-                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
-                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
-                                f"inside Travel Compositor first, then retry (you can switch it back "
-                                f"to inactive/draft afterward).")
+                        show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel "
+                               f"Compositor first, then retry (you can switch it back to inactive/draft afterward).")
                     else:
                         st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
                         st.session_state.just_published_tour_code = target_tour_code
@@ -2542,11 +2573,9 @@ if st.session_state.extracted:
                         target_tour_code
                     )
                     if "error" in result:
-                        st.error(f"❌ Tour update failed (tried both `{target_tour_code}` and its CLOSEDTOUR- "
-                                f"variant): {result}\n\n"
-                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
-                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
-                                f"inside Travel Compositor first, then retry.")
+                        show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result)
+                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Tour updated using code `{used_code}`.")
                         st.session_state.just_published_tour_code = target_tour_code
@@ -2561,11 +2590,9 @@ if st.session_state.extracted:
                         target_tour_code
                     )
                     if "error" in option_result:
-                        st.error(f"❌ Option update failed (tried both `{target_tour_code}` and its CLOSEDTOUR- "
-                                f"variant): {option_result}\n\n"
-                                f"💡 Note: adjustments to a ClosedTour require it to be ACTIVE - "
-                                f"inactive tours aren't visible via the API. Activate `{target_tour_code}` "
-                                f"inside Travel Compositor first, then retry.")
+                        show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                     else:
                         st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
                         st.session_state.just_published_tour_code = target_tour_code
