@@ -81,14 +81,19 @@ Rules:
   its own entry in supplements (see below) so guests clearly see they can request a different language,
   e.g. {"name": "German-speaking guide (upon request)", "price": 0 unless a price is stated, "on_request": true}.
   The goal is always maximum clarity for the guest: what's the standard language, and what other options exist.
-- policy_remarks: include genuinely relevant policy info such as child age policy, payment/deposit
-  schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include the source document's own
-  cancellation policy/terms here (e.g. "25% charged for cancellations 60-31 days before", "no-show =
-  100% fee", any tiered cancellation percentages/timelines). The actual cancellation policy is ALWAYS
-  fixed at 30 days / 100% regardless of what the source says, and including the source's different
-  wording here would be legally incorrect and contradict the real configured setting. If the source's
-  policy section is ONLY about cancellation, leave policy_remarks empty entirely rather than including
-  any of it.
+- policy_remarks: include genuinely relevant NON-MONETARY policy info such as age restrictions/supervision
+  requirements, payment/deposit schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include
+  any of the following from the source document, since Momira (as tour operator) applies its own fee
+  structure by law rather than the supplier's commercial terms - including the supplier's numbers here
+  would be legally incorrect and contradict the real configured settings:
+  (1) the source's own cancellation policy/terms (e.g. "25% charged for cancellations 60-31 days before",
+      "no-show = 100% fee", any tiered cancellation percentages/timelines) - cancellation is ALWAYS fixed
+      at 30 days / 100% regardless of what the source says.
+  (2) any child discount PERCENTAGE or fee (e.g. "children under 12 pay 50%", "child rate is 70% of
+      adult price") - it's fine to keep non-monetary child age policy (e.g. "must be accompanied by an
+      adult", "minimum age 12"), just never the supplier's stated discount percentage/fee itself.
+  If the source's policy section is ONLY about cancellation or child pricing percentages, leave
+  policy_remarks empty entirely rather than including any of it.
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM). Leave both as empty strings if no specific time is stated.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
