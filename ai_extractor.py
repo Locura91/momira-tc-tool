@@ -652,7 +652,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
-        "price_type": "DISTRIBUTION", "base_service_price": 0, "occupancy_prices": [],
+        "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -700,7 +700,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "time_tables": [],
         "supplements": [], "pricing_notes": "", "stop_sales": [],
-        "price_type": "DISTRIBUTION", "base_service_price": 0, "occupancy_prices": [],
+        "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
