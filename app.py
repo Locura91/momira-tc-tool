@@ -714,7 +714,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if current["data"] is None:
             with st.spinner(f"Extracting details focused on '{current['label']}'..."):
                 current["data"] = extract_ticket_data(st.session_state.mt_raw_text, variant_hint=current["label"])
-                current["data"]["image_urls"] = []
+                current["data"]["image_urls"] = [FALLBACK_IMAGE]
 
         data = current["data"]
 
@@ -756,7 +756,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
         editable_table("Start Time(s)", tt_df, f"mt_timetables_{idx}", on_save=_save_mt_timetables)
         if not data.get("time_tables"):
-            st.warning("⚠️ No start time set yet - add at least one above before continuing.")
+            st.caption("ℹ️ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mt_op_days_{idx}"
@@ -797,8 +797,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
 
         price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
-        time_valid = bool(data.get("time_tables"))
-        can_continue = price_valid and time_valid
+        can_continue = price_valid
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
@@ -811,8 +810,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             st.rerun()
         if not price_valid:
             st.info("Add at least one non-zero price before continuing.")
-        if not time_valid:
-            st.info("Add at least one Start Time before continuing.")
         return
 
     # ------------------------------------------------------------------
@@ -1321,7 +1318,7 @@ def render_ticket_flow(client):
             data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
         editable_table("Start Time(s)", tt_df, "tk_timetables", on_save=_save_tk_timetables)
         if not data.get("time_tables"):
-            st.warning("⚠️ No start time set for this Ticket yet - add at least one above before publishing.")
+            st.caption("ℹ️ No start time set yet - optional, but add one if the ticket has a fixed departure time.")
 
         st.subheader("Departure Schedule")
         if data.get("schedule_notes"):
@@ -1399,15 +1396,22 @@ def render_ticket_flow(client):
                       "infants are always free and excluded automatically. If your source shows a range "
                       "like '3-5' at one price, add ONE row per exact number (3, 4, and 5) all with that "
                       "same price - use the button below to auto-expand a range for you.")
-            occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 1), "Price": o.get("amount", 0)}
-                       for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 1, "Price": 0}]
+            occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
+                       for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
             occ_df = pd.DataFrame(occ_rows)
             def _save_occupancy(edf, data=data):
                 data["occupancy_prices"] = [
-                    {"occupancy": int(r.get("Occupancy (exact # pax)", 1) or 1), "amount": float(r.get("Price", 0) or 0)}
+                    {"occupancy": int(r.get("Occupancy (exact # pax)", 2) or 2), "amount": float(r.get("Price", 0) or 0)}
                     for _, r in edf.iterrows()
                 ]
             editable_table("Occupancy Price Tiers", occ_df, "tk_occupancy", on_save=_save_occupancy)
+
+            occ_has_solo = any(o.get("occupancy") == 1 for o in data.get("occupancy_prices", []))
+            if not occ_has_solo:
+                st.warning("⚠️ No price for **1 pax (solo traveler)** yet - this needs to be added manually. "
+                          "Solo pricing is often different from the per-person rate when sharing (sometimes "
+                          "higher, sometimes not offered at all), so it can't be safely defaulted from the "
+                          "other rows - check the source or confirm with the supplier.")
 
             with st.expander("🔢 Auto-expand a range (e.g. '3-5' at one price) into individual rows"):
                 rcol1, rcol2, rcol3 = st.columns(3)
@@ -1524,8 +1528,7 @@ def render_ticket_flow(client):
         if not price_valid:
             st.error("Add at least one non-zero price (Adult/Child/Infant) before continuing.")
 
-        time_valid = bool(data.get("time_tables"))
-        can_build = price_valid and time_valid
+        can_build = price_valid
 
         if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
@@ -1776,7 +1779,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-code-availability-check — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-fix-multi-ticket-missing-image — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
