@@ -498,6 +498,11 @@ Extract:
 - duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
   (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
+- is_private: true if the source describes this as a PRIVATE experience (e.g. "private tour", "private
+  transfers", "private guide", "exclusively for your group") as opposed to a joint/shared/group/public
+  one (e.g. "joint public tour", "shared transfer", "group tour"). This is a genuine selling point worth
+  flagging clearly - a human will use it to label the Modality Code. If the source doesn't specify either
+  way, default to false rather than guessing.
 - base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
   CRITICAL RULE for base_children_price specifically: if children are allowed (not disallow_children) but
   the source gives only ONE price with no distinct child rate, set base_children_price EQUAL to
@@ -542,6 +547,15 @@ Extract:
   (3) Mandatory per-night/per-component seasonal surcharges (pre-calculate the total: rate x actual
       nights/units) are still fine as supplements, since they always apply uniformly and don't compete
       with anything else.
+  (4) CRITICAL - a common real case: if the source has SEPARATE FULL PRICE TABLES per guide language
+      (e.g. "English Speaking Guide" table with its own prices, then a separate "German Speaking Guide"
+      table with DIFFERENT prices), each language is its OWN distinct product with its own real price -
+      NEVER model different guide languages as a supplement (that would just add a small fee on top of
+      one base price, which is wrong - each language has its own genuinely different full price). Extract
+      the PRIMARY/first language's table as the main base_adult_price/base_children_price/base_infant_price,
+      then list every OTHER language found with its own prices clearly in pricing_notes (e.g. "Also
+      available: German Speaking Guide - Adult 91, Superior 100; French Speaking Guide - Adult 92..."),
+      so a human can create each additional language as its own separate Modality.
   Each supplement: {"name": "label", "adult_price": number, "children_price": number,
   "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
 - occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used (this is
@@ -566,7 +580,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 {
   "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
-  "activity_type": "", "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+  "activity_type": "", "is_private": false, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "occupancy_prices": [],
   "child_age_min": 6, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
@@ -586,7 +600,9 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 {
   "multiple_excursions": true or false,
   "excursions": [
-    {"label": "short human-readable label, e.g. 'City Tour in El Gouna'"}
+    {"label": "short human-readable label, e.g. 'City Tour in El Gouna'",
+     "is_private": true if this specific excursion is described as private (private tour/transfer/guide),
+     false if described as joint/shared/group/public, false if not specified either way}
   ]
 }
 If there is only one excursion, set "multiple_excursions": false and "excursions": [] ."""
@@ -629,7 +645,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     defaults = {
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
-        "activity_type": None, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+        "activity_type": None, "is_private": False, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 6, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
         "disallow_infant": False,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
@@ -652,7 +668,7 @@ when just adding/updating a modality). The source is often just a pricing table 
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
-supplements (simple, always-available, stackable add-ons only - never exclusive alternatives or on-request items, see full prompt's rules on this), pricing_notes.
+supplements (simple, always-available, stackable add-ons only - never exclusive alternatives, different guide languages, or on-request items, see full prompt's rules on this), pricing_notes.
 
 CRITICAL RULE for base_children_price: if the source gives only ONE price with no distinct child rate,
 set base_children_price EQUAL to base_adult_price - NOT 0. A price of 0 specifically means "this
