@@ -980,6 +980,19 @@ def render_ticket_flow(client):
 
         if "ticket_code" in needed:
             ticket_code_in = st.text_input("Ticket Code", value="", placeholder="e.g. JAP-T1", key="tk_ticket_code")
+            if ticket_code_in.strip():
+                if st.button("🔍 Check if this code is available", key="check_ticket_code_available"):
+                    with st.spinner("Checking..."):
+                        check_result = client.get_ticket(supplier_id, ticket_code_in.strip())
+                        st.session_state._tk_code_check_result = check_result
+                        st.session_state._tk_code_check_value = ticket_code_in.strip()
+                if st.session_state.get("_tk_code_check_value") == ticket_code_in.strip() and st.session_state.get("_tk_code_check_result") is not None:
+                    check_result = st.session_state._tk_code_check_result
+                    if "error" in check_result:
+                        st.success(f"✅ `{ticket_code_in.strip()}` is available.")
+                    else:
+                        st.error(f"🚫 `{ticket_code_in.strip()}` is ALREADY TAKEN by an existing ticket "
+                                f"(\"{check_result.get('name', '(unnamed)')}\"). Please choose a different code.")
         if "min_passengers" in needed:
             min_pass_in = st.selectbox("Min Passengers", [1, 2], key="tk_min_pass")
         if "max_passengers" in needed:
@@ -1763,7 +1776,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-multi-modality-on-create — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-code-availability-check — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1931,6 +1944,19 @@ else:
 
     if "provider_code" in needed:
         provider_code_in = st.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
+        if provider_code_in.strip():
+            if st.button("🔍 Check if this code is available", key="check_provider_code_available"):
+                with st.spinner("Checking..."):
+                    check_result = client.get_closed_tour(supplier_id, provider_code_in.strip())
+                    st.session_state._code_check_result = check_result
+                    st.session_state._code_check_value = provider_code_in.strip()
+            if st.session_state.get("_code_check_value") == provider_code_in.strip() and st.session_state.get("_code_check_result") is not None:
+                check_result = st.session_state._code_check_result
+                if "error" in check_result:
+                    st.success(f"✅ `{provider_code_in.strip()}` is available.")
+                else:
+                    st.error(f"🚫 `{provider_code_in.strip()}` is ALREADY TAKEN by an existing tour "
+                            f"(\"{check_result.get('name', '(unnamed)')}\"). Please choose a different code.")
     if "min_pax" in needed:
         min_pax_in = st.selectbox("Min Pax", [1, 2])
     if "max_pax" in needed:
