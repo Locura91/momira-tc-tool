@@ -94,6 +94,12 @@ Rules:
       adult", "minimum age 12"), just never the supplier's stated discount percentage/fee itself.
   If the source's policy section is ONLY about cancellation or child pricing percentages, leave
   policy_remarks empty entirely rather than including any of it.
+- min_child_age, max_child_age: the age range that counts as "child" (for pricing purposes), AND/OR any
+  stated age eligibility restriction (e.g. "children must be at least 12", "not suitable for children
+  under 12 years old", "minimum age: 12"). Both kinds of language should populate these fields - use
+  whichever number range is most specific to what's actually stated. Default to 0/12 only if genuinely
+  nothing about child age is mentioned anywhere in the source - this has been missed before, so actively
+  look for it even in a "Good to know"/notes section, not just a pricing table.
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM). Leave both as empty strings if no specific time is stated.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
@@ -127,7 +133,7 @@ Output this exact JSON structure:
   "policy_remarks": "",
   "itinerary_destinations": [],
   "nights": 0,
-  "start_time": "", "end_time": "",
+  "start_time": "", "end_time": "", "min_child_age": 0, "max_child_age": 12,
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
@@ -444,7 +450,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     defaults = {
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
         "excluded": "", "meeting_point": "", "policy_remarks": "",
-        "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "",
+        "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 0, "max_child_age": 12,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": []
     }
@@ -493,7 +499,11 @@ Extract:
   If only one price is given (no child/infant distinction), put it in base_adult_price and leave others 0.
   If pricing is genuinely absent/blank in the source (e.g. a rate table with no values filled in yet),
   leave these as 0 - do NOT invent numbers - and mention this clearly in pricing_notes.
-- child_age_min, child_age_max: the age range that counts as "child" pricing, if mentioned (else 6/12 as a common default).
+- child_age_min, child_age_max: the age range that counts as "child" pricing, AND/OR any stated age
+  eligibility restriction (e.g. "children must be at least 12", "not applicable for children under 12
+  years old", "minimum age: 12", "age limit: 12"). Both kinds of language should populate these fields -
+  use whichever is most specific to what's actually stated. This has been missed before, so actively
+  look for it anywhere in the source (a "Good to know" section counts, not just a pricing table), else 6/12 as a common default.
 - disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
   type isn't allowed (rare) - otherwise all false.
 - operational_days: list of uppercase weekday names this is available, or all 7 if unclear/daily.
