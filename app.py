@@ -42,6 +42,7 @@ from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
+from geocoding_client import geocode_search
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -1718,6 +1719,35 @@ def render_ticket_flow(client):
                 if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
                     st.caption("Geocoding data © OpenStreetMap contributors")
 
+                with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
+                    st.caption("Broad place names (e.g. 'Bali') often resolve to the centroid of a whole "
+                              "region, which can be far from the actual location. Try something more "
+                              "specific - a landmark, neighborhood, or meeting point name - and pick the "
+                              "correct result below.")
+                    tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query")
+                    if st.button("🔎 Search", key="tk_geo_search_btn"):
+                        with st.spinner("Searching..."):
+                            st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
+                    if st.session_state.get("tk_geo_search_results"):
+                        for gi, candidate in enumerate(st.session_state.tk_geo_search_results):
+                            gcol_info, gcol_btn = st.columns([4, 1])
+                            with gcol_info:
+                                st.write(f"**{candidate['display_name']}**")
+                                st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                            with gcol_btn:
+                                if st.button("Use this", key=f"tk_geo_pick_{gi}"):
+                                    data["manual_latitude"] = candidate["latitude"]
+                                    data["manual_longitude"] = candidate["longitude"]
+                                    pre_config = TicketHumanPreConfig(
+                                        supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                                        currency=currency, modality_code=modality_code, on_request=on_request,
+                                        days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                                    )
+                                    st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                    st.session_state.tk_geo_confirmed = False
+                                    st.session_state.tk_geo_search_results = None
+                                    st.rerun()
+
                 st.session_state.tk_geo_confirmed = st.checkbox(
                     "✅ I've checked this location on the map and it's correct for this ticket",
                     value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
@@ -1731,8 +1761,34 @@ def render_ticket_flow(client):
                     "destination.</div>",
                     unsafe_allow_html=True
                 )
-                st.caption("Enter coordinates manually (e.g. look up the city on Google Maps, right-click "
-                          "the pin → coordinates are shown), then rebuild the payload.")
+                st.caption("Search for the correct location below (easier than looking up exact "
+                          "coordinates), or enter coordinates manually if you already have them.")
+
+                tk_geo_search_query2 = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query2")
+                if st.button("🔎 Search", key="tk_geo_search_btn2"):
+                    with st.spinner("Searching..."):
+                        st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
+                if st.session_state.get("tk_geo_search_results2"):
+                    for gi, candidate in enumerate(st.session_state.tk_geo_search_results2):
+                        gcol_info, gcol_btn = st.columns([4, 1])
+                        with gcol_info:
+                            st.write(f"**{candidate['display_name']}**")
+                            st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                        with gcol_btn:
+                            if st.button("Use this", key=f"tk_geo_pick2_{gi}"):
+                                data["manual_latitude"] = candidate["latitude"]
+                                data["manual_longitude"] = candidate["longitude"]
+                                pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                                    currency=currency, modality_code=modality_code, on_request=on_request,
+                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                                )
+                                st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                st.session_state.tk_geo_confirmed = False
+                                st.session_state.tk_geo_search_results2 = None
+                                st.rerun()
+
+                st.markdown("**Or enter coordinates manually:**")
                 gcol1, gcol2 = st.columns(2)
                 with gcol1:
                     manual_lat = st.number_input("Latitude", value=None, format="%.6f", key="tk_manual_lat", placeholder="e.g. 27.394900")
@@ -1955,7 +2011,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-language-modality-rule-and-batch-multimodality — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-geolocation-search-and-pick — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
