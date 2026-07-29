@@ -72,6 +72,53 @@ ACTION_FIELDS = {
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
 }
 
+def render_seasonal_price_editor(label, target_data, edit_key, currency):
+    """
+    Renders an editable seasonal price list table (Name/Start/End/Single/
+    Double/Triple/Quadruple) bound to target_data["price_list"], matching
+    the exact ClosedTour pricing shape. Reusable for the main modality and
+    for any additional modalities being created in the same batch.
+    """
+    default_price_list = sorted(
+        target_data.get("price_list") or [{
+            "name": "Example row - edit or delete", "startDate": "2027-01-01", "endDate": "2027-12-31",
+            "price": {"singlePrice": {"amount": 0, "currency": currency}, "doublePrice": {"amount": 0, "currency": currency}}
+        }],
+        key=lambda entry: entry.get("startDate", "")
+    )
+    target_data["price_list"] = default_price_list
+
+    price_df_rows = []
+    for entry in default_price_list:
+        price = entry.get("price", {}) or {}
+        def _amt(key, price=price):
+            block = price.get(key)
+            return block.get("amount") if isinstance(block, dict) else None
+        price_df_rows.append({"Name": entry.get("name", ""), "Start Date": entry.get("startDate", ""),
+                              "End Date": entry.get("endDate", ""), "Single": _amt("singlePrice"),
+                              "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
+    price_df = pd.DataFrame(price_df_rows)
+
+    def _save(edited_df, target_data=target_data, currency=currency):
+        def _row_to_entry(row):
+            price = {}
+            for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"), ("Triple", "triplePrice"), ("Quadruple", "quadruplePrice")]:
+                val = row.get(col)
+                if val is not None and not pd.isna(val):
+                    price[key] = {"amount": float(val), "currency": currency}
+            entry = {"startDate": str(row.get("Start Date", "")).strip(), "endDate": str(row.get("End Date", "")).strip(), "price": price}
+            name = str(row.get("Name", "")).strip()
+            if name:
+                entry["name"] = name
+            return entry
+        target_data["price_list"] = sorted(
+            [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "")).strip() and str(r.get("End Date", "")).strip()],
+            key=lambda e: e.get("startDate", "")
+        )
+
+    editable_table(label, price_df, edit_key, on_save=_save)
+
+
 def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
     """
     Shows a table in READ-ONLY display mode by default (clean st.dataframe),
@@ -1372,6 +1419,62 @@ def render_ticket_flow(client):
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
+        if action == "create":
+            st.subheader("➕ Add more Modalities to create right away (optional)")
+            st.caption("Add more ticket variants now (e.g. different guide languages or vehicle classes) - "
+                      "all get created together with a SINGLE deactivation at the end, so you don't need to "
+                      "manually reactivate the Ticket in Travel Compositor between each one. Uses Distribution "
+                      "pricing (Adult/Child/Infant) only - use the normal single-Ticket flow afterward for "
+                      "Occupancy or Service pricing on a specific one.")
+            if "tk_extra_modalities" not in st.session_state:
+                st.session_state.tk_extra_modalities = []
+
+            for i, mod in enumerate(st.session_state.tk_extra_modalities):
+                st.markdown(f"**Modality {i + 2}**")
+                mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
+                with mcol1:
+                    mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"tk_extramod_code_{i}")
+                with mcol2:
+                    mod["hint"] = st.text_input("Focus Hint (e.g. 'German guide')", value=mod["hint"], key=f"tk_extramod_hint_{i}")
+                with mcol3:
+                    st.write("")
+                    if st.button("🗑️ Remove", key=f"tk_extramod_remove_{i}"):
+                        st.session_state.tk_extra_modalities.pop(i)
+                        st.rerun()
+
+                if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
+                    st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
+
+                if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"tk_extramod_extract_{i}", disabled=not mod["code"]):
+                    with st.spinner("Extracting..."):
+                        mod["data"] = extract_ticket_option_only_data(st.session_state.tk_raw_preview, human_hint=mod["hint"])
+                        st.rerun()
+
+                if mod["data"]:
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"tk_extramod_adult_{i}")
+                    with pcol2:
+                        mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"tk_extramod_child_{i}")
+                    with pcol3:
+                        mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"tk_extramod_infant_{i}")
+                    dcol1x, dcol2x = st.columns(2)
+                    with dcol1x:
+                        mod["data"]["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=mod["data"].get("start_date", ""), key=f"tk_extramod_start_{i}")
+                    with dcol2x:
+                        mod["data"]["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=mod["data"].get("end_date", ""), key=f"tk_extramod_end_{i}")
+                    tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                    def _save_extramod_tt(edf, mod=mod):
+                        mod["data"]["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+                    editable_table(f"Start Time(s) - {mod['code']}", tt_df_extra, f"tk_extramod_tt_{i}", on_save=_save_extramod_tt)
+                else:
+                    st.info("Click 'Extract pricing' above to get started for this modality.")
+                st.divider()
+
+            if st.button("➕ Add another Modality", key="tk_add_extramod"):
+                st.session_state.tk_extra_modalities.append({"code": "", "hint": "", "data": None})
+                st.rerun()
+
         st.subheader("Optional Add-ons (Supplements)")
         st.caption("⚠️ Ticket Supplements are always independently stackable - a customer can tick ANY "
                   "combination, and prices simply add up. Only use this for simple add-ons everyone can "
@@ -1514,6 +1617,31 @@ def render_ticket_flow(client):
                                 st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
                             else:
                                 st.success("✅ Ticket option created.")
+
+                                tk_extra_modalities = st.session_state.get("tk_extra_modalities", [])
+                                if tk_extra_modalities:
+                                    st.markdown("**Creating additional modalities...**")
+                                    for mod in tk_extra_modalities:
+                                        if not mod.get("code") or not mod.get("data"):
+                                            st.warning("⚠️ Skipped a modality - missing code or pricing data.")
+                                            continue
+                                        with st.spinner(f"Creating modality '{mod['code']}'..."):
+                                            mod_pre_config = TicketHumanPreConfig(
+                                                supplier_id=supplier_id, ticket_code=ticket_code, currency=currency,
+                                                modality_code=mod["code"], on_request=on_request,
+                                                days_available_before_release=release_days,
+                                                min_passengers=min_passengers, max_passengers=max_passengers
+                                            )
+                                            mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
+                                            if mod_payloads["ticket_option_error"]:
+                                                show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"])
+                                                continue
+                                            mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
+                                            if "error" in mod_option_result:
+                                                show_publish_error(f"create modality '{mod['code']}'", mod_option_result)
+                                            else:
+                                                st.success(f"✅ Modality '{mod['code']}' created.")
+
                                 deactivate_payload = dict(creation_payload)
                                 deactivate_payload["active"] = False
                                 deactivate_payload["code"] = real_code
@@ -1525,6 +1653,7 @@ def render_ticket_flow(client):
                                     st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
                                               f"Ready for human review — activate it inside Travel Compositor when ready.")
                                     st.session_state.tk_just_published_code = real_code
+                                    st.session_state.tk_extra_modalities = []
                                     st.session_state.tk_just_published_supplier_id = supplier_id
                                     st.session_state.tk_just_published_is_inactive = True
 
@@ -1634,7 +1763,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-simplified-error-display — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-29-multi-modality-on-create — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -2292,6 +2421,45 @@ if st.session_state.extracted:
     with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
         st.json(data["price_list"])
 
+    if action == "create":
+        st.subheader("➕ Add more Modalities to create right away (optional)")
+        st.caption("Add more room/cabin/product types now - all get created together with a SINGLE "
+                  "deactivation at the end, so you don't need to manually reactivate the tour in Travel "
+                  "Compositor between each one.")
+        if "extra_modalities" not in st.session_state:
+            st.session_state.extra_modalities = []
+
+        for i, mod in enumerate(st.session_state.extra_modalities):
+            st.markdown(f"**Modality {i + 2}**")
+            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
+            with mcol1:
+                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"extramod_code_{i}")
+            with mcol2:
+                mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"extramod_hint_{i}")
+            with mcol3:
+                st.write("")
+                if st.button("🗑️ Remove", key=f"extramod_remove_{i}"):
+                    st.session_state.extra_modalities.pop(i)
+                    st.rerun()
+
+            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
+                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
+
+            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
+                with st.spinner("Extracting..."):
+                    mod["data"] = extract_option_only_data(st.session_state.raw_preview, human_hint=mod["hint"])
+                    st.rerun()
+
+            if mod["data"]:
+                render_seasonal_price_editor(f"Pricing - {mod['code'] or f'Modality {i + 2}'}", mod["data"], f"extramod_pricing_{i}", currency)
+            else:
+                st.info("Click 'Extract pricing' above to get started for this modality.")
+            st.divider()
+
+        if st.button("➕ Add another Modality"):
+            st.session_state.extra_modalities.append({"code": "", "hint": "", "data": None})
+            st.rerun()
+
     if not is_option_only:
         st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
         st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
@@ -2534,6 +2702,34 @@ if st.session_state.extracted:
                                    f"shows as active, and try 'Add a new option to an existing tour' manually once confirmed.")
                         else:
                             st.success("✅ Tour option created.")
+
+                            extra_modalities = st.session_state.get("extra_modalities", [])
+                            if extra_modalities:
+                                st.markdown("**Creating additional modalities...**")
+                                for mod in extra_modalities:
+                                    if not mod.get("code") or not mod.get("data"):
+                                        st.warning("⚠️ Skipped a modality - missing code or pricing data.")
+                                        continue
+                                    with st.spinner(f"Creating modality '{mod['code']}'..."):
+                                        mod_pre_config = HumanPreConfig(
+                                            supplier_id=payloads["supplier_id"], provider_code=provider_code or _real_provider_code or "XXX-1",
+                                            min_pax=min_pax, max_pax=max_pax, currency=currency,
+                                            modality_code=mod["code"], on_request=on_request,
+                                            days_available_before_release=days_available_before_release
+                                        )
+                                        mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
+                                        if mod_payloads["tour_option_error"]:
+                                            show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["tour_option_error"])
+                                            continue
+                                        mod_result, mod_used_code = try_code_variants(
+                                            lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, mod_payloads["tour_option_payload"]),
+                                            real_code
+                                        )
+                                        if "error" in mod_result:
+                                            show_publish_error(f"create modality '{mod['code']}'", mod_result)
+                                        else:
+                                            st.success(f"✅ Modality '{mod['code']}' created.")
+
                             deactivate_payload = dict(creation_payload)
                             deactivate_payload["active"] = False
                             deactivate_payload["code"] = real_code
@@ -2548,6 +2744,7 @@ if st.session_state.extracted:
                                 st.session_state.just_published_tour_code = real_code
                                 st.session_state.just_published_supplier_id = payloads["supplier_id"]
                                 st.session_state.just_published_is_inactive = True
+                                st.session_state.extra_modalities = []
 
                 elif publish_action == "Add a new option to an existing tour":
                     option_result, used_code = try_code_variants(
