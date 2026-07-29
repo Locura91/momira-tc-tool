@@ -335,6 +335,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
+                    if "price_list" in result["changes"]:
+                        st.session_state[f"_editing_table_mm_pricing_{idx}"] = False
                 st.rerun()
         if st.session_state.get(f"mm_clarify_result_{idx}"):
             r = st.session_state[f"mm_clarify_result_{idx}"]
@@ -821,6 +823,17 @@ def render_ticket_flow(client):
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
+                    tk_field_to_table_key = {
+                        "supplements": "_editing_table_tk_supplements",
+                        "includes": "_editing_table_tk_includes",
+                        "excludes": "_editing_table_tk_excludes",
+                        "meeting_points": "_editing_table_tk_meeting_points",
+                        "time_tables": "_editing_table_tk_timetables",
+                    }
+                    for field_name in result["changes"]:
+                        table_key = tk_field_to_table_key.get(field_name)
+                        if table_key:
+                            st.session_state[table_key] = False
                 st.rerun()
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
@@ -1150,7 +1163,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-occupancy-fix-and-engines — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-fix-ai-clarification-truncation — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -1859,6 +1872,18 @@ if st.session_state.extracted:
             if result.get("changes"):
                 for field_name, new_value in result["changes"].items():
                     data[field_name] = new_value
+                # Force any affected table out of edit mode so it re-renders
+                # fresh from the new data, rather than potentially showing a
+                # stale cached data_editor state from before the AI change.
+                field_to_table_key = {
+                    "supplements": "_editing_table_supplements",
+                    "price_list": "_editing_table_pricing",
+                    "itinerary_destinations": "_editing_table_destinations",
+                }
+                for field_name in result["changes"]:
+                    table_key = field_to_table_key.get(field_name)
+                    if table_key:
+                        st.session_state[table_key] = False
             st.rerun()
     if st.session_state.get("clarify_result"):
         r = st.session_state.clarify_result
