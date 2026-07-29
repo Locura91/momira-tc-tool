@@ -381,7 +381,7 @@ class ContractTicketModalityVO(BaseModel):
     childAgeMin: int = 6
     childAgeMax: int = 12
     occupancyPrices: List[dict] = []
-    priceType: str = "DISTRIBUTION"
+    priceType: str = "OCCUPANCY"
     onRequestRemarks: Dict[str, str] = {}
     languages: List[str] = ["EN"]
     timeTables: List[str] = []
