@@ -120,6 +120,27 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
     editable_table(label, price_df, edit_key, on_save=_save)
 
 
+def render_readonly_source(text, height):
+    """
+    Read-only display for the raw extracted source text. Uses st.code()
+    instead of a disabled st.text_area - disabled form elements can't
+    receive real browser focus, so selecting/copying text from one can leak
+    keystrokes to Streamlit's global keyboard shortcuts (e.g. "c" = Clear
+    Cache), popping up an unwanted dialog while copying. st.code() isn't a
+    form control and has its own built-in copy button, so it isn't affected.
+    Wrapped in try/except: st.code()'s `height` argument needs a fairly
+    recent Streamlit version, and if that (or anything else here) isn't
+    supported in this deployment, silently crashing this block would abort
+    the ENTIRE page render below it - including Step 6's geolocation UI,
+    blocking ticket/tour creation entirely. A working (if imperfect) display
+    beats a hard-blocked page.
+    """
+    try:
+        st.code(text, language=None, height=height)
+    except Exception:
+        st.text_area("Raw content (read-only reference)", text, height=height, disabled=True)
+
+
 def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
     """
     Shows a table in READ-ONLY display mode by default (clean st.dataframe),
@@ -598,6 +619,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.subheader(f"Reviewing tour {idx + 1} of {len(queue)}: **{current['label'] or current['tour_code']}** (code: {current['tour_code']})")
         st.progress(idx / len(queue))
+        with st.expander("Not what you wanted?"):
+            if st.button("🔙 Cancel this batch - return to single-tour flow", key=f"mct_cancel_{idx}"):
+                for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
+                           "mct_doc_raw_images", "mct_hosted_image_candidates"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
 
         if current["data"] is None:
             with st.spinner(f"Extracting details focused on '{current['label']}'..."):
@@ -1136,6 +1163,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: **{current['label'] or current['ticket_code']}** (code: {current['ticket_code']})")
         st.progress(idx / len(queue))
+        with st.expander("Not what you wanted?"):
+            if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mt_cancel_{idx}"):
+                for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
+                           "mt_doc_raw_images", "mt_hosted_image_candidates"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
 
         if current["data"] is None:
             with st.spinner(f"Extracting details focused on '{current['label']}'..."):
@@ -1647,7 +1680,16 @@ def render_ticket_flow(client):
             help="The app will detect distinct excursions in this document, let you pick which ones to "
                  "create, then review and publish each one individually, one at a time."
         )
-    if multi_ticket_mode or st.session_state.get("mt_phase"):
+    # Only force-route into the batch flow once real committed work exists
+    # (reviewing/publishing) - NOT for "gather"/"prepare_queue", so that
+    # simply toggling the checkbox on and back off (or landing on the
+    # candidate-selection step and deciding not to continue) still lets the
+    # human fall through to the normal single-Ticket flow below, exactly
+    # like unchecking the box always used to. Without this, mt_phase stays
+    # set forever once initialized and silently traps every future ticket
+    # creation attempt in the batch flow - including its Step 6 geolocation
+    # UI never being reachable, which blocks finishing a ticket entirely.
+    if multi_ticket_mode or st.session_state.get("mt_phase") in ("reviewing", "publishing"):
         # Also route here once a batch is seeded from the single-flow's own
         # variant picker below (picking 2+ excursions there jumps straight
         # into this same batch flow) - not just when the checkbox above was ticked.
@@ -1810,13 +1852,7 @@ def render_ticket_flow(client):
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original Source")
-            # NOTE: was a disabled st.text_area - disabled form elements can't
-            # receive real browser focus, so selecting/copying text from one
-            # can leak keystrokes to Streamlit's global keyboard shortcuts
-            # (e.g. "c" = Clear Cache), popping up an unwanted dialog while
-            # copying. st.code() renders as plain read-only text (not a form
-            # control), has its own built-in copy button, and isn't affected.
-            st.code(st.session_state.tk_raw_preview, language=None, height=500)
+            render_readonly_source(st.session_state.tk_raw_preview, height=500)
 
         with col2:
             if tk_is_option_only:
@@ -2827,7 +2863,14 @@ if multi_modality_mode:
     render_multi_modality_flow(client, url=url, uploaded_files=uploaded_files)
     st.stop()
 
-if multi_tour_mode or st.session_state.get("mct_phase"):
+# Only force-route into the batch flow once real committed work exists
+# (reviewing/publishing) - NOT for "gather"/"prepare_queue", so that simply
+# toggling the checkbox on and back off still lets the human fall through
+# to the normal single-tour flow below, exactly like unchecking the box
+# always used to. Without this, mct_phase stays set forever once
+# initialized and silently traps every future tour creation attempt in the
+# batch flow.
+if multi_tour_mode or st.session_state.get("mct_phase") in ("reviewing", "publishing"):
     # Also route here once a batch is seeded from the single-flow's own
     # variant picker below (picking 2+ variants there jumps straight into
     # this same batch flow) - not just when the checkbox above was ticked.
@@ -3014,10 +3057,7 @@ if st.session_state.extracted:
 
     with col1:
         st.subheader("Original Source")
-        # NOTE: was a disabled st.text_area - see the identical fix + explanation
-        # in render_ticket_flow's Step 5 for why that caused the "copying text
-        # pops up a Clear Cache dialog" bug.
-        st.code(st.session_state.raw_preview, language=None, height=600)
+        render_readonly_source(st.session_state.raw_preview, height=600)
 
     with col2:
         if is_option_only:
