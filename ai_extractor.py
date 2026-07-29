@@ -150,8 +150,20 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
-def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096) -> dict:
-    """Shared helper: calls Claude, strips code fences, parses JSON, raises clearly on failure."""
+_client_singleton = None
+
+
+def _get_anthropic_client():
+    """
+    Reuses ONE Anthropic client for the whole process instead of constructing
+    a fresh one on every single API call (previously done in 3 separate
+    places) - avoids redundant object/HTTP-pool setup on every extraction,
+    clarification, or detection call.
+    """
+    global _client_singleton
+    if _client_singleton is not None:
+        return _client_singleton
+
     try:
         from anthropic import Anthropic
     except ImportError:
@@ -166,11 +178,65 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
             "(Settings -> API Keys -> Create Key) and add it to your .env file."
         )
 
-    client = Anthropic(api_key=api_key)
+    _client_singleton = Anthropic(api_key=api_key)
+    return _client_singleton
+
+
+def friendly_error_message(e: Exception) -> str:
+    """
+    Translates raw Python/API exceptions into a short, plain-language message
+    a non-technical human can act on, instead of showing them a stack trace
+    or a bare Python exception string. Used anywhere an AI call can fail
+    (extraction, clarification, detection) and the failure is shown in the UI.
+    """
+    text = str(e)
+    lower = text.lower()
+
+    if "ANTHROPIC_API_KEY" in text or "api key" in lower:
+        return "The AI service isn't set up correctly (missing or invalid API key). Please contact whoever manages this tool."
+    if "anthropic' package" in lower or "not installed" in lower:
+        return "A required piece of software isn't installed on the server. Please contact whoever manages this tool."
+    if "rate_limit" in lower or "rate limit" in lower or "429" in text:
+        return "The AI service is temporarily busy (too many requests). Please wait a minute and try again."
+    if "overloaded" in lower or "529" in text:
+        return "The AI service is temporarily overloaded. Please wait a moment and try again."
+    if "timeout" in lower or "timed out" in lower:
+        return "The request took too long and timed out. Please try again - if it keeps happening, try with a shorter document."
+    if "connection" in lower or "network" in lower:
+        return "Couldn't connect to the AI service. Please check your internet connection and try again."
+    if "authenticationerror" in lower or "401" in text or "403" in text:
+        return "The AI service rejected the request (authentication problem). Please contact whoever manages this tool."
+    if "json" in lower and ("decode" in lower or "parse" in lower):
+        return "The AI's response couldn't be understood. Please try again - if it keeps happening, try rephrasing your request."
+
+    # Fallback: still human-readable, just without technical jargon exposure
+    return f"Something went wrong while talking to the AI service ({text[:150]})"
+
+
+# Cheap/fast model for simple yes-no classification calls (detecting whether a
+# document describes multiple tours/tickets/modalities) - these are much
+# simpler tasks than full structured extraction, so they don't need the same
+# top-tier model. Extraction and clarification calls (where getting the real
+# data right matters most) keep using the higher-accuracy model passed in by
+# the caller.
+HAIKU_MODEL = "claude-haiku-4-5"
+
+
+def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096) -> dict:
+    """
+    Shared helper: calls Claude, strips code fences, parses JSON, raises
+    clearly on failure. The system prompt is sent as a cacheable block -
+    Anthropic's prompt caching means repeat calls that reuse the SAME system
+    prompt (e.g. one call per item in a multi-tour/multi-ticket batch) are
+    billed at a fraction of the normal input price for that cached portion,
+    instead of paying full price for the same multi-thousand-token prompt
+    every single time.
+    """
+    client = _get_anthropic_client()
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=system_prompt,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -220,7 +286,7 @@ If there's only one pricing category (or pricing is a single flat table), set "m
 and "modalities": [] ."""
 
 
-def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") -> list:
+def detect_multiple_modalities(raw_text: str, model: str = HAIKU_MODEL) -> list:
     """
     Checks whether the source describes MULTIPLE distinct pricing
     categories (room/cabin types) that should become separate Modalities,
@@ -237,7 +303,7 @@ def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") ->
     return modalities
 
 
-def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
+def detect_tour_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     """
     Checks whether the source text describes ONE tour or MULTIPLE distinct
     variants (e.g. a 3-night and 4-night version of the same cruise).
@@ -280,19 +346,26 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         "shapes must exactly match the current extracted data's own structure (e.g. price_list is "
         "the same array-of-objects shape, operational_days is the same list of weekday names)."
     )
-    user_content = (
-        f"--- Source document text ---\n{raw_text[:15000]}\n\n"
-        f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:30000]}\n\n"
-        f"--- Human's message ---\n{instruction}"
-    )
+    # The source document text is put in its OWN cacheable content block,
+    # separate from the (frequently-changing) current-data/instruction block.
+    # It stays IDENTICAL across every "Tell AI what to fix" call on the same
+    # item during a review session, so Anthropic's prompt caching means only
+    # the first call in that session pays full price for it - every
+    # follow-up question/fix on the same item reuses the cached copy instead
+    # of resending it at full cost.
+    user_content = [
+        {"type": "text", "text": f"--- Source document text ---\n{raw_text[:15000]}",
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": (
+            f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:20000]}\n\n"
+            f"--- Human's message ---\n{instruction}"
+        )},
+    ]
     try:
-        from anthropic import Anthropic
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return {"summary": "ANTHROPIC_API_KEY is not set - can't process this right now.", "changes": {}}
-        client = Anthropic(api_key=api_key)
+        client = _get_anthropic_client()
         response = client.messages.create(
-            model=model, max_tokens=4096, system=system_prompt,
+            model=model, max_tokens=4096,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}]
         )
         raw_response = "".join(block.text for block in response.content if block.type == "text")
@@ -304,7 +377,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
             result["changes"] = {}
         return result
     except Exception as e:
-        return {"summary": f"Couldn't process this: {e}", "changes": {}}
+        return {"summary": f"Couldn't process that request - {friendly_error_message(e)}", "changes": {}}
 
 
 def answer_clarification_question(raw_text: str, current_data: dict, question: str, model: str = "claude-sonnet-5") -> str:
@@ -321,20 +394,23 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
         "in the source, say so plainly rather than guessing. Do not output JSON - just "
         "a direct, helpful answer in plain text/prose."
     )
-    user_content = (
-        f"--- Source document text ---\n{raw_text[:15000]}\n\n"
-        f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:5000]}\n\n"
-        f"--- Human's question ---\n{question}"
-    )
+    # Same cacheable-source-text pattern as apply_clarification() above -
+    # repeat questions about the same item during one review session reuse
+    # the cached source text instead of paying full price for it each time.
+    user_content = [
+        {"type": "text", "text": f"--- Source document text ---\n{raw_text[:15000]}",
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": (
+            f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:5000]}\n\n"
+            f"--- Human's question ---\n{question}"
+        )},
+    ]
     result_text_parts = []
     try:
-        from anthropic import Anthropic
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return "ANTHROPIC_API_KEY is not set - can't answer questions right now."
-        client = Anthropic(api_key=api_key)
+        client = _get_anthropic_client()
         response = client.messages.create(
-            model=model, max_tokens=1024, system=system_prompt,
+            model=model, max_tokens=1024,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}]
         )
         for block in response.content:
@@ -342,7 +418,7 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
                 result_text_parts.append(block.text)
         return "".join(result_text_parts).strip() or "(No answer returned.)"
     except Exception as e:
-        return f"Couldn't get an answer: {e}"
+        return f"Couldn't get an answer - {friendly_error_message(e)}"
 
 
 OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel Compositor
@@ -608,7 +684,7 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 If there is only one excursion, set "multiple_excursions": false and "excursions": [] ."""
 
 
-def detect_ticket_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
+def detect_ticket_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     """
     Checks whether the source describes MULTIPLE distinct excursions/
     activities bundled in one document, as opposed to just one ticket.
