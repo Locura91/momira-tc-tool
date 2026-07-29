@@ -271,7 +271,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
     )
     user_content = (
         f"--- Source document text ---\n{raw_text[:15000]}\n\n"
-        f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:6000]}\n\n"
+        f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:30000]}\n\n"
         f"--- Human's message ---\n{instruction}"
     )
     try:
@@ -281,7 +281,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
             return {"summary": "ANTHROPIC_API_KEY is not set - can't process this right now.", "changes": {}}
         client = Anthropic(api_key=api_key)
         response = client.messages.create(
-            model=model, max_tokens=2048, system=system_prompt,
+            model=model, max_tokens=4096, system=system_prompt,
             messages=[{"role": "user", "content": user_content}]
         )
         raw_response = "".join(block.text for block in response.content if block.type == "text")
