@@ -89,7 +89,7 @@ def extract_raw_text(file_path: str) -> str:
 import hashlib
 
 
-def extract_images_from_pdf(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+def extract_images_from_pdf(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
     """Returns list of (image_bytes, extension) tuples for embedded images in a PDF.
     Skips duplicate images (e.g. a logo repeated on every page) via content hash."""
     import fitz  # PyMuPDF
@@ -119,7 +119,7 @@ def extract_images_from_pdf(file_path: str, max_images: int = 5, seen_hashes: se
     return images
 
 
-def extract_images_from_docx(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+def extract_images_from_docx(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
     """Returns list of (image_bytes, extension) tuples for embedded images in a Word doc.
     Skips duplicate images via content hash."""
     import docx
@@ -142,7 +142,7 @@ def extract_images_from_docx(file_path: str, max_images: int = 5, seen_hashes: s
     return images
 
 
-def extract_images_from_xlsx(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+def extract_images_from_xlsx(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
     """Returns list of (image_bytes, extension) tuples for embedded images in an Excel file.
     Skips duplicate images via content hash."""
     import openpyxl
@@ -169,7 +169,7 @@ def extract_images_from_xlsx(file_path: str, max_images: int = 5, seen_hashes: s
     return images
 
 
-def extract_images(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
     """
     Dispatches to the right image extractor based on file extension.
     Returns list of (image_bytes, extension) tuples, or an empty list if
