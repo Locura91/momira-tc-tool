@@ -37,7 +37,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig
 from builder import build_closed_tour_payloads, build_ticket_payloads
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants
+from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
 from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
@@ -278,7 +278,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     st.session_state.mm_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Extraction failed: {e}")
+                    st.error(f"Extraction failed: {friendly_error_message(e)}")
         return
 
     # ------------------------------------------------------------------
@@ -540,7 +540,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     st.session_state.mct_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Detection failed: {e}")
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
         return
 
     # ------------------------------------------------------------------
@@ -913,7 +913,7 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
                     else:
                         st.error("Upload returned no URL.")
                 except Exception as e:
-                    st.error(f"Upload failed: {e}")
+                    st.error(f"Upload failed: {friendly_error_message(e)}")
             st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"{state_prefix}_dl_{photo_key}")
     return newly_added_url
 
@@ -1085,7 +1085,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     st.session_state.mt_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Detection failed: {e}")
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
         return
 
     # ------------------------------------------------------------------
@@ -1826,7 +1826,7 @@ def render_ticket_flow(client):
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
                         st.success("Extraction complete. Review and edit below.")
             except Exception as e:
-                st.error(f"Extraction failed: {e}")
+                st.error(f"Extraction failed: {friendly_error_message(e)}")
 
     if st.session_state.get("tk_pending_variants"):
         excursions = st.session_state.tk_pending_variants
@@ -1883,7 +1883,7 @@ def render_ticket_flow(client):
                         st.session_state.tk_pending_variant_selection = None
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Extraction failed: {e}")
+                        st.error(f"Extraction failed: {friendly_error_message(e)}")
             else:
                 tkpv_missing = [s["label"] for s in tkpv_selection if s["selected"] and (not s["ticket_code"].strip() or not s["modality_code"].strip())]
                 tkpv_invalid = [s["modality_code"] for s in tkpv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
@@ -3024,7 +3024,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(url) if url else []) + doc_image_urls))
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
-            st.error(f"Extraction failed: {e}")
+            st.error(f"Extraction failed: {friendly_error_message(e)}")
 
 if st.session_state.get("pending_variants") and not is_option_only:
     variants = st.session_state.pending_variants
@@ -3085,7 +3085,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     st.session_state.pending_variant_selection = None
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Extraction failed: {e}")
+                    st.error(f"Extraction failed: {friendly_error_message(e)}")
         else:
             pv_missing = [s["label"] for s in pv_selection if s["selected"] and (not s["tour_code"].strip() or not s["modality_code"].strip())]
             pv_invalid = [s["modality_code"] for s in pv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
