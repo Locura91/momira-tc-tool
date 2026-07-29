@@ -42,7 +42,7 @@ from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
-from geocoding_client import geocode_search
+from geocoding_client import geocode_search, geocode
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -1181,6 +1181,80 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         editable_field("Description", data, "description", widget="text_area", height=120)
         editable_field("City", data, "city", widget="text_input")
 
+        # ------------------------------------------------------------------
+        # Geolocation resolve + human confirm - REQUIRED before this ticket
+        # can be confirmed. Without this, an unresolved/wrong city silently
+        # fails at publish time with a raw "GeolocationVO validation error"
+        # and no way to fix it from inside the batch flow.
+        # ------------------------------------------------------------------
+        st.markdown(f"**📍 Location for {current['label'] or current['ticket_code']}**")
+        mt_city = data.get("city", "")
+        if data.get("manual_latitude") is not None and data.get("manual_longitude") is not None:
+            mt_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
+                      "display_name": mt_city, "valid": True}
+        else:
+            mt_geo = geocode(mt_city)  # cached in geocoding_client - cheap to call every rerun
+
+        if mt_geo.get("valid"):
+            mt_lat, mt_lng = mt_geo["latitude"], mt_geo["longitude"]
+            mt_maps_link = f"https://www.google.com/maps?q={mt_lat},{mt_lng}"
+            st.markdown(
+                f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
+                f"border-radius:4px;'>📍 Resolved: <strong>{mt_geo.get('display_name') or mt_city}</strong>"
+                f"<br>Coordinates: {mt_lat:.6f}, {mt_lng:.6f} — "
+                f"<a href='{mt_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
+                unsafe_allow_html=True
+            )
+            st.caption("Geocoding data © OpenStreetMap contributors")
+        else:
+            st.markdown(
+                "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
+                "location. Search below or enter coordinates manually.</div>",
+                unsafe_allow_html=True
+            )
+
+        with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
+            mt_geo_query = st.text_input("Search for a location", value=mt_city, key=f"mt_geo_query_{idx}")
+            if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
+                with st.spinner("Searching..."):
+                    current["geo_search_results"] = geocode_search(mt_geo_query, limit=5)
+            if current.get("geo_search_results"):
+                for gi, candidate in enumerate(current["geo_search_results"]):
+                    ggcol1, ggcol2 = st.columns([4, 1])
+                    with ggcol1:
+                        st.write(f"**{candidate['display_name']}**")
+                        st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                    with ggcol2:
+                        if st.button("Use this", key=f"mt_geo_pick_{idx}_{gi}"):
+                            data["manual_latitude"] = candidate["latitude"]
+                            data["manual_longitude"] = candidate["longitude"]
+                            current["geo_confirmed"] = False
+                            current["geo_search_results"] = None
+                            st.rerun()
+
+            st.markdown("**Or enter coordinates manually:**")
+            mgcol1, mgcol2 = st.columns(2)
+            with mgcol1:
+                mt_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mt_geo_manlat_{idx}", placeholder="e.g. 27.394900")
+            with mgcol2:
+                mt_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mt_geo_manlng_{idx}", placeholder="e.g. 33.678400")
+            if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
+                data["manual_latitude"] = mt_man_lat
+                data["manual_longitude"] = mt_man_lng
+                current["geo_confirmed"] = False
+                st.rerun()
+
+        current["geo_confirmed"] = st.checkbox(
+            "✅ I've checked this location and it's correct for this ticket",
+            value=current.get("geo_confirmed", False), key=f"mt_geo_confirm_{idx}",
+            disabled=not mt_geo.get("valid")
+        )
+        if not mt_geo.get("valid"):
+            st.info("👆 Resolve the location above before this ticket can be confirmed.")
+        elif not current["geo_confirmed"]:
+            st.info("👆 Please check the location above and confirm it's correct.")
+
         st.markdown(f"**Images for {current['label'] or current['ticket_code']}**")
         if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
             st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
@@ -1354,7 +1428,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
 
         price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
-        can_continue = price_valid
+        can_continue = price_valid and mt_geo.get("valid") and current.get("geo_confirmed")
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
