@@ -86,10 +86,16 @@ def extract_raw_text(file_path: str) -> str:
         raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx")
 
 
-def extract_images_from_pdf(file_path: str, max_images: int = 5) -> list:
-    """Returns list of (image_bytes, extension) tuples for embedded images in a PDF."""
+import hashlib
+
+
+def extract_images_from_pdf(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in a PDF.
+    Skips duplicate images (e.g. a logo repeated on every page) via content hash."""
     import fitz  # PyMuPDF
 
+    if seen_hashes is None:
+        seen_hashes = set()
     images = []
     doc = fitz.open(file_path)
     try:
@@ -102,31 +108,47 @@ def extract_images_from_pdf(file_path: str, max_images: int = 5) -> list:
                     break
                 xref = img[0]
                 base_image = doc.extract_image(xref)
-                images.append((base_image["image"], base_image["ext"]))
+                img_bytes = base_image["image"]
+                img_hash = hashlib.sha256(img_bytes).hexdigest()
+                if img_hash in seen_hashes:
+                    continue
+                seen_hashes.add(img_hash)
+                images.append((img_bytes, base_image["ext"]))
     finally:
         doc.close()
     return images
 
 
-def extract_images_from_docx(file_path: str, max_images: int = 5) -> list:
-    """Returns list of (image_bytes, extension) tuples for embedded images in a Word doc."""
+def extract_images_from_docx(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in a Word doc.
+    Skips duplicate images via content hash."""
     import docx
 
+    if seen_hashes is None:
+        seen_hashes = set()
     doc = docx.Document(file_path)
     images = []
     for rel in doc.part.rels.values():
         if len(images) >= max_images:
             break
         if "image" in rel.reltype:
+            img_bytes = rel.target_part.blob
+            img_hash = hashlib.sha256(img_bytes).hexdigest()
+            if img_hash in seen_hashes:
+                continue
+            seen_hashes.add(img_hash)
             ext = rel.target_ref.rsplit(".", 1)[-1] if "." in rel.target_ref else "png"
-            images.append((rel.target_part.blob, ext))
+            images.append((img_bytes, ext))
     return images
 
 
-def extract_images_from_xlsx(file_path: str, max_images: int = 5) -> list:
-    """Returns list of (image_bytes, extension) tuples for embedded images in an Excel file."""
+def extract_images_from_xlsx(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
+    """Returns list of (image_bytes, extension) tuples for embedded images in an Excel file.
+    Skips duplicate images via content hash."""
     import openpyxl
 
+    if seen_hashes is None:
+        seen_hashes = set()
     wb = openpyxl.load_workbook(file_path)
     images = []
     for ws in wb.worksheets:
@@ -137,26 +159,35 @@ def extract_images_from_xlsx(file_path: str, max_images: int = 5) -> list:
                 break
             try:
                 data = img._data()
+                img_hash = hashlib.sha256(data).hexdigest()
+                if img_hash in seen_hashes:
+                    continue
+                seen_hashes.add(img_hash)
                 images.append((data, "png"))
             except Exception:
                 continue
     return images
 
 
-def extract_images(file_path: str, max_images: int = 5) -> list:
+def extract_images(file_path: str, max_images: int = 5, seen_hashes: set = None) -> list:
     """
     Dispatches to the right image extractor based on file extension.
     Returns list of (image_bytes, extension) tuples, or an empty list if
     the format isn't supported for image extraction or none are found.
+    seen_hashes: an optional shared set of content hashes to dedupe against
+    - pass the SAME set across multiple calls (e.g. multiple uploaded
+    documents in one session) to dedupe across files too, not just within one.
     """
+    if seen_hashes is None:
+        seen_hashes = set()
     ext = os.path.splitext(file_path)[1].lower()
     try:
         if ext == ".pdf":
-            return extract_images_from_pdf(file_path, max_images)
+            return extract_images_from_pdf(file_path, max_images, seen_hashes)
         elif ext == ".docx":
-            return extract_images_from_docx(file_path, max_images)
+            return extract_images_from_docx(file_path, max_images, seen_hashes)
         elif ext == ".xlsx":
-            return extract_images_from_xlsx(file_path, max_images)
+            return extract_images_from_xlsx(file_path, max_images, seen_hashes)
     except Exception as e:
         print(f"⚠️ Image extraction failed for {file_path}: {e}")
     return []
