@@ -639,6 +639,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         editable_field("City", data, "city", widget="text_input")
         editable_field("Duration (hours)", data, "duration", widget="number_input")
 
+        acol1, acol2 = st.columns(2)
+        with acol1:
+            data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
+                                                     value=int(data.get("child_age_min", 6) or 6), key=f"mt_min_child_age_{idx}")
+        with acol2:
+            data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
+                                                     value=int(data.get("child_age_max", 12) or 12), key=f"mt_max_child_age_{idx}")
+
         inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
         def _save_mt_includes(edf, data=data):
             data["includes"] = [str(r["Item"]).strip() for _, r in edf.iterrows() if str(r.get("Item", "")).strip()]
@@ -1086,6 +1094,14 @@ def render_ticket_flow(client):
                 editable_field("Description", data, "description", widget="text_area", height=150)
                 editable_field("City", data, "city", widget="text_input")
                 editable_field("Duration (hours)", data, "duration", widget="number_input")
+
+                acol1, acol2 = st.columns(2)
+                with acol1:
+                    data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
+                                                             value=int(data.get("child_age_min", 6) or 6), key="tk_min_child_age")
+                with acol2:
+                    data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
+                                                             value=int(data.get("child_age_max", 12) or 12), key="tk_max_child_age")
 
                 st.markdown("**Engines (Search Engines to Sell through)**")
                 st.caption("⚠️ This defaults to a broad, informed guess based on a real screenshot - not "
@@ -1583,7 +1599,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-28-image-limit-12 — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-07-28-fix-child-age-extraction — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -2013,6 +2029,14 @@ if st.session_state.extracted:
                 data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional - e.g. 08:00:00)", value=data.get("start_time", ""), key="ct_start_time")
             with tcol2:
                 data["end_time"] = st.text_input("End Time (HH:MM:SS, optional - e.g. 18:00:00)", value=data.get("end_time", ""), key="ct_end_time")
+
+            acol1, acol2 = st.columns(2)
+            with acol1:
+                data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
+                                                        value=int(data.get("min_child_age", 0) or 0), key="ct_min_child_age")
+            with acol2:
+                data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
+                                                        value=int(data.get("max_child_age", 12) or 12), key="ct_max_child_age")
 
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
