@@ -284,13 +284,25 @@ def _plain_to_html_for_saving(text):
     return "".join(html_parts)
 
 
-def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value=""):
+def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value="", key_suffix=""):
     """
     Renders a field in READ-ONLY display mode by default, with a small
     pencil button to switch it into an editable widget. Saving switches
     back to display mode. Mutates data_dict[field_key] directly on save.
+
+    `key_suffix` MUST be a unique identifier (e.g. f"_{idx}") whenever this
+    is used inside a queue/batch review loop (multiple different items
+    reusing the same field_key, like "city" or "tour_name", across several
+    tickets/tours one at a time). CONFIRMED REAL BUG: Streamlit widgets with
+    a fixed `key` ignore the `value=` argument on every render after the
+    first and just keep showing whatever was last typed under that key - so
+    without a per-item suffix, opening the editor for ticket #2's City after
+    having edited ticket #1's City showed ticket #1's stale typed text
+    instead of ticket #2's actual city, making it look like the field
+    couldn't be changed at all. Single-item flows (one tour/ticket at a
+    time, no loop) can safely omit this.
     """
-    edit_flag_key = f"_editing_{field_key}"
+    edit_flag_key = f"_editing_{field_key}{key_suffix}"
     if edit_flag_key not in st.session_state:
         st.session_state[edit_flag_key] = False
 
@@ -312,11 +324,11 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 st.caption("(empty)")
         with bcol:
             st.write("")
-            if st.button("✏️", key=f"pencil_{field_key}", help=f"Edit {label}"):
+            if st.button("✏️", key=f"pencil_{field_key}{key_suffix}", help=f"Edit {label}"):
                 st.session_state[edit_flag_key] = True
                 st.rerun()
     else:
-        widget_key = f"_widgetval_{field_key}"
+        widget_key = f"_widgetval_{field_key}{key_suffix}"
         if widget == "html_text_area":
             # Show/edit as plain human-friendly text - the underlying HTML
             # (<p>, <strong>, etc.) is converted automatically in the
@@ -333,7 +345,7 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
             new_value = st.number_input(label, min_value=1, value=int(current_value or 1), key=widget_key)
         else:
             new_value = st.text_input(label, value=current_value, key=widget_key)
-        if st.button("✅ Save", key=f"save_{field_key}", type="primary"):
+        if st.button("✅ Save", key=f"save_{field_key}{key_suffix}", type="primary"):
             if widget == "html_text_area":
                 data_dict[field_key] = _plain_to_html_for_saving(new_plain_value)
             else:
@@ -777,8 +789,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             data["meeting_point"] = ("Meet your guide in the airport arrival hall or, if you are already in "
                                      "the tour's starting city, in your hotel lobby.")
 
-        editable_field("Tour name", data, "tour_name", widget="text_input")
-        editable_field("Description", data, "description", widget="html_text_area", height=150)
+        editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix=f"_{idx}")
+        editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix=f"_{idx}")
 
         render_skip_item_button(
             current['label'] or current['tour_code'], queue, idx,
@@ -788,12 +800,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             button_key=f"mct_skip_{idx}"
         )
 
-        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100)
-        editable_field("Included", data, "included", widget="text_area", height=100)
-        editable_field("Excluded", data, "excluded", widget="text_area", height=100)
-        editable_field("Meeting point", data, "meeting_point", widget="text_input")
-        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80)
-        editable_field("Nights", data, "nights", widget="number_input")
+        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix=f"_{idx}")
+        editable_field("Included", data, "included", widget="text_area", height=100, key_suffix=f"_{idx}")
+        editable_field("Excluded", data, "excluded", widget="text_area", height=100, key_suffix=f"_{idx}")
+        editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix=f"_{idx}")
+        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
+        editable_field("Nights", data, "nights", widget="number_input", key_suffix=f"_{idx}")
 
         tcol1, tcol2 = st.columns(2)
         with tcol1:
@@ -1622,8 +1634,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         data = current["data"]
 
-        editable_field("Ticket name", data, "ticket_name", widget="text_input")
-        editable_field("Description", data, "description", widget="html_text_area", height=120)
+        editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
+        editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
 
         render_skip_item_button(
             current['label'] or current['ticket_code'], queue, idx,
@@ -1633,7 +1645,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             button_key=f"mt_skip_{idx}"
         )
 
-        editable_field("City", data, "city", widget="text_input")
+        editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
 
         # ------------------------------------------------------------------
         # Geolocation resolve + human confirm - REQUIRED before this ticket
@@ -1766,7 +1778,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
 
-        editable_field("Duration (hours)", data, "duration", widget="number_input")
+        editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}")
 
         acol1, acol2 = st.columns(2)
         with acol1:
