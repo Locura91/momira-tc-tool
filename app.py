@@ -1807,21 +1807,74 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mt_op_days_{idx}"
         )
 
-        st.markdown(f"**Pricing (Distribution mode, in {currency})**")
-        st.caption("Batch mode uses Distribution pricing only, for simplicity - use the normal single-Ticket "
-                  "Create flow afterward if you need Occupancy or Service pricing for a specific one.")
-        # This flow never shows a pricing-mode selector, so force Distribution explicitly - otherwise
-        # the extraction default (now Occupancy, see Feature 3) would leave price_type unset/wrong here
-        # and builder.py's per-mode zeroing (Bug 2 fix) would blank out the Adult/Child/Infant prices
-        # entered below.
-        data["price_type"] = "DISTRIBUTION"
-        pcol1, pcol2, pcol3 = st.columns(3)
-        with pcol1:
-            data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(data.get("base_adult_price", 0) or 0), key=f"mt_adult_{idx}")
-        with pcol2:
-            data["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(data.get("base_children_price", 0) or 0), key=f"mt_child_{idx}")
-        with pcol3:
-            data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(data.get("base_infant_price", 0) or 0), key=f"mt_infant_{idx}")
+        st.markdown(f"**Pricing (in {currency})**")
+        st.caption("A Ticket Modality holds ONE price setup + ONE validity date range (not a seasonal table). "
+                  "For holiday/seasonal price differences, use dated Supplements below instead.")
+        mt_price_type = st.radio(
+            "Pricing Mode", ["DISTRIBUTION", "OCCUPANCY", "SERVICE"],
+            index=["DISTRIBUTION", "OCCUPANCY", "SERVICE"].index(data.get("price_type") or "OCCUPANCY"),
+            format_func=lambda x: {
+                "DISTRIBUTION": "Distribution - price per person (Adult/Child/Infant)",
+                "OCCUPANCY": "Occupancy - price varies by group size (infants free, not counted)",
+                "SERVICE": "Service - one flat total price regardless of headcount",
+            }[x],
+            key=f"mt_price_type_{idx}"
+        )
+        data["price_type"] = mt_price_type
+        if mt_price_type != "DISTRIBUTION":
+            st.warning("⚠️ UNCONFIRMED whether Travel Compositor's API accepts this pricing mode for "
+                      "Tickets - test carefully with a real publish before relying on it.")
+
+        if mt_price_type == "DISTRIBUTION":
+            pcol1, pcol2, pcol3 = st.columns(3)
+            with pcol1:
+                data["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(data.get("base_adult_price", 0) or 0), key=f"mt_adult_{idx}")
+            with pcol2:
+                data["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(data.get("base_children_price", 0) or 0), key=f"mt_child_{idx}")
+            with pcol3:
+                data["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(data.get("base_infant_price", 0) or 0), key=f"mt_infant_{idx}")
+        elif mt_price_type == "SERVICE":
+            data["base_service_price"] = st.number_input(
+                "Total Service Price (flat, regardless of group size)", min_value=0.0,
+                value=float(data.get("base_service_price", 0) or 0), key=f"mt_service_price_{idx}"
+            )
+        elif mt_price_type == "OCCUPANCY":
+            st.caption("Each row is an EXACT number of paying passengers (not a range) with its price - "
+                      "infants are always free and excluded automatically. If your source shows a range "
+                      "like '3-5' at one price, add ONE row per exact number (3, 4, and 5) all with that "
+                      "same price - use the button below to auto-expand a range for you.")
+            mt_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
+                          for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
+            mt_occ_df = pd.DataFrame(mt_occ_rows)
+            def _save_mt_occupancy(edf, data=data):
+                data["occupancy_prices"] = [
+                    {"occupancy": int(r.get("Occupancy (exact # pax)", 2) or 2), "amount": float(r.get("Price", 0) or 0)}
+                    for _, r in edf.iterrows()
+                ]
+            editable_table("Occupancy Price Tiers", mt_occ_df, f"mt_occupancy_{idx}", on_save=_save_mt_occupancy)
+
+            mt_occ_has_solo = any(o.get("occupancy") == 1 for o in data.get("occupancy_prices", []))
+            if not mt_occ_has_solo:
+                st.warning("⚠️ No price for **1 pax (solo traveler)** yet - this needs to be added manually. "
+                          "Solo pricing is often different from the per-person rate when sharing, so it "
+                          "can't be safely defaulted from the other rows - check the source or confirm "
+                          "with the supplier.")
+
+            with st.expander("🔢 Auto-expand a range (e.g. '3-5' at one price) into individual rows"):
+                mrcol1, mrcol2, mrcol3 = st.columns(3)
+                with mrcol1:
+                    mt_range_start = st.number_input("From", min_value=1, value=1, key=f"mt_occ_range_start_{idx}")
+                with mrcol2:
+                    mt_range_end = st.number_input("To", min_value=1, value=1, key=f"mt_occ_range_end_{idx}")
+                with mrcol3:
+                    mt_range_price = st.number_input("Price (same for all)", min_value=0.0, value=0.0, key=f"mt_occ_range_price_{idx}")
+                if st.button("➕ Add this range as individual rows", key=f"mt_occ_range_add_{idx}") and mt_range_end >= mt_range_start:
+                    mt_existing = list(data.get("occupancy_prices", []))
+                    for n in range(int(mt_range_start), int(mt_range_end) + 1):
+                        mt_existing.append({"occupancy": n, "amount": mt_range_price})
+                    data["occupancy_prices"] = mt_existing
+                    st.rerun()
+
         dcol1, dcol2 = st.columns(2)
         with dcol1:
             data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key=f"mt_start_date_{idx}")
@@ -1901,7 +1954,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if r.get("changes"):
                 st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
 
-        price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
+        if mt_price_type == "SERVICE":
+            price_valid = bool(data.get("base_service_price", 0))
+        elif mt_price_type == "OCCUPANCY":
+            price_valid = bool(data.get("occupancy_prices")) and any(o.get("amount", 0) for o in data.get("occupancy_prices", []))
+        else:
+            price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         can_continue = price_valid and mt_geo.get("valid") and current.get("geo_confirmed")
 
         is_last = idx == len(queue) - 1
@@ -1922,6 +1980,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
     # ------------------------------------------------------------------
     if st.session_state.mt_phase == "publishing":
         queue = st.session_state.mt_queue
+        if "mt_failed_items" not in st.session_state:
+            st.session_state.mt_failed_items = []
         st.subheader(f"Ready to publish {len(queue)} Tickets - one by one")
         for q in queue:
             extra_count = len(q.get("extra_modalities", []))
@@ -1963,6 +2023,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             time.sleep(2)
                         if "error" in option_result:
                             show_publish_error(f"create **{q['ticket_code']}**'s option (created as `{real_code}`)", option_result)
+                            # The ticket itself WAS created (real_code) and is still ACTIVE - only the
+                            # option failed. Don't force the human to abandon the whole batch and start
+                            # over: remember this item (with its real_code, and the SAME editable data
+                            # dict) so they can adjust it and retry just this option below, without
+                            # re-running the other tickets or losing their edits.
+                            st.session_state.mt_failed_items.append({
+                                "ticket_code": q["ticket_code"], "label": q["label"], "real_code": real_code,
+                                "modality_code": q["modality_code"], "data": q["data"],
+                            })
                             continue
                         else:
                             st.success(f"✅ **{q['ticket_code']}**: base modality '{q['modality_code']}' created.")
@@ -2004,9 +2073,71 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         show_publish_error(f"publish **{q['ticket_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         continue
 
+        if st.session_state.mt_failed_items:
+            st.divider()
+            st.subheader(f"⚠️ {len(st.session_state.mt_failed_items)} ticket(s) created but their option failed")
+            st.caption("These tickets themselves were created successfully (and are still ACTIVE) - only "
+                      "the option/modality failed, so retrying 'Publish all' would try to create duplicate "
+                      "tickets. Adjust whatever needs fixing below (e.g. a start time), then retry just the "
+                      "option for that one ticket - no need to redo the whole batch.")
+            for fi_idx, fi in enumerate(list(st.session_state.mt_failed_items)):
+                with st.expander(f"🔧 {fi['ticket_code']} (created as `{fi['real_code']}`) — {fi['label']}", expanded=True):
+                    fdata = fi["data"]
+                    fcol1, fcol2, fcol3 = st.columns(3)
+                    with fcol1:
+                        fdata["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(fdata.get("base_adult_price", 0) or 0), key=f"mtf_adult_{fi_idx}")
+                    with fcol2:
+                        fdata["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(fdata.get("base_children_price", 0) or 0), key=f"mtf_child_{fi_idx}")
+                    with fcol3:
+                        fdata["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(fdata.get("base_infant_price", 0) or 0), key=f"mtf_infant_{fi_idx}")
+                    ftt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in fdata.get("time_tables", [])]) if fdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                    def _save_mtf_tt(edf, fdata=fdata):
+                        fdata["time_tables"] = _clean_time_table_rows(edf)
+                    editable_table("Start Time(s)", ftt_df, f"mtf_tt_{fi_idx}", on_save=_save_mtf_tt)
+                    fdcol1, fdcol2 = st.columns(2)
+                    with fdcol1:
+                        fdata["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=fdata.get("start_date", ""), key=f"mtf_start_{fi_idx}")
+                    with fdcol2:
+                        fdata["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=fdata.get("end_date", ""), key=f"mtf_end_{fi_idx}")
+
+                    if st.button(f"🔄 Retry option for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
+                        with st.spinner(f"Retrying '{fi['ticket_code']}'..."):
+                            try:
+                                retry_pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=fi["real_code"], currency=currency,
+                                    modality_code=fi["modality_code"], on_request=on_request,
+                                    days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                                )
+                                retry_payloads = build_ticket_payloads(retry_pre_config, fdata, client)
+                                if retry_payloads["ticket_option_error"]:
+                                    show_publish_error(f"prepare **{fi['ticket_code']}**'s payload", retry_payloads["ticket_option_error"])
+                                elif not retry_payloads["geolocation_resolved"]:
+                                    st.error("❌ Geolocation not resolved - fix the City field via the normal Create flow instead.")
+                                else:
+                                    retry_option_result = client.create_ticket_option(supplier_id, fi["real_code"], retry_payloads["ticket_option_payload"])
+                                    if "error" in retry_option_result:
+                                        show_publish_error(f"retry **{fi['ticket_code']}**'s option", retry_option_result)
+                                    else:
+                                        st.success(f"✅ **{fi['ticket_code']}**: option created on retry.")
+                                        # Match the normal flow's end state: switch back to
+                                        # inactive/draft now that the ticket has its option.
+                                        retry_deactivate_payload = dict(retry_payloads["main_ticket_payload"])
+                                        retry_deactivate_payload["active"] = False
+                                        retry_deactivate_payload["code"] = fi["real_code"]
+                                        retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
+                                        if "error" in retry_deactivate_result:
+                                            st.warning(f"⚠️ Option created, but switching back to inactive/draft "
+                                                      f"failed: {retry_deactivate_result}.")
+                                        st.session_state.mt_failed_items = [
+                                            x for x in st.session_state.mt_failed_items if x is not fi
+                                        ]
+                                        st.rerun()
+                            except Exception as e:
+                                show_publish_error(f"retry **{fi['ticket_code']}**'s option (unexpected error)", str(e))
+
         if st.button("🆕 Start a new batch"):
             for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
-                       "mt_doc_raw_images", "mt_hosted_image_candidates"]:
+                       "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items"]:
                 st.session_state.pop(key, None)
             st.rerun()
         return
