@@ -2723,6 +2723,12 @@ def render_ticket_flow(client):
                     st.info(f"🇮🇩 Indonesia detected — Vesak Day is automatically blocked as a stop-sale "
                             f"date, no excursion may start that day. {payloads.get('vesak_day_note', '')}")
 
+                if payloads.get("release_days_overridden"):
+                    st.info(f"📅 The document mentions its own booking/release deadline, so the release "
+                            f"period being used is **{payloads['effective_release_days']} days** instead of "
+                            f"your default - if the source mentioned more than one deadline, the longer "
+                            f"(safer) one was used.")
+
                 st.session_state.tk_geo_confirmed = st.checkbox(
                     "✅ I've checked this location on the map and it's correct for this ticket",
                     value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
@@ -3947,6 +3953,11 @@ if st.session_state.extracted:
         if payloads.get("is_indonesia"):
             st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day is automatically blocked as a "
                     f"stop-sale date, no excursion/tour may start that day. {payloads.get('vesak_day_note', '')}")
+
+        if payloads.get("release_days_overridden"):
+            st.info(f"📅 The document mentions its own booking/release deadline, so the release period "
+                    f"being used is **{payloads['effective_release_days']} days** instead of your default - "
+                    f"if the source mentioned more than one deadline, the longer (safer) one was used.")
 
         if payloads["unresolved_destinations"]:
             st.error(
