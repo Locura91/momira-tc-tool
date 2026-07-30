@@ -56,16 +56,20 @@ Rules:
   CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
   never add these as a supplement or anywhere else in the extracted data, even though they're technically
   optional and priced. This is a deliberate exclusion, not an oversight.
-  CRITICAL - CONFIRMED RULE: whenever the source mentions ANY peak season/holiday/seasonal surcharge -
-  whole-trip uniform (e.g. "20% higher during Christmas") OR per-night/per-component (e.g. "USD 11 per
-  person per night surcharge at the Deluxe Cabin during peak season") - ALWAYS model it as its own
-  supplement with "mandatory": true and a real travel_start_date/travel_end_date. NEVER represent it as a
-  separate row in price_list, and never omit the date range - it must always be present for a peak-season
-  supplement. This supplement OVERLAYS the normal price: it's an ADDITIONAL charge on top of whatever the
-  base price already is for bookings that fall inside that date range, not a replacement or alternative
-  price. If the source only names a season/holiday without exact dates (e.g. "Christmas/New Year", "Peak
-  Season"), use your best real-world date range for that period and say so in pricing_notes - don't leave
-  the date range empty just because exact dates weren't spelled out.
+  CRITICAL - CONFIRMED RULE: this rule ONLY applies if the source document ITSELF explicitly mentions a
+  peak season/holiday/seasonal surcharge somewhere. NEVER invent or add a peak-season supplement that
+  isn't actually mentioned in the source - if the source says nothing about a seasonal surcharge, do not
+  create one "just in case"; leave supplements as-is for this case, same as any other never-invent rule
+  in this prompt. When (and ONLY when) the source DOES mention one - whole-trip uniform (e.g. "20% higher
+  during Christmas") OR per-night/per-component (e.g. "USD 11 per person per night surcharge at the
+  Deluxe Cabin during peak season") - ALWAYS model it as its own supplement with "mandatory": true and a
+  real travel_start_date/travel_end_date. NEVER represent it as a separate row in price_list, and never
+  omit the date range - it must always be present for a peak-season supplement. This supplement OVERLAYS
+  the normal price: it's an ADDITIONAL charge on top of whatever the base price already is for bookings
+  that fall inside that date range, not a replacement or alternative price. If the source only names a
+  season/holiday without exact dates (e.g. "Christmas/New Year", "Peak Season"), use your best real-world
+  date range for that period and say so in pricing_notes - don't leave the date range empty just because
+  exact dates weren't spelled out.
   - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where you can (e.g. 20% of
     the base per-person price) and show the calculation in the name, e.g. "Christmas/New Year surcharge
     (20% of base price)". If a percentage genuinely can't be converted to a safe real amount, still create
@@ -799,7 +803,10 @@ Extract:
       must become a SEPARATE MODALITY instead - flag this clearly in pricing_notes, explaining what
       the separate modality should be (e.g. "Create a second Modality 'Deluxe with private guide' for
       this on-request option - it cannot be a supplement").
-  (3) Peak season/holiday surcharges - CONFIRMED RULE: ALWAYS model these as a supplement with a real
+  (3) Peak season/holiday surcharges - CONFIRMED RULE: this ONLY applies if the source ITSELF explicitly
+      mentions a peak season/holiday/seasonal surcharge somewhere - NEVER invent or add one that isn't
+      actually mentioned; if the source says nothing about a seasonal surcharge, don't create one "just in
+      case". When (and ONLY when) the source DOES mention one, ALWAYS model it as a supplement with a real
       travel_start_date/travel_end_date, whether the surcharge is whole-trip/percentage-based (e.g. "20%
       higher during Christmas") or per-night/per-component (e.g. "USD 11 per person per night surcharge
       during peak season"). Never leave the date range empty for one of these - if the source only names a
