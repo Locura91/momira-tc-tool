@@ -339,6 +339,13 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         st.subheader(f"Reviewing modality {idx + 1} of {len(queue)}: **{current['code']}**")
         st.progress((idx) / len(queue))
 
+        render_skip_item_button(
+            current['code'], queue, idx,
+            "mm_queue", "mm_queue_index",
+            ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"],
+            button_key=f"mm_skip_{idx}"
+        )
+
         if current["data"] is None:
             with st.spinner(f"Extracting pricing/schedule focused on '{current['hint'] or current['code']}'..."):
                 current["data"] = extract_option_only_data(st.session_state.mm_raw_text, human_hint=current["hint"])
@@ -638,6 +645,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         editable_field("Tour name", data, "tour_name", widget="text_input")
         editable_field("Description (HTML ok)", data, "description", widget="text_area", height=150)
+
+        render_skip_item_button(
+            current['label'] or current['tour_code'], queue, idx,
+            "mct_queue", "mct_queue_index",
+            ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
+             "mct_doc_raw_images", "mct_hosted_image_candidates"],
+            button_key=f"mct_skip_{idx}"
+        )
+
         editable_field("Hotels", data, "hotels_text", widget="text_area", height=100)
         editable_field("Included", data, "included", widget="text_area", height=100)
         editable_field("Excluded", data, "excluded", widget="text_area", height=100)
@@ -679,35 +695,55 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 
-        if st.session_state.get("mct_hosted_image_candidates"):
-            with st.expander(f"🖼️ Images found in your document/page ({len(st.session_state.mct_hosted_image_candidates)})"):
-                mct_url_selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, f"mct_found_{idx}")
-                if mct_url_selected:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + mct_url_selected
-                    st.rerun()
+        def _mct_add_url_images():
+            selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, f"mct_found_{idx}")
+            if selected:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
 
-        if st.session_state.get("mct_doc_raw_images"):
-            with st.expander(f"📥 Images needing hosting ({len(st.session_state.mct_doc_raw_images)})"):
-                mct_doc_added = render_doc_image_picker(st.session_state.mct_doc_raw_images, f"mct_doc_{idx}")
-                if mct_doc_added:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + [mct_doc_added]
-                    st.rerun()
+        render_closable_image_section(
+            bool(st.session_state.get("mct_hosted_image_candidates")),
+            f"🖼️ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
+            f"mct_found_{idx}_closed", _mct_add_url_images
+        )
+
+        def _mct_add_doc_image():
+            added = render_doc_image_picker(st.session_state.mct_doc_raw_images, f"mct_doc_{idx}")
+            if added:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + [added]
+                return 1
+            return 0
+
+        render_closable_image_section(
+            bool(st.session_state.get("mct_doc_raw_images")),
+            f"📥 Images needing hosting ({len(st.session_state.get('mct_doc_raw_images') or [])})",
+            f"mct_doc_{idx}_closed", _mct_add_doc_image
+        )
 
         mct_default_query = current["label"] or data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0] if data.get("itinerary_destinations") else "")
-        with st.expander("🖼️ Search free stock photos (Pexels)"):
-            mct_pexels_selected = render_stock_photo_picker("Pexels", search_images, mct_default_query, f"mct_pexels_{idx}")
-            if mct_pexels_selected:
+
+        def _mct_add_pexels():
+            selected = render_stock_photo_picker("Pexels", search_images, mct_default_query, f"mct_pexels_{idx}")
+            if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + mct_pexels_selected
-                st.rerun()
-        with st.expander("🖼️ Search free stock photos (Pixabay)"):
-            mct_pixabay_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mct_default_query, f"mct_pixabay_{idx}")
-            if mct_pixabay_selected:
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
+
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mct_pexels_{idx}_closed", _mct_add_pexels)
+
+        def _mct_add_pixabay():
+            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mct_default_query, f"mct_pixabay_{idx}")
+            if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + mct_pixabay_selected
-                st.rerun()
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
+
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mct_pixabay_{idx}_closed", _mct_add_pixabay)
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_days_{idx}"
@@ -863,6 +899,42 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.session_state.pop(key, None)
             st.rerun()
         return
+
+
+def render_closable_image_section(condition, header, closed_key, picker_call):
+    """
+    Wraps ONE image-picker section (stock photo search, "found in your
+    document/page", etc) so that once the human clicks "Add selected"
+    inside it, the section visibly collapses into a plain confirmation line
+    instead of staying open - which used to leave it ambiguous whether the
+    click actually worked. Streamlit's native st.expander(expanded=...) only
+    sets the widget's INITIAL open/closed state; once a human has manually
+    toggled it open in the browser, the script can't reliably force it shut
+    again on a later rerun. This sidesteps that entirely by managing its own
+    open/closed flag in session_state and simply not re-rendering the
+    interactive picker once something's been added.
+    `picker_call` is a zero-arg callable that renders the picker AND applies
+    any newly-selected URLs to the caller's data dict itself, returning how
+    many it just added (0/None if nothing new this run).
+    """
+    if not condition:
+        return
+    if st.session_state.get(closed_key):
+        added_n = st.session_state.get(f"{closed_key}_count", 0)
+        col_a, col_b = st.columns([5, 1])
+        with col_a:
+            st.success(f"✅ {header} — {added_n} image(s) added.")
+        with col_b:
+            if st.button("➕ Add more", key=f"{closed_key}_reopen"):
+                st.session_state[closed_key] = False
+                st.rerun()
+        return
+    with st.expander(header, expanded=True):
+        added = picker_call()
+    if added:
+        st.session_state[closed_key] = True
+        st.session_state[f"{closed_key}_count"] = st.session_state.get(f"{closed_key}_count", 0) + added
+        st.rerun()
 
 
 def render_url_image_picker(image_urls, state_prefix):
@@ -1067,6 +1139,102 @@ def check_duplicate_tour_name(client, supplier_id, tour_name):
     return None
 
 
+def _summarize_modality_pricing(kind, data, currency):
+    """
+    Renders a compact, read-only summary of one modality's key facts
+    (pricing, operational days, stop sales) inside whatever container is
+    currently open (an expander, typically). `kind` is "tour" or "ticket" -
+    the two use different pricing shapes.
+    """
+    if not data:
+        st.warning("No pricing data entered yet for this modality.")
+        return
+
+    if kind == "tour":
+        price_list = data.get("price_list", []) or []
+        if price_list:
+            st.write(f"**{len(price_list)} price period(s):**")
+            for p in price_list:
+                price = p.get("price", {}) or {}
+                st.caption(
+                    f"{p.get('startDate', '?')} → {p.get('endDate', '?')}: "
+                    f"Single {price.get('singlePrice', {}).get('amount', '-')}, "
+                    f"Double {price.get('doublePrice', {}).get('amount', '-')}, "
+                    f"Triple {price.get('triplePrice', {}).get('amount', '-')}, "
+                    f"Quad {price.get('quadruplePrice', {}).get('amount', '-')} {currency}"
+                )
+        else:
+            st.warning("No price rows entered yet.")
+    else:  # ticket
+        price_type = data.get("price_type", "DISTRIBUTION")
+        if price_type == "OCCUPANCY":
+            occ = data.get("occupancy_prices", []) or []
+            st.write(f"**Occupancy pricing** - {len(occ)} tier(s):")
+            for o in occ:
+                st.caption(f"{o.get('occupancy', '?')} pax: {o.get('amount', '?')} {currency}")
+        elif price_type == "SERVICE":
+            st.write(f"**Flat service price:** {data.get('base_service_price', 0)} {currency}")
+        else:
+            st.write(f"**Adult:** {data.get('base_adult_price', 0)} · "
+                    f"**Child:** {data.get('base_children_price', 0)} · "
+                    f"**Infant:** {data.get('base_infant_price', 0)} {currency}")
+
+    st.caption(f"Operational days: {', '.join(data.get('operational_days', []) or []) or '(not set)'}")
+    if data.get("stop_sales"):
+        st.caption(f"🚫 Stop sales: {len(data['stop_sales'])} date range(s) blocked")
+
+
+def render_modalities_review(kind, base_code, base_label, base_data, extra_modalities, currency):
+    """
+    Consolidated "review everything before you publish" step for when a
+    Ticket or ClosedTour is getting MORE THAN ONE modality/service created
+    together (a base modality + any "Add another Modality" entries). Each
+    extra modality was entered and edited in its own section further up the
+    page, which by the time a human reaches the publish button has usually
+    scrolled out of view - this shows every modality's code, label, and key
+    pricing facts together in one place so nothing entered earlier gets
+    forgotten or silently dropped before publishing.
+    Only renders anything if there's actually more than one modality -
+    a single modality is already fully visible right above the publish
+    button, so a review step here would just be a redundant restatement.
+    """
+    all_modalities = [{"code": base_code, "label": base_label, "data": base_data}]
+    for m in extra_modalities:
+        all_modalities.append({"code": m.get("code"), "label": m.get("hint") or "(no label)", "data": m.get("data")})
+
+    if len(all_modalities) <= 1:
+        return
+
+    st.subheader(f"📋 Review — {len(all_modalities)} modalities will be created together")
+    st.caption("Double-check everything below before publishing - once sent, each modality is created "
+              "as its own separate call to Travel Compositor.")
+    for i, mod in enumerate(all_modalities):
+        code_display = mod["code"] or "(code not set)"
+        icon = "🟢 Base" if i == 0 else f"➕ Extra {i}"
+        with st.expander(f"{icon}: `{code_display}` — {mod['label']}", expanded=False):
+            _summarize_modality_pricing(kind, mod["data"], currency)
+
+
+def render_skip_item_button(item_label, queue, idx, queue_session_key, index_session_key, cleanup_keys, button_key):
+    """
+    Lets a human bail out on ONE item mid-batch-review (e.g. after seeing the
+    AI-extracted name/description and deciding "I don't want this one"),
+    without having to go through the rest of that item's review (geolocation,
+    pricing, etc) or cancel the WHOLE batch. Removes just this item from the
+    queue and reruns; if it was the last item left, clears the batch entirely
+    since there's nothing left to review or publish.
+    """
+    if st.button(f"❌ Don't want this one - remove '{item_label}' from the batch", key=button_key):
+        queue.pop(idx)
+        if not queue:
+            for key in cleanup_keys:
+                st.session_state.pop(key, None)
+        else:
+            st.session_state[queue_session_key] = queue
+            st.session_state[index_session_key] = min(idx, len(queue) - 1)
+        st.rerun()
+
+
 def try_code_variants(call_fn, code):
     """
     Tries `code` as given, then falls back to toggling the 'CLOSEDTOUR-' prefix -
@@ -1251,6 +1419,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         editable_field("Ticket name", data, "ticket_name", widget="text_input")
         editable_field("Description", data, "description", widget="text_area", height=120)
+
+        render_skip_item_button(
+            current['label'] or current['ticket_code'], queue, idx,
+            "mt_queue", "mt_queue_index",
+            ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
+             "mt_doc_raw_images", "mt_hosted_image_candidates"],
+            button_key=f"mt_skip_{idx}"
+        )
+
         editable_field("City", data, "city", widget="text_input")
 
         # ------------------------------------------------------------------
@@ -1334,35 +1511,55 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 
-        if st.session_state.get("mt_hosted_image_candidates"):
-            with st.expander(f"🖼️ Images found in your document/page ({len(st.session_state.mt_hosted_image_candidates)})"):
-                mt_url_selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
-                if mt_url_selected:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + mt_url_selected
-                    st.rerun()
+        def _mt_add_url_images():
+            selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
+            if selected:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
 
-        if st.session_state.get("mt_doc_raw_images"):
-            with st.expander(f"📥 Images needing hosting ({len(st.session_state.mt_doc_raw_images)})"):
-                mt_doc_added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
-                if mt_doc_added:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + [mt_doc_added]
-                    st.rerun()
+        render_closable_image_section(
+            bool(st.session_state.get("mt_hosted_image_candidates")),
+            f"🖼️ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
+            f"mt_found_{idx}_closed", _mt_add_url_images
+        )
+
+        def _mt_add_doc_image():
+            added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
+            if added:
+                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                data["image_urls"] = current_imgs + [added]
+                return 1
+            return 0
+
+        render_closable_image_section(
+            bool(st.session_state.get("mt_doc_raw_images")),
+            f"📥 Images needing hosting ({len(st.session_state.get('mt_doc_raw_images') or [])})",
+            f"mt_doc_{idx}_closed", _mt_add_doc_image
+        )
 
         mt_default_query = current["label"] or data.get("ticket_name", "") or data.get("city", "")
-        with st.expander("🖼️ Search free stock photos (Pexels)"):
-            mt_pexels_selected = render_stock_photo_picker("Pexels", search_images, mt_default_query, f"mt_pexels_{idx}")
-            if mt_pexels_selected:
+
+        def _mt_add_pexels():
+            selected = render_stock_photo_picker("Pexels", search_images, mt_default_query, f"mt_pexels_{idx}")
+            if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + mt_pexels_selected
-                st.rerun()
-        with st.expander("🖼️ Search free stock photos (Pixabay)"):
-            mt_pixabay_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
-            if mt_pixabay_selected:
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
+
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mt_pexels_{idx}_closed", _mt_add_pexels)
+
+        def _mt_add_pixabay():
+            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
+            if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + mt_pixabay_selected
-                st.rerun()
+                data["image_urls"] = current_imgs + selected
+                return len(selected)
+            return 0
+
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
 
         editable_field("Duration (hours)", data, "duration", widget="number_input")
 
@@ -2075,43 +2272,62 @@ def render_ticket_flow(client):
                 data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
 
                 default_tk_img_query = data.get("ticket_name", "") or data.get("city", "")
-                with st.expander("🖼️ Or search free stock photos (Pexels)"):
-                    tk_newly_selected = render_stock_photo_picker("Pexels", search_images, default_tk_img_query, "tk_pexels")
-                    if tk_newly_selected:
+
+                def _tk_add_pexels():
+                    selected = render_stock_photo_picker("Pexels", search_images, default_tk_img_query, "tk_pexels")
+                    if selected:
                         current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + tk_newly_selected
+                        new_list = current + selected
                         data["image_urls"] = new_list
                         st.session_state._tk_pending_images_update = "\n".join(new_list)
-                        st.rerun()
+                        return len(selected)
+                    return 0
 
-                with st.expander("🖼️ Or search free stock photos (Pixabay)"):
-                    tk_newly_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_tk_img_query, "tk_pixabay")
-                    if tk_newly_selected:
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "tk_pexels_closed", _tk_add_pexels)
+
+                def _tk_add_pixabay():
+                    selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_tk_img_query, "tk_pixabay")
+                    if selected:
                         current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + tk_newly_selected
+                        new_list = current + selected
                         data["image_urls"] = new_list
                         st.session_state._tk_pending_images_update = "\n".join(new_list)
-                        st.rerun()
+                        return len(selected)
+                    return 0
 
-                if st.session_state.get("tk_hosted_image_candidates"):
-                    with st.expander(f"🖼️ Images found ({len(st.session_state.tk_hosted_image_candidates)}) - from the page/document", expanded=True):
-                        tk_url_selected = render_url_image_picker(st.session_state.tk_hosted_image_candidates, "tk_found_images")
-                        if tk_url_selected:
-                            current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                            new_list = current + tk_url_selected
-                            data["image_urls"] = new_list
-                            st.session_state._tk_pending_images_update = "\n".join(new_list)
-                            st.rerun()
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "tk_pixabay_closed", _tk_add_pixabay)
 
-                if st.session_state.get("tk_doc_raw_images"):
-                    with st.expander(f"📥 Images extracted from your document(s) ({len(st.session_state.tk_doc_raw_images)}) - need hosting"):
-                        tk_doc_added = render_doc_image_picker(st.session_state.tk_doc_raw_images, "tk_doc_images")
-                        if tk_doc_added:
-                            current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                            new_list = current + [tk_doc_added]
-                            data["image_urls"] = new_list
-                            st.session_state._tk_pending_images_update = "\n".join(new_list)
-                            st.rerun()
+                def _tk_add_url_images():
+                    selected = render_url_image_picker(st.session_state.tk_hosted_image_candidates, "tk_found_images")
+                    if selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + selected
+                        data["image_urls"] = new_list
+                        st.session_state._tk_pending_images_update = "\n".join(new_list)
+                        return len(selected)
+                    return 0
+
+                render_closable_image_section(
+                    bool(st.session_state.get("tk_hosted_image_candidates")),
+                    f"🖼️ Images found ({len(st.session_state.get('tk_hosted_image_candidates') or [])}) - from the page/document",
+                    "tk_found_images_closed", _tk_add_url_images
+                )
+
+                def _tk_add_doc_image():
+                    added = render_doc_image_picker(st.session_state.tk_doc_raw_images, "tk_doc_images")
+                    if added:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + [added]
+                        data["image_urls"] = new_list
+                        st.session_state._tk_pending_images_update = "\n".join(new_list)
+                        return 1
+                    return 0
+
+                render_closable_image_section(
+                    bool(st.session_state.get("tk_doc_raw_images")),
+                    f"📥 Images extracted from your document(s) ({len(st.session_state.get('tk_doc_raw_images') or [])}) - need hosting",
+                    "tk_doc_images_closed", _tk_add_doc_image
+                )
 
         st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
@@ -2383,6 +2599,11 @@ def render_ticket_flow(client):
             payloads = st.session_state.tk_payloads
             st.header("Ticket — Step 6: Geolocation & Payload Preview")
 
+            render_modalities_review(
+                "ticket", modality_code, "Base Modality", data,
+                st.session_state.get("tk_extra_modalities", []), currency
+            )
+
             if payloads["geolocation_resolved"]:
                 lat, lng = payloads["geolocation_latitude"], payloads["geolocation_longitude"]
                 maps_link = f"https://www.google.com/maps?q={lat},{lng}"
@@ -2424,6 +2645,10 @@ def render_ticket_flow(client):
                                     st.session_state.tk_geo_confirmed = False
                                     st.session_state.tk_geo_search_results = None
                                     st.rerun()
+
+                if payloads.get("is_indonesia"):
+                    st.info(f"🇮🇩 Indonesia detected — Vesak Day is automatically blocked as a stop-sale "
+                            f"date, no excursion may start that day. {payloads.get('vesak_day_note', '')}")
 
                 st.session_state.tk_geo_confirmed = st.checkbox(
                     "✅ I've checked this location on the map and it's correct for this ticket",
@@ -3271,44 +3496,63 @@ if st.session_state.extracted:
             if data["image_urls"] == [FALLBACK_IMAGE]:
                 st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
 
-            if st.session_state.get("hosted_image_candidates"):
-                with st.expander(f"🖼️ Images found ({len(st.session_state.hosted_image_candidates)}) - from the page/document", expanded=True):
-                    newly_selected = render_url_image_picker(st.session_state.hosted_image_candidates, "found_images")
-                    if newly_selected:
-                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + newly_selected
-                        data["image_urls"] = new_list
-                        st.session_state._pending_images_update = "\n".join(new_list)
-                        st.rerun()
+            def _ct_add_url_images():
+                selected = render_url_image_picker(st.session_state.hosted_image_candidates, "found_images")
+                if selected:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    new_list = current + selected
+                    data["image_urls"] = new_list
+                    st.session_state._pending_images_update = "\n".join(new_list)
+                    return len(selected)
+                return 0
 
-            if st.session_state.get("doc_raw_images"):
-                with st.expander(f"📥 Images extracted from your document(s) ({len(st.session_state.doc_raw_images)}) - need hosting"):
-                    newly_added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")
-                    if newly_added:
-                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + [newly_added]
-                        data["image_urls"] = new_list
-                        st.session_state._pending_images_update = "\n".join(new_list)
-                        st.rerun()
+            render_closable_image_section(
+                bool(st.session_state.get("hosted_image_candidates")),
+                f"🖼️ Images found ({len(st.session_state.get('hosted_image_candidates') or [])}) - from the page/document",
+                "found_images_closed", _ct_add_url_images
+            )
+
+            def _ct_add_doc_image():
+                added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")
+                if added:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    new_list = current + [added]
+                    data["image_urls"] = new_list
+                    st.session_state._pending_images_update = "\n".join(new_list)
+                    return 1
+                return 0
+
+            render_closable_image_section(
+                bool(st.session_state.get("doc_raw_images")),
+                f"📥 Images extracted from your document(s) ({len(st.session_state.get('doc_raw_images') or [])}) - need hosting",
+                "doc_images_closed", _ct_add_doc_image
+            )
 
             default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
-            with st.expander("🖼️ Or search free stock photos (Pexels)"):
-                newly_selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
-                if newly_selected:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + newly_selected
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    st.rerun()
 
-            with st.expander("🖼️ Or search free stock photos (Pixabay)"):
-                newly_selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
-                if newly_selected:
+            def _ct_add_pexels():
+                selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
+                if selected:
                     current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + newly_selected
+                    new_list = current + selected
                     data["image_urls"] = new_list
                     st.session_state._pending_images_update = "\n".join(new_list)
-                    st.rerun()
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "pexels_closed", _ct_add_pexels)
+
+            def _ct_add_pixabay():
+                selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
+                if selected:
+                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    new_list = current + selected
+                    data["image_urls"] = new_list
+                    st.session_state._pending_images_update = "\n".join(new_list)
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
 
     st.subheader("Departure Schedule")
     if data.get("schedule_notes"):
@@ -3608,6 +3852,11 @@ if st.session_state.extracted:
 
         st.header("Step 6 — Destination Resolution & Payload Preview")
 
+        render_modalities_review(
+            "tour", modality_code, "Base Modality", data,
+            st.session_state.get("extra_modalities", []), currency
+        )
+
         st.subheader("Destination Check — verify these against Travel Compositor before publishing")
         for res in payloads["itinerary_resolution"]:
             if res["valid"]:
@@ -3624,6 +3873,10 @@ if st.session_state.extracted:
                     f"in Travel Compositor</div>",
                     unsafe_allow_html=True
                 )
+
+        if payloads.get("is_indonesia"):
+            st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day is automatically blocked as a "
+                    f"stop-sale date, no excursion/tour may start that day. {payloads.get('vesak_day_note', '')}")
 
         if payloads["unresolved_destinations"]:
             st.error(
