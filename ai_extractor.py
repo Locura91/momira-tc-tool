@@ -229,6 +229,33 @@ def friendly_error_message(e: Exception) -> str:
 HAIKU_MODEL = "claude-haiku-4-5"
 
 
+def _stream_claude_message(client, model: str, max_tokens: int, system_prompt: str, user_content) -> tuple:
+    """
+    Sends one message via the Anthropic SDK's STREAMING API rather than a
+    plain (non-streaming) create() call. The SDK itself requires streaming
+    for any request whose max_tokens is high enough that it MIGHT take
+    longer than 10 minutes to generate - confirmed via a real failure
+    ("Streaming is required for operations that may take longer than 10
+    minutes") once max_tokens was raised for longer tour extractions.
+    Streaming works identically for short/simple calls too, so every call
+    site uses this shared helper now rather than only the ones that
+    technically need it - one code path, no risk of the same error
+    resurfacing later if another call's max_tokens grows.
+    Returns (full_text, stop_reason).
+    """
+    full_text_parts = []
+    with client.messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+    ) as stream:
+        for text in stream.text_stream:
+            full_text_parts.append(text)
+        final_message = stream.get_final_message()
+    return "".join(full_text_parts), getattr(final_message, "stop_reason", None)
+
+
 def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096) -> dict:
     """
     Shared helper: calls Claude, strips code fences, parses JSON, raises
@@ -240,14 +267,7 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
     every single time.
     """
     client = _get_anthropic_client()
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
-    )
-
-    raw_response = "".join(block.text for block in response.content if block.type == "text")
+    raw_response, stop_reason = _stream_claude_message(client, model, max_tokens, system_prompt, user_content)
     cleaned = _strip_code_fences(raw_response)
 
     try:
@@ -265,7 +285,6 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
         except json.JSONDecodeError:
             pass
 
-    stop_reason = getattr(response, "stop_reason", None)
     hint = (
         " The response appears to have been cut off (hit the token limit) - try a shorter "
         "document/URL, or this may need a higher max_tokens setting."
@@ -370,12 +389,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
     ]
     try:
         client = _get_anthropic_client()
-        response = client.messages.create(
-            model=model, max_tokens=4096,
-            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_content}]
-        )
-        raw_response = "".join(block.text for block in response.content if block.type == "text")
+        raw_response, _ = _stream_claude_message(client, model, 4096, system_prompt, user_content)
         cleaned = _strip_code_fences(raw_response)
         result = json.loads(cleaned)
         if "summary" not in result:
@@ -412,18 +426,10 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
             f"--- Human's question ---\n{question}"
         )},
     ]
-    result_text_parts = []
     try:
         client = _get_anthropic_client()
-        response = client.messages.create(
-            model=model, max_tokens=1024,
-            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_content}]
-        )
-        for block in response.content:
-            if block.type == "text":
-                result_text_parts.append(block.text)
-        return "".join(result_text_parts).strip() or "(No answer returned.)"
+        raw_response, _ = _stream_claude_message(client, model, 1024, system_prompt, user_content)
+        return raw_response.strip() or "(No answer returned.)"
     except Exception as e:
         return f"Couldn't get an answer - {friendly_error_message(e)}"
 
