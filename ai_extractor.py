@@ -460,12 +460,17 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         "(e.g. 'fix the end date of season 1 to Sept 30', 'the price for triple should be 449 not 459') "
         "- in that case, actually apply the fix. Use ONLY the source document and current "
         "extracted data as context/facts - never invent information not present in the source. "
-        "Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:\n"
-        '{"summary": "plain-text explanation of what you understood and changed (or answered)", '
-        '"changes": {"<field_name>": <new_value>, ...}}\n'
-        "Only include fields in 'changes' that actually need to change - if it's just a question "
-        "with no requested change, 'changes' must be an empty object {}. Field names and value "
-        "shapes must exactly match the current extracted data's own structure (e.g. price_list is "
+        "You MUST call the apply_changes tool exactly once to respond - never respond with plain text. "
+        "The tool call has TWO required arguments, and you must always provide BOTH, with no exceptions:\n"
+        "1. summary (string, REQUIRED, never omit): a plain-text explanation of what you understood and "
+        "changed, or your answer if it was just a question. This is shown directly to the human, so it "
+        "must never be empty - even for a pure question with zero data changes, still explain your answer "
+        "here.\n"
+        "2. changes (object, REQUIRED, may be empty {} for a pure question): ONLY the fields that actually "
+        "need to change, with their NEW full value. If the human asked for a concrete change (a date, "
+        "price, name, day, etc.), 'changes' must contain that field with its corrected value - an empty "
+        "'changes' object when a concrete edit was requested means you failed the task. Field names and "
+        "value shapes must exactly match the current extracted data's own structure (e.g. price_list is "
         "the same array-of-objects shape, operational_days is the same list of weekday names)."
     )
     # The source document text is put in its OWN cacheable content block,
@@ -490,8 +495,32 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         # arbitrary long text (e.g. a corrected description) that's exactly the
         # kind of content prone to breaking free-text JSON parsing.
         result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, user_content, tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
-        if "summary" not in result:
-            result["summary"] = "(No summary returned.)"
+
+        # SAFETY NET: a strict input_schema with "required" is a strong hint to
+        # the model, but the Anthropic API does NOT hard-enforce "required" on
+        # tool_use output - the model can still technically omit a key. If that
+        # happens, retry ONCE with an explicit corrective instruction rather
+        # than silently showing an unhelpful placeholder - confirmed this was
+        # happening even with the strict schema in place.
+        if not (result.get("summary") or "").strip():
+            corrective_user_content = user_content + [{
+                "type": "text",
+                "text": ("Your previous tool call omitted the required 'summary' field (or left it blank) - "
+                         "this is not allowed. Call apply_changes again, this time including a real, "
+                         "non-empty 'summary' explaining what you understood/changed or answered, "
+                         "alongside 'changes'."),
+            }]
+            result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, corrective_user_content,
+                                                 tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
+
+        if not (result.get("summary") or "").strip():
+            # Both attempts failed to include a summary - build a factual one
+            # from whatever we DO have rather than a dead-end placeholder.
+            if result.get("changes"):
+                result["summary"] = f"Applied changes to: {', '.join(result['changes'].keys())}."
+            else:
+                result["summary"] = ("I processed your message but didn't return a clear summary - please "
+                                     "check above whether anything changed, or try rephrasing your request.")
         if "changes" not in result or not isinstance(result["changes"], dict):
             result["changes"] = {}
         return result
@@ -719,10 +748,26 @@ Extract:
   look for it anywhere in the source (a "Good to know" section counts, not just a pricing table), else 6/12 as a common default.
 - disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
   type isn't allowed (rare) - otherwise all false.
-- operational_days: list of uppercase weekday names this is available, or all 7 if unclear/daily.
+- operational_days: list of uppercase weekday names this is available. CRITICAL - THIS IS OFTEN MISSED:
+  actively search the ENTIRE source for weekday schedule information (not just an obvious "Schedule"
+  section) - phrases like "operated ... as following schedules:", "departs on", "available every", or a
+  bare list of weekday names near the tour description all count. Only fall back to all 7 days if the
+  source is GENUINELY silent about which days it runs (e.g. truly says "daily", or says nothing about
+  scheduling at all) - never default to all 7 just because the schedule is stated in an unusual place or
+  a slightly indirect format.
+  MULTI-LANGUAGE SCHEDULE RULE: if the source gives a SEPARATE weekday schedule per guide language (e.g.
+  "English-speaking guide (am.): Mondays, Wednesdays, Fridays, Saturdays and Sundays" / "German-speaking
+  guide (am.): Mondays, Wednesdays, Fridays and Sundays"), this ticket's base operational_days MUST be set
+  to the schedule for the STANDARD/base language only (see the GUIDE LANGUAGE RULE above - normally
+  English, or whichever language has no separate on-request supplement). Do NOT merge/union the different
+  languages' day-sets together, and do NOT default to all 7 - pick the exact days listed for the base
+  language's schedule. Mention the other language(s)' different schedule explicitly in schedule_notes so
+  the human sees the discrepancy (e.g. "German-speaking guide runs Mon/Wed/Fri/Sun only - narrower than
+  the English schedule used for operational_days above").
 - schedule_notes: if the source says operational days are NOT YET DETERMINED (e.g. "TBD by Operations",
   "to be confirmed"), say so plainly here so the human knows operational_days is a placeholder default,
-  not a real confirmed schedule. Empty string otherwise.
+  not a real confirmed schedule. Also use this field for the multi-language schedule discrepancy note
+  described above. Empty string otherwise.
 - time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
   gives specific time slots - empty list if not applicable.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
@@ -882,6 +927,13 @@ when just adding/updating a modality). The source is often just a pricing table 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
 supplements (simple, always-available, stackable add-ons only - never exclusive alternatives, different guide languages, or on-request items, see full prompt's rules on this - and NEVER voluntary carbon offset/emission compensation charges, ignore those entirely), pricing_notes.
+
+operational_days: actively search the ENTIRE source for weekday schedule info, even if it's stated in an
+unusual place or format - only default to all 7 days if the source is genuinely silent about which days
+it runs. If the source gives a SEPARATE schedule per guide language and a human hint above names a
+specific language/focus for THIS modality, use that language's exact days (not a union, not all 7). If no
+hint narrows it down, use the base/standard language's schedule and note any other languages' differing
+days in pricing_notes.
 
 CRITICAL RULE for base_children_price: if the source gives only ONE price with no distinct child rate,
 set base_children_price EQUAL to base_adult_price - NOT 0. A price of 0 specifically means "this
