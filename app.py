@@ -3117,7 +3117,7 @@ def render_ticket_flow(client):
                         unsafe_allow_html=True
                     )
                     st.markdown(f"[🗺️ Open in Google Maps to verify]({maps_link})")
-                    if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
+                    if payloads['geolocation_source'] not in ("manual override", "not_found", None):
                         st.caption("Geocoding data © OpenStreetMap contributors")
 
                     with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
