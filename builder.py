@@ -27,6 +27,109 @@ def normalize_time_hhmmss(value: str) -> str:
         return value
     return value  # malformed input - pass through, let the API's own validation catch it clearly
 
+
+# CONFIRMED business rule (human instruction, 2026-07-30): in Indonesia
+# specifically, NO excursion or tour may ever start on Vesak Day (Hari Raya
+# Waisak) - it must always default to a blocked stop-sale date, regardless
+# of what the source document's own schedule says. Vesak Day follows the
+# Buddhist lunar calendar so it moves every year and can't be computed with
+# a simple formula - these are the real, confirmed government-recognized
+# dates for the years currently published. Sourced from publicholidays.co.id
+# (checked 2026-07-30). Extend this table as later years become official.
+VESAK_DAY_DATES = {
+    2026: "2026-05-31",
+    2027: "2027-05-20",
+    2028: "2028-05-09",
+}
+
+
+def _is_indonesia_country_value(country_value) -> bool:
+    """
+    Matches Travel Compositor's own 'country' field on a DestinationVO,
+    which may hold either an ISO code ("ID") or a full name ("Indonesia")
+    depending on account/version - check both rather than betting on one.
+    """
+    if not country_value:
+        return False
+    value = str(country_value).strip().lower()
+    return value == "id" or "indonesia" in value
+
+
+def _is_indonesia_place_name(display_name: str) -> bool:
+    return bool(display_name) and "indonesia" in display_name.lower()
+
+
+def _is_indonesia_destination(place_name: str, api_client: TravelCompositorAPI = None) -> bool:
+    """
+    Determines whether a single place name is in Indonesia. Prefers Travel
+    Compositor's OWN destination data (the 'country' field on DestinationVO,
+    already cached via the same lookup ClosedTour destination-resolution
+    uses) since it's the authoritative, official source - falls back to the
+    free OpenStreetMap/Nominatim geocoder (same one used for Ticket
+    coordinates, cached) only when Travel Compositor has no record for that
+    place, since its own destination list won't cover every small town a
+    DMC document might mention.
+    """
+    if not place_name:
+        return False
+    if api_client is not None:
+        try:
+            country = api_client.get_destination_country(place_name)
+        except Exception:
+            country = None
+        if country is not None:
+            return _is_indonesia_country_value(country)
+    geo_result = geocode(place_name)
+    return geo_result.get("valid") and _is_indonesia_place_name(geo_result.get("display_name"))
+
+
+def _detect_indonesia_tour(raw_locations: List[str], api_client: TravelCompositorAPI = None) -> bool:
+    """
+    Best-effort check for whether a ClosedTour's itinerary is in Indonesia -
+    checks each raw destination name (Travel Compositor's own country data
+    first, OpenStreetMap as fallback - see _is_indonesia_destination) and
+    stops as soon as one resolves to a place inside Indonesia.
+    """
+    for loc_name in raw_locations:
+        if loc_name and _is_indonesia_destination(loc_name, api_client):
+            return True
+    return False
+
+
+def vesak_day_stop_sales() -> List[Dict[str, str]]:
+    """
+    Every known Vesak Day date as a {"start", "end"} stop-sale entry (same
+    single day for both). Safe to always include every known year regardless
+    of the product's actual selling window - a stop-sale date outside the
+    real range is simply unused, never harmful.
+    """
+    return [{"start": d, "end": d} for d in VESAK_DAY_DATES.values()]
+
+
+def vesak_day_coverage_note() -> str:
+    """
+    Plain-language note for the UI so a human reviewing an Indonesia product
+    can see at a glance how far the automatic Vesak Day block reaches, and
+    knows to add later years manually once Indonesia officially confirms them.
+    """
+    years = sorted(VESAK_DAY_DATES.keys())
+    return (f"Vesak Day is automatically blocked for {years[0]}-{years[-1]} (confirmed dates). "
+            f"For years beyond {years[-1]}, Indonesia's Vesak Day date isn't officially "
+            f"confirmed yet - add it manually as a stop-sale once announced.")
+
+
+def _merge_stop_sales(existing: List[Dict[str, str]], additions: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Merges two stop-sale lists, skipping any addition that's already present (same start+end)."""
+    existing = list(existing or [])
+    existing_keys = {(s.get("start"), s.get("end")) for s in existing if isinstance(s, dict)}
+    for item in additions:
+        key = (item.get("start"), item.get("end"))
+        if key not in existing_keys:
+            existing.append(item)
+            existing_keys.add(key)
+    return existing
+
+
 def build_closed_tour_payloads(
     pre_config: HumanPreConfig,
     extracted_dmc_data: Dict[str, Any],
@@ -73,6 +176,10 @@ def build_closed_tour_payloads(
             continue  # skip - same as the immediately preceding stop
         collapsed_itinerary.append(item)
     validated_itinerary = collapsed_itinerary
+
+    # Indonesia / Vesak Day rule (human instruction): tours in Indonesia can
+    # never start on Vesak Day - automatically block it as a stop-sale below.
+    is_indonesia = _detect_indonesia_tour(raw_locations, api_client)
 
     # Transports = number of destination CHANGES along the itinerary (not total stops)
     transports_count = sum(
@@ -166,13 +273,17 @@ def build_closed_tour_payloads(
     # the validation error and surface it as data instead; the actual
     # publish step (in web_extractor.py) still refuses to upload if this
     # error is present.
+    combined_stop_sales = extracted_dmc_data.get("stop_sales", []) or []
+    if is_indonesia:
+        combined_stop_sales = _merge_stop_sales(combined_stop_sales, vesak_day_stop_sales())
+
     tour_option_payload = None
     tour_option_error = None
     try:
         tour_option = ContractClosedTourOptionVO(
             code=pre_config.modality_code,
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
-            stopSales=extracted_dmc_data.get("stop_sales", []),
+            stopSales=combined_stop_sales,
             priceList=sorted(extracted_dmc_data.get("price_list", []), key=lambda p: p.get("startDate", "")),
             translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
@@ -190,7 +301,9 @@ def build_closed_tour_payloads(
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
-        "itinerary_resolution": itinerary_resolution  # per-item status for clean green/red UI display
+        "itinerary_resolution": itinerary_resolution,  # per-item status for clean green/red UI display
+        "is_indonesia": is_indonesia,
+        "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
     }
 
 def build_ticket_payloads(
@@ -220,6 +333,12 @@ def build_ticket_payloads(
             "name": geo_result.get("display_name") or city, "valid": geo_result["valid"],
             "source": "OpenStreetMap/Nominatim" if geo_result["valid"] else "not_found",
         }
+
+    # Indonesia / Vesak Day rule (human instruction): excursions in Indonesia
+    # can never start on Vesak Day - automatically block it as a stop-sale
+    # below. Prefers Travel Compositor's own destination country data, falls
+    # back to the OpenStreetMap lookup already done above for coordinates.
+    is_indonesia = _is_indonesia_destination(city, api_client)
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
@@ -337,12 +456,16 @@ def build_ticket_payloads(
         if selected_price_type != "OCCUPANCY":
             occupancy_prices = []
 
+        combined_ticket_stop_sales = extracted_ticket_data.get("stop_sales", []) or []
+        if is_indonesia:
+            combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, vesak_day_stop_sales())
+
         ticket_option = ContractTicketModalityVO(
             code=pre_config.modality_code,
             operationalDays=extracted_ticket_data.get("operational_days", WEEKDAY_NAMES.copy()),
             remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=None)},
             supplements=supplements_list,
-            stopSales=extracted_ticket_data.get("stop_sales", []),
+            stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
             disallowChildren=bool(extracted_ticket_data.get("disallow_children", False)),
             onRequest=pre_config.on_request,
@@ -381,6 +504,8 @@ def build_ticket_payloads(
         "geolocation_name": geoloc.get("name"),
         "geolocation_latitude": geoloc.get("latitude"),
         "geolocation_longitude": geoloc.get("longitude"),
+        "is_indonesia": is_indonesia,
+        "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
         "has_real_pricing": any([
             extracted_ticket_data.get("base_adult_price", 0),
             extracted_ticket_data.get("base_children_price", 0),
