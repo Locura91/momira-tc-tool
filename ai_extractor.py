@@ -39,6 +39,10 @@ Rules:
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
 - hotels_count: the number of DIFFERENT accommodations/hotels the client actually stays in (count the bullets you just wrote in hotels_text - e.g. a cruise with one ship the whole way is 1, a land tour through 3 different-hotel cities is 3).
 - supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price.
+  CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
+  CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
+  never add these as a supplement or anywhere else in the extracted data, even though they're technically
+  optional and priced. This is a deliberate exclusion, not an oversight.
   CRITICAL - MANDATORY peak season/holiday surcharges are NOT supplements (a supplement implies the
   customer chooses to pay it - a mandatory surcharge doesn't). Two cases:
   (a) The surcharge applies to the WHOLE TRIP/booking uniformly (e.g. "20% higher during Christmas") -
@@ -677,7 +681,12 @@ Extract:
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
 - supplements: ONLY genuinely simple, ALWAYS-AVAILABLE, independently-stackable optional add-ons (e.g.
-  "Add English audio guide - $5", "Extra photo package - $15"). CONFIRMED REAL CONSTRAINTS - Ticket
+  "Add English audio guide - $5", "Extra photo package - $15").
+  CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
+  CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
+  never add these as a supplement or anywhere else in the extracted data, even though they're technically
+  optional and priced. This is a deliberate exclusion, not an oversight.
+  CONFIRMED REAL CONSTRAINTS - Ticket
   Supplements are structurally different from ClosedTour ones:
   (1) There is NO "on request" concept for Ticket supplements at all - never describe one as needing
       special confirmation/availability check, since the schema has no field for that.
@@ -824,7 +833,7 @@ when just adding/updating a modality). The source is often just a pricing table 
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
-supplements (simple, always-available, stackable add-ons only - never exclusive alternatives, different guide languages, or on-request items, see full prompt's rules on this), pricing_notes.
+supplements (simple, always-available, stackable add-ons only - never exclusive alternatives, different guide languages, or on-request items, see full prompt's rules on this - and NEVER voluntary carbon offset/emission compensation charges, ignore those entirely), pricing_notes.
 
 CRITICAL RULE for base_children_price: if the source gives only ONE price with no distinct child rate,
 set base_children_price EQUAL to base_adult_price - NOT 0. A price of 0 specifically means "this
