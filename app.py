@@ -213,7 +213,7 @@ def render_optional_time_input(label, data_dict, field_key, widget_key, default_
         parsed_default = datetime.strptime(current_value, "%H:%M:%S").time() if current_value else datetime.strptime(default_time_str, "%H:%M:%S").time()
     except ValueError:
         parsed_default = datetime.strptime(default_time_str, "%H:%M:%S").time()
-    picked = st.time_input(label, value=parsed_default, key=widget_key, step=300)
+    picked = st.time_input(label, value=parsed_default, key=widget_key, step=900)
     data_dict[field_key] = picked.strftime("%H:%M:%S")
 
 
@@ -997,11 +997,43 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
     if st.session_state.mct_phase == "publishing":
         queue = st.session_state.mct_queue
         st.subheader(f"Ready to publish {len(queue)} tours - one by one")
+
+        st.markdown("**🌍 Destination Check — verify these against Travel Compositor before publishing**")
         for q in queue:
-            st.write(f"- **{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}")
-            dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
-            if dup_warning:
-                st.warning(dup_warning)
+            with st.expander(f"**{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}", expanded=False):
+                dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
+                if dup_warning:
+                    st.warning(dup_warning)
+                preview_pre_config = HumanPreConfig(
+                    supplier_id=supplier_id, provider_code=q["tour_code"],
+                    min_pax=min_pax, max_pax=max_pax, currency=currency,
+                    modality_code=q["modality_code"], on_request=on_request,
+                    days_available_before_release=release_days
+                )
+                preview_payloads = build_closed_tour_payloads(preview_pre_config, q["data"], client)
+                for res in preview_payloads.get("itinerary_resolution", []):
+                    if res["valid"]:
+                        st.markdown(
+                            f"<div style='background-color:#d4edda; color:#155724; padding:4px 10px; "
+                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>✅ <b>{res['input']}</b> → "
+                            f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f"<div style='background-color:#f8d7da; color:#721c24; padding:4px 10px; "
+                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>❌ <b>{res['input']}</b> → "
+                            f"NOT FOUND in Travel Compositor</div>",
+                            unsafe_allow_html=True
+                        )
+
+        mct_activation_choice = st.radio(
+            "After publishing, should these Tours be Active or Inactive (draft)?",
+            ["Inactive (draft) - recommended, review inside Travel Compositor before they go live",
+             "Active - live immediately"],
+            index=0, key="mct_activation_choice"
+        )
+        mct_publish_as_active = mct_activation_choice.startswith("Active")
 
         if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
@@ -1052,15 +1084,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         else:
                             st.success(f"✅ **{q['tour_code']}**: base modality '{q['modality_code']}' created (option code used: `{used_code}`).")
 
-                        deactivate_payload = dict(creation_payload)
-                        deactivate_payload["active"] = False
-                        deactivate_payload["code"] = real_code
-                        deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
-                        if "error" in deactivate_result:
-                            st.warning(f"⚠️ **{q['tour_code']}**: created and published, but switching back to "
-                                      f"inactive failed - {deactivate_result}")
+                        if mct_publish_as_active:
+                            st.success(f"✅ **{q['tour_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
                         else:
-                            st.success(f"✅ **{q['tour_code']}** published successfully as `{real_code}`.")
+                            deactivate_payload = dict(creation_payload)
+                            deactivate_payload["active"] = False
+                            deactivate_payload["code"] = real_code
+                            deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
+                            if "error" in deactivate_result:
+                                st.warning(f"⚠️ **{q['tour_code']}**: created and published, but switching back to "
+                                          f"inactive failed - {deactivate_result}")
+                            else:
+                                st.success(f"✅ **{q['tour_code']}** published successfully as `{real_code}` (inactive/draft).")
                     except Exception as e:
                         show_publish_error(f"publish **{q['tour_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         continue
@@ -2069,6 +2104,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             extra_note = f" + {extra_count} additional modalit{'y' if extra_count == 1 else 'ies'}" if extra_count else ""
             st.write(f"- **{q['ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}{extra_note}")
 
+        mt_activation_choice = st.radio(
+            "After publishing, should these Tickets be Active or Inactive (draft)?",
+            ["Inactive (draft) - recommended, review inside Travel Compositor before they go live",
+             "Active - live immediately"],
+            index=0, key="mt_activation_choice"
+        )
+        mt_publish_as_active = mt_activation_choice.startswith("Active")
+
         if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
                 with st.spinner(f"Publishing '{q['ticket_code']}'..."):
@@ -2138,15 +2181,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     show_publish_error(f"create **{q['ticket_code']}** modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
                                     continue
 
-                        deactivate_payload = dict(creation_payload)
-                        deactivate_payload["active"] = False
-                        deactivate_payload["code"] = real_code
-                        deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
-                        if "error" in deactivate_result:
-                            st.warning(f"⚠️ **{q['ticket_code']}**: created and published, but switching back to "
-                                      f"inactive failed - {deactivate_result}")
+                        if mt_publish_as_active:
+                            st.success(f"✅ **{q['ticket_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
                         else:
-                            st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}`.")
+                            deactivate_payload = dict(creation_payload)
+                            deactivate_payload["active"] = False
+                            deactivate_payload["code"] = real_code
+                            deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
+                            if "error" in deactivate_result:
+                                st.warning(f"⚠️ **{q['ticket_code']}**: created and published, but switching back to "
+                                          f"inactive failed - {deactivate_result}")
+                            else:
+                                st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}` (inactive/draft).")
                     except Exception as e:
                         show_publish_error(f"publish **{q['ticket_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         continue
@@ -2197,15 +2243,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                         show_publish_error(f"retry **{fi['ticket_code']}**'s option", retry_option_result)
                                     else:
                                         st.success(f"✅ **{fi['ticket_code']}**: option created on retry.")
-                                        # Match the normal flow's end state: switch back to
-                                        # inactive/draft now that the ticket has its option.
-                                        retry_deactivate_payload = dict(retry_payloads["main_ticket_payload"])
-                                        retry_deactivate_payload["active"] = False
-                                        retry_deactivate_payload["code"] = fi["real_code"]
-                                        retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
-                                        if "error" in retry_deactivate_result:
-                                            st.warning(f"⚠️ Option created, but switching back to inactive/draft "
-                                                      f"failed: {retry_deactivate_result}.")
+                                        # Match the activation choice made above for this batch.
+                                        if not mt_publish_as_active:
+                                            retry_deactivate_payload = dict(retry_payloads["main_ticket_payload"])
+                                            retry_deactivate_payload["active"] = False
+                                            retry_deactivate_payload["code"] = fi["real_code"]
+                                            retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
+                                            if "error" in retry_deactivate_result:
+                                                st.warning(f"⚠️ Option created, but switching back to inactive/draft "
+                                                          f"failed: {retry_deactivate_result}.")
                                         st.session_state.mt_failed_items = [
                                             x for x in st.session_state.mt_failed_items if x is not fi
                                         ]
@@ -3215,6 +3261,16 @@ def render_ticket_flow(client):
             }
             st.caption(action_descriptions[publish_action])
 
+            tk_publish_as_active = True
+            if creating_new:
+                tk_activation_choice = st.radio(
+                    "After publishing, should this Ticket be Active or Inactive (draft)?",
+                    ["Inactive (draft) - recommended, review inside Travel Compositor before it goes live",
+                     "Active - live immediately"],
+                    index=0, key="tk_activation_choice"
+                )
+                tk_publish_as_active = tk_activation_choice.startswith("Active")
+
             if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary", key="tk_publish_btn"):
                 with st.spinner("Publishing..."):
                     try:
@@ -3277,21 +3333,29 @@ def render_ticket_flow(client):
                                                     show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
                                                     continue
 
-                                    deactivate_payload = dict(creation_payload)
-                                    deactivate_payload["active"] = False
-                                    deactivate_payload["code"] = real_code
-                                    deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
-                                    if "error" in deactivate_result:
-                                        st.warning(f"⚠️ Ticket and option created successfully, but switching back "
-                                                  f"to inactive/draft failed: {deactivate_result}.")
-                                    else:
-                                        st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
-                                                  f"Ready for human review — activate it inside Travel Compositor when ready.")
+                                    if tk_publish_as_active:
+                                        st.success(f"✅ Ticket `{real_code}` left ACTIVE, as chosen above - it's live now.")
                                         st.session_state.tk_just_published_code = real_code
                                         st.session_state.tk_extra_modalities = []
                                         st.session_state.tk_just_published_supplier_id = supplier_id
-                                        st.session_state.tk_just_published_is_inactive = True
+                                        st.session_state.tk_just_published_is_inactive = False
                                         st.session_state.tk_publish_partial_failure = False
+                                    else:
+                                        deactivate_payload = dict(creation_payload)
+                                        deactivate_payload["active"] = False
+                                        deactivate_payload["code"] = real_code
+                                        deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
+                                        if "error" in deactivate_result:
+                                            st.warning(f"⚠️ Ticket and option created successfully, but switching back "
+                                                      f"to inactive/draft failed: {deactivate_result}.")
+                                        else:
+                                            st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
+                                                      f"Ready for human review — activate it inside Travel Compositor when ready.")
+                                            st.session_state.tk_just_published_code = real_code
+                                            st.session_state.tk_extra_modalities = []
+                                            st.session_state.tk_just_published_supplier_id = supplier_id
+                                            st.session_state.tk_just_published_is_inactive = True
+                                            st.session_state.tk_publish_partial_failure = False
 
                         elif publish_action == "Add a new option to an existing ticket":
                             result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
@@ -4482,6 +4546,16 @@ if st.session_state.extracted:
                         st.session_state._existing_tours_cache.pop(payloads["supplier_id"], None)
                         st.rerun()
 
+        ct_publish_as_active = True
+        if creating_new_tour:
+            ct_activation_choice = st.radio(
+                "After publishing, should this Tour be Active or Inactive (draft)?",
+                ["Inactive (draft) - recommended, review inside Travel Compositor before it goes live",
+                 "Active - live immediately"],
+                index=0, key="ct_activation_choice"
+            )
+            ct_publish_as_active = ct_activation_choice.startswith("Active")
+
         if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Sending to Travel Compositor..."):
 
@@ -4558,21 +4632,28 @@ if st.session_state.extracted:
                                                 show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
                                                 continue
 
-                                deactivate_payload = dict(creation_payload)
-                                deactivate_payload["active"] = False
-                                deactivate_payload["code"] = real_code
-                                deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
-                                if "error" in deactivate_result:
-                                    st.warning(f"⚠️ Tour and option were created successfully, but switching "
-                                              f"the tour back to inactive/draft failed: {deactivate_result}. "
-                                              f"You may need to deactivate it manually inside Travel Compositor.")
-                                else:
-                                    st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
-                                              f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
+                                if ct_publish_as_active:
+                                    st.success(f"✅ Tour `{real_code}` left ACTIVE, as chosen above - it's live now.")
                                     st.session_state.just_published_tour_code = real_code
                                     st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                                    st.session_state.just_published_is_inactive = True
+                                    st.session_state.just_published_is_inactive = False
                                     st.session_state.extra_modalities = []
+                                else:
+                                    deactivate_payload = dict(creation_payload)
+                                    deactivate_payload["active"] = False
+                                    deactivate_payload["code"] = real_code
+                                    deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
+                                    if "error" in deactivate_result:
+                                        st.warning(f"⚠️ Tour and option were created successfully, but switching "
+                                                  f"the tour back to inactive/draft failed: {deactivate_result}. "
+                                                  f"You may need to deactivate it manually inside Travel Compositor.")
+                                    else:
+                                        st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
+                                                  f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
+                                        st.session_state.just_published_tour_code = real_code
+                                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                                        st.session_state.just_published_is_inactive = True
+                                        st.session_state.extra_modalities = []
 
                     elif publish_action == "Add a new option to an existing tour":
                         option_result, used_code = try_code_variants(
