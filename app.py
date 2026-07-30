@@ -21,7 +21,6 @@ import json
 import re
 import tempfile
 import os
-import time
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -48,6 +47,14 @@ from geocoding_client import geocode_search, geocode
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+
+# Session-state key prefixes used ONLY by the shared editable_field/
+# editable_table widget helpers - never by any flow's own phase/queue
+# control state (mct_phase, mm_queue, tk_..., etc. never start with any of
+# these). Safe to sweep-clear in bulk: see _clear_batch_widget_state's
+# docstring for why this is needed (positional-index widget keys getting
+# reused by a different queue item after a skip or a fresh batch start).
+SHARED_WIDGET_STATE_PREFIXES = ["_editing_", "_widgetval_", "pencil_", "save_", "editor_"]
 
 # Currency dropdown options - EUR/USD first as the ones actually used in
 # practice, then the rest of the common ISO codes a DMC document might quote
@@ -476,7 +483,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             current['code'], queue, idx,
             "mm_queue", "mm_queue_index",
             ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"],
-            button_key=f"mm_skip_{idx}"
+            button_key=f"mm_skip_{idx}",
+            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
         )
 
         if current["data"] is None:
@@ -546,6 +554,10 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                         data[field_name] = new_value
                     if "price_list" in result["changes"]:
                         st.session_state[f"_editing_table_mm_pricing_{idx}"] = False
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop(f"mm_days_{idx}", None)
+                    if "stop_sales" in result["changes"]:
+                        st.session_state.pop(f"mm_stops_{idx}", None)
                 st.rerun()
         if st.session_state.get(f"mm_clarify_result_{idx}"):
             r = st.session_state[f"mm_clarify_result_{idx}"]
@@ -604,6 +616,10 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         if st.button("🆕 Start a new batch"):
             for key in ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"]:
                 st.session_state.pop(key, None)
+            # Also clear per-item widget state (see _clear_batch_widget_state) -
+            # otherwise a fresh batch's first item (always idx==0) can inherit
+            # leftover edited values from the PREVIOUS batch's idx==0 item.
+            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
             st.rerun()
         return
 
@@ -777,6 +793,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
                            "mct_doc_raw_images", "mct_hosted_image_candidates"]:
                     st.session_state.pop(key, None)
+                _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
                 st.rerun()
 
         if current["data"] is None:
@@ -797,7 +814,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             "mct_queue", "mct_queue_index",
             ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
              "mct_doc_raw_images", "mct_hosted_image_candidates"],
-            button_key=f"mct_skip_{idx}"
+            button_key=f"mct_skip_{idx}",
+            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
         )
 
         editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix=f"_{idx}")
@@ -949,6 +967,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         data[field_name] = new_value
                     if "price_list" in result["changes"]:
                         st.session_state[f"_editing_table_mct_pricing_{idx}"] = False
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop(f"mct_days_{idx}", None)
+                    if "stop_sales" in result["changes"]:
+                        st.session_state.pop(f"mct_stops_{idx}", None)
                 st.rerun()
         if st.session_state.get(f"mct_clarify_result_{idx}"):
             r = st.session_state[f"mct_clarify_result_{idx}"]
@@ -1012,16 +1034,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             continue
                         real_code = result.get("code", payloads["main_tour_code"])
 
+                        # api_client.py's _request() already retries each individual POST
+                        # attempt up to 6 times internally now - this loop just still tries
+                        # BOTH candidate codes (that part isn't a retry, it's genuinely two
+                        # different possible identifiers - see comment below at the other
+                        # occurrence of this pattern).
                         option_result = None
                         used_code = None
                         for candidate_code in [q["tour_code"], real_code]:
-                            for attempt in range(3):
-                                option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
-                                if "error" not in option_result:
-                                    used_code = candidate_code
-                                    break
-                                time.sleep(2)
+                            option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
                             if "error" not in option_result:
+                                used_code = candidate_code
                                 break
                         if "error" in option_result:
                             show_publish_error(f"create **{q['tour_code']}**'s option (created as `{real_code}`)", option_result)
@@ -1046,6 +1069,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
                        "mct_doc_raw_images", "mct_hosted_image_candidates"]:
                 st.session_state.pop(key, None)
+            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
             st.rerun()
         return
 
@@ -1425,7 +1449,37 @@ def render_modalities_review(kind, base_code, base_label, base_data, extra_modal
             _summarize_modality_pricing(kind, mod["data"], currency)
 
 
-def render_skip_item_button(item_label, queue, idx, queue_session_key, index_session_key, cleanup_keys, button_key):
+def _clear_batch_widget_state(prefixes):
+    """
+    Sweeps st.session_state for every key starting with any of the given
+    prefixes and removes it.
+
+    CONFIRMED REAL BUG this exists to prevent: every per-item widget in the
+    three batch/queue review flows (multi-tour, multi-ticket, multi-modality)
+    is keyed off the item's POSITIONAL index in the queue (e.g.
+    key=f"mct_days_{idx}", editable_field's key_suffix=f"_{idx}"). Streamlit
+    widgets with a fixed key ignore the value= argument after first render -
+    so whenever a positional slot gets reused by a DIFFERENT item, the new
+    item displays the previous occupant's stale typed/edited values instead
+    of its own data. This happens in two real situations:
+      1. Skipping a non-last item: queue.pop(idx) shifts every later item
+         down one slot, so the item now AT that slot inherits whatever the
+         skipped item's widgets held.
+      2. Starting a new batch: a fresh batch's first item is always idx==0,
+         so it can inherit leftover state from the PREVIOUS batch's idx==0
+         item if only a few top-level keys get cleared.
+    Clearing every key under the flow's own prefix(es) - not just a short
+    fixed list - closes both holes: the next render has nothing stale to
+    fall back on, so every widget genuinely re-reads from the (correct,
+    freshly-positioned) `data` dict again.
+    """
+    for key in list(st.session_state.keys()):
+        if any(key.startswith(p) for p in prefixes):
+            st.session_state.pop(key, None)
+
+
+def render_skip_item_button(item_label, queue, idx, queue_session_key, index_session_key, cleanup_keys, button_key,
+                            widget_state_prefixes=None):
     """
     Lets a human bail out on ONE item mid-batch-review (e.g. after seeing the
     AI-extracted name/description and deciding "I don't want this one"),
@@ -1433,6 +1487,12 @@ def render_skip_item_button(item_label, queue, idx, queue_session_key, index_ses
     pricing, etc) or cancel the WHOLE batch. Removes just this item from the
     queue and reruns; if it was the last item left, clears the batch entirely
     since there's nothing left to review or publish.
+
+    `widget_state_prefixes`: prefixes for _clear_batch_widget_state - pass
+    this whenever skipping can leave a later item sitting in a queue slot
+    whose widget keys were populated by the just-removed item (see that
+    function's docstring). Without it, a skip can otherwise show the human
+    the WRONG item's stale edited data on the very next render.
     """
     if st.button(f"❌ Don't want this one - remove '{item_label}' from the batch", key=button_key):
         queue.pop(idx)
@@ -1442,6 +1502,8 @@ def render_skip_item_button(item_label, queue, idx, queue_session_key, index_ses
         else:
             st.session_state[queue_session_key] = queue
             st.session_state[index_session_key] = min(idx, len(queue) - 1)
+            if widget_state_prefixes:
+                _clear_batch_widget_state(widget_state_prefixes)
         st.rerun()
 
 
@@ -1628,6 +1690,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                            "mt_doc_raw_images", "mt_hosted_image_candidates"]:
                     st.session_state.pop(key, None)
+                _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
                 st.rerun()
 
         if current["data"] is None:
@@ -1645,7 +1708,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             "mt_queue", "mt_queue_index",
             ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
              "mt_doc_raw_images", "mt_hosted_image_candidates"],
-            button_key=f"mt_skip_{idx}"
+            button_key=f"mt_skip_{idx}",
+            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
         )
 
         editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
@@ -1962,6 +2026,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop(f"mt_op_days_{idx}", None)
                 st.rerun()
         if st.session_state.get(f"mt_clarify_result_{idx}"):
             r = st.session_state[f"mt_clarify_result_{idx}"]
@@ -2030,12 +2096,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             continue
                         real_code = result.get("code", payloads["main_ticket_code"])
 
-                        option_result = None
-                        for attempt in range(6):
-                            option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
-                            if "error" not in option_result:
-                                break
-                            time.sleep(2)
+                        # api_client.py's _request() already retries every write call (incl. this
+                        # POST) up to 6 times internally now - no need to also loop here.
+                        option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
                         if "error" in option_result:
                             show_publish_error(f"create **{q['ticket_code']}**'s option (created as `{real_code}`)", option_result)
                             # The ticket itself WAS created (real_code) and is still ACTIVE - only the
@@ -2154,6 +2217,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                        "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items"]:
                 st.session_state.pop(key, None)
+            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
             st.rerun()
         return
 
@@ -2704,6 +2768,10 @@ def render_ticket_flow(client):
                         table_key = tk_field_to_table_key.get(field_name)
                         if table_key:
                             st.session_state[table_key] = False
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop("tk_op_days", None)
+                    if "stop_sales" in result["changes"]:
+                        st.session_state.pop("tk_stop_sales", None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
@@ -2960,6 +3028,10 @@ def render_ticket_flow(client):
                         table_key = tk_field_to_table_key2.get(field_name)
                         if table_key:
                             st.session_state[table_key] = False
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop("tk_op_days", None)
+                    if "stop_sales" in result["changes"]:
+                        st.session_state.pop("tk_stop_sales", None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
@@ -2988,36 +3060,87 @@ def render_ticket_flow(client):
                 st.session_state.get("tk_extra_modalities", []), currency
             )
 
-            if payloads["geolocation_resolved"]:
-                lat, lng = payloads["geolocation_latitude"], payloads["geolocation_longitude"]
-                maps_link = f"https://www.google.com/maps?q={lat},{lng}"
-                st.markdown(
-                    f"<div style='background-color:#d4edda; color:#155724; padding:10px 14px; "
-                    f"border-radius:4px;'>📍 Resolved location: <strong>{payloads['geolocation_name'] or '(no name)'}</strong>"
-                    f"<br>Coordinates: {lat:.6f}, {lng:.6f} (source: {payloads['geolocation_source']})</div>",
-                    unsafe_allow_html=True
-                )
-                st.markdown(f"[🗺️ Open in Google Maps to verify]({maps_link})")
-                if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
-                    st.caption("Geocoding data © OpenStreetMap contributors")
+            if not tk_is_option_only:
+                if payloads["geolocation_resolved"]:
+                    lat, lng = payloads["geolocation_latitude"], payloads["geolocation_longitude"]
+                    maps_link = f"https://www.google.com/maps?q={lat},{lng}"
+                    st.markdown(
+                        f"<div style='background-color:#d4edda; color:#155724; padding:10px 14px; "
+                        f"border-radius:4px;'>📍 Resolved location: <strong>{payloads['geolocation_name'] or '(no name)'}</strong>"
+                        f"<br>Coordinates: {lat:.6f}, {lng:.6f} (source: {payloads['geolocation_source']})</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(f"[🗺️ Open in Google Maps to verify]({maps_link})")
+                    if payloads['geolocation_source'] == "OpenStreetMap/Nominatim":
+                        st.caption("Geocoding data © OpenStreetMap contributors")
 
-                with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
-                    st.caption("Broad place names (e.g. 'Bali') often resolve to the centroid of a whole "
-                              "region, which can be far from the actual location. Try something more "
-                              "specific - a landmark, neighborhood, or meeting point name - and pick the "
-                              "correct result below.")
-                    tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query")
-                    if st.button("🔎 Search", key="tk_geo_search_btn"):
+                    with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
+                        st.caption("Broad place names (e.g. 'Bali') often resolve to the centroid of a whole "
+                                  "region, which can be far from the actual location. Try something more "
+                                  "specific - a landmark, neighborhood, or meeting point name - and pick the "
+                                  "correct result below.")
+                        tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query")
+                        if st.button("🔎 Search", key="tk_geo_search_btn"):
+                            with st.spinner("Searching..."):
+                                st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
+                        if st.session_state.get("tk_geo_search_results"):
+                            for gi, candidate in enumerate(st.session_state.tk_geo_search_results):
+                                gcol_info, gcol_btn = st.columns([4, 1])
+                                with gcol_info:
+                                    st.write(f"**{candidate['display_name']}**")
+                                    st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                                with gcol_btn:
+                                    if st.button("Use this", key=f"tk_geo_pick_{gi}"):
+                                        data["manual_latitude"] = candidate["latitude"]
+                                        data["manual_longitude"] = candidate["longitude"]
+                                        pre_config = TicketHumanPreConfig(
+                                            supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                                            currency=currency, modality_code=modality_code, on_request=on_request,
+                                            days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                                        )
+                                        st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                        st.session_state.tk_geo_confirmed = False
+                                        st.session_state.tk_geo_search_results = None
+                                        st.rerun()
+
+                    if payloads.get("is_indonesia"):
+                        st.info(f"🇮🇩 Indonesia detected — Vesak Day is automatically blocked as a stop-sale "
+                                f"date, no excursion may start that day. {payloads.get('vesak_day_note', '')}")
+
+                    if payloads.get("release_days_overridden"):
+                        st.info(f"📅 The document mentions its own booking/release deadline, so the release "
+                                f"period being used is **{payloads['effective_release_days']} days** instead of "
+                                f"your default - if the source mentioned more than one deadline, the longer "
+                                f"(safer) one was used.")
+
+                    st.session_state.tk_geo_confirmed = st.checkbox(
+                        "✅ I've checked this location on the map and it's correct for this ticket",
+                        value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
+                    )
+                    if not st.session_state.tk_geo_confirmed:
+                        st.info("👆 Please verify the location above before publishing.")
+                else:
+                    st.markdown(
+                        "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                        "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
+                        "destination.</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.caption("Search for the correct location below (easier than looking up exact "
+                              "coordinates), or enter coordinates manually if you already have them.")
+
+                    tk_geo_search_query2 = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query2")
+                    if st.button("🔎 Search", key="tk_geo_search_btn2"):
                         with st.spinner("Searching..."):
-                            st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
-                    if st.session_state.get("tk_geo_search_results"):
-                        for gi, candidate in enumerate(st.session_state.tk_geo_search_results):
+                            st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
+                    if st.session_state.get("tk_geo_search_results2"):
+                        for gi, candidate in enumerate(st.session_state.tk_geo_search_results2):
                             gcol_info, gcol_btn = st.columns([4, 1])
                             with gcol_info:
                                 st.write(f"**{candidate['display_name']}**")
                                 st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
                             with gcol_btn:
-                                if st.button("Use this", key=f"tk_geo_pick_{gi}"):
+                                if st.button("Use this", key=f"tk_geo_pick2_{gi}"):
                                     data["manual_latitude"] = candidate["latitude"]
                                     data["manual_longitude"] = candidate["longitude"]
                                     pre_config = TicketHumanPreConfig(
@@ -3027,79 +3150,32 @@ def render_ticket_flow(client):
                                     )
                                     st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                                     st.session_state.tk_geo_confirmed = False
-                                    st.session_state.tk_geo_search_results = None
+                                    st.session_state.tk_geo_search_results2 = None
                                     st.rerun()
 
-                if payloads.get("is_indonesia"):
-                    st.info(f"🇮🇩 Indonesia detected — Vesak Day is automatically blocked as a stop-sale "
-                            f"date, no excursion may start that day. {payloads.get('vesak_day_note', '')}")
-
-                if payloads.get("release_days_overridden"):
-                    st.info(f"📅 The document mentions its own booking/release deadline, so the release "
-                            f"period being used is **{payloads['effective_release_days']} days** instead of "
-                            f"your default - if the source mentioned more than one deadline, the longer "
-                            f"(safer) one was used.")
-
-                st.session_state.tk_geo_confirmed = st.checkbox(
-                    "✅ I've checked this location on the map and it's correct for this ticket",
-                    value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
-                )
-                if not st.session_state.tk_geo_confirmed:
-                    st.info("👆 Please verify the location above before publishing.")
+                    st.markdown("**Or enter coordinates manually:**")
+                    gcol1, gcol2 = st.columns(2)
+                    with gcol1:
+                        manual_lat = st.number_input("Latitude", value=None, format="%.6f", key="tk_manual_lat", placeholder="e.g. 27.394900")
+                    with gcol2:
+                        manual_lng = st.number_input("Longitude", value=None, format="%.6f", key="tk_manual_lng", placeholder="e.g. 33.678400")
+                    manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
+                    if manual_lat == 0 and manual_lng == 0:
+                        st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
+                    if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
+                        data["manual_latitude"] = manual_lat
+                        data["manual_longitude"] = manual_lng
+                        pre_config = TicketHumanPreConfig(
+                            supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                            currency=currency, modality_code=modality_code, on_request=on_request,
+                            days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                        )
+                        st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                        st.session_state.tk_geo_confirmed = False
+                        st.rerun()
             else:
-                st.markdown(
-                    "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
-                    "destination.</div>",
-                    unsafe_allow_html=True
-                )
-                st.caption("Search for the correct location below (easier than looking up exact "
-                          "coordinates), or enter coordinates manually if you already have them.")
-
-                tk_geo_search_query2 = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query2")
-                if st.button("🔎 Search", key="tk_geo_search_btn2"):
-                    with st.spinner("Searching..."):
-                        st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
-                if st.session_state.get("tk_geo_search_results2"):
-                    for gi, candidate in enumerate(st.session_state.tk_geo_search_results2):
-                        gcol_info, gcol_btn = st.columns([4, 1])
-                        with gcol_info:
-                            st.write(f"**{candidate['display_name']}**")
-                            st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
-                        with gcol_btn:
-                            if st.button("Use this", key=f"tk_geo_pick2_{gi}"):
-                                data["manual_latitude"] = candidate["latitude"]
-                                data["manual_longitude"] = candidate["longitude"]
-                                pre_config = TicketHumanPreConfig(
-                                    supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                                    currency=currency, modality_code=modality_code, on_request=on_request,
-                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                                )
-                                st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                                st.session_state.tk_geo_confirmed = False
-                                st.session_state.tk_geo_search_results2 = None
-                                st.rerun()
-
-                st.markdown("**Or enter coordinates manually:**")
-                gcol1, gcol2 = st.columns(2)
-                with gcol1:
-                    manual_lat = st.number_input("Latitude", value=None, format="%.6f", key="tk_manual_lat", placeholder="e.g. 27.394900")
-                with gcol2:
-                    manual_lng = st.number_input("Longitude", value=None, format="%.6f", key="tk_manual_lng", placeholder="e.g. 33.678400")
-                manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
-                if manual_lat == 0 and manual_lng == 0:
-                    st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
-                if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
-                    data["manual_latitude"] = manual_lat
-                    data["manual_longitude"] = manual_lng
-                    pre_config = TicketHumanPreConfig(
-                        supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                        currency=currency, modality_code=modality_code, on_request=on_request,
-                        days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                    )
-                    st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                    st.session_state.tk_geo_confirmed = False
-                    st.rerun()
+                st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "
+                        "of its own (geolocation lives on the main ticket only) - nothing to confirm here.")
 
             with st.expander("🔧 Main Ticket Payload", expanded=False):
                 if payloads["main_ticket_error"]:
@@ -3118,12 +3194,18 @@ def render_ticket_flow(client):
             st.header("Ticket — Step 7: Publish")
             creating_new = publish_action == "Create a brand-new ticket (+ first option)"
             target_ticket_code = payloads["main_ticket_code"] if creating_new else existing_ticket_code
-            can_publish = (
-                not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
-                and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
-            )
-            if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
-                st.warning("⚠️ Confirm the location above (checkbox in Step 6) before you can publish.")
+            # Geolocation only lives on the MAIN ticket - "Add option"/"Update option" only
+            # ever touch a ContractTicketModalityVO, which has no geolocation field at all.
+            # Their source data always comes from extract_ticket_option_only_data(), which
+            # never fills in a real city, so geolocation_resolved is always False for these
+            # two actions - requiring it here would make "Add option"/"Update option"
+            # permanently unpublishable. Only require geolocation confirmation when this
+            # publish action actually writes the main ticket (create / update_ticket).
+            can_publish = not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
+            if not tk_is_option_only:
+                can_publish = can_publish and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
+                if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
+                    st.warning("⚠️ Confirm the location above (checkbox in Step 6) before you can publish.")
 
             action_descriptions = {
                 "Create a brand-new ticket (+ first option)": "Will POST a new ticket, then POST a new option.",
@@ -3146,15 +3228,12 @@ def render_ticket_flow(client):
                                 real_code = result.get("code", payloads["main_ticket_code"])
                                 st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
 
-                                option_result = None
-                                for attempt in range(6):
-                                    option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
-                                    if "error" not in option_result:
-                                        break
-                                    time.sleep(2)
+                                # api_client.py's _request() already retries every write call
+                                # (incl. this POST) up to 6 times internally now.
+                                option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
 
                                 if "error" in option_result:
-                                    show_publish_error("create the ticket option after 6 attempts", option_result)
+                                    show_publish_error("create the ticket option after retrying", option_result)
                                     st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
                                     # The ticket itself WAS created successfully (real_code) and is still
                                     # ACTIVE - only the option failed. Don't leave the human stuck on this
@@ -4423,19 +4502,17 @@ if st.session_state.extracted:
                             # Try the human-chosen ClosedTour/Provider Code first (confirmed working
                             # via direct API test), falling back to the internal 'code' if that fails -
                             # we've seen conflicting evidence about which one Travel Compositor's
-                            # lookup actually uses, so don't bet everything on just one.
+                            # lookup actually uses, so don't bet everything on just one. (Each attempt
+                            # below is itself already retried up to 6x internally by api_client.py's
+                            # _request() - this loop is for trying the two different CODES, not retries.)
                             option_result = None
                             used_code = None
                             for candidate_code in [provider_code, real_code]:
-                                for attempt in range(3):
-                                    option_result = client.create_closed_tour_option(
-                                        payloads["supplier_id"], candidate_code, payloads["tour_option_payload"]
-                                    )
-                                    if "error" not in option_result:
-                                        used_code = candidate_code
-                                        break
-                                    time.sleep(2)
+                                option_result = client.create_closed_tour_option(
+                                    payloads["supplier_id"], candidate_code, payloads["tour_option_payload"]
+                                )
                                 if "error" not in option_result:
+                                    used_code = candidate_code
                                     break
 
                             if "error" not in option_result:
