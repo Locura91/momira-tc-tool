@@ -23,7 +23,10 @@ class HumanPreConfig(BaseModel):
     
     # System Hardcoded Defaults
     user_id: str = "Christian"
-    min_child_age: int = 0
+    # Confirmed by product owner: internationally standard age bands -
+    # infant = 0-2, child = 2-12 - same convention for ClosedTours and
+    # Tickets (see ContractTicketModalityVO's childAgeMin/Max in builder.py).
+    min_child_age: int = 2
     max_child_age: int = 12
 
     @validator("provider_code")
@@ -151,7 +154,7 @@ class ContractClosedTourVO(BaseModel):
     itinerary: List[ItineraryItem] = []
     startTime: str = ""
     endTime: str = ""
-    minChildAge: int = 0
+    minChildAge: int = 2  # infant = 0-2, child = 2-12 (confirmed international convention)
     maxChildAge: int = 12
     hotels: int = 1
     transports: int = 0
@@ -378,7 +381,7 @@ class ContractTicketModalityVO(BaseModel):
     baseInfantPrice: float = 0.0
     maxPassengers: int = 9
     minPassengers: int = 1
-    childAgeMin: int = 6
+    childAgeMin: int = 2  # infant = 0-2, child = 2-12 (confirmed international convention, unified with ClosedTour)
     childAgeMax: int = 12
     occupancyPrices: List[dict] = []
     priceType: str = "OCCUPANCY"
