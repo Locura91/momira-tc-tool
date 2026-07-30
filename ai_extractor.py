@@ -56,31 +56,37 @@ Rules:
   CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
   never add these as a supplement or anywhere else in the extracted data, even though they're technically
   optional and priced. This is a deliberate exclusion, not an oversight.
-  CRITICAL - MANDATORY peak season/holiday surcharges are NOT supplements (a supplement implies the
-  customer chooses to pay it - a mandatory surcharge doesn't). Two cases:
-  (a) The surcharge applies to the WHOLE TRIP/booking uniformly (e.g. "20% higher during Christmas") -
-      do NOT model this as a supplement at all. Instead, this must become a SEPARATE ROW in price_list
-      with the elevated price for that date range (see price_list rules below) - describe this clearly
-      in pricing_notes so the human knows an extra season row is needed.
-  (b) The surcharge is PER NIGHT/PER UNIT tied to a SPECIFIC hotel or component (e.g. "USD 11 per person
-      per night surcharge at the Deluxe Cabin during peak season") - THIS case can be modeled as a
-      supplement, but pre-calculate the TOTAL amount by multiplying the per-night rate by the actual
-      number of nights spent at that specific hotel/component (determine this from the day-by-day
-      itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total).
+  CRITICAL - CONFIRMED RULE: whenever the source mentions ANY peak season/holiday/seasonal surcharge -
+  whole-trip uniform (e.g. "20% higher during Christmas") OR per-night/per-component (e.g. "USD 11 per
+  person per night surcharge at the Deluxe Cabin during peak season") - ALWAYS model it as its own
+  supplement with "mandatory": true and a real travel_start_date/travel_end_date. NEVER represent it as a
+  separate row in price_list, and never omit the date range - it must always be present for a peak-season
+  supplement. This supplement OVERLAYS the normal price: it's an ADDITIONAL charge on top of whatever the
+  base price already is for bookings that fall inside that date range, not a replacement or alternative
+  price. If the source only names a season/holiday without exact dates (e.g. "Christmas/New Year", "Peak
+  Season"), use your best real-world date range for that period and say so in pricing_notes - don't leave
+  the date range empty just because exact dates weren't spelled out.
+  - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where you can (e.g. 20% of
+    the base per-person price) and show the calculation in the name, e.g. "Christmas/New Year surcharge
+    (20% of base price)". If a percentage genuinely can't be converted to a safe real amount, still create
+    the mandatory supplement with your best estimate and flag it clearly in pricing_notes for review.
+  - Per-night/per-component surcharges: pre-calculate the TOTAL amount by multiplying the per-night rate by
+      the actual number of nights spent at that specific hotel/component (determine this from the
+      day-by-day itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total).
       CRITICAL SELF-CHECK - this exact multiplication has been missed before: before finalizing the
       supplement price, explicitly verify you multiplied rate x nights and did NOT just copy the
       per-night rate as if it were the total. State the calculation in the name so it's checkable by a
       human, e.g. "Peak season surcharge - Hotel X (2 nights x $11 = $22)".
       If the number of nights at that specific component genuinely can't be determined from the source,
       say so plainly in pricing_notes rather than guessing.
-  For each TRUE supplement (optional add-on, or case (b) above), output:
+  For each TRUE supplement (optional add-on, or a peak-season surcharge per the rule above), output:
   {
     "name": "clear, specific short label - always required, never leave blank",
     "price": per-person amount as a number,
     "per_pax": true if this charge applies per traveler (the normal case), false if the source says it's a flat/one-time charge regardless of group size,
-    "mandatory": true only if the source says this is required despite being listed separately (rare - most supplements are false),
+    "mandatory": true if the source says this is required despite being listed separately, OR if this is a peak-season/holiday surcharge (see rule above - those are ALWAYS mandatory: true); false for a normal optional add-on,
     "on_request": true if the source says this needs advance request/confirmation rather than being instantly bookable,
-    "travel_start_date": "YYYY-MM-DD" ONLY if this supplement is restricted to a specific date range (e.g. a seasonal excursion) - otherwise omit/empty string,
+    "travel_start_date": "YYYY-MM-DD" if this supplement is restricted to a specific date range (e.g. a seasonal excursion) - ALWAYS required (never empty) for a peak-season/holiday surcharge, otherwise omit/empty string,
     "travel_end_date": "YYYY-MM-DD" - same condition as above
   }
   If nothing optional with its own price is mentioned, leave this as an empty list - don't invent any.
@@ -793,9 +799,23 @@ Extract:
       must become a SEPARATE MODALITY instead - flag this clearly in pricing_notes, explaining what
       the separate modality should be (e.g. "Create a second Modality 'Deluxe with private guide' for
       this on-request option - it cannot be a supplement").
-  (3) Mandatory per-night/per-component seasonal surcharges (pre-calculate the total: rate x actual
-      nights/units) are still fine as supplements, since they always apply uniformly and don't compete
-      with anything else.
+  (3) Peak season/holiday surcharges - CONFIRMED RULE: ALWAYS model these as a supplement with a real
+      travel_start_date/travel_end_date, whether the surcharge is whole-trip/percentage-based (e.g. "20%
+      higher during Christmas") or per-night/per-component (e.g. "USD 11 per person per night surcharge
+      during peak season"). Never leave the date range empty for one of these - if the source only names a
+      season/holiday without exact dates, use your best real-world date range for that period and note the
+      assumption in pricing_notes. This supplement OVERLAYS the normal modality price - it's an ADDITIONAL
+      charge for bookings that fall inside that date range, not a replacement/alternative price.
+      - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where possible (e.g. 20%
+        of the base adult/child/infant prices) and show the calculation in the name, e.g. "Christmas/New
+        Year surcharge (20% of base price)". If a percentage genuinely can't be converted to a safe real
+        amount, still create the supplement with your best estimate and flag it in pricing_notes.
+      - Per-night/per-component surcharges: pre-calculate the TOTAL by multiplying the per-night rate by
+        the actual number of nights/units (same CRITICAL SELF-CHECK as ClosedTour above - verify you
+        multiplied rate x nights/units and did not just copy the per-night rate as the total; state the
+        calculation in the name, e.g. "Peak season surcharge (2 nights x $11 = $22)").
+      These always apply uniformly and don't compete with anything else, so they're safe as supplements
+      even though (2) above forbids mutually-exclusive alternative supplements.
   (4) CRITICAL - a common real case: if the source has SEPARATE FULL PRICE TABLES per guide language
       (e.g. "English Speaking Guide" table with its own prices, then a separate "German Speaking Guide"
       table with DIFFERENT prices), each language is its OWN distinct product with its own real price -
@@ -821,9 +841,9 @@ Extract:
   safely assumed from the other rows.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
   table forced onto adult/child/infant categories, pricing was genuinely absent from the source, a
-  mandatory whole-trip seasonal price difference couldn't be represented, or an alternative/on-request
-  option needs to become a separate Modality - see supplements rule above) - explain what, with real
-  numbers where available, so a human can review.
+  peak-season surcharge amount/date range had to be estimated, or an alternative/on-request option needs
+  to become a separate Modality - see supplements rule above) - explain what, with real numbers where
+  available, so a human can review.
 - release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
   mentioned anywhere in the source (e.g. "must be booked at least 45 days before", "release period: 60
   days", "reservations required 30 days in advance"). DIFFERENT from a cancellation policy (e.g.
