@@ -34,6 +34,19 @@ Rules:
   Keep going for every day in the itinerary. Regardless of how the source presents each day - a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), a bare bullet list, or already flowing prose - always REWRITE it into natural, engaging, SEO-strong flowing sentences for that day's paragraph, not a copy of the raw format. Use ONLY facts, places, and activities that are actually present in the source - never invent or add details, opening hours, prices, or claims that aren't there. The goal is better PROSE, not more information.
   LENGTH LIMIT: keep each day's paragraph to 3-4 sentences MAXIMUM (roughly 60-90 words) - pick the most compelling highlights rather than listing everything mentioned. This is a firm limit, not a suggestion - shorter, punchier prose reads better anyway and keeps the response fast to generate.
   MEAL CODES: if the source indicates which meals are included each day (e.g. "[B, L, D]", "[-, L, D]", "Breakfast and lunch included"), add the SAME meal codes in parentheses right after that day's title, e.g. "Day 1: Short title (B, L)". Only include codes for meals actually mentioned for that day - if a day has no meals mentioned, add nothing in parentheses. Use these codes: B=Breakfast, L=Lunch, D=Dinner, P=Picnic (add other single-letter codes only if the source uses a different one you can map clearly). At the very END of the full description (after the last day's closing </p><p><br></p>), add ONE final legend paragraph explaining only the codes actually used anywhere in the description, e.g.: <p><em>B = Breakfast | L = Lunch | D = Dinner</em></p>. Omit any code not actually used. If the source gives no meal information at all, skip both the parenthetical codes and the legend entirely.
+  PACKAGE-WIDE PRE-ARRIVAL ADVISORY: if the source mentions an advisory, instruction, or strong
+  recommendation that affects the WHOLE package/booking rather than a single day - most commonly
+  something the traveler must do BEFORE the tour even starts (e.g. "In line with the program, customers
+  are strongly advised to spend the night prior to the start of this package [at a hotel near the
+  departure point]", a required pre-tour overnight stay, an early check-in requirement, or similar
+  advice that governs the entire trip) - this message is IMPORTANT and easy to miss if buried inside a
+  day's paragraph or silently dropped. It MUST be placed PROMINENTLY at the VERY BEGINNING of the
+  description field, BEFORE "Day 1", as its own standalone paragraph, e.g.:
+  <p><strong>⚠️ Important:</strong> In line with the program, customers are strongly advised to spend the
+  night prior to the start of this package.</p><p><br></p>
+  then continue with the normal Day 1, Day 2, ... blocks as described above. Only add this lead-in
+  paragraph if the source genuinely contains such a package-wide advisory - never invent one. If the
+  source has no such advisory, skip this and start the description directly with Day 1 as normal.
 - hotels_text MUST always follow this EXACT template (confirmed against a real published tour) - a fixed intro paragraph (always exactly this wording), then a bulleted list:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
@@ -278,9 +291,30 @@ EXTRACTION_TOOL_NAME = "provide_extracted_data"
 # Anthropic API treats the response as a tool call.
 _PERMISSIVE_TOOL_SCHEMA = {"type": "object", "additionalProperties": True}
 
+# Strict schema for apply_clarification's small, fixed-shape output. Unlike the
+# big extraction prompts, this MUST force "summary" to always be present -
+# confirmed that the permissive schema let Claude drop it on every call.
+CLARIFY_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "Plain-text explanation of what was understood and changed (or answered). "
+                            "ALWAYS required, even for a pure question with no changes - never omit this.",
+        },
+        "changes": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "Only the fields that actually need to change, in the same shape as the "
+                            "extracted data structure. Empty object {} if nothing needs to change.",
+        },
+    },
+    "required": ["summary", "changes"],
+}
+
 
 def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt: str, user_content,
-                              tool_name: str = EXTRACTION_TOOL_NAME) -> tuple:
+                              tool_name: str = EXTRACTION_TOOL_NAME, input_schema: dict = None) -> tuple:
     """
     Forces Claude to respond via a TOOL CALL instead of free-form JSON text
     inside a text block. This closes off an entire class of failure that
@@ -296,6 +330,14 @@ def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt:
     raw text to parse ourselves) - this makes malformed JSON structurally
     impossible rather than something to keep patching around after the
     fact.
+    `input_schema` defaults to a fully permissive object (any keys) for the
+    big free-form extraction prompts, where the detailed system prompt
+    already fully describes the shape. Callers with a SMALL, fixed shape
+    (e.g. apply_clarification's {"summary", "changes"}) should pass a real
+    schema with "required" fields instead - a permissive schema gives the
+    model no structural signal about which keys are actually expected, and
+    was confirmed to let it drift (omitting "summary" entirely on every
+    single call) once nothing but prose was enforcing the shape.
     Returns (parsed_input_dict, stop_reason). Raises RuntimeError if Claude
     didn't call the tool for some reason (very rare with tool_choice
     forcing it, but handled rather than silently returning nothing).
@@ -303,7 +345,7 @@ def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt:
     tool_def = {
         "name": tool_name,
         "description": "Provide the requested extracted/structured data as a JSON object, following the shape and rules described in the system prompt.",
-        "input_schema": _PERMISSIVE_TOOL_SCHEMA,
+        "input_schema": input_schema or _PERMISSIVE_TOOL_SCHEMA,
     }
     with client.messages.stream(
         model=model,
@@ -447,7 +489,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         # JSON - same reasoning as _call_claude: a "changes" payload can contain
         # arbitrary long text (e.g. a corrected description) that's exactly the
         # kind of content prone to breaking free-text JSON parsing.
-        result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, user_content, tool_name="apply_changes")
+        result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, user_content, tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
         if "summary" not in result:
             result["summary"] = "(No summary returned.)"
         if "changes" not in result or not isinstance(result["changes"], dict):
@@ -627,6 +669,12 @@ Extract:
   actually present in the source - never invent details, ratings, superlatives, or claims that aren't
   there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
   true. Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+  PRE-ARRIVAL ADVISORY: if the source mentions an important advisory affecting the whole booking that the
+  traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
+  beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
+  short standalone lead-in paragraph at the VERY BEGINNING of the description, e.g. <p><strong>⚠️
+  Important:</strong> ...</p>, before the normal descriptive paragraphs. Only add it if the source
+  genuinely contains such an advisory - never invent one.
 - city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
