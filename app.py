@@ -795,6 +795,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         st.subheader(f"Ready to publish {len(queue)} tours - one by one")
         for q in queue:
             st.write(f"- **{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}")
+            dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
+            if dup_warning:
+                st.warning(dup_warning)
 
         if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
@@ -993,6 +996,75 @@ def show_publish_error(context_label, raw_error):
 
     with st.expander("🔧 Technical details"):
         st.code(str(raw_error))
+
+
+def get_existing_tour_names(client, supplier_id):
+    """
+    Fetches the list of ClosedTours already published for this supplier, so
+    a new tour's name can be checked against them before uploading - catches
+    accidental duplicate uploads (e.g. re-running the same document twice).
+    Cached per-supplier in session_state for the rest of the session (cleared
+    on demand via the "Refresh" control next to the duplicate-name warning).
+    Returns (names_list, error_message). error_message is None on success -
+    if the API call fails or the response shape isn't recognized, this
+    returns ([], "reason") so the caller can skip the check gracefully
+    instead of blocking publishing over a check that couldn't run.
+    """
+    if "_existing_tours_cache" not in st.session_state:
+        st.session_state._existing_tours_cache = {}
+    cache = st.session_state._existing_tours_cache
+    if supplier_id in cache:
+        return cache[supplier_id]
+
+    try:
+        result = client.get_closed_tours(supplier_id, first=0, limit=200)
+    except Exception as e:
+        cache[supplier_id] = ([], friendly_error_message(e))
+        return cache[supplier_id]
+
+    if isinstance(result, dict) and "error" in result:
+        cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing tours")
+        return cache[supplier_id]
+
+    # Normalize whatever shape came back - a bare list, or a dict wrapping
+    # the list under one of a few likely keys - into a flat list of items.
+    items = []
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        for key in ("closedTour", "closedTours", "items", "data", "results", "content"):
+            if isinstance(result.get(key), list):
+                items = result[key]
+                break
+
+    names = []
+    for item in items:
+        if isinstance(item, dict) and item.get("name"):
+            names.append({"name": item["name"], "code": item.get("code", "")})
+
+    if not items and not names:
+        cache[supplier_id] = ([], "no existing tours found (or couldn't recognize the response format)")
+    else:
+        cache[supplier_id] = (names, None)
+    return cache[supplier_id]
+
+
+def check_duplicate_tour_name(client, supplier_id, tour_name):
+    """
+    Returns a human-readable warning string if `tour_name` (case/whitespace-
+    insensitive) matches an existing tour already published for this
+    supplier, else None. Never raises - a failed lookup just means no
+    warning is shown, since this is a helpful heads-up, not a hard gate.
+    """
+    clean_name = (tour_name or "").strip().lower()
+    if not clean_name:
+        return None
+    names, _ = get_existing_tour_names(client, supplier_id)
+    for existing in names:
+        if existing["name"].strip().lower() == clean_name:
+            return (f"⚠️ A tour named **'{existing['name']}'** already exists for this supplier "
+                    f"(code: `{existing['code']}`). Double-check this isn't a duplicate upload before publishing.")
+    return None
 
 
 def try_code_variants(call_fn, code):
@@ -1591,7 +1663,7 @@ def render_ticket_flow(client):
                     f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                     for s in momira_suppliers
                 }
-                selected_label = st.selectbox("Supplier (Momira_ only)", list(supplier_options.keys()), key="tk_supplier_select")
+                selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tk_supplier_select")
                 supplier_id_choice = str(supplier_options[selected_label])
             if st.button("🔄 Refresh supplier list", key="tk_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
@@ -2700,7 +2772,7 @@ else:
                 f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                 for s in momira_suppliers
             }
-            selected_label = st.selectbox("Supplier (Momira_ only)", list(supplier_options.keys()))
+            selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()))
             supplier_id_choice = str(supplier_options[selected_label])
         if st.button("🔄 Refresh supplier list"):
             st.session_state.suppliers_cache = None
@@ -3623,6 +3695,17 @@ if st.session_state.extracted:
             "Update an existing option": f"Will PUT (update) the option under tour `{target_tour_code}`.",
         }
         st.caption(action_descriptions[publish_action])
+
+        if creating_new_tour:
+            dup_warning = check_duplicate_tour_name(client, payloads["supplier_id"], data.get("tour_name"))
+            if dup_warning:
+                col_dup1, col_dup2 = st.columns([5, 1])
+                with col_dup1:
+                    st.warning(dup_warning)
+                with col_dup2:
+                    if st.button("🔄 Re-check", key="recheck_dup_tour_name"):
+                        st.session_state._existing_tours_cache.pop(payloads["supplier_id"], None)
+                        st.rerun()
 
         if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Sending to Travel Compositor..."):
