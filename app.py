@@ -605,6 +605,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.error(f"🚫 ClosedTour Code `{code}` is used by more than one selected variant ({', '.join(labels)}) "
                         f"- each tour needs its own unique code.")
 
+        for q in new_queue:
+            existing_check = check_code_availability(client, "tour", supplier_id, q["tour_code"])
+            if existing_check and existing_check["exists"]:
+                st.error(f"🚫 ClosedTour Code `{q['tour_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
+                        f"by an existing tour (\"{existing_check.get('name') or '(unnamed)'}\") - choose a "
+                        f"different code before publishing, or this will fail.")
+
         ready_to_review = new_queue and not missing_codes and not duplicate_codes
         st.caption(f"**{len(new_queue)}** tour(s) ready to review." if ready_to_review else
                   "Fix the issues above before continuing.")
@@ -1139,6 +1146,67 @@ def check_duplicate_tour_name(client, supplier_id, tour_name):
     return None
 
 
+def check_code_availability(client, kind, supplier_id, code):
+    """
+    Directly asks Travel Compositor (GET by exact code) whether a
+    ClosedTour/Ticket CODE already exists for this supplier - this is the
+    real, authoritative check for the "code already exists" publish error
+    (different from - and more definitive than - the name-based duplicate
+    check above, since the actual API rejection is keyed on the code, not
+    the name). `kind` is "tour" or "ticket". Cached per (kind, supplier_id,
+    code) in session_state so re-checking the same code (e.g. re-rendering
+    on every keystroke elsewhere on the page) costs nothing extra.
+    Returns {"exists": bool, "name": str|None} on a successful lookup, or
+    None if the check itself couldn't be completed (e.g. API/network
+    issue) - callers should treat None as "couldn't verify" rather than
+    either a pass or a fail.
+    """
+    clean_code = (code or "").strip()
+    if not clean_code:
+        return None
+    if "_code_exists_cache" not in st.session_state:
+        st.session_state._code_exists_cache = {}
+    cache = st.session_state._code_exists_cache
+    cache_key = (kind, supplier_id, clean_code)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    try:
+        result = client.get_closed_tour(supplier_id, clean_code) if kind == "tour" else client.get_ticket(supplier_id, clean_code)
+    except Exception:
+        return None
+
+    if not isinstance(result, dict):
+        return None
+    if "error" in result:
+        # A clean "not found" - some accounts return 404, treat any error
+        # response here as "doesn't exist" rather than "couldn't check",
+        # since that's what get_closed_tour/get_ticket already normalize to.
+        outcome = {"exists": False, "name": None}
+    else:
+        outcome = {"exists": True, "name": result.get("name")}
+    cache[cache_key] = outcome
+    return outcome
+
+
+def render_code_availability_check(client, kind, supplier_id, code, label):
+    """
+    Shows an immediate, automatic (no button needed) availability check
+    right under a Tour/Ticket Code input field - so a human sees "this code
+    is already taken" the moment they type it, instead of only discovering
+    it after filling out the entire form and pressing Publish.
+    """
+    result = check_code_availability(client, kind, supplier_id, code)
+    if result is None:
+        return
+    if result["exists"]:
+        st.error(f"🚫 `{(code or '').strip()}` is ALREADY TAKEN by an existing {label} "
+                f"(\"{result.get('name') or '(unnamed)'}\"). Choose a different code, or use an "
+                f"Update/Add-modality action instead if you meant to add to this existing one.")
+    else:
+        st.success(f"✅ `{(code or '').strip()}` is available.")
+
+
 def _summarize_modality_pricing(kind, data, currency):
     """
     Renders a compact, read-only summary of one modality's key facts
@@ -1381,6 +1449,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             for code, labels in duplicate_codes.items():
                 st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
                         f"- each Ticket needs its own unique code.")
+
+        for q in new_queue:
+            existing_check = check_code_availability(client, "ticket", supplier_id, q["ticket_code"])
+            if existing_check and existing_check["exists"]:
+                st.error(f"🚫 Ticket Code `{q['ticket_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
+                        f"by an existing ticket (\"{existing_check.get('name') or '(unnamed)'}\") - choose a "
+                        f"different code before publishing, or this will fail.")
 
         ready_to_review = new_queue and not missing_codes and not duplicate_codes
         st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
@@ -1923,19 +1998,7 @@ def render_ticket_flow(client):
 
         if "ticket_code" in needed:
             ticket_code_in = st.text_input("Ticket Code", value="", placeholder="e.g. JAP-T1", key="tk_ticket_code")
-            if ticket_code_in.strip():
-                if st.button("🔍 Check if this code is available", key="check_ticket_code_available"):
-                    with st.spinner("Checking..."):
-                        check_result = client.get_ticket(supplier_id, ticket_code_in.strip())
-                        st.session_state._tk_code_check_result = check_result
-                        st.session_state._tk_code_check_value = ticket_code_in.strip()
-                if st.session_state.get("_tk_code_check_value") == ticket_code_in.strip() and st.session_state.get("_tk_code_check_result") is not None:
-                    check_result = st.session_state._tk_code_check_result
-                    if "error" in check_result:
-                        st.success(f"✅ `{ticket_code_in.strip()}` is available.")
-                    else:
-                        st.error(f"🚫 `{ticket_code_in.strip()}` is ALREADY TAKEN by an existing ticket "
-                                f"(\"{check_result.get('name', '(unnamed)')}\"). Please choose a different code.")
+            render_code_availability_check(client, "ticket", supplier_id, ticket_code_in, "ticket")
         if "min_passengers" in needed:
             min_pass_in = st.selectbox("Min Passengers", [1, 2], key="tk_min_pass")
         if "max_passengers" in needed:
@@ -2161,12 +2224,22 @@ def render_ticket_flow(client):
                     if s["selected"] and s["ticket_code"].strip():
                         tkpv_codes_seen.setdefault(s["ticket_code"].strip(), []).append(s["label"])
                 tkpv_dupes = {c: labs for c, labs in tkpv_codes_seen.items() if len(labs) > 1}
+                tkpv_existing = []
+                for s in tkpv_selection:
+                    if s["selected"] and s["ticket_code"].strip():
+                        existing_check = check_code_availability(client, "ticket", supplier_id, s["ticket_code"])
+                        if existing_check and existing_check["exists"]:
+                            tkpv_existing.append(s["ticket_code"].strip())
+
                 if tkpv_missing:
                     st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
                 elif tkpv_invalid:
                     st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {tkpv_invalid}")
                 elif tkpv_dupes:
                     st.error(f"🚫 These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
+                elif tkpv_existing:
+                    st.error(f"🚫 These Ticket Codes are ALREADY TAKEN by existing tickets - choose different "
+                            f"ones: {tkpv_existing}")
                 else:
                     tk_pending_url = st.session_state.get("tk_pending_url")
                     new_mt_queue = [
@@ -3098,19 +3171,7 @@ else:
 
     if "provider_code" in needed:
         provider_code_in = st.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
-        if provider_code_in.strip():
-            if st.button("🔍 Check if this code is available", key="check_provider_code_available"):
-                with st.spinner("Checking..."):
-                    check_result = client.get_closed_tour(supplier_id, provider_code_in.strip())
-                    st.session_state._code_check_result = check_result
-                    st.session_state._code_check_value = provider_code_in.strip()
-            if st.session_state.get("_code_check_value") == provider_code_in.strip() and st.session_state.get("_code_check_result") is not None:
-                check_result = st.session_state._code_check_result
-                if "error" in check_result:
-                    st.success(f"✅ `{provider_code_in.strip()}` is available.")
-                else:
-                    st.error(f"🚫 `{provider_code_in.strip()}` is ALREADY TAKEN by an existing tour "
-                            f"(\"{check_result.get('name', '(unnamed)')}\"). Please choose a different code.")
+        render_code_availability_check(client, "tour", supplier_id, provider_code_in, "tour")
     if "min_pax" in needed:
         min_pax_in = st.selectbox("Min Pax", [1, 2])
     if "max_pax" in needed:
@@ -3391,12 +3452,21 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 if s["selected"] and s["tour_code"].strip():
                     pv_codes_seen.setdefault(s["tour_code"].strip(), []).append(s["label"])
             pv_dupes = {c: labs for c, labs in pv_codes_seen.items() if len(labs) > 1}
+            pv_existing = []
+            for s in pv_selection:
+                if s["selected"] and s["tour_code"].strip():
+                    existing_check = check_code_availability(client, "tour", supplier_id, s["tour_code"])
+                    if existing_check and existing_check["exists"]:
+                        pv_existing.append(s["tour_code"].strip())
             if pv_missing:
                 st.error(f"🚫 These selected variants are missing a ClosedTour Code or Modality Code: {pv_missing}")
             elif pv_invalid:
                 st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {pv_invalid}")
             elif pv_dupes:
                 st.error(f"🚫 These ClosedTour Codes are used by more than one selected variant: {list(pv_dupes.keys())}")
+            elif pv_existing:
+                st.error(f"🚫 These ClosedTour Codes are ALREADY TAKEN by existing tours - choose different "
+                        f"ones: {pv_existing}")
             else:
                 pending_url = st.session_state.get("pending_url")
                 new_mct_queue = [
