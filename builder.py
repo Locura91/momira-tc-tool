@@ -407,7 +407,16 @@ def build_ticket_payloads(
             translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
         ))
 
-    time_tables_list = extracted_ticket_data.get("time_tables", [])
+    # Filter out any None/blank/literal-"None" garbage BEFORE normalizing -
+    # confirmed via a real API error that a stray "None" string (from a blank
+    # data_editor row upstream getting str()'d) reaches here and blows up
+    # java.time.LocalTime deserialization server-side with a raw
+    # DateTimeParseException. Also normalize HH:MM -> HH:MM:SS like
+    # start_time/end_time already do (see normalize_time_hhmmss above).
+    time_tables_list = [
+        normalize_time_hhmmss(t) for t in (extracted_ticket_data.get("time_tables", []) or [])
+        if t and str(t).strip() and str(t).strip().lower() not in ("none", "nan")
+    ]
 
     effective_release_days = resolve_release_days(
         pre_config.days_available_before_release, extracted_ticket_data.get("release_days_mentions")
@@ -521,7 +530,7 @@ def build_ticket_payloads(
             childAgeMin=extracted_ticket_data.get("child_age_min", 6),
             childAgeMax=extracted_ticket_data.get("child_age_max", 12),
             languages=extracted_ticket_data.get("languages") or ["EN"],
-            timeTables=extracted_ticket_data.get("time_tables", []),
+            timeTables=time_tables_list,
             duration=float(extracted_ticket_data.get("duration", 0) or 0),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
         )
