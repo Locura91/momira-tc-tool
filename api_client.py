@@ -337,6 +337,26 @@ class TravelCompositorAPI:
         data = res.json()
         return data if isinstance(data, list) else []
 
+    def get_closed_tours(self, supplier_id: str, first: int = 0, limit: int = 100) -> Dict[str, Any]:
+        """
+        Executes GET /closedtour/{supplierId} (no tour code) — mirrors the
+        confirmed get_tickets() list pattern. Returns whatever the API gives
+        back (a bare list, or a paginated dict wrapping the list depending
+        on account/version) for the caller to normalize. Used to build a
+        "does a tour with this name already exist" pre-upload check, so a
+        failure here should never block publishing - callers must treat any
+        {"error": ...} result as "couldn't verify, skip the check" rather
+        than a hard failure.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}"
+        merged_headers = {**self.get_headers(), "first": str(first), "limit": str(limit)}
+        res = requests.request("GET", url, headers=merged_headers, timeout=15)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """
         Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
