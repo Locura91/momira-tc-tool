@@ -21,6 +21,7 @@ import json
 import tempfile
 import os
 import time
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 
@@ -46,6 +47,16 @@ from geocoding_client import geocode_search, geocode
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+
+# Currency dropdown options - EUR/USD first as the ones actually used in
+# practice, then the rest of the common ISO codes a DMC document might quote
+# in, alphabetically. A dropdown (instead of free-text) prevents typos like
+# "EURO" or "Eur" that Travel Compositor's API would otherwise reject or
+# silently mishandle.
+CURRENCY_OPTIONS = [
+    "EUR", "USD", "GBP", "AUD", "CAD", "CHF", "CNY", "IDR", "INR", "JPY",
+    "MXN", "NZD", "SEK", "SGD", "THB", "TRY", "VND", "ZAR",
+]
 
 TICKET_ACTION_LABELS = {
     "create": "1: Create new Ticket + 1 Modality",
@@ -174,6 +185,28 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
             on_save(edited)
             st.session_state[edit_flag_key] = False
             st.rerun()
+
+
+def render_optional_time_input(label, data_dict, field_key, widget_key, default_time_str="08:00:00"):
+    """
+    Easier way to enter a Start/End Time than typing "HH:MM:SS" by hand
+    (which the API requires exactly, seconds included) - shows a native
+    clock/time picker instead of a free-text field. The field stays
+    genuinely OPTIONAL (Travel Compositor accepts blank), so a checkbox
+    gates whether a time is set at all - unchecked means "leave blank",
+    checked shows the picker and stores its value as "HH:MM:SS".
+    """
+    current_value = (data_dict.get(field_key) or "").strip()
+    has_time = st.checkbox(f"Set a {label.lower()}", value=bool(current_value), key=f"{widget_key}_has")
+    if not has_time:
+        data_dict[field_key] = ""
+        return
+    try:
+        parsed_default = datetime.strptime(current_value, "%H:%M:%S").time() if current_value else datetime.strptime(default_time_str, "%H:%M:%S").time()
+    except ValueError:
+        parsed_default = datetime.strptime(default_time_str, "%H:%M:%S").time()
+    picked = st.time_input(label, value=parsed_default, key=widget_key, step=300)
+    data_dict[field_key] = picked.strftime("%H:%M:%S")
 
 
 def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value=""):
@@ -540,6 +573,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     if not candidates:
                         candidates = [{"label": "", "nights": None, "tour_code": "", "modality_code": "Standard", "selected": True}]
 
+                    # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
+                    # if every image already got a real URL, showing them again in a second
+                    # section would just be a confusing, redundant duplicate of "Images found" above.
+                    if len(doc_image_urls) >= len(doc_raw_images):
+                        doc_raw_images = []
+
                     st.session_state.mct_raw_text = raw_text
                     st.session_state.mct_candidates = candidates
                     st.session_state.mct_doc_raw_images = doc_raw_images
@@ -670,9 +709,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         tcol1, tcol2 = st.columns(2)
         with tcol1:
-            data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional)", value=data.get("start_time", ""), key=f"mct_start_time_{idx}")
+            render_optional_time_input("Start Time", data, "start_time", f"mct_start_time_{idx}")
         with tcol2:
-            data["end_time"] = st.text_input("End Time (HH:MM:SS, optional)", value=data.get("end_time", ""), key=f"mct_end_time_{idx}")
+            render_optional_time_input("End Time", data, "end_time", f"mct_end_time_{idx}", default_time_str="18:00:00")
 
         acol1, acol2 = st.columns(2)
         with acol1:
@@ -1386,6 +1425,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     if not candidates:
                         candidates = [{"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True}]
 
+                    if len(doc_image_urls) >= len(doc_raw_images):
+                        doc_raw_images = []
+
                     st.session_state.mt_raw_text = raw_text
                     st.session_state.mt_candidates = candidates
                     st.session_state.mt_doc_raw_images = doc_raw_images
@@ -2004,7 +2046,7 @@ def render_ticket_flow(client):
         if "max_passengers" in needed:
             max_pass_in = st.selectbox("Max Passengers", list(range(2, 21)), index=7, key="tk_max_pass")
         if "currency" in needed:
-            currency_in = st.text_input("Currency", value="", placeholder="e.g. EUR", key="tk_currency")
+            currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tk_currency")
         if "modality_code" in needed:
             default_modality = st.session_state.get("tk_check_modality_pick", "") if action == "update_option" else ""
             label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
@@ -2127,6 +2169,9 @@ def render_ticket_flow(client):
                         except Exception:
                             pass
                     os.remove(tmp_path)
+
+                if len(doc_image_urls) >= len(doc_raw_images):
+                    doc_raw_images = []
 
                 raw_text = "\n\n".join(combined_parts)
 
@@ -3183,7 +3228,7 @@ else:
     if "max_pax" in needed:
         max_pax_in = st.selectbox("Max Pax", list(range(2, 10)), index=7)
     if "currency" in needed:
-        currency_in = st.text_input("Currency", value="", placeholder="e.g. EUR")
+        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS)
     if "modality_code" in needed:
         default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
         label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
@@ -3352,6 +3397,9 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                                       f"{uploaded.name} will be available to download instead (see Step 5).")
 
                 os.remove(tmp_path)
+
+            if len(doc_image_urls) >= len(doc_raw_images):
+                doc_raw_images = []
 
             raw_text = "\n\n".join(combined_parts)
 
@@ -3530,9 +3578,9 @@ if st.session_state.extracted:
 
             tcol1, tcol2 = st.columns(2)
             with tcol1:
-                data["start_time"] = st.text_input("Start Time (HH:MM:SS, optional - e.g. 08:00:00)", value=data.get("start_time", ""), key="ct_start_time")
+                render_optional_time_input("Start Time", data, "start_time", "ct_start_time")
             with tcol2:
-                data["end_time"] = st.text_input("End Time (HH:MM:SS, optional - e.g. 18:00:00)", value=data.get("end_time", ""), key="ct_end_time")
+                render_optional_time_input("End Time", data, "end_time", "ct_end_time", default_time_str="18:00:00")
 
             acol1, acol2 = st.columns(2)
             with acol1:
