@@ -119,6 +119,14 @@ Rules:
   IMPORTANT - occupancy/group-size-tiered pricing tables (columns like "1", "2", "3-5", "6-8", "9-14", "15-up" showing per-person price by TOTAL group size, not room-sharing): this schema only has 4 slots (single/double/triple/quadruple) tied to room-sharing, so a table with more than 4 tiers CANNOT be fully represented. Map tiers onto slots by closest fit: the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, the tier containing "4" (or the next one up) -> quadruplePrice, "1" -> singlePrice (omit if the source says N/A for 1 pax). Any tier beyond quadruple (e.g. "9-14", "15-up") CANNOT be included in price_list - instead, describe exactly what was approximated and what had to be dropped (with the real numbers) in the pricing_notes field, so a human can review before publishing. Never silently lose pricing information without flagging it there.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into the price object of ONE SINGLE price_list entry - NEVER create multiple separate entries that share the same or overlapping startDate/endDate just to hold different occupancy tiers. Travel Compositor ADDS TOGETHER the prices from any entries with overlapping dates within one option, so multiple rows for the same period would silently produce a wrong, inflated total price. Only create a NEW entry when the dates genuinely change (e.g. a different season).
 - pricing_notes: leave empty UNLESS you had to approximate or drop something while fitting an occupancy/group-size pricing table into the 4-slot Distribution schema (see above) - in that case, explain exactly what was mapped where and what was dropped, including the real numbers, so the human can catch and adjust it.
+- release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
+  mentioned anywhere in the source (e.g. "must be booked at least 45 days before departure", "release
+  period: 60 days", "reservations required 30 days in advance", "book by X days prior to arrival"). This is
+  DIFFERENT from a cancellation policy (e.g. "non-refundable inside 21 days") - do NOT include cancellation
+  deadlines here, only booking/reservation/release deadlines. Convert weeks/months to days (e.g. "6 weeks"
+  -> 42, "2 months" -> 60). If the source mentions MORE THAN ONE such deadline (e.g. different components
+  have different notice periods), include ALL of them as separate integers - a human will apply the
+  safest (longest) one rather than you picking. Empty list if nothing like this is mentioned anywhere.
 
 Output this exact JSON structure:
 {
@@ -137,7 +145,8 @@ Output this exact JSON structure:
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
-  "price_list": []
+  "price_list": [],
+  "release_days_mentions": []
 }"""
 
 
@@ -545,7 +554,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "excluded": "", "meeting_point": "", "policy_remarks": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 0, "max_child_age": 12,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": []
+        "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }
     defaults.update(data)
 
@@ -668,6 +677,13 @@ Extract:
   mandatory whole-trip seasonal price difference couldn't be represented, or an alternative/on-request
   option needs to become a separate Modality - see supplements rule above) - explain what, with real
   numbers where available, so a human can review.
+- release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
+  mentioned anywhere in the source (e.g. "must be booked at least 45 days before", "release period: 60
+  days", "reservations required 30 days in advance"). DIFFERENT from a cancellation policy (e.g.
+  "non-refundable inside 21 days") - do NOT include cancellation deadlines here, only booking/reservation/
+  release deadlines. Convert weeks/months to days (e.g. "6 weeks" -> 42, "2 months" -> 60). If the source
+  mentions MORE THAN ONE such deadline, include ALL of them as separate integers - a human will apply the
+  safest (longest) one rather than you picking. Empty list if nothing like this is mentioned anywhere.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -678,7 +694,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "child_age_min": 6, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
-  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": ""
+  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "",
+  "release_days_mentions": []
 }"""
 
 
@@ -748,7 +765,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
-        "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
+        "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
