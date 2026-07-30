@@ -96,6 +96,33 @@ def _detect_indonesia_tour(raw_locations: List[str], api_client: TravelComposito
     return False
 
 
+def resolve_release_days(default_days: int, mentioned_days: List[Any]) -> int:
+    """
+    Human instruction (2026-07-30): the release period (how many days before
+    departure a tour/ticket becomes bookable) defaults to whatever the human
+    set in the pre-config (usually 30) - UNLESS the source document itself
+    mentions an explicit booking/reservation deadline, in which case that
+    ALWAYS wins over the default. If the document mentions more than one
+    (e.g. different components have different notice periods), use the
+    HIGHER one, since a longer required-notice period is the safer choice -
+    it never turns away a booking too late, only ever asks for it earlier.
+    `mentioned_days` is whatever the AI extraction put in
+    "release_days_mentions" - defensively coerced/filtered here since it's
+    AI-produced and could contain non-numeric junk or non-positive values.
+    """
+    valid_mentions = []
+    for value in (mentioned_days or []):
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            valid_mentions.append(n)
+    if valid_mentions:
+        return max(valid_mentions)
+    return default_days
+
+
 def vesak_day_stop_sales() -> List[Dict[str, str]]:
     """
     Every known Vesak Day date as a {"start", "end"} stop-sale entry (same
@@ -242,6 +269,10 @@ def build_closed_tour_payloads(
         remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
     )
 
+    effective_release_days = resolve_release_days(
+        pre_config.days_available_before_release, extracted_dmc_data.get("release_days_mentions")
+    )
+
     main_tour = ContractClosedTourVO(
         supplier=pre_config.supplier_code or pre_config.supplier_id,
         userId=pre_config.user_id,
@@ -263,7 +294,7 @@ def build_closed_tour_payloads(
         minPax=pre_config.min_pax,
         maxPax=pre_config.max_pax,
         modalityCodes=[pre_config.modality_code],
-        daysAvailableBeforeRelease=pre_config.days_available_before_release,
+        daysAvailableBeforeRelease=effective_release_days,
         active=False  # LOCKED: Strictly upload as inactive/draft
     )
 
@@ -304,6 +335,8 @@ def build_closed_tour_payloads(
         "itinerary_resolution": itinerary_resolution,  # per-item status for clean green/red UI display
         "is_indonesia": is_indonesia,
         "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
+        "effective_release_days": effective_release_days,
+        "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
     }
 
 def build_ticket_payloads(
@@ -376,6 +409,10 @@ def build_ticket_payloads(
 
     time_tables_list = extracted_ticket_data.get("time_tables", [])
 
+    effective_release_days = resolve_release_days(
+        pre_config.days_available_before_release, extracted_ticket_data.get("release_days_mentions")
+    )
+
     main_ticket_error = None
     main_ticket_payload = None
     try:
@@ -410,7 +447,7 @@ def build_ticket_payloads(
             adultTaxesAmount=float(extracted_ticket_data.get("adult_taxes_amount", 0) or 0),
             childTaxesAmount=float(extracted_ticket_data.get("child_taxes_amount", 0) or 0),
             infantTaxesAmount=float(extracted_ticket_data.get("infant_taxes_amount", 0) or 0),
-            daysAvailableBeforeRelease=pre_config.days_available_before_release,
+            daysAvailableBeforeRelease=effective_release_days,
             duration=float(extracted_ticket_data.get("duration", 0) or 0),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
             cancellationRanges=[TicketCancellationRange()],  # LOCKED default: always 30 days / 100%, matching ClosedTour's confirmed convention
@@ -506,6 +543,8 @@ def build_ticket_payloads(
         "geolocation_longitude": geoloc.get("longitude"),
         "is_indonesia": is_indonesia,
         "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
+        "effective_release_days": effective_release_days,
+        "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
         "has_real_pricing": any([
             extracted_ticket_data.get("base_adult_price", 0),
             extracted_ticket_data.get("base_children_price", 0),
