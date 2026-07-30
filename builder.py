@@ -208,7 +208,16 @@ def build_closed_tour_payloads(
         validated_itinerary.append(
             ItineraryItem(
                 description={},
-                destination=result["tc_code"],
+                # ItineraryItem.destination is a required non-Optional str - an
+                # unresolved destination returns tc_code=None, which used to
+                # crash this whole function with an uncaught pydantic
+                # ValidationError instead of reaching the friendly
+                # "unresolved_destinations" warning UI already built for this
+                # case (app.py, Step 6). "" is a safe placeholder: it can never
+                # be a real Travel Compositor code, and can_publish already
+                # requires unresolved_destinations to be empty before allowing
+                # publish, so this can never silently reach the real API.
+                destination=result["tc_code"] or "",
                 hotelsId=[]
             )
         )
@@ -244,80 +253,103 @@ def build_closed_tour_payloads(
     else:
         hotels_count = len(set(item.destination for item in validated_itinerary if item.destination))
 
-    # Convert the simple flat supplement table into the confirmed real
-    # SupplementVO structure. A flat per-person price applies to both single
-    # and double occupancy (the common real-world pattern - e.g. an optional
-    # dinner costs the same whether traveling solo or as a couple); triple/
-    # quadruple stay at 0 unless a future refinement adds per-occupancy input.
-    supplements_list = []
-    for s in extracted_dmc_data.get("supplements", []):
-        price_val = float(s.get("price", 0) or 0)
-        # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
-        # per-person amounts (that's what "per occupancy" means in this API).
-        # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
-        # have a confirmed API field for a genuinely flat/non-per-pax supplement
-        # charge - if you need that, verify with Travel Compositor directly.
-        travel_windows = []
-        if s.get("travel_start_date") and s.get("travel_end_date"):
-            travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
-
-        supplements_list.append(SupplementVO(
-            translations={"EN": SupplementTranslation(name=s.get("name", ""))},
-            price=SupplementPriceVO(singlePrice=price_val, doublePrice=price_val),
-            mandatory=bool(s.get("mandatory", False)),
-            onRequest=bool(s.get("on_request", False)),
-            free=(price_val == 0),
-            travelWindows=travel_windows,
-        ))
-
-    # 2. Build Main Tour Payload (ContractClosedTourVO)
-    # NOTE: these fields are required `str`/`list` types on DatasheetEN /
-    # ContractClosedTourVO. `.get(key, default)` only falls back to `default`
-    # when the key is ABSENT - if the AI extraction explicitly returned
-    # `None`, `.get()` still returns None and pydantic raises a
-    # ValidationError. `or <fallback>` below guards against that (same class
-    # of bug that used to crash the Ticket path unguarded - see
-    # build_ticket_payloads below).
-    datasheet_en = DatasheetEN(
-        name=extracted_dmc_data.get("tour_name") or "",
-        description=extracted_dmc_data.get("description") or "",
-        hotels=extracted_dmc_data.get("hotels_text") or "",
-        voucherRemarks="",
-        included=extracted_dmc_data.get("included") or "",
-        excluded=extracted_dmc_data.get("excluded") or "",
-        meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
-        remarksTitle="Policy",
-        remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
-    )
-
     effective_release_days = resolve_release_days(
         pre_config.days_available_before_release, extracted_dmc_data.get("release_days_mentions")
     )
 
-    main_tour = ContractClosedTourVO(
-        supplier=pre_config.supplier_code or pre_config.supplier_id,
-        userId=pre_config.user_id,
-        code=extracted_dmc_data.get("tour_code") or f"TOUR-{pre_config.provider_code}",
-        providerCode=pre_config.provider_code,
-        name=extracted_dmc_data.get("tour_name") or "",
-        datasheets=build_datasheets(datasheet_en),
-        images=extracted_dmc_data.get("image_urls", []),
-        itinerary=validated_itinerary,
-        transports=transports_count,
-        hotels=hotels_count,
-        startTime=normalize_time_hhmmss(extracted_dmc_data.get("start_time", "")),
-        endTime=normalize_time_hhmmss(extracted_dmc_data.get("end_time", "")),
-        supplements=supplements_list,
-        minChildAge=extracted_dmc_data.get("min_child_age", pre_config.min_child_age),
-        maxChildAge=extracted_dmc_data.get("max_child_age", pre_config.max_child_age),
-        currency=pre_config.currency,
-        nights=extracted_dmc_data.get("nights", 1),
-        minPax=pre_config.min_pax,
-        maxPax=pre_config.max_pax,
-        modalityCodes=[pre_config.modality_code],
-        daysAvailableBeforeRelease=effective_release_days,
-        active=False  # LOCKED: Strictly upload as inactive/draft
-    )
+    # This constant guess is used as the fallback tour code shown in the UI
+    # BEFORE a real code is returned by the API, and (unlike main_tour.code)
+    # stays available even if the main_tour construction below fails -
+    # mirrors build_ticket_payloads' main_ticket_code pattern.
+    main_tour_code_guess = extracted_dmc_data.get("tour_code") or f"TOUR-{pre_config.provider_code}"
+
+    # 2. Build Main Tour Payload (ContractClosedTourVO)
+    # NOTE: these fields are required `str`/`list`/`int` types on DatasheetEN /
+    # ContractClosedTourVO. `.get(key, default)` only falls back to `default`
+    # when the key is ABSENT - if the AI extraction explicitly returned
+    # `None`, `.get()` still returns None and pydantic raises a
+    # ValidationError. `or <fallback>` below guards against that for every
+    # field, and the whole construction (including supplements and the
+    # datasheet, both of which can also raise - e.g. float() on a non-numeric
+    # supplement price) is wrapped in try/except below - this used to be
+    # unguarded (unlike the Ticket path, which already had this exact
+    # protection) and a single bad field crashed the entire build with an
+    # uncaught ValidationError instead of degrading to a friendly per-field
+    # error message like Tickets already did.
+    main_tour_error = None
+    main_tour_payload = None
+    try:
+        # Convert the simple flat supplement table into the confirmed real
+        # SupplementVO structure. A flat per-person price applies to both single
+        # and double occupancy (the common real-world pattern - e.g. an optional
+        # dinner costs the same whether traveling solo or as a couple); triple/
+        # quadruple stay at 0 unless a future refinement adds per-occupancy input.
+        supplements_list = []
+        for s in extracted_dmc_data.get("supplements", []):
+            price_val = float(s.get("price", 0) or 0)
+            # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
+            # per-person amounts (that's what "per occupancy" means in this API).
+            # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
+            # have a confirmed API field for a genuinely flat/non-per-pax supplement
+            # charge - if you need that, verify with Travel Compositor directly.
+            travel_windows = []
+            if s.get("travel_start_date") and s.get("travel_end_date"):
+                travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
+
+            supplements_list.append(SupplementVO(
+                translations={"EN": SupplementTranslation(name=s.get("name", ""))},
+                price=SupplementPriceVO(singlePrice=price_val, doublePrice=price_val),
+                mandatory=bool(s.get("mandatory", False)),
+                onRequest=bool(s.get("on_request", False)),
+                free=(price_val == 0),
+                travelWindows=travel_windows,
+            ))
+
+        datasheet_en = DatasheetEN(
+            name=extracted_dmc_data.get("tour_name") or "",
+            description=extracted_dmc_data.get("description") or "",
+            hotels=extracted_dmc_data.get("hotels_text") or "",
+            voucherRemarks="",
+            included=extracted_dmc_data.get("included") or "",
+            excluded=extracted_dmc_data.get("excluded") or "",
+            meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
+            remarksTitle="Policy",
+            remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
+        )
+
+        main_tour = ContractClosedTourVO(
+            supplier=pre_config.supplier_code or pre_config.supplier_id,
+            userId=pre_config.user_id,
+            code=main_tour_code_guess,
+            providerCode=pre_config.provider_code,
+            name=extracted_dmc_data.get("tour_name") or "",
+            datasheets=build_datasheets(datasheet_en),
+            images=extracted_dmc_data.get("image_urls") or [],
+            itinerary=validated_itinerary,
+            transports=transports_count,
+            hotels=hotels_count or 0,
+            startTime=normalize_time_hhmmss(extracted_dmc_data.get("start_time", "")),
+            endTime=normalize_time_hhmmss(extracted_dmc_data.get("end_time", "")),
+            supplements=supplements_list,
+            minChildAge=extracted_dmc_data.get("min_child_age") if extracted_dmc_data.get("min_child_age") is not None else pre_config.min_child_age,
+            maxChildAge=extracted_dmc_data.get("max_child_age") if extracted_dmc_data.get("max_child_age") is not None else pre_config.max_child_age,
+            currency=pre_config.currency,
+            nights=extracted_dmc_data.get("nights") if extracted_dmc_data.get("nights") is not None else 1,
+            minPax=pre_config.min_pax,
+            maxPax=pre_config.max_pax,
+            modalityCodes=[pre_config.modality_code],
+            daysAvailableBeforeRelease=effective_release_days,
+            active=False  # LOCKED: Strictly upload as inactive/draft
+        )
+        main_tour_payload = main_tour.dict()
+    except ValidationError as e:
+        main_tour_error = str(e)
+    except (ValueError, TypeError) as e:
+        # Plain Python errors (e.g. a non-numeric string reaching a numeric
+        # field before pydantic even sees it) used to propagate uncaught -
+        # catch these too, not just ValidationError, same as the defensive
+        # net just added to the Ticket path.
+        main_tour_error = f"Couldn't build the tour payload - {e}"
 
     # 3. Build Closed Tour Option Payload (ContractClosedTourOptionVO)
     # NOTE: priceList is required by the API, but we don't want to hard-crash
@@ -345,11 +377,14 @@ def build_closed_tour_payloads(
         tour_option_payload = tour_option.dict()
     except ValidationError as e:
         tour_option_error = str(e)
+    except (ValueError, TypeError) as e:
+        tour_option_error = f"Couldn't build the tour option payload - {e}"
 
     return {
         "supplier_id": pre_config.supplier_id,
-        "main_tour_code": main_tour.code,
-        "main_tour_payload": main_tour.dict(),
+        "main_tour_code": main_tour_code_guess,
+        "main_tour_payload": main_tour_payload,
+        "main_tour_error": main_tour_error,
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
@@ -416,18 +451,6 @@ def build_ticket_payloads(
         if lat is not None and lng is not None:
             meeting_points_out.append(MeetingPointVO(description=mp_desc, latitude=lat, longitude=lng))
 
-    # Convert supplements (ticket-specific shape: per-passenger-type + dates)
-    supplements_list = []
-    for s in extracted_ticket_data.get("supplements", []):
-        supplements_list.append(TicketSupplementVO(
-            adultPriceSupplement=float(s.get("adult_price", 0) or 0),
-            childrenPriceSupplement=float(s.get("children_price", 0) or 0),
-            infantPriceSupplement=float(s.get("infant_price", 0) or 0),
-            startDate=s.get("travel_start_date", ""),
-            endDate=s.get("travel_end_date", ""),
-            translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
-        ))
-
     # Filter out any None/blank/literal-"None" garbage BEFORE normalizing -
     # confirmed via a real API error that a stray "None" string (from a blank
     # data_editor row upstream getting str()'d) reaches here and blows up
@@ -454,6 +477,24 @@ def build_ticket_payloads(
         # used to happen here, outside any try/except, and took down the whole
         # batch/app. It's now caught below (via `or ""`  defensive coercion
         # plus this try block), and reported as a per-item error instead.
+
+        # Convert supplements (ticket-specific shape: per-passenger-type + dates).
+        # NOTE: `.get(key, "")` only applies "" when the key is ABSENT - a blank
+        # data_editor row upstream can leave an explicit `None` here (the exact
+        # class of bug already fixed for time_tables above), which used to crash
+        # this construction OUTSIDE any try/except entirely, before this
+        # function's own try block was even reached. `or ""` guards both cases.
+        supplements_list = []
+        for s in extracted_ticket_data.get("supplements", []):
+            supplements_list.append(TicketSupplementVO(
+                adultPriceSupplement=float(s.get("adult_price", 0) or 0),
+                childrenPriceSupplement=float(s.get("children_price", 0) or 0),
+                infantPriceSupplement=float(s.get("infant_price", 0) or 0),
+                startDate=s.get("travel_start_date") or "",
+                endDate=s.get("travel_end_date") or "",
+                translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
+            ))
+
         datasheet_en = TicketDatasheetEN(
             name=extracted_ticket_data.get("ticket_name") or "",
             description=extracted_ticket_data.get("description") or "",
@@ -485,12 +526,21 @@ def build_ticket_payloads(
             meetingPoints=meeting_points_out,
             active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
         )
-        if extracted_ticket_data.get("product_types"):
-            main_ticket_kwargs["productTypes"] = extracted_ticket_data["product_types"]
+        # NOTE: deliberately NOT reading extracted_ticket_data.get("product_types")
+        # here anymore - product_types (Engines) always uses the curated safe
+        # default list from ApiStaticContentTicketVO/schemas.py (confirmed
+        # by the product owner). Letting AI-extracted data override that list
+        # was a live footgun: a hallucinated/malformed value could silently
+        # replace the known-good defaults with no validation against them.
         main_ticket = ApiStaticContentTicketVO(**main_ticket_kwargs)
         main_ticket_payload = main_ticket.dict()
     except ValidationError as e:
         main_ticket_error = str(e)
+    except (ValueError, TypeError) as e:
+        # Plain Python errors (e.g. a non-numeric string reaching float())
+        # used to propagate uncaught instead of degrading to a friendly
+        # per-field error message.
+        main_ticket_error = f"Couldn't build the ticket payload - {e}"
 
     ticket_option_payload = None
     ticket_option_error = None
@@ -539,8 +589,8 @@ def build_ticket_payloads(
             onRequest=pre_config.on_request,
             disallowInfant=bool(extracted_ticket_data.get("disallow_infant", False)),
             disallowAdult=bool(extracted_ticket_data.get("disallow_adult", False)),
-            startDate=extracted_ticket_data.get("start_date", ""),
-            endDate=extracted_ticket_data.get("end_date", ""),
+            startDate=extracted_ticket_data.get("start_date") or "",
+            endDate=extracted_ticket_data.get("end_date") or "",
             baseAdultPrice=base_adult_price,
             baseChildrenPrice=base_children_price,
             baseInfantPrice=base_infant_price,
@@ -549,8 +599,12 @@ def build_ticket_payloads(
             priceType=selected_price_type,
             maxPassengers=pre_config.max_passengers,
             minPassengers=pre_config.min_passengers,
-            childAgeMin=extracted_ticket_data.get("child_age_min", 6),
-            childAgeMax=extracted_ticket_data.get("child_age_max", 12),
+            # Confirmed by product owner: infant = 0-2, child = 2-12,
+            # internationally standard, same for Tickets and ClosedTours -
+            # previously this defaulted to 6/12 here (unify with ClosedTour's
+            # 2/12 default below, see HumanPreConfig in schemas.py).
+            childAgeMin=extracted_ticket_data.get("child_age_min") if extracted_ticket_data.get("child_age_min") is not None else 2,
+            childAgeMax=extracted_ticket_data.get("child_age_max") if extracted_ticket_data.get("child_age_max") is not None else 12,
             languages=extracted_ticket_data.get("languages") or ["EN"],
             timeTables=time_tables_list,
             duration=float(extracted_ticket_data.get("duration", 0) or 0),
@@ -559,6 +613,8 @@ def build_ticket_payloads(
         ticket_option_payload = ticket_option.dict()
     except ValidationError as e:
         ticket_option_error = str(e)
+    except (ValueError, TypeError) as e:
+        ticket_option_error = f"Couldn't build the ticket option payload - {e}"
 
     return {
         "supplier_id": pre_config.supplier_id,
