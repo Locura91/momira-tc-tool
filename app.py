@@ -608,7 +608,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         return
 
 
-def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files):
+def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files, min_pax=1, max_pax=9):
     """
     Batch flow for creating MULTIPLE full ClosedTours from one document that
     describes several distinct tour variants (e.g. a 7-night and 10-night
@@ -816,7 +816,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         acol1, acol2 = st.columns(2)
         with acol1:
             data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("min_child_age", 0) or 0), key=f"mct_min_child_age_{idx}")
+                                                     value=int(data.get("min_child_age", 2) or 2), key=f"mct_min_child_age_{idx}")
         with acol2:
             data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                      value=int(data.get("max_child_age", 12) or 12), key=f"mct_max_child_age_{idx}")
@@ -987,11 +987,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     try:
                         pre_config = HumanPreConfig(
                             supplier_id=supplier_id, provider_code=q["tour_code"],
-                            min_pax=1, max_pax=9, currency=currency,
+                            min_pax=min_pax, max_pax=max_pax, currency=currency,
                             modality_code=q["modality_code"], on_request=on_request,
                             days_available_before_release=release_days
                         )
                         payloads = build_closed_tour_payloads(pre_config, q["data"], client)
+                        if payloads.get("main_tour_error"):
+                            show_publish_error(f"prepare **{q['tour_code']}**'s payload", payloads["main_tour_error"])
+                            continue
                         if payloads["tour_option_error"]:
                             show_publish_error(f"prepare **{q['tour_code']}**'s payload", payloads['tour_option_error'])
                             continue
@@ -1464,7 +1467,7 @@ def try_code_variants(call_fn, code):
     return result, None
 
 
-def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files):
+def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files, min_passengers=1, max_passengers=9):
     """
     Batch flow for creating MULTIPLE full Tickets from one document that
     describes several distinct excursions:
@@ -1783,7 +1786,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         acol1, acol2 = st.columns(2)
         with acol1:
             data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("child_age_min", 6) or 6), key=f"mt_min_child_age_{idx}")
+                                                     value=int(data.get("child_age_min", 2) or 2), key=f"mt_min_child_age_{idx}")
         with acol2:
             data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                      value=int(data.get("child_age_max", 12) or 12), key=f"mt_max_child_age_{idx}")
@@ -2007,7 +2010,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         pre_config = TicketHumanPreConfig(
                             supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
                             modality_code=q["modality_code"], on_request=on_request,
-                            days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                            days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                         )
                         payloads = build_ticket_payloads(pre_config, q["data"], client)
                         if payloads["main_ticket_error"] or payloads["ticket_option_error"]:
@@ -2057,7 +2060,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     mod_pre_config = TicketHumanPreConfig(
                                         supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
                                         modality_code=mod["code"], on_request=on_request,
-                                        days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                                        days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                                     )
                                     mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
                                     if mod_payloads["ticket_option_error"]:
@@ -2118,7 +2121,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                 retry_pre_config = TicketHumanPreConfig(
                                     supplier_id=supplier_id, ticket_code=fi["real_code"], currency=currency,
                                     modality_code=fi["modality_code"], on_request=on_request,
-                                    days_available_before_release=release_days, min_passengers=1, max_passengers=9
+                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                                 )
                                 retry_payloads = build_ticket_payloads(retry_pre_config, fdata, client)
                                 if retry_payloads["ticket_option_error"]:
@@ -2189,7 +2192,14 @@ def render_ticket_flow(client):
         )
         if st.session_state.suppliers_cache is None:
             with st.spinner("Loading supplier list from Travel Compositor..."):
-                st.session_state.suppliers_cache = client.get_all_suppliers()
+                try:
+                    st.session_state.suppliers_cache = client.get_all_suppliers()
+                except Exception as e:
+                    # This is the very first real network call in the flow -
+                    # a transient connection issue here used to crash the
+                    # whole app before the human could even pick a supplier.
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
         if st.session_state.suppliers_cache:
@@ -2372,7 +2382,8 @@ def render_ticket_flow(client):
         # Also route here once a batch is seeded from the single-flow's own
         # variant picker below (picking 2+ excursions there jumps straight
         # into this same batch flow) - not just when the checkbox above was ticked.
-        render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files)
+        render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files,
+                                min_passengers=min_passengers, max_passengers=max_passengers)
         return
 
     if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
@@ -2568,7 +2579,7 @@ def render_ticket_flow(client):
                 acol1, acol2 = st.columns(2)
                 with acol1:
                     data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                             value=int(data.get("child_age_min", 6) or 6), key="tk_min_child_age")
+                                                             value=int(data.get("child_age_min", 2) or 2), key="tk_min_child_age")
                 with acol2:
                     data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                              value=int(data.get("child_age_max", 12) or 12), key="tk_max_child_age")
@@ -3124,123 +3135,129 @@ def render_ticket_flow(client):
 
             if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary", key="tk_publish_btn"):
                 with st.spinner("Publishing..."):
-                    if publish_action == "Create a brand-new ticket (+ first option)":
-                        creation_payload = dict(payloads["main_ticket_payload"])
-                        creation_payload["active"] = True
-                        result = client.create_ticket(supplier_id, creation_payload)
-                        if "error" in result:
-                            show_publish_error("create the ticket", result)
-                        else:
-                            real_code = result.get("code", payloads["main_ticket_code"])
-                            st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
+                    try:
+                        if publish_action == "Create a brand-new ticket (+ first option)":
+                            creation_payload = dict(payloads["main_ticket_payload"])
+                            creation_payload["active"] = True
+                            result = client.create_ticket(supplier_id, creation_payload)
+                            if "error" in result:
+                                show_publish_error("create the ticket", result)
+                            else:
+                                real_code = result.get("code", payloads["main_ticket_code"])
+                                st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
 
-                            option_result = None
-                            for attempt in range(6):
-                                option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
-                                if "error" not in option_result:
-                                    break
-                                time.sleep(2)
+                                option_result = None
+                                for attempt in range(6):
+                                    option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
+                                    if "error" not in option_result:
+                                        break
+                                    time.sleep(2)
 
-                            if "error" in option_result:
-                                show_publish_error("create the ticket option after 6 attempts", option_result)
-                                st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
-                                # The ticket itself WAS created successfully (real_code) and is still
-                                # ACTIVE - only the option failed. Don't leave the human stuck on this
-                                # page with no way forward: surface the same "what next" block used on
-                                # success, so they can immediately retry adding the option to this
-                                # already-created ticket ("Add another Modality" below prefills exactly
-                                # that: action=add_option, existing_ticket_code=real_code) or start a
-                                # fresh import instead.
-                                st.session_state.tk_just_published_code = real_code
+                                if "error" in option_result:
+                                    show_publish_error("create the ticket option after 6 attempts", option_result)
+                                    st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
+                                    # The ticket itself WAS created successfully (real_code) and is still
+                                    # ACTIVE - only the option failed. Don't leave the human stuck on this
+                                    # page with no way forward: surface the same "what next" block used on
+                                    # success, so they can immediately retry adding the option to this
+                                    # already-created ticket ("Add another Modality" below prefills exactly
+                                    # that: action=add_option, existing_ticket_code=real_code) or start a
+                                    # fresh import instead.
+                                    st.session_state.tk_just_published_code = real_code
+                                    st.session_state.tk_just_published_supplier_id = supplier_id
+                                    st.session_state.tk_just_published_is_inactive = False
+                                    st.session_state.tk_publish_partial_failure = True
+                                else:
+                                    st.success("✅ Ticket option created.")
+
+                                    tk_extra_modalities = st.session_state.get("tk_extra_modalities", [])
+                                    if tk_extra_modalities:
+                                        st.markdown("**Creating additional modalities...**")
+                                        for mod in tk_extra_modalities:
+                                            if not mod.get("code") or not mod.get("data"):
+                                                st.warning("⚠️ Skipped a modality - missing code or pricing data.")
+                                                continue
+                                            with st.spinner(f"Creating modality '{mod['code']}'..."):
+                                                try:
+                                                    mod_pre_config = TicketHumanPreConfig(
+                                                        supplier_id=supplier_id, ticket_code=ticket_code, currency=currency,
+                                                        modality_code=mod["code"], on_request=on_request,
+                                                        days_available_before_release=release_days,
+                                                        min_passengers=min_passengers, max_passengers=max_passengers
+                                                    )
+                                                    mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
+                                                    if mod_payloads["ticket_option_error"]:
+                                                        show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"])
+                                                        continue
+                                                    mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
+                                                    if "error" in mod_option_result:
+                                                        show_publish_error(f"create modality '{mod['code']}'", mod_option_result)
+                                                    else:
+                                                        st.success(f"✅ Modality '{mod['code']}' created.")
+                                                except Exception as e:
+                                                    show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                                    continue
+
+                                    deactivate_payload = dict(creation_payload)
+                                    deactivate_payload["active"] = False
+                                    deactivate_payload["code"] = real_code
+                                    deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
+                                    if "error" in deactivate_result:
+                                        st.warning(f"⚠️ Ticket and option created successfully, but switching back "
+                                                  f"to inactive/draft failed: {deactivate_result}.")
+                                    else:
+                                        st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
+                                                  f"Ready for human review — activate it inside Travel Compositor when ready.")
+                                        st.session_state.tk_just_published_code = real_code
+                                        st.session_state.tk_extra_modalities = []
+                                        st.session_state.tk_just_published_supplier_id = supplier_id
+                                        st.session_state.tk_just_published_is_inactive = True
+                                        st.session_state.tk_publish_partial_failure = False
+
+                        elif publish_action == "Add a new option to an existing ticket":
+                            result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
+                            if "error" in result:
+                                show_publish_error("add the option", result)
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                            else:
+                                st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
+                                st.session_state.tk_just_published_code = target_ticket_code
                                 st.session_state.tk_just_published_supplier_id = supplier_id
                                 st.session_state.tk_just_published_is_inactive = False
-                                st.session_state.tk_publish_partial_failure = True
+                                st.session_state.tk_publish_partial_failure = False
+
+                        elif publish_action == "Update an existing ticket's details":
+                            update_payload = dict(payloads["main_ticket_payload"])
+                            update_payload["code"] = target_ticket_code
+                            result = client.update_ticket(supplier_id, update_payload)
+                            if "error" in result:
+                                show_publish_error("update the ticket", result)
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
-                                st.success("✅ Ticket option created.")
+                                st.success(f"✅ Ticket `{target_ticket_code}` updated.")
+                                st.session_state.tk_just_published_code = target_ticket_code
+                                st.session_state.tk_just_published_supplier_id = supplier_id
+                                st.session_state.tk_just_published_is_inactive = False
+                                st.session_state.tk_publish_partial_failure = False
 
-                                tk_extra_modalities = st.session_state.get("tk_extra_modalities", [])
-                                if tk_extra_modalities:
-                                    st.markdown("**Creating additional modalities...**")
-                                    for mod in tk_extra_modalities:
-                                        if not mod.get("code") or not mod.get("data"):
-                                            st.warning("⚠️ Skipped a modality - missing code or pricing data.")
-                                            continue
-                                        with st.spinner(f"Creating modality '{mod['code']}'..."):
-                                            try:
-                                                mod_pre_config = TicketHumanPreConfig(
-                                                    supplier_id=supplier_id, ticket_code=ticket_code, currency=currency,
-                                                    modality_code=mod["code"], on_request=on_request,
-                                                    days_available_before_release=release_days,
-                                                    min_passengers=min_passengers, max_passengers=max_passengers
-                                                )
-                                                mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
-                                                if mod_payloads["ticket_option_error"]:
-                                                    show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"])
-                                                    continue
-                                                mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
-                                                if "error" in mod_option_result:
-                                                    show_publish_error(f"create modality '{mod['code']}'", mod_option_result)
-                                                else:
-                                                    st.success(f"✅ Modality '{mod['code']}' created.")
-                                            except Exception as e:
-                                                show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
-                                                continue
-
-                                deactivate_payload = dict(creation_payload)
-                                deactivate_payload["active"] = False
-                                deactivate_payload["code"] = real_code
-                                deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
-                                if "error" in deactivate_result:
-                                    st.warning(f"⚠️ Ticket and option created successfully, but switching back "
-                                              f"to inactive/draft failed: {deactivate_result}.")
-                                else:
-                                    st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
-                                              f"Ready for human review — activate it inside Travel Compositor when ready.")
-                                    st.session_state.tk_just_published_code = real_code
-                                    st.session_state.tk_extra_modalities = []
-                                    st.session_state.tk_just_published_supplier_id = supplier_id
-                                    st.session_state.tk_just_published_is_inactive = True
-                                    st.session_state.tk_publish_partial_failure = False
-
-                    elif publish_action == "Add a new option to an existing ticket":
-                        result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
-                        if "error" in result:
-                            show_publish_error("add the option", result)
-                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
-                        else:
-                            st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
-                            st.session_state.tk_just_published_code = target_ticket_code
-                            st.session_state.tk_just_published_supplier_id = supplier_id
-                            st.session_state.tk_just_published_is_inactive = False
-                            st.session_state.tk_publish_partial_failure = False
-
-                    elif publish_action == "Update an existing ticket's details":
-                        update_payload = dict(payloads["main_ticket_payload"])
-                        update_payload["code"] = target_ticket_code
-                        result = client.update_ticket(supplier_id, update_payload)
-                        if "error" in result:
-                            show_publish_error("update the ticket", result)
-                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
-                        else:
-                            st.success(f"✅ Ticket `{target_ticket_code}` updated.")
-                            st.session_state.tk_just_published_code = target_ticket_code
-                            st.session_state.tk_just_published_supplier_id = supplier_id
-                            st.session_state.tk_just_published_is_inactive = False
-                            st.session_state.tk_publish_partial_failure = False
-
-                    elif publish_action == "Update an existing ticket option":
-                        update_option_payload = dict(payloads["ticket_option_payload"])
-                        update_option_payload["code"] = modality_code
-                        result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
-                        if "error" in result:
-                            show_publish_error("update the option", result)
-                            st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
-                        else:
-                            st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
-                            st.session_state.tk_just_published_code = target_ticket_code
-                            st.session_state.tk_just_published_supplier_id = supplier_id
-                            st.session_state.tk_just_published_is_inactive = False
-                            st.session_state.tk_publish_partial_failure = False
+                        elif publish_action == "Update an existing ticket option":
+                            update_option_payload = dict(payloads["ticket_option_payload"])
+                            update_option_payload["code"] = modality_code
+                            result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
+                            if "error" in result:
+                                show_publish_error("update the option", result)
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                            else:
+                                st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
+                                st.session_state.tk_just_published_code = target_ticket_code
+                                st.session_state.tk_just_published_supplier_id = supplier_id
+                                st.session_state.tk_just_published_is_inactive = False
+                                st.session_state.tk_publish_partial_failure = False
+                    except Exception as e:
+                        # This used to be able to crash the whole app on any
+                        # unhandled exception partway through publishing -
+                        # now it shows a contained error instead.
+                        show_publish_error("publish the ticket (unexpected error)", str(e))
 
     if st.session_state.get("tk_just_published_code"):
         st.divider()
@@ -3381,7 +3398,11 @@ else:
 
     if st.session_state.suppliers_cache is None:
         with st.spinner("Loading supplier list from Travel Compositor..."):
-            st.session_state.suppliers_cache = client.get_all_suppliers()
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception as e:
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.session_state.suppliers_cache = []
 
     supplier_id_choice = None
     if st.session_state.suppliers_cache:
@@ -3636,7 +3657,8 @@ if multi_tour_mode or st.session_state.get("mct_phase") in ("reviewing", "publis
     # Also route here once a batch is seeded from the single-flow's own
     # variant picker below (picking 2+ variants there jumps straight into
     # this same batch flow) - not just when the checkbox above was ticked.
-    render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files)
+    render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files,
+                          min_pax=min_pax, max_pax=max_pax)
     st.stop()
 
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
@@ -3864,7 +3886,7 @@ if st.session_state.extracted:
             acol1, acol2 = st.columns(2)
             with acol1:
                 data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                        value=int(data.get("min_child_age", 0) or 0), key="ct_min_child_age")
+                                                        value=int(data.get("min_child_age", 2) or 2), key="ct_min_child_age")
             with acol2:
                 data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                         value=int(data.get("max_child_age", 12) or 12), key="ct_max_child_age")
@@ -3931,7 +3953,7 @@ if st.session_state.extracted:
                 "doc_images_closed", _ct_add_doc_image
             )
 
-            default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0])
+            default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations")[0] if data.get("itinerary_destinations") else "")
 
             def _ct_add_pexels():
                 selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
@@ -4247,8 +4269,17 @@ if st.session_state.extracted:
             days_available_before_release=days_available_before_release
         )
         with st.spinner("Resolving destinations against Travel Compositor..."):
-            st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
-            st.session_state.pre_config = pre_config
+            try:
+                st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
+                st.session_state.pre_config = pre_config
+            except Exception as e:
+                # This used to be able to crash the whole app on a bad
+                # destination/network hiccup instead of showing a contained
+                # error - build_closed_tour_payloads itself now guards its
+                # main construction, but keep this as a last-resort net for
+                # anything upstream (e.g. the destination-resolution API
+                # calls themselves).
+                show_publish_error("resolve destinations / build the payload", str(e))
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
@@ -4304,10 +4335,13 @@ if st.session_state.extracted:
                 title = "Main Tour Payload (PUT - update)"
             else:
                 title = "Main Tour Payload (not sent this time)"
-            with st.expander(f"🔧 {title}", expanded=False):
-                if publish_action not in ("Create a brand-new tour (+ first option)", "Update an existing tour's details"):
-                    st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
-                st.json(payloads["main_tour_payload"])
+            if payloads.get("main_tour_error"):
+                show_publish_error("build the main tour payload", payloads["main_tour_error"])
+            else:
+                with st.expander(f"🔧 {title}", expanded=False):
+                    if publish_action not in ("Create a brand-new tour (+ first option)", "Update an existing tour's details"):
+                        st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
+                    st.json(payloads["main_tour_payload"])
         with col4:
             if publish_action in ("Create a brand-new tour (+ first option)", "Add a new option to an existing tour"):
                 title = "Tour Option Payload (POST)"
@@ -4316,7 +4350,7 @@ if st.session_state.extracted:
             else:
                 title = "Tour Option Payload (not sent this time)"
             if payloads["tour_option_error"]:
-                st.error(f"Invalid: {payloads['tour_option_error']}")
+                show_publish_error("build the tour option payload", payloads["tour_option_error"])
             else:
                 with st.expander(f"🔧 {title}", expanded=False):
                     st.json(payloads["tour_option_payload"])
@@ -4339,6 +4373,7 @@ if st.session_state.extracted:
 
         can_publish = (
             not payloads["unresolved_destinations"]
+            and not payloads.get("main_tour_error")
             and not payloads["tour_option_error"]
             and not missing_existing_code
             and not missing_provider_code_for_update
@@ -4371,145 +4406,152 @@ if st.session_state.extracted:
         if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Sending to Travel Compositor..."):
 
-                if publish_action == "Create a brand-new tour (+ first option)":
-                    creation_payload = dict(payloads["main_tour_payload"])
-                    creation_payload["active"] = True
+                try:
+                    if publish_action == "Create a brand-new tour (+ first option)":
+                        creation_payload = dict(payloads["main_tour_payload"])
+                        creation_payload["active"] = True
 
-                    result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
-                    if "error" in result:
-                        show_publish_error("create the main tour", result)
-                    else:
-                        real_code = result.get('code', payloads['main_tour_code'])
-                        st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
-                                  f"— save this exact value, you'll need it for any future lookups, "
-                                  f"updates, or adding more modalities to this tour.")
-
-                        # Try the human-chosen ClosedTour/Provider Code first (confirmed working
-                        # via direct API test), falling back to the internal 'code' if that fails -
-                        # we've seen conflicting evidence about which one Travel Compositor's
-                        # lookup actually uses, so don't bet everything on just one.
-                        option_result = None
-                        used_code = None
-                        for candidate_code in [provider_code, real_code]:
-                            for attempt in range(3):
-                                option_result = client.create_closed_tour_option(
-                                    payloads["supplier_id"], candidate_code, payloads["tour_option_payload"]
-                                )
-                                if "error" not in option_result:
-                                    used_code = candidate_code
-                                    break
-                                time.sleep(2)
-                            if "error" not in option_result:
-                                break
-
-                        if "error" not in option_result:
-                            st.caption(f"(Option succeeded using code: `{used_code}`)")
-
-                        if "error" in option_result:
-                            show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result)
-                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
-                                   f"aren't visible via the API. The tour was created with active:true, but if "
-                                   f"this keeps failing, check inside Travel Compositor whether `{real_code}` "
-                                   f"shows as active, and try 'Add a new option to an existing tour' manually once confirmed.")
+                        result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
+                        if "error" in result:
+                            show_publish_error("create the main tour", result)
                         else:
-                            st.success("✅ Tour option created.")
+                            real_code = result.get('code', payloads['main_tour_code'])
+                            st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
+                                      f"— save this exact value, you'll need it for any future lookups, "
+                                      f"updates, or adding more modalities to this tour.")
 
-                            extra_modalities = st.session_state.get("extra_modalities", [])
-                            if extra_modalities:
-                                st.markdown("**Creating additional modalities...**")
-                                for mod in extra_modalities:
-                                    if not mod.get("code") or not mod.get("data"):
-                                        st.warning("⚠️ Skipped a modality - missing code or pricing data.")
-                                        continue
-                                    with st.spinner(f"Creating modality '{mod['code']}'..."):
-                                        try:
-                                            mod_pre_config = HumanPreConfig(
-                                                supplier_id=payloads["supplier_id"], provider_code=provider_code or _real_provider_code or "XXX-1",
-                                                min_pax=min_pax, max_pax=max_pax, currency=currency,
-                                                modality_code=mod["code"], on_request=on_request,
-                                                days_available_before_release=days_available_before_release
-                                            )
-                                            mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
-                                            if mod_payloads["tour_option_error"]:
-                                                show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["tour_option_error"])
-                                                continue
-                                            mod_result, mod_used_code = try_code_variants(
-                                                lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, mod_payloads["tour_option_payload"]),
-                                                real_code
-                                            )
-                                            if "error" in mod_result:
-                                                show_publish_error(f"create modality '{mod['code']}'", mod_result)
-                                            else:
-                                                st.success(f"✅ Modality '{mod['code']}' created.")
-                                        except Exception as e:
-                                            show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
-                                            continue
+                            # Try the human-chosen ClosedTour/Provider Code first (confirmed working
+                            # via direct API test), falling back to the internal 'code' if that fails -
+                            # we've seen conflicting evidence about which one Travel Compositor's
+                            # lookup actually uses, so don't bet everything on just one.
+                            option_result = None
+                            used_code = None
+                            for candidate_code in [provider_code, real_code]:
+                                for attempt in range(3):
+                                    option_result = client.create_closed_tour_option(
+                                        payloads["supplier_id"], candidate_code, payloads["tour_option_payload"]
+                                    )
+                                    if "error" not in option_result:
+                                        used_code = candidate_code
+                                        break
+                                    time.sleep(2)
+                                if "error" not in option_result:
+                                    break
 
-                            deactivate_payload = dict(creation_payload)
-                            deactivate_payload["active"] = False
-                            deactivate_payload["code"] = real_code
-                            deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
-                            if "error" in deactivate_result:
-                                st.warning(f"⚠️ Tour and option were created successfully, but switching "
-                                          f"the tour back to inactive/draft failed: {deactivate_result}. "
-                                          f"You may need to deactivate it manually inside Travel Compositor.")
+                            if "error" not in option_result:
+                                st.caption(f"(Option succeeded using code: `{used_code}`)")
+
+                            if "error" in option_result:
+                                show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result)
+                                st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                       f"aren't visible via the API. The tour was created with active:true, but if "
+                                       f"this keeps failing, check inside Travel Compositor whether `{real_code}` "
+                                       f"shows as active, and try 'Add a new option to an existing tour' manually once confirmed.")
                             else:
-                                st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
-                                          f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
-                                st.session_state.just_published_tour_code = real_code
-                                st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                                st.session_state.just_published_is_inactive = True
-                                st.session_state.extra_modalities = []
+                                st.success("✅ Tour option created.")
 
-                elif publish_action == "Add a new option to an existing tour":
-                    option_result, used_code = try_code_variants(
-                        lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, payloads["tour_option_payload"]),
-                        target_tour_code
-                    )
-                    if "error" in option_result:
-                        show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
-                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
-                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel "
-                               f"Compositor first, then retry (you can switch it back to inactive/draft afterward).")
-                    else:
-                        st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
-                        st.session_state.just_published_tour_code = target_tour_code
-                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                        st.session_state.just_published_is_inactive = False
+                                extra_modalities = st.session_state.get("extra_modalities", [])
+                                if extra_modalities:
+                                    st.markdown("**Creating additional modalities...**")
+                                    for mod in extra_modalities:
+                                        if not mod.get("code") or not mod.get("data"):
+                                            st.warning("⚠️ Skipped a modality - missing code or pricing data.")
+                                            continue
+                                        with st.spinner(f"Creating modality '{mod['code']}'..."):
+                                            try:
+                                                mod_pre_config = HumanPreConfig(
+                                                    supplier_id=payloads["supplier_id"], provider_code=provider_code or _real_provider_code or "XXX-1",
+                                                    min_pax=min_pax, max_pax=max_pax, currency=currency,
+                                                    modality_code=mod["code"], on_request=on_request,
+                                                    days_available_before_release=days_available_before_release
+                                                )
+                                                mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
+                                                if mod_payloads["tour_option_error"]:
+                                                    show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["tour_option_error"])
+                                                    continue
+                                                mod_result, mod_used_code = try_code_variants(
+                                                    lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, mod_payloads["tour_option_payload"]),
+                                                    real_code
+                                                )
+                                                if "error" in mod_result:
+                                                    show_publish_error(f"create modality '{mod['code']}'", mod_result)
+                                                else:
+                                                    st.success(f"✅ Modality '{mod['code']}' created.")
+                                            except Exception as e:
+                                                show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                                continue
 
-                elif publish_action == "Update an existing tour's details":
-                    update_payload = dict(payloads["main_tour_payload"])
-                    update_payload["code"] = target_tour_code
-                    result, used_code = try_code_variants(
-                        lambda c: client.update_closed_tour(payloads["supplier_id"], {**update_payload, "code": c}),
-                        target_tour_code
-                    )
-                    if "error" in result:
-                        show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result)
-                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
-                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
-                    else:
-                        st.success(f"✅ Tour updated using code `{used_code}`.")
-                        st.session_state.just_published_tour_code = target_tour_code
-                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                        st.session_state.just_published_is_inactive = False
+                                deactivate_payload = dict(creation_payload)
+                                deactivate_payload["active"] = False
+                                deactivate_payload["code"] = real_code
+                                deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
+                                if "error" in deactivate_result:
+                                    st.warning(f"⚠️ Tour and option were created successfully, but switching "
+                                              f"the tour back to inactive/draft failed: {deactivate_result}. "
+                                              f"You may need to deactivate it manually inside Travel Compositor.")
+                                else:
+                                    st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
+                                              f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
+                                    st.session_state.just_published_tour_code = real_code
+                                    st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                                    st.session_state.just_published_is_inactive = True
+                                    st.session_state.extra_modalities = []
 
-                elif publish_action == "Update an existing option":
-                    update_option_payload = dict(payloads["tour_option_payload"])
-                    update_option_payload["code"] = modality_code
-                    option_result, used_code = try_code_variants(
-                        lambda c: client.update_closed_tour_option(payloads["supplier_id"], c, update_option_payload),
-                        target_tour_code
-                    )
-                    if "error" in option_result:
-                        show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
-                        st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
-                               f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
-                    else:
-                        st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
-                        st.session_state.just_published_tour_code = target_tour_code
-                        st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                        st.session_state.just_published_is_inactive = False
+                    elif publish_action == "Add a new option to an existing tour":
+                        option_result, used_code = try_code_variants(
+                            lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, payloads["tour_option_payload"]),
+                            target_tour_code
+                        )
+                        if "error" in option_result:
+                            show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                   f"aren't visible via the API. Activate `{target_tour_code}` inside Travel "
+                                   f"Compositor first, then retry (you can switch it back to inactive/draft afterward).")
+                        else:
+                            st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
+                            st.session_state.just_published_tour_code = target_tour_code
+                            st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                            st.session_state.just_published_is_inactive = False
+
+                    elif publish_action == "Update an existing tour's details":
+                        update_payload = dict(payloads["main_tour_payload"])
+                        update_payload["code"] = target_tour_code
+                        result, used_code = try_code_variants(
+                            lambda c: client.update_closed_tour(payloads["supplier_id"], {**update_payload, "code": c}),
+                            target_tour_code
+                        )
+                        if "error" in result:
+                            show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result)
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                   f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
+                        else:
+                            st.success(f"✅ Tour updated using code `{used_code}`.")
+                            st.session_state.just_published_tour_code = target_tour_code
+                            st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                            st.session_state.just_published_is_inactive = False
+
+                    elif publish_action == "Update an existing option":
+                        update_option_payload = dict(payloads["tour_option_payload"])
+                        update_option_payload["code"] = modality_code
+                        option_result, used_code = try_code_variants(
+                            lambda c: client.update_closed_tour_option(payloads["supplier_id"], c, update_option_payload),
+                            target_tour_code
+                        )
+                        if "error" in option_result:
+                            show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                   f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
+                        else:
+                            st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
+                            st.session_state.just_published_tour_code = target_tour_code
+                            st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                            st.session_state.just_published_is_inactive = False
+                except Exception as e:
+                    # This used to be able to crash the whole app on any
+                    # unhandled exception (network error, unexpected API
+                    # response shape, etc.) partway through publishing -
+                    # now it shows a contained error instead.
+                    show_publish_error("publish the tour (unexpected error)", str(e))
 
 # ----------------------------------------------------------------------
 # Post-publish follow-up: what next?
