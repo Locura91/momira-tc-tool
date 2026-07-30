@@ -29,6 +29,15 @@ Rules:
 - Translate ALL content into English, regardless of the source document's original language.
 - Output ONLY valid JSON. No markdown code fences, no explanation, no preamble.
 - Never fabricate information that isn't present in the source document. Use empty string "" or empty list [] for anything you can't determine.
+- CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+  directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up
+  time, and note that the starting time and duration may vary according to traffic, weather and
+  operational conditions", "Contact us to confirm timing", "Call the supplier to reconfirm your booking").
+  Momira Travel is the tour operator the client actually deals with - the client must NEVER be told to
+  contact the DMC/supplier directly, since that DMC is Momira's backend supplier, not the client-facing
+  operator. This applies EVERYWHERE such an instruction could appear - description, included/excluded,
+  meeting point, policy/remarks, schedule/pricing notes, anywhere - silently drop/omit it entirely rather
+  than including, paraphrasing, or softening it. This is a deliberate exclusion, not an oversight.
 - description MUST be formatted as day-by-day HTML using this EXACT pattern (confirmed against a real published tour) - one block per day, each day title in bold, separated by an empty paragraph:
   <p><strong>Day 1: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p>...
   Keep going for every day in the itinerary. Regardless of how the source presents each day - a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), a bare bullet list, or already flowing prose - always REWRITE it into natural, engaging, SEO-strong flowing sentences for that day's paragraph, not a copy of the raw format. Use ONLY facts, places, and activities that are actually present in the source - never invent or add details, opening hours, prices, or claims that aren't there. The goal is better PROSE, not more information.
@@ -593,7 +602,7 @@ Extract ONLY:
   If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
 - pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a group-size table into the 4-slot schema - explain exactly what, with real numbers.
-- schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only.
+- schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only. NEVER include an instruction telling the customer to contact the operator/supplier directly (e.g. "contact the operator 48h before to confirm pick-up time") - Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
 - stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} for any explicitly mentioned blackout/non-operating date ranges (e.g. dry-dock periods). Empty list if none mentioned.
 
@@ -700,6 +709,16 @@ TICKET_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Tr
 (an excursion/activity - single destination, no overnight stay) from a DMC supplier document.
 This is DIFFERENT from a multi-day tour: no itinerary, no day-by-day description, no room-occupancy
 pricing. Translate ALL content to English regardless of source language.
+
+CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up time,
+and note that the starting time and duration may vary according to traffic, weather and operational
+conditions", "Contact us to confirm timing", "Call the supplier to reconfirm your booking"). Momira Travel
+is the tour operator the client actually deals with - the client must NEVER be told to contact the
+DMC/supplier directly, since that DMC is Momira's backend supplier, not the client-facing operator. This
+applies EVERYWHERE such an instruction could appear - description, includes/excludes, meeting points,
+pricing_notes, schedule_notes, anywhere - silently drop/omit it entirely rather than including,
+paraphrasing, or softening it. This is a deliberate exclusion, not an oversight.
 
 Extract:
 - ticket_name: the excursion/activity name - keep close to the source, don't invent a fancier title.
@@ -956,6 +975,10 @@ when just adding/updating a modality). The source is often just a pricing table 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
 supplements (simple, always-available, stackable add-ons only - never exclusive alternatives, different guide languages, or on-request items, see full prompt's rules on this - and NEVER voluntary carbon offset/emission compensation charges, ignore those entirely), pricing_notes.
+
+CRITICAL - NEVER include an instruction telling the customer to contact the operator/supplier directly
+(e.g. "contact the operator 48h before to confirm pick-up time") anywhere, including pricing_notes -
+Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 
 operational_days: actively search the ENTIRE source for weekday schedule info, even if it's stated in an
 unusual place or format - only default to all 7 days if the source is genuinely silent about which days
