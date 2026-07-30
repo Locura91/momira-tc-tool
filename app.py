@@ -18,6 +18,7 @@ Reuses everything already built and tested:
     - web_extractor.py    (URL -> structured data, incl. destination scanning)
 """
 import json
+import re
 import tempfile
 import os
 import time
@@ -209,6 +210,80 @@ def render_optional_time_input(label, data_dict, field_key, widget_key, default_
     data_dict[field_key] = picked.strftime("%H:%M:%S")
 
 
+def _clean_time_table_rows(edf, col="Time (HH:MM)"):
+    """
+    Extracts clean time strings from a data_editor DataFrame column, guarding
+    against pandas NaN/None in a blank row. CONFIRMED real bug: str(None) ==
+    "None" - a non-empty, truthy string - so a naive `str(val).strip()` on a
+    blank row's None/NaN cell used to sail through and get sent to the API as
+    a literal time value, crashing java.time.LocalTime deserialization
+    server-side ("Text 'None' could not be parsed"). Check for real None/NaN
+    FIRST, before ever converting to str().
+    """
+    times = []
+    for _, r in edf.iterrows():
+        val = r.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        val = str(val).strip()
+        if not val or val.lower() in ("none", "nan"):
+            continue
+        times.append(val)
+    return times
+
+
+def _html_to_plain_for_editing(html):
+    """
+    Converts the stored HTML (<p>...</p> paragraphs, <strong>/<em> inline
+    formatting, <p><br></p> spacer paragraphs between days) into plain,
+    human-friendly text for editing - no raw HTML tags shown. Bold/italic
+    become **bold**/*italic* markdown-style markers so the human can still
+    see and edit that emphasis without ever looking at a tag.
+    """
+    if not html:
+        return ""
+    text = html
+    # Spacer paragraphs (used between day blocks) become a blank line.
+    text = re.sub(r"<p>\s*<br\s*/?>\s*</p>", "\n", text, flags=re.I)
+    text = re.sub(r"<(strong|b)>(.*?)</\1>", r"**\2**", text, flags=re.I | re.S)
+    text = re.sub(r"<(em|i)>(.*?)</\1>", r"*\2*", text, flags=re.I | re.S)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<p>(.*?)</p>", r"\1\n\n", text, flags=re.I | re.S)
+    # Strip any remaining stray tags (e.g. <ul><li> bullet lists) rather than
+    # showing raw code - fall back to plain line-per-item for bullets.
+    text = re.sub(r"</li>\s*<li>", "\n", text, flags=re.I)
+    text = re.sub(r"<[uo]l>", "", text, flags=re.I)
+    text = re.sub(r"</[uo]l>", "\n", text, flags=re.I)
+    text = re.sub(r"<li>", "", text, flags=re.I)
+    text = re.sub(r"</li>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _plain_to_html_for_saving(text):
+    """
+    Reverses _html_to_plain_for_editing(): plain paragraphs (separated by a
+    blank line) become <p>...</p> blocks with <p><br></p> spacers between
+    them (matching the original day-by-day template), single newlines within
+    a paragraph become <br>, and **bold**/*italic* markers become
+    <strong>/<em> tags - all done automatically in the background so the
+    human editing the field never has to type or see raw HTML.
+    """
+    if not text or not text.strip():
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    html_parts = []
+    for i, para in enumerate(paragraphs):
+        para_html = para.replace("\n", "<br>")
+        para_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", para_html)
+        para_html = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", para_html)
+        html_parts.append(f"<p>{para_html}</p>")
+        if i < len(paragraphs) - 1:
+            html_parts.append("<p><br></p>")
+    return "".join(html_parts)
+
+
 def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value=""):
     """
     Renders a field in READ-ONLY display mode by default, with a small
@@ -242,14 +317,27 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 st.rerun()
     else:
         widget_key = f"_widgetval_{field_key}"
-        if widget == "text_area":
+        if widget == "html_text_area":
+            # Show/edit as plain human-friendly text - the underlying HTML
+            # (<p>, <strong>, etc.) is converted automatically in the
+            # background on the way in and out, so the human never sees or
+            # types raw markup.
+            st.caption("Formatting (bold, paragraphs) is handled automatically - just write plain text. "
+                      "Use **word** for bold if you want to keep a day title bold, and a blank line "
+                      "between paragraphs/days.")
+            new_plain_value = st.text_area(label, value=_html_to_plain_for_editing(current_value),
+                                           height=height or 120, key=widget_key)
+        elif widget == "text_area":
             new_value = st.text_area(label, value=current_value, height=height or 120, key=widget_key)
         elif widget == "number_input":
             new_value = st.number_input(label, min_value=1, value=int(current_value or 1), key=widget_key)
         else:
             new_value = st.text_input(label, value=current_value, key=widget_key)
         if st.button("✅ Save", key=f"save_{field_key}", type="primary"):
-            data_dict[field_key] = new_value
+            if widget == "html_text_area":
+                data_dict[field_key] = _plain_to_html_for_saving(new_plain_value)
+            else:
+                data_dict[field_key] = new_value
             st.session_state[edit_flag_key] = False
             st.rerun()
 
@@ -690,7 +778,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                      "the tour's starting city, in your hotel lobby.")
 
         editable_field("Tour name", data, "tour_name", widget="text_input")
-        editable_field("Description (HTML ok)", data, "description", widget="text_area", height=150)
+        editable_field("Description", data, "description", widget="html_text_area", height=150)
 
         render_skip_item_button(
             current['label'] or current['tour_code'], queue, idx,
@@ -1535,7 +1623,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         data = current["data"]
 
         editable_field("Ticket name", data, "ticket_name", widget="text_input")
-        editable_field("Description", data, "description", widget="text_area", height=120)
+        editable_field("Description", data, "description", widget="html_text_area", height=120)
 
         render_skip_item_button(
             current['label'] or current['ticket_code'], queue, idx,
@@ -1710,7 +1798,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         st.markdown("**Start Time(s)**")
         tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
         def _save_mt_timetables(edf, data=data):
-            data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+            data["time_tables"] = _clean_time_table_rows(edf)
         editable_table("Start Time(s)", tt_df, f"mt_timetables_{idx}", on_save=_save_mt_timetables)
         if not data.get("time_tables"):
             st.caption("ℹ️ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
@@ -2323,7 +2411,7 @@ def render_ticket_flow(client):
             else:
                 st.subheader("Extracted Data (click ✏️ to edit)")
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
-                editable_field("Description", data, "description", widget="text_area", height=150)
+                editable_field("Description", data, "description", widget="html_text_area", height=150)
                 editable_field("City", data, "city", widget="text_input")
 
                 if data.get("is_private") and "private" not in (modality_code or "").lower():
@@ -2342,23 +2430,18 @@ def render_ticket_flow(client):
                     data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                              value=int(data.get("child_age_max", 12) or 12), key="tk_max_child_age")
 
-                st.markdown("**Engines (Search Engines to Sell through)**")
-                st.caption("⚠️ This defaults to a broad, reasonable set - not guaranteed to be exactly right "
-                          "for every ticket type. Review before publishing; you can also adjust this "
-                          "afterward in Travel Compositor under Settings > Engine.")
-                ALL_ENGINE_OPTIONS = [
+                # Engines (Search Engines to Sell through): always ALL of them - this was
+                # previously a review multiselect, but there's never a real reason to sell
+                # through fewer than all engines, so it's set silently in the background and
+                # not shown to the human at all (adjustable afterward in Travel Compositor
+                # under Settings > Engine if ever needed).
+                data["product_types"] = [
                     "MULTI", "GROUPS", "ONLY_HOTEL", "ONLY_HOUSE", "ONLY_FLIGHT", "ONLY_TRAIN",
                     "FLIGHT_HOTEL", "FLIGHT_HOUSE", "ONLY_TICKET", "EVENT_TICKET", "GOLF", "ONLY_CAR",
                     "ONLY_TRANSFER", "HOLIDAYS", "GIFTCARD", "EXTERNAL_SEARCH_BOX", "GIFT_BOX", "ROUTING",
                     "PRIVATE_TOUR", "MAGIC_BOX", "CRUISES", "AI_TRIP", "MEMBERSHIP", "ONLY_INSURANCE",
                     "ONLY_ITEM", "TRIP_PLANNER",
                 ]
-                default_engines = data.get("product_types") or [
-                    "MULTI", "ONLY_TICKET", "EVENT_TICKET", "ONLY_TRANSFER", "ONLY_TRAIN", "ONLY_HOTEL",
-                    "ONLY_HOUSE", "ONLY_FLIGHT", "FLIGHT_HOTEL", "FLIGHT_HOUSE", "ONLY_CAR", "GOLF",
-                    "MAGIC_BOX", "ROUTING", "PRIVATE_TOUR", "TRIP_PLANNER", "GROUPS",
-                ]
-                data["product_types"] = st.multiselect("Selected Engines", ALL_ENGINE_OPTIONS, default=default_engines, key="tk_product_types")
 
                 inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_includes(edf, data=data):
@@ -2479,7 +2562,7 @@ def render_ticket_flow(client):
                   "If the document doesn't state one, please add at least one manually.")
         tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
         def _save_tk_timetables(edf, data=data):
-            data["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+            data["time_tables"] = _clean_time_table_rows(edf)
         editable_table("Start Time(s)", tt_df, "tk_timetables", on_save=_save_tk_timetables)
         if not data.get("time_tables"):
             st.caption("ℹ️ No start time set yet - optional, but add one if the ticket has a fixed departure time.")
@@ -2650,7 +2733,7 @@ def render_ticket_flow(client):
                         mod["data"]["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=mod["data"].get("end_date", ""), key=f"tk_extramod_end_{i}")
                     tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
                     def _save_extramod_tt(edf, mod=mod):
-                        mod["data"]["time_tables"] = [str(r["Time (HH:MM)"]).strip() for _, r in edf.iterrows() if str(r.get("Time (HH:MM)", "")).strip()]
+                        mod["data"]["time_tables"] = _clean_time_table_rows(edf)
                     editable_table(f"Start Time(s) - {mod['code']}", tt_df_extra, f"tk_extramod_tt_{i}", on_save=_save_extramod_tt)
                 else:
                     st.info("Click 'Extract pricing' above to get started for this modality.")
@@ -2700,6 +2783,35 @@ def render_ticket_flow(client):
             st.error("Add at least one non-zero price (Adult/Child/Infant) before continuing.")
 
         can_build = price_valid
+
+        st.subheader("🤖 Tell AI what to fix or clarify (optional)")
+        st.caption("Ask a question, or tell it to fix something about the pricing/schedule above (e.g. 'the "
+                  "adult price should be 89 not 79'). It applies real changes when you ask for them - always "
+                  "shows exactly what changed so you can double-check.")
+        tk_clarify_q2 = st.text_input("Your message", key="tk_clarify_input_pricing",
+                                      placeholder="e.g. 'Fix the adult price to 89' or 'Is the child price for under 12?'")
+        if st.button("Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q2)
+                st.session_state.tk_clarify_result_pricing = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                    tk_field_to_table_key2 = {
+                        "supplements": "_editing_table_tk_supplements",
+                        "occupancy_prices": "_editing_table_tk_occupancy",
+                        "time_tables": "_editing_table_tk_timetables",
+                    }
+                    for field_name in result["changes"]:
+                        table_key = tk_field_to_table_key2.get(field_name)
+                        if table_key:
+                            st.session_state[table_key] = False
+                st.rerun()
+        if st.session_state.get("tk_clarify_result_pricing"):
+            r = st.session_state.tk_clarify_result_pricing
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
 
         if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
@@ -2889,6 +3001,17 @@ def render_ticket_flow(client):
                             if "error" in option_result:
                                 show_publish_error("create the ticket option after 6 attempts", option_result)
                                 st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
+                                # The ticket itself WAS created successfully (real_code) and is still
+                                # ACTIVE - only the option failed. Don't leave the human stuck on this
+                                # page with no way forward: surface the same "what next" block used on
+                                # success, so they can immediately retry adding the option to this
+                                # already-created ticket ("Add another Modality" below prefills exactly
+                                # that: action=add_option, existing_ticket_code=real_code) or start a
+                                # fresh import instead.
+                                st.session_state.tk_just_published_code = real_code
+                                st.session_state.tk_just_published_supplier_id = supplier_id
+                                st.session_state.tk_just_published_is_inactive = False
+                                st.session_state.tk_publish_partial_failure = True
                             else:
                                 st.success("✅ Ticket option created.")
 
@@ -2934,6 +3057,7 @@ def render_ticket_flow(client):
                                     st.session_state.tk_extra_modalities = []
                                     st.session_state.tk_just_published_supplier_id = supplier_id
                                     st.session_state.tk_just_published_is_inactive = True
+                                    st.session_state.tk_publish_partial_failure = False
 
                     elif publish_action == "Add a new option to an existing ticket":
                         result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
@@ -2945,6 +3069,7 @@ def render_ticket_flow(client):
                             st.session_state.tk_just_published_code = target_ticket_code
                             st.session_state.tk_just_published_supplier_id = supplier_id
                             st.session_state.tk_just_published_is_inactive = False
+                            st.session_state.tk_publish_partial_failure = False
 
                     elif publish_action == "Update an existing ticket's details":
                         update_payload = dict(payloads["main_ticket_payload"])
@@ -2958,6 +3083,7 @@ def render_ticket_flow(client):
                             st.session_state.tk_just_published_code = target_ticket_code
                             st.session_state.tk_just_published_supplier_id = supplier_id
                             st.session_state.tk_just_published_is_inactive = False
+                            st.session_state.tk_publish_partial_failure = False
 
                     elif publish_action == "Update an existing ticket option":
                         update_option_payload = dict(payloads["ticket_option_payload"])
@@ -2971,12 +3097,22 @@ def render_ticket_flow(client):
                             st.session_state.tk_just_published_code = target_ticket_code
                             st.session_state.tk_just_published_supplier_id = supplier_id
                             st.session_state.tk_just_published_is_inactive = False
+                            st.session_state.tk_publish_partial_failure = False
 
     if st.session_state.get("tk_just_published_code"):
         st.divider()
-        st.subheader("✅ Ticket published — what would you like to do next?")
-        st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
-                f"(Supplier {st.session_state.tk_just_published_supplier_id})")
+        if st.session_state.get("tk_publish_partial_failure"):
+            st.subheader("⚠️ Ticket created, but the option failed — here's how to continue")
+            st.write(f"The ticket itself (**{st.session_state.tk_just_published_code}**, Supplier "
+                    f"{st.session_state.tk_just_published_supplier_id}) was created successfully and is "
+                    f"still **ACTIVE**, but its first option/modality failed - see the error above. Don't "
+                    f"retry 'Create a brand-new ticket' (that would try to create a duplicate). Instead, "
+                    f"use **'Add another Modality to this same Ticket'** below to retry just the option "
+                    f"against the ticket that already exists, or start a completely fresh import.")
+        else:
+            st.subheader("✅ Ticket published — what would you like to do next?")
+            st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
+                    f"(Supplier {st.session_state.tk_just_published_supplier_id})")
 
         if st.session_state.get("tk_just_published_is_inactive"):
             st.warning("⚠️ **This Ticket is now INACTIVE.** It was created, given its first Modality, then "
@@ -3568,7 +3704,7 @@ if st.session_state.extracted:
                 data["meeting_point"] = DEFAULT_MEETING_POINT
 
             editable_field("Tour name", data, "tour_name", widget="text_input")
-            editable_field("Description (HTML ok)", data, "description", widget="text_area", height=200)
+            editable_field("Description", data, "description", widget="html_text_area", height=200)
             editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
             editable_field("Included", data, "included", widget="text_area", height=120)
             editable_field("Excluded", data, "excluded", widget="text_area", height=120)
