@@ -110,6 +110,38 @@ class TravelCompositorAPI:
         print(f"📥 Cached {len(self._destination_cache)} destinations for '{self.microsite_id}'.")
         return self._destination_cache
 
+    def get_destination_country(self, query_term: str) -> Optional[str]:
+        """
+        Looks up a destination's own 'country' field (per Travel Compositor's
+        DestinationVO schema) using the SAME cached full destination list
+        already fetched by resolve_destination()/_get_all_destinations() - no
+        extra network call. This is Travel Compositor's own authoritative
+        country data (used to power business rules like the Indonesia/Vesak
+        Day stop-sale default), preferred over free-text geocoding services
+        when a match exists. Mirrors resolve_destination()'s own match order
+        (exact name, then substring). Returns None if no match is found or
+        the matched record has no country set - callers should fall back to
+        another signal (e.g. OpenStreetMap) in that case, since Travel
+        Compositor's own destination list won't include every small place a
+        DMC document might mention.
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return None
+        try:
+            destinations = self._get_all_destinations()
+        except requests.RequestException:
+            return None
+
+        query_lower = clean_query.lower()
+        for dest in destinations:
+            if dest.get("name", "").strip().lower() == query_lower:
+                return dest.get("country")
+        for dest in destinations:
+            if query_lower in dest.get("name", "").lower():
+                return dest.get("country")
+        return None
+
     def find_destinations_in_text(self, text: str, min_name_length: int = 4) -> List[Dict[str, Any]]:
         """
         Scans arbitrary text (e.g. a scraped web page heading or paragraph)
