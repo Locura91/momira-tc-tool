@@ -206,10 +206,17 @@ def friendly_error_message(e: Exception) -> str:
         return "Couldn't connect to the AI service. Please check your internet connection and try again."
     if "authenticationerror" in lower or "401" in text or "403" in text:
         return "The AI service rejected the request (authentication problem). Please contact whoever manages this tool."
-    if "json" in lower and ("decode" in lower or "parse" in lower):
+    if "cut off" in lower or "token limit" in lower or "max_tokens" in lower:
+        return ("The AI's answer was too long and got cut off before it finished (this document/tour "
+                "produced more text than the AI is allowed to send back in one go). Try again - if it keeps "
+                "happening on this same document, splitting it into smaller sections usually fixes it.")
+    if "wasn't valid json" in lower or ("json" in lower and ("decode" in lower or "parse" in lower)):
         return "The AI's response couldn't be understood. Please try again - if it keeps happening, try rephrasing your request."
 
-    # Fallback: still human-readable, just without technical jargon exposure
+    # Fallback: still human-readable, just without technical jargon exposure -
+    # checked BEFORE truncating so a helpful hint earlier in a long message
+    # (e.g. "cut off"/"token limit", checked above) never gets sliced away by
+    # the [:150] cut, only the leftover raw-response dump gets shortened.
     return f"Something went wrong while talking to the AI service ({text[:150]})"
 
 
@@ -520,7 +527,11 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 
     print(f"🤖 Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
-    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
+    # 32768 (up from a previous 16384) - confirmed against a real failure where
+    # a longer multi-day tour's response got cut off mid-JSON at the old limit.
+    # Sonnet 5 supports up to 128k output tokens on the synchronous API, so
+    # this has plenty of headroom without needing any beta header.
+    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=32768)
 
     # Defensive defaults in case the model omits a key
     defaults = {
@@ -716,7 +727,10 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+    # 16384 (up from a previous 8192) for the same headroom reason as the
+    # tour extraction above - Tickets are usually shorter, but a long
+    # description + many occupancy/supplement rows could still hit the old cap.
+    data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
 
     defaults = {
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
