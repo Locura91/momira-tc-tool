@@ -28,6 +28,27 @@ def normalize_time_hhmmss(value: str) -> str:
     return value  # malformed input - pass through, let the API's own validation catch it clearly
 
 
+def normalize_time_hhmm(value: str) -> str:
+    """
+    CONFIRMED via a real API error (3 real tickets failed on this): unlike
+    startTime/endTime above (which need HH:MM:SS), the Ticket Modality's
+    timeTables field is deserialized server-side with a LocalTime format
+    that ONLY accepts HH:MM - 'Value(HourOfDay,2)':'Value(MinuteOfHour,2)',
+    no seconds component at all. Sending "08:00:00" fails with
+    "Text '08:00:00' could not be parsed, unparsed text found at index 5"
+    (index 5 is exactly where the trailing ":00" seconds starts). This
+    strips any seconds instead, guaranteeing bare HH:MM regardless of what
+    was extracted or typed in.
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    parts = value.split(":")
+    if len(parts) >= 2:
+        return f"{parts[0]}:{parts[1]}"
+    return value  # malformed input - pass through, let the API's own validation catch it clearly
+
+
 # CONFIRMED business rule (human instruction, 2026-07-30): in Indonesia
 # specifically, NO excursion or tour may ever start on Vesak Day (Hari Raya
 # Waisak) - it must always default to a blocked stop-sale date, regardless
@@ -411,10 +432,11 @@ def build_ticket_payloads(
     # confirmed via a real API error that a stray "None" string (from a blank
     # data_editor row upstream getting str()'d) reaches here and blows up
     # java.time.LocalTime deserialization server-side with a raw
-    # DateTimeParseException. Also normalize HH:MM -> HH:MM:SS like
-    # start_time/end_time already do (see normalize_time_hhmmss above).
+    # DateTimeParseException. Also normalize to bare HH:MM (NOT HH:MM:SS -
+    # confirmed via 3 real failed tickets that timeTables' LocalTime parser
+    # rejects seconds entirely, see normalize_time_hhmm above).
     time_tables_list = [
-        normalize_time_hhmmss(t) for t in (extracted_ticket_data.get("time_tables", []) or [])
+        normalize_time_hhmm(t) for t in (extracted_ticket_data.get("time_tables", []) or [])
         if t and str(t).strip() and str(t).strip().lower() not in ("none", "nan")
     ]
 
