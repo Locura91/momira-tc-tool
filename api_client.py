@@ -1,4 +1,5 @@
 import os
+import time
 import difflib
 import requests
 from typing import Dict, Any, Optional, List
@@ -73,19 +74,55 @@ class TravelCompositorAPI:
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
-        Wraps requests.request() with automatic re-authentication if the
-        token has expired (401). Without this, an expired token mid-session
-        looks like a random "connection failure" instead of an auth issue.
+        Wraps requests.request() with:
+          1. Automatic re-authentication if the token has expired (401) -
+             without this, an expired token mid-session looks like a random
+             "connection failure" instead of an auth issue.
+          2. For WRITE calls (POST/PUT) only: automatic retry on failure (up
+             to 6 attempts, 2s apart). This used to be a hand-written loop
+             duplicated in app.py around ONLY create_ticket_option and
+             create_closed_tour_option - confirmed decision was to extend
+             the same protection to every write call (create_ticket,
+             create_closed_tour, update_ticket, update_ticket_option,
+             update_closed_tour, update_closed_tour_option too), since
+             Travel Compositor's API can return a transient failure right
+             after a related object was just created (eventual-consistency
+             lag). Centralizing it here - instead of leaving app.py's old
+             loops in place - avoids retrying twice (once in app.py, once
+             here) and multiplying the attempt count/wait time.
+          Deliberately NOT applied to GET calls: those are often used as
+          fast "does this exist" checks where a real 404/4xx is an
+          expected, final answer, not a transient failure worth retrying
+          6 times (~12s) for.
         """
         kwargs.setdefault("timeout", 15)
-        res = requests.request(method, url, headers=self.get_headers(), **kwargs)
+        # Callers may pass extra headers (e.g. get_closed_tours'/get_tickets'
+        # pagination 'first'/'limit' headers) - merge them with the real
+        # auth headers rather than overwriting, and re-merge fresh every
+        # attempt so a re-authenticated token is always actually used.
+        extra_headers = kwargs.pop("headers", None) or {}
+        is_write = method.upper() in ("POST", "PUT")
+        max_attempts = 6 if is_write else 1
+        last_res = None
 
-        if res.status_code == 401:
-            print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
-            self.authenticate(force=True)
-            res = requests.request(method, url, headers=self.get_headers(), **kwargs)
+        for attempt in range(max_attempts):
+            res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
 
-        return res
+            if res.status_code == 401:
+                print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
+                self.authenticate(force=True)
+                res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+
+            if res.status_code < 400:
+                return res
+
+            last_res = res
+            if is_write and attempt < max_attempts - 1:
+                print(f"⚠️ {method} {url} returned {res.status_code} "
+                      f"(attempt {attempt + 1}/{max_attempts}) - retrying in 2s...")
+                time.sleep(2)
+
+        return last_res
 
     # ------------------------------------------------------------------
     # DESTINATIONS  (the consolidated, correct resolver)
@@ -381,8 +418,7 @@ class TravelCompositorAPI:
         than a hard failure.
         """
         url = f"{self.api_base_url}/closedtour/{supplier_id}"
-        merged_headers = {**self.get_headers(), "first": str(first), "limit": str(limit)}
-        res = requests.request("GET", url, headers=merged_headers, timeout=15)
+        res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
 
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
@@ -476,8 +512,7 @@ class TravelCompositorAPI:
     def get_tickets(self, supplier_id: str, first: int = 0, limit: int = 50) -> Dict[str, Any]:
         """Executes GET /tickets/{supplierId} — returns paginated list of tickets for this supplier."""
         url = f"{self.api_base_url}/tickets/{supplier_id}"
-        merged_headers = {**self.get_headers(), "first": str(first), "limit": str(limit)}
-        res = requests.request("GET", url, headers=merged_headers, timeout=15)
+        res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
 
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
