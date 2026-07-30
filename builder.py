@@ -417,10 +417,16 @@ def build_ticket_payloads(
         geoloc = {"latitude": float(manual_lat), "longitude": float(manual_lng), "name": city, "valid": True, "source": "manual override"}
     else:
         geo_result = geocode(city)
+        # geocode() tries Nominatim first, then falls back to Photon if
+        # Nominatim comes back empty (confirmed real issue: Nominatim often
+        # returns zero results for cloud-hosted traffic like this app's,
+        # even for well-known places) - report whichever provider actually
+        # served this result rather than assuming it was always Nominatim.
+        provider_labels = {"nominatim": "OpenStreetMap/Nominatim", "photon": "OpenStreetMap/Photon"}
         geoloc = {
             "latitude": geo_result["latitude"], "longitude": geo_result["longitude"],
             "name": geo_result.get("display_name") or city, "valid": geo_result["valid"],
-            "source": "OpenStreetMap/Nominatim" if geo_result["valid"] else "not_found",
+            "source": provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geo_result["valid"] else "not_found",
         }
 
     # Indonesia / Vesak Day rule (human instruction): excursions in Indonesia
