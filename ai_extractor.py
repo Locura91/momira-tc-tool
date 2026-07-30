@@ -265,41 +265,82 @@ def _stream_claude_message(client, model: str, max_tokens: int, system_prompt: s
     return "".join(full_text_parts), getattr(final_message, "stop_reason", None)
 
 
+EXTRACTION_TOOL_NAME = "provide_extracted_data"
+
+# Deliberately PERMISSIVE (any object, any properties) rather than a
+# hand-written schema mirroring every possible output shape across all the
+# different extraction prompts - the detailed system prompts already fully
+# control what fields/shape to produce; this schema exists only so the
+# Anthropic API treats the response as a tool call.
+_PERMISSIVE_TOOL_SCHEMA = {"type": "object", "additionalProperties": True}
+
+
+def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt: str, user_content,
+                              tool_name: str = EXTRACTION_TOOL_NAME) -> tuple:
+    """
+    Forces Claude to respond via a TOOL CALL instead of free-form JSON text
+    inside a text block. This closes off an entire class of failure that
+    free-form "output JSON as text" prompting is prone to: on a real,
+    repeatedly-reproduced failure (same document, three separate tries),
+    Claude's free-text response was genuinely malformed JSON - most likely
+    an unescaped quote inside a long generated HTML description - which
+    broke both the direct json.loads() parse AND the brace-matching
+    fallback, surfacing as "The AI's response couldn't be understood" every
+    single time for that document.
+    Tool-call inputs are parsed and validated as JSON by the Anthropic API
+    itself before they ever reach us (we get an already-parsed dict, not
+    raw text to parse ourselves) - this makes malformed JSON structurally
+    impossible rather than something to keep patching around after the
+    fact.
+    Returns (parsed_input_dict, stop_reason). Raises RuntimeError if Claude
+    didn't call the tool for some reason (very rare with tool_choice
+    forcing it, but handled rather than silently returning nothing).
+    """
+    tool_def = {
+        "name": tool_name,
+        "description": "Provide the requested extracted/structured data as a JSON object, following the shape and rules described in the system prompt.",
+        "input_schema": _PERMISSIVE_TOOL_SCHEMA,
+    }
+    with client.messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+        tools=[tool_def],
+        tool_choice={"type": "tool", "name": tool_name},
+    ) as stream:
+        final_message = stream.get_final_message()
+
+    stop_reason = getattr(final_message, "stop_reason", None)
+    for block in final_message.content:
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == tool_name:
+            return block.input, stop_reason
+
+    raise RuntimeError(
+        "Claude didn't return the expected structured data. This is unusual - please try again, and if "
+        "it keeps happening, try a shorter document."
+    )
+
+
 def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096) -> dict:
     """
-    Shared helper: calls Claude, strips code fences, parses JSON, raises
-    clearly on failure. The system prompt is sent as a cacheable block -
-    Anthropic's prompt caching means repeat calls that reuse the SAME system
-    prompt (e.g. one call per item in a multi-tour/multi-ticket batch) are
-    billed at a fraction of the normal input price for that cached portion,
-    instead of paying full price for the same multi-thousand-token prompt
-    every single time.
+    Shared helper: calls Claude via a forced tool call (see
+    _stream_claude_tool_call - guarantees well-formed JSON back, no manual
+    parsing/fallback-recovery needed) and returns the resulting dict. The
+    system prompt is sent as a cacheable block - Anthropic's prompt caching
+    means repeat calls that reuse the SAME system prompt (e.g. one call per
+    item in a multi-tour/multi-ticket batch) are billed at a fraction of
+    the normal input price for that cached portion, instead of paying full
+    price for the same multi-thousand-token prompt every single time.
     """
     client = _get_anthropic_client()
-    raw_response, stop_reason = _stream_claude_message(client, model, max_tokens, system_prompt, user_content)
-    cleaned = _strip_code_fences(raw_response)
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass  # try a fallback extraction below before giving up
-
-    # Fallback: the model may have added stray text before/after the JSON despite
-    # instructions not to. Try isolating just the outermost {...} block.
-    first_brace = cleaned.find("{")
-    last_brace = cleaned.rfind("}")
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        try:
-            return json.loads(cleaned[first_brace:last_brace + 1])
-        except json.JSONDecodeError:
-            pass
-
-    hint = (
-        " The response appears to have been cut off (hit the token limit) - try a shorter "
-        "document/URL, or this may need a higher max_tokens setting."
-        if stop_reason == "max_tokens" else ""
-    )
-    raise RuntimeError(f"Claude's response wasn't valid JSON.{hint} Raw response:\n{raw_response[:1500]}")
+    data, stop_reason = _stream_claude_tool_call(client, model, max_tokens, system_prompt, user_content)
+    if stop_reason == "max_tokens":
+        raise RuntimeError(
+            "Claude's response was cut off (hit the token limit) before finishing - try a shorter "
+            "document/URL, or this may need a higher max_tokens setting."
+        )
+    return data
 
 
 MODALITY_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page describes pricing for
@@ -398,9 +439,11 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
     ]
     try:
         client = _get_anthropic_client()
-        raw_response, _ = _stream_claude_message(client, model, 4096, system_prompt, user_content)
-        cleaned = _strip_code_fences(raw_response)
-        result = json.loads(cleaned)
+        # Tool-call forcing (see _stream_claude_tool_call) rather than free-text
+        # JSON - same reasoning as _call_claude: a "changes" payload can contain
+        # arbitrary long text (e.g. a corrected description) that's exactly the
+        # kind of content prone to breaking free-text JSON parsing.
+        result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, user_content, tool_name="apply_changes")
         if "summary" not in result:
             result["summary"] = "(No summary returned.)"
         if "changes" not in result or not isinstance(result["changes"], dict):
