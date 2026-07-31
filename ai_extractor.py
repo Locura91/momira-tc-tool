@@ -445,6 +445,105 @@ def detect_multiple_modalities(raw_text: str, model: str = HAIKU_MODEL) -> list:
     return modalities
 
 
+MODALITY_MATCH_PROMPT = """You are matching NEWLY-DETECTED pricing categories from an updated DMC document
+against the modality/option codes that ALREADY EXIST live in Travel Compositor for this same tour/ticket.
+
+You'll be given:
+- EXISTING CODES: the modality/option codes already live in Travel Compositor for this tour/ticket.
+- NEW CANDIDATES: pricing categories just detected in the updated source document, each with a label.
+
+For each NEW CANDIDATE, decide whether it's an UPDATE to one of the EXISTING CODES (the same room/cabin/
+ticket category, just refreshed pricing) or a genuinely NEW modality that doesn't exist yet. Match on
+MEANING, not exact string equality - e.g. a candidate labeled "Standard Cabin" should match an existing
+code like "Standard" or "STD_CABIN" if that's clearly the same category, even though the text differs.
+Only propose a match when you're reasonably confident it's the SAME category - if in doubt, mark it as
+new rather than guessing wrong (a human always confirms or corrects every suggestion before anything is
+applied, so it is safe - and preferred - to be cautious and mark something "new" when unsure).
+
+Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
+{
+  "matches": [
+    {"candidate_label": "<the candidate's label, verbatim>", "matched_existing_code": "<one of the EXISTING CODES, or null if this is a new modality>", "confidence": "high" or "medium" or "low", "reasoning": "one short sentence"}
+  ]
+}
+Every NEW CANDIDATE must appear exactly once in "matches"."""
+
+
+def match_modalities_to_existing(existing_codes: list, candidates: list, model: str = HAIKU_MODEL) -> list:
+    """
+    AI-ASSISTED, NEVER AUTO-APPLIED matching of newly-detected modality
+    candidates (from detect_multiple_modalities) against the modality codes
+    already live for this tour/ticket. Both ContractClosedTourVO and
+    ContractTicketVO expose a plain `modalityCodes: List[str]` on their GET
+    response (confirmed via schemas.py) with no separate human-readable
+    name field, so the codes themselves ARE the identifier to match against.
+
+    Per the confirmed "AI matches, human confirms" design (this is a
+    deliberate product decision, not a shortcut): this function only ever
+    PROPOSES a match - it never decides anything on its own. The caller
+    must always surface every suggestion to a human for explicit
+    confirm/override before treating any candidate as an update-to-existing
+    (PUT) vs. a genuinely new modality (POST). Never wire this function's
+    output straight into a publish call without a human confirmation step
+    in between.
+
+    Returns a list of dicts, one per candidate, in the same order as
+    `candidates`: {"candidate_label", "matched_existing_code" (a string
+    from `existing_codes`, or None), "confidence" ("high"/"medium"/"low"),
+    "reasoning"}. Falls back to "no match" (every candidate treated as new)
+    if there are no existing codes to match against, or if the AI call
+    fails outright - a safe default, since "new" just means the human sees
+    an extra modality to confirm, never a silently-skipped update.
+    """
+    if not candidates:
+        return []
+    if not existing_codes:
+        return [
+            {"candidate_label": c.get("label", ""), "matched_existing_code": None,
+             "confidence": "high", "reasoning": "No existing modalities to match against - this tour/ticket has none yet."}
+            for c in candidates
+        ]
+    print(f"🔎 Matching {len(candidates)} newly-detected modalit{'y' if len(candidates) == 1 else 'ies'} "
+          f"against {len(existing_codes)} existing code(s)...")
+    user_content = (
+        "EXISTING CODES:\n" + "\n".join(f"- {c}" for c in existing_codes) +
+        "\n\nNEW CANDIDATES:\n" + "\n".join(f"- {c.get('label', '')}" for c in candidates)
+    )
+    try:
+        result = _call_claude(MODALITY_MATCH_PROMPT, user_content, model, max_tokens=1024)
+    except Exception as e:
+        print(f"⚠️ Modality matching call failed ({e}) - treating all candidates as new; a human can still "
+              "manually pick an existing code to update instead.")
+        return [
+            {"candidate_label": c.get("label", ""), "matched_existing_code": None,
+             "confidence": "low", "reasoning": f"AI matching failed ({e}) - defaulted to 'new', please check manually."}
+            for c in candidates
+        ]
+    matches = result.get("matches", [])
+    # Guard against the AI dropping/renaming a candidate, or hallucinating a
+    # code that isn't actually in existing_codes - never trust blindly, and
+    # always return exactly one entry per input candidate in order.
+    by_label = {m.get("candidate_label"): m for m in matches if isinstance(m, dict)}
+    safe_matches = []
+    for c in candidates:
+        label = c.get("label", "")
+        m = by_label.get(label)
+        matched_code = m.get("matched_existing_code") if m else None
+        if matched_code not in existing_codes:
+            matched_code = None
+        safe_matches.append({
+            "candidate_label": label,
+            "matched_existing_code": matched_code,
+            "confidence": (m.get("confidence") if m else None) or "low",
+            "reasoning": (m.get("reasoning") if m else None) or "No AI suggestion returned for this candidate - please check manually.",
+        })
+    if safe_matches:
+        matched_n = len([m for m in safe_matches if m["matched_existing_code"]])
+        print(f"✅ {matched_n} of {len(safe_matches)} candidate(s) suggested as updates to an existing code "
+              f"(pending human confirmation); {len(safe_matches) - matched_n} suggested as new.")
+    return safe_matches
+
+
 def detect_tour_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     """
     Checks whether the source text describes ONE tour or MULTIPLE distinct
