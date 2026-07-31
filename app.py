@@ -956,6 +956,56 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             )
         editable_table(f"Pricing - {current['label'] or current['tour_code']}", price_df, f"mct_pricing_{idx}", on_save=_save_mct_price_list)
 
+        st.markdown(f"**Optional Add-ons / Upgrades / Excursions (Supplements) - {current['label'] or current['tour_code']}**")
+        st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
+                  "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
+                  "Every row needs a clear Name. Special Travel Date is optional.")
+        mct_default_supplements = data.get("supplements") or []
+        mct_supp_df_rows = [
+            {
+                "Name": s.get("name", ""),
+                "Price (per person)": s.get("price", 0),
+                "Per Pax": s.get("per_pax", True),
+                "Mandatory": s.get("mandatory", False),
+                "On Request": s.get("on_request", False),
+                "Special Travel Start Date": s.get("travel_start_date", ""),
+                "Special Travel End Date": s.get("travel_end_date", ""),
+            }
+            for s in mct_default_supplements
+        ]
+        mct_supp_df = pd.DataFrame(mct_supp_df_rows) if mct_supp_df_rows else pd.DataFrame(
+            columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
+                     "Special Travel Start Date", "Special Travel End Date"]
+        )
+
+        def _save_mct_supplements(edited_df, data=data, idx=idx):
+            missing_name = False
+            new_supplements = []
+            for _, row in edited_df.iterrows():
+                name = str(row.get("Name", "")).strip()
+                price_given = row.get("Price (per person)", 0)
+                has_any_data = name or (price_given not in (0, "", None))
+                if not name and has_any_data:
+                    missing_name = True
+                    continue
+                if not name:
+                    continue
+                new_supplements.append({
+                    "name": name,
+                    "price": float(price_given or 0),
+                    "per_pax": bool(row.get("Per Pax", True)),
+                    "mandatory": bool(row.get("Mandatory", False)),
+                    "on_request": bool(row.get("On Request", False)),
+                    "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
+                    "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+                })
+            data["supplements"] = new_supplements
+            st.session_state[f"_mct_supplements_missing_name_{idx}"] = missing_name
+
+        editable_table(f"Supplements - {current['label'] or current['tour_code']}", mct_supp_df, f"mct_supplements_{idx}", on_save=_save_mct_supplements)
+        if st.session_state.get(f"_mct_supplements_missing_name_{idx}"):
+            st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+
         st.markdown(f"**➕ Additional Modalities for {current['label'] or current['tour_code']} (optional)**")
         st.caption("Add more room/cabin/product types for THIS tour now - all get created together with "
                   "this tour's single deactivation, so you don't need to manually reactivate it afterward.")
@@ -2294,6 +2344,40 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
+        with st.expander(f"Stop Sales - {current['label'] or current['ticket_code']}"):
+            mt_ss_json = st.text_area(
+                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mt_stops_{idx}"
+            )
+            try:
+                data["stop_sales"] = json.loads(mt_ss_json)
+            except json.JSONDecodeError as e:
+                st.error(f"stopSales isn't valid JSON: {e}")
+
+        st.markdown(f"**Optional Add-ons (Supplements) - {current['label'] or current['ticket_code']}**")
+        st.caption("⚠️ Ticket Supplements are always independently stackable - a customer can tick ANY "
+                  "combination, and prices simply add up. For anything that should be an ALTERNATIVE (only "
+                  "one of several choices), or different guide languages with their own full price table, "
+                  "use a separate Modality instead below, never a supplement.")
+        mt_supp_rows = [
+            {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
+             "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
+            for s in data.get("supplements", [])
+        ]
+        mt_supp_df = pd.DataFrame(mt_supp_rows) if mt_supp_rows else pd.DataFrame(columns=["Name", "Adult", "Child", "Infant", "Start", "End"])
+        def _save_mt_supplements(edf, data=data):
+            new_supp = []
+            for _, r in edf.iterrows():
+                name = str(r.get("Name", "")).strip()
+                if not name:
+                    continue
+                new_supp.append({
+                    "name": name, "adult_price": float(r.get("Adult", 0) or 0),
+                    "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
+                    "travel_start_date": str(r.get("Start", "")).strip(), "travel_end_date": str(r.get("End", "")).strip(),
+                })
+            data["supplements"] = new_supp
+        editable_table(f"Supplements - {current['label'] or current['ticket_code']}", mt_supp_df, f"mt_supplements_{idx}", on_save=_save_mt_supplements)
+
         st.markdown(f"**➕ Additional Modalities for {current['label'] or current['ticket_code']} (optional)**")
         st.caption("Add more variants of THIS ticket now (e.g. one per guide language) - all get created "
                   "together with this ticket's single deactivation, so you don't need to manually reactivate "
@@ -2769,26 +2853,15 @@ def render_ticket_flow(client):
                                 accept_multiple_files=True, key="tk_files")
     tk_hint = st.text_input("Extraction hint (optional)", key="tk_hint")
 
-    multi_ticket_mode = False
+    # "Create" always routes through the batch-capable flow now, regardless
+    # of how many excursions the source actually turns out to describe - it
+    # transparently handles a single excursion exactly like the old
+    # single-Ticket flow did (just one row to fill in), and auto-detects/
+    # handles multiple excursions without the human needing to pre-declare
+    # "this has several" via a checkbox first. This removes the old upfront
+    # single-vs-multiple choice per the confirmed design (always
+    # auto-detect, one unified queue-based UI regardless of count).
     if action == "create":
-        multi_ticket_mode = st.checkbox(
-            "📦 This document describes MULTIPLE excursions - I want to create several as separate Tickets",
-            help="The app will detect distinct excursions in this document, let you pick which ones to "
-                 "create, then review and publish each one individually, one at a time."
-        )
-    # Only force-route into the batch flow once real committed work exists
-    # (reviewing/publishing) - NOT for "gather"/"prepare_queue", so that
-    # simply toggling the checkbox on and back off (or landing on the
-    # candidate-selection step and deciding not to continue) still lets the
-    # human fall through to the normal single-Ticket flow below, exactly
-    # like unchecking the box always used to. Without this, mt_phase stays
-    # set forever once initialized and silently traps every future ticket
-    # creation attempt in the batch flow - including its Step 6 geolocation
-    # UI never being reachable, which blocks finishing a ticket entirely.
-    if multi_ticket_mode or st.session_state.get("mt_phase") in ("reviewing", "publishing"):
-        # Also route here once a batch is seeded from the single-flow's own
-        # variant picker below (picking 2+ excursions there jumps straight
-        # into this same batch flow) - not just when the checkbox above was ticked.
         render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files,
                                 min_passengers=min_passengers, max_passengers=max_passengers)
         return
@@ -3766,6 +3839,13 @@ def render_ticket_flow(client):
 
 st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
+# Slightly larger base font app-wide for readability. Streamlit's own CSS is
+# built almost entirely on rem units, so scaling the ROOT font-size (rather
+# than hunting down individual elements) cleanly scales text, inputs,
+# buttons, tables etc. together without breaking any layout - 106% takes the
+# default 16px browser base up to ~17px.
+st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
+
 _defaults = {
     "client": None, "extracted": None, "raw_preview": "", "payloads": None,
     "suppliers_cache": None, "step1_confirmed": False, "step2_confirmed": False,
@@ -4078,30 +4158,19 @@ if action == "add_option":
              "shared document/URL, and let you review + publish each one individually, one at a time."
     )
 
-multi_tour_mode = False
-if action == "create":
-    multi_tour_mode = st.checkbox(
-        "📦 This document describes MULTIPLE tour variants - I want to create several as separate ClosedTours",
-        help="The app will detect distinct tour variants (e.g. a 7-night and 10-night version of the same "
-             "itinerary) in this document, let you pick which ones to create, then review and publish each "
-             "one individually, one at a time."
-    )
-
 if multi_modality_mode:
     render_multi_modality_flow(client, url=url, uploaded_files=uploaded_files)
     st.stop()
 
-# Only force-route into the batch flow once real committed work exists
-# (reviewing/publishing) - NOT for "gather"/"prepare_queue", so that simply
-# toggling the checkbox on and back off still lets the human fall through
-# to the normal single-tour flow below, exactly like unchecking the box
-# always used to. Without this, mct_phase stays set forever once
-# initialized and silently traps every future tour creation attempt in the
-# batch flow.
-if multi_tour_mode or st.session_state.get("mct_phase") in ("reviewing", "publishing"):
-    # Also route here once a batch is seeded from the single-flow's own
-    # variant picker below (picking 2+ variants there jumps straight into
-    # this same batch flow) - not just when the checkbox above was ticked.
+# "Create" always routes through the batch-capable flow now, regardless of
+# how many tour variants the source actually turns out to describe - it
+# transparently handles a single variant exactly like the old single-tour
+# flow did (just one row to fill in), and auto-detects/handles multiple
+# variants without the human needing to pre-declare "this has several" via
+# a checkbox first. This removes the old upfront single-vs-multiple choice
+# per the confirmed design (always auto-detect, one unified queue-based UI
+# regardless of count).
+if action == "create":
     render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files,
                           min_pax=min_pax, max_pax=max_pax)
     st.stop()
