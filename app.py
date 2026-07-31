@@ -899,6 +899,82 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         st.rerun()
                     return
 
+            # CONFIRMED FIX (triple-charging bug): auto-detect other room/cabin pricing
+            # categories (Modalities) described in the SAME document (e.g. "Standard" /
+            # "Superior" / "Deluxe") and pre-queue them here as extra_modalities, instead
+            # of requiring the human to manually click "Add another Modality" and retype
+            # each one. Runs exactly once - this whole branch only executes the first time
+            # this queue item is reviewed (guarded by current["data"] being None above) -
+            # and is best-effort: wrapped in its own try/except so a failure here never
+            # blocks the main extraction that already succeeded above.
+            if "extra_modalities" not in current:
+                current["extra_modalities"] = []
+            try:
+                if not current["extra_modalities"]:
+                    detected_modalities = detect_multiple_modalities(st.session_state.mct_raw_text)
+                    base_modality_label = (current.get("modality_code") or "").strip().lower()
+                    for m in detected_modalities:
+                        label = (m.get("label") or "").strip()
+                        raw_code = (m.get("suggested_code") or label or "").strip()
+                        clean_code = "".join(c for c in raw_code if c not in "/\\+-")
+                        # Skip a detected category that's clearly the SAME one already
+                        # covered by this tour's own base Modality Code, so it doesn't
+                        # get queued as a redundant duplicate "extra" modality.
+                        if base_modality_label and label and (base_modality_label in label.lower() or label.lower() in base_modality_label):
+                            continue
+                        if clean_code:
+                            current["extra_modalities"].append({"code": clean_code, "hint": label, "data": None})
+            except Exception:
+                pass  # best-effort only - the human can still add Modalities manually below
+
+            # CONFIRMED FIX (triple-charging bug): the single extraction above scans the
+            # WHOLE document, so when it describes multiple Modalities, any peak-season
+            # surcharges/add-ons mentioned under EACH category all land in this ONE
+            # "supplements" list together. Left unresolved, every one of them would be
+            # attached to EVERY Modality once published (Travel Compositor's own
+            # SupplementVO.modalityCodes field means "applies to ALL Modalities" when
+            # left empty), silently stacking every category's surcharges on top of each
+            # other - exactly the reported bug (price >3x too high). The extraction
+            # prompt now tags each supplement with which category it believes it belongs
+            # to ("applies_to"); translate that tag into an actual Modality Code here,
+            # defaulting to "All Modalities" (today's prior behavior) whenever the tag is
+            # missing/unclear/unmatched - and remember which ones so the human can be
+            # warned to double-check the "Applies To" column below before publishing.
+            known_modality_codes = {}
+            base_code = (current.get("modality_code") or "").strip()
+            if base_code:
+                known_modality_codes[base_code.lower()] = base_code
+            for m in current["extra_modalities"]:
+                code = (m.get("code") or "").strip()
+                if code:
+                    known_modality_codes[code.lower()] = code
+                    hint = (m.get("hint") or "").strip()
+                    if hint:
+                        known_modality_codes.setdefault(hint.lower(), code)
+            uncertain_supplement_names = []
+            for s in current["data"].get("supplements", []):
+                raw_tag = str(s.pop("applies_to", "") or "").strip()
+                if not raw_tag or raw_tag.upper() == "ALL":
+                    s["applies_to"] = "All Modalities"
+                    continue
+                if raw_tag.upper() == "UNCLEAR":
+                    s["applies_to"] = "All Modalities"
+                    uncertain_supplement_names.append(s.get("name", "(unnamed)"))
+                    continue
+                tag_lower = raw_tag.lower()
+                match = None
+                for known_lower, real_code in known_modality_codes.items():
+                    if known_lower and (known_lower in tag_lower or tag_lower in known_lower):
+                        match = real_code
+                        break
+                if match:
+                    s["applies_to"] = match
+                else:
+                    s["applies_to"] = "All Modalities"
+                    uncertain_supplement_names.append(s.get("name", "(unnamed)"))
+            if uncertain_supplement_names:
+                current["supplement_scope_warnings"] = uncertain_supplement_names
+
         data = current["data"]
         if not data.get("meeting_point"):
             data["meeting_point"] = ("Meet your guide in the airport arrival hall or, if you are already in "
@@ -1057,26 +1133,60 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         st.markdown(f"**Optional Add-ons / Upgrades / Excursions (Supplements) - {current['label'] or current['tour_code']}**")
         st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
                   "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
-                  "Every row needs a clear Name. Special Travel Date is optional.")
+                  "Every row needs a clear Name. Special Travel Date is optional. "
+                  "**Applies To** decides which Modality/Modalities actually get charged this supplement when "
+                  "published - 'All Modalities' means every room/cabin category on this tour gets it, or pick "
+                  "one specific Modality (e.g. 'Superior') if it should only apply there. "
+                  "**Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per room' (e.g. "
+                  "'USD 71.00 per room per night') - since that flat per-room charge must be split by how "
+                  "many people share the room, these 4 columns hold the resulting per-person amount for "
+                  "each occupancy. For a normal per-person add-on, just fill 'Price (per person)' - the 4 "
+                  "occupancy columns default to matching it.")
+
+        # CONFIRMED FIX (triple-charging bug): options for the "Applies To" dropdown are
+        # built fresh on every render from whatever Modalities are known RIGHT NOW (this
+        # tour's own base Modality Code + every extra Modality's code below) - so newly
+        # added/renamed/removed Modalities immediately show up here too.
+        mct_modality_options = ["All Modalities"]
+        if (current.get("modality_code") or "").strip():
+            mct_modality_options.append(current["modality_code"].strip())
+        for _mod in current.get("extra_modalities", []):
+            _mod_code = (_mod.get("code") or "").strip()
+            if _mod_code and _mod_code not in mct_modality_options:
+                mct_modality_options.append(_mod_code)
+
+        if current.get("supplement_scope_warnings"):
+            st.warning(
+                "🤖 Couldn't confidently tell which Modality these supplements belong to, so they were "
+                "left on **'All Modalities'** for now - please double-check the 'Applies To' column below "
+                "before publishing: " + ", ".join(current["supplement_scope_warnings"])
+            )
+
         mct_default_supplements = data.get("supplements") or []
         mct_supp_df_rows = [
             {
                 "Name": s.get("name", ""),
                 "Price (per person)": s.get("price", 0),
+                "Single": s.get("single_price", s.get("price", 0)),
+                "Double": s.get("double_price", s.get("price", 0)),
+                "Triple": s.get("triple_price", s.get("price", 0)),
+                "Quadruple": s.get("quadruple_price", s.get("price", 0)),
                 "Per Pax": s.get("per_pax", True),
                 "Mandatory": s.get("mandatory", False),
                 "On Request": s.get("on_request", False),
+                "Applies To": s.get("applies_to") if s.get("applies_to") in mct_modality_options else "All Modalities",
                 "Special Travel Start Date": s.get("travel_start_date", ""),
                 "Special Travel End Date": s.get("travel_end_date", ""),
             }
             for s in mct_default_supplements
         ]
         mct_supp_df = pd.DataFrame(mct_supp_df_rows) if mct_supp_df_rows else pd.DataFrame(
-            columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
+            columns=["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
+                     "Per Pax", "Mandatory", "On Request", "Applies To",
                      "Special Travel Start Date", "Special Travel End Date"]
         )
 
-        def _save_mct_supplements(edited_df, data=data, idx=idx):
+        def _save_mct_supplements(edited_df, data=data, idx=idx, modality_options=mct_modality_options):
             missing_name = False
             new_supplements = []
             for _, row in edited_df.iterrows():
@@ -1088,25 +1198,46 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     continue
                 if not name:
                     continue
+                applies_to = str(row.get("Applies To", "All Modalities") or "All Modalities").strip()
+                if applies_to not in modality_options:
+                    applies_to = "All Modalities"
+                flat_price = float(price_given or 0)
+
+                def _occ(col, fallback=flat_price):
+                    val = row.get(col)
+                    if val is None or (isinstance(val, float) and pd.isna(val)):
+                        return fallback
+                    return float(val)
+
                 new_supplements.append({
                     "name": name,
-                    "price": float(price_given or 0),
+                    "price": flat_price,
+                    "single_price": _occ("Single"),
+                    "double_price": _occ("Double"),
+                    "triple_price": _occ("Triple"),
+                    "quadruple_price": _occ("Quadruple"),
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
+                    "applies_to": applies_to,
                     "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
                     "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
                 })
             data["supplements"] = new_supplements
             st.session_state[f"_mct_supplements_missing_name_{idx}"] = missing_name
 
-        editable_table(f"Supplements - {current['label'] or current['tour_code']}", mct_supp_df, f"mct_supplements_{idx}", on_save=_save_mct_supplements)
+        editable_table(
+            f"Supplements - {current['label'] or current['tour_code']}", mct_supp_df, f"mct_supplements_{idx}",
+            on_save=_save_mct_supplements,
+            column_config={"Applies To": st.column_config.SelectboxColumn("Applies To", options=mct_modality_options, required=True)}
+        )
         if st.session_state.get(f"_mct_supplements_missing_name_{idx}"):
             st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
         st.markdown(f"**➕ Additional Modalities for {current['label'] or current['tour_code']} (optional)**")
-        st.caption("Add more room/cabin/product types for THIS tour now - all get created together with "
-                  "this tour's single deactivation, so you don't need to manually reactivate it afterward.")
+        st.caption("Auto-detected from your document where possible (edit/remove as needed) - add more room/"
+                  "cabin/product types for THIS tour now, all get created together with this tour's single "
+                  "deactivation, so you don't need to manually reactivate it afterward.")
         if "extra_modalities" not in current:
             current["extra_modalities"] = []
 
