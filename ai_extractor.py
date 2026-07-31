@@ -110,12 +110,31 @@ Rules:
     be pre-calculated by you, since Travel Compositor can't do it). Then set per_pax: true so Travel
     Compositor further multiplies that per-night total by the actual booked pax count - together giving
     the correct rate x nights x pax total without you ever needing to guess a pax number.
+  - "per room" / "per room per night" - e.g. "USD 71.00 per room per night" (a flat charge for the WHOLE
+    room's occupants together, not per traveler): this needs different handling from every case above,
+    because the correct per-PERSON amount now depends on how many people actually share that room.
+    Travel Compositor's real Supplement schema mirrors price_list's own occupancy split (single/double/
+    triple/quadruple), so use that instead of "price"/per_pax: first compute the TOTAL charge for the
+    whole room for the whole stay - the per-room rate x the actual affected TOUR nights (same nights
+    calculation and same tour-length cap as the "per night" rule above; if the source says "per room"
+    with NO "per night" attached, treat it as already a flat one-time per-room total - don't multiply by
+    nights). Then divide that SAME total by 1, 2, 3, and 4 to get the per-person amount for each occupancy
+    tier - e.g. rate $71 x 3 affected nights = $213 total for the room, so single_price = 213/1 = 213,
+    double_price = 213/2 = 106.50, triple_price = 213/3 = 71, quadruple_price = 213/4 = 53.25. Set
+    per_pax: false and put the double_price value in "price" too (as the general-purpose per-person
+    figure) - Travel Compositor must NOT multiply any of these occupancy amounts again, each is already
+    the final per-person charge for that room configuration.
+    CRITICAL SELF-CHECK: verify all four occupancy amounts were computed by dividing the exact SAME
+    total-per-room figure by 1, 2, 3, and 4 respectively - never compute them independently, and never
+    copy the per-night/per-room rate into more than one slot unchanged.
   - Whole-trip/percentage surcharges (e.g. "20% higher during Christmas", not tied to a per-night rate):
     pre-calculate an actual currency amount where you can (e.g. 20% of the base per-person price) and put
     that resulting number in "price", with per_pax: true (a percentage of a per-person price is itself
     per-person, so let Travel Compositor scale it by actual pax the same way). If a percentage genuinely
     can't be converted to a safe real amount, still create the mandatory supplement with your best
     estimate and flag it clearly in pricing_notes for review.
+  For every OTHER basis above (not "per room"/"per room per night"), the per-person amount is the SAME
+  regardless of occupancy, so set single_price = double_price = triple_price = quadruple_price = "price".
   CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge specifically, the "name" must stay a
   clean, customer-facing label ONLY - e.g. "Christmas/New Year Surcharge" or "Peak Season Surcharge -
   Hotel X" - and must NEVER include the price, percentage, or the calculation (no "(20% of base price)",
@@ -125,13 +144,29 @@ Rules:
   arrive at it, so a human can double-check it before publishing) in pricing_notes, never in the name.
   This does NOT apply to normal optional supplements (non-peak-season add-ons/upgrades) - only to
   peak-season/holiday surcharges.
+  MODALITY SCOPING - CONFIRMED RULE: if (and only if) this document describes MULTIPLE distinct room/
+  cabin/pricing categories (Modalities) for this same tour - e.g. separate "Standard", "Superior", and
+  "Deluxe" pricing/supplement tables - a supplement can belong to just ONE of those categories, or to all
+  of them. Tag every supplement with "applies_to" so this never gets mixed up: use the EXACT category
+  label as it appears in the source (e.g. "Standard", "Superior Class", "Deluxe") if the supplement is
+  explicitly listed under, or clearly named/tied to, only that one category (e.g. a surcharge appearing
+  only in a "Deluxe Class Hotel" supplements section, or named "Deluxe Room Upgrade"); use "ALL" if the
+  supplement clearly applies to every category (or if the document only describes ONE category/modality
+  to begin with - "ALL" is always correct in that single-modality case); use "UNCLEAR" ONLY if the
+  document genuinely has multiple categories AND you truly cannot tell which one(s) this supplement
+  belongs to - a human will resolve those cases, so it's always safe to say "UNCLEAR" rather than guess.
   For each TRUE supplement (optional add-on, or a peak-season surcharge per the rule above), output:
   {
     "name": "clear, specific short label - always required, never leave blank",
-    "price": per-person amount as a number,
-    "per_pax": true if this charge applies per traveler (the normal case), false if the source says it's a flat/one-time charge regardless of group size,
+    "price": per-person amount as a number (see occupancy fields below for the "per room" basis),
+    "single_price": per-person amount for SINGLE occupancy (1 traveler in the room) - equal to "price" unless this is a "per room"/"per room per night" surcharge, see the BASIS RULE above,
+    "double_price": per-person amount for DOUBLE occupancy (2 travelers sharing) - equal to "price" unless a "per room" surcharge, see above,
+    "triple_price": per-person amount for TRIPLE occupancy (3 travelers sharing) - equal to "price" unless a "per room" surcharge, see above,
+    "quadruple_price": per-person amount for QUADRUPLE occupancy (4 travelers sharing) - equal to "price" unless a "per room" surcharge, see above,
+    "per_pax": true if this charge applies per traveler (the normal case), false if the source says it's a flat/one-time charge regardless of group size, OR if this is a "per room"/"per room per night" surcharge (see BASIS RULE above),
     "mandatory": true if the source says this is required despite being listed separately, OR if this is a peak-season/holiday surcharge (see rule above - those are ALWAYS mandatory: true); false for a normal optional add-on,
     "on_request": true if the source says this needs advance request/confirmation rather than being instantly bookable,
+    "applies_to": "ALL", or the exact category label, or "UNCLEAR" - see MODALITY SCOPING above,
     "travel_start_date": "YYYY-MM-DD" if this supplement is restricted to a specific date range (e.g. a seasonal excursion) - ALWAYS required (never empty) for a peak-season/holiday surcharge, otherwise omit/empty string,
     "travel_end_date": "YYYY-MM-DD" - same condition as above
   }
@@ -180,7 +215,23 @@ Rules:
   nothing about child age is mentioned anywhere in the source (standard convention: infant = 0-2, child =
   2-12) - this has been missed before, so actively look for it even in a "Good to know"/notes section,
   not just a pricing table.
-- start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM). Leave both as empty strings if no specific time is stated.
+- start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM).
+  CONFIRMED RULE - start_time: if the source gives an actual pick-up/collection time for Day 1 (e.g. "Pick-up
+  at 07:30", "collection between 6:00-6:30am" - use the earlier/first time given for a range), always use
+  that exact time as start_time, in preference to anything below. Otherwise, if the PACKAGE-WIDE
+  PRE-ARRIVAL ADVISORY above applies (the source recommends/requires spending the night before the tour
+  starts) and no specific pick-up time is stated anywhere, default start_time to "08:00:00" - a
+  pre-night stay implies an early, standard-morning departure, so this is a safe, useful default rather
+  than leaving the field blank. Do not apply this "08:00:00" default in any other situation - only when
+  the pre-arrival advisory genuinely applies AND no real pick-up time was given.
+  CONFIRMED RULE - end_time: if the source gives guidance on the LATEST safe departure/return time - most
+  commonly a flight-booking recommendation (e.g. "departure flights are recommended not earlier than
+  16:00", "please don't book flights before 4pm on the final day", "avoid flights before 18:00 on your
+  return day") - use that stated time as end_time, since it reflects the actual earliest moment the
+  traveler is free to leave. This applies whether it's phrased as the tour's own return time or as
+  flight-booking advice for the final day - either way, treat it as when the tour itself effectively ends.
+  Leave start_time/end_time as empty strings only if NEITHER a real time NOR (for start_time) the
+  pre-arrival-advisory default above applies.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
@@ -837,6 +888,20 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }
     defaults.update(data)
+
+    # Defensive per-supplement defaults (in case the model omits a field despite
+    # the prompt's instructions above) - "applies_to" defaults to "ALL" (today's
+    # prior all-modalities behavior) rather than blank/missing, and the occupancy
+    # price fields default to the flat "price" so older-shaped responses still
+    # behave exactly as before this per-occupancy pricing was added.
+    for _s in defaults.get("supplements") or []:
+        if not isinstance(_s, dict):
+            continue
+        _flat_price = _s.get("price", 0) or 0
+        _s.setdefault("applies_to", "ALL")
+        for _occ_key in ("single_price", "double_price", "triple_price", "quadruple_price"):
+            if _s.get(_occ_key) is None:
+                _s[_occ_key] = _flat_price
 
     print(f"✅ Extraction complete: '{defaults['tour_name']}' "
           f"({len(defaults['itinerary_destinations'])} destinations, {defaults['nights']} nights)")
