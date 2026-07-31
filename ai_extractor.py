@@ -524,18 +524,32 @@ This is DIFFERENT from checking for tour variants (different itineraries/duratio
 for multiple PRICING CATEGORIES within the same product that would each need to become a separate
 Modality/Option in Travel Compositor.
 
+CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
+API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing
+else. A real production error was caused by a suggested_code of "Standard English min. 2 people" (the
+API rejected it outright: "Modality code ... not found in contract modalities") - that happened because
+extra descriptive text (the language, a minimum-pax note, pricing-table wording) got folded into the code
+instead of being left out. NEVER include: parenthetical/explanatory text, numbers describing
+pax/occupancy/min-max requirements, the word "people"/"pax"/"person", periods, or the language name
+(e.g. "English") unless the language IS the only thing distinguishing this category from another one at
+the same tier. Correct: "Standard", "Superior", "Deluxe", "Suite". Wrong: "Standard English min. 2
+people", "Superior Cabin (2-4 pax)", "Deluxe - Ocean View, min 2 guests". If the source labels a category
+with extra words beyond the core tier name, extract ONLY the tier name itself for suggested_code, and put
+any of that other descriptive detail (language, occupancy notes) in "label" instead, where it's just
+informational and never sent to the API as-is.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_modalities": true or false,
   "modalities": [
-    {"label": "short human-readable label, e.g. 'Standard Cabin'", "suggested_code": "e.g. Standard Cabin (no / + - characters)"}
+    {"label": "short human-readable label, e.g. 'Standard Cabin (English)'", "suggested_code": "e.g. 'Standard' - ONLY the core tier name, no / + - characters, no extra words"}
   ]
 }
 If there's only one pricing category (or pricing is a single flat table), set "multiple_modalities": false
 and "modalities": [] ."""
 
 
-def detect_multiple_modalities(raw_text: str, model: str = HAIKU_MODEL) -> list:
+def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") -> list:
     """
     Checks whether the source describes MULTIPLE distinct pricing
     categories (room/cabin types) that should become separate Modalities,
