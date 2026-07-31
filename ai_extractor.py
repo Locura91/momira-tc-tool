@@ -48,14 +48,16 @@ Rules:
   something the traveler must do BEFORE the tour even starts (e.g. "In line with the program, customers
   are strongly advised to spend the night prior to the start of this package [at a hotel near the
   departure point]", a required pre-tour overnight stay, an early check-in requirement, or similar
-  advice that governs the entire trip) - this message is IMPORTANT and easy to miss if buried inside a
-  day's paragraph or silently dropped. It MUST be placed PROMINENTLY at the VERY BEGINNING of the
-  description field, BEFORE "Day 1", as its own standalone paragraph, e.g.:
-  <p><strong>⚠️ Important:</strong> In line with the program, customers are strongly advised to spend the
-  night prior to the start of this package.</p><p><br></p>
-  then continue with the normal Day 1, Day 2, ... blocks as described above. Only add this lead-in
-  paragraph if the source genuinely contains such a package-wide advisory - never invent one. If the
-  source has no such advisory, skip this and start the description directly with Day 1 as normal.
+  advice that governs the entire trip) - this message must not get lost or buried inside a day's
+  paragraph. CONFIRMED RULE: add it as its own standalone paragraph at the VERY END of the description
+  field - after the last day's content, and after the meal legend paragraph too if one was added, so it
+  is always the LAST paragraph in the whole description. Write it as PLAIN text only: NO icon/emoji (e.g.
+  no "⚠️") and NO "Important:" label or other bold prefix - those have caused downstream coding/encoding
+  issues, so the paragraph must contain nothing but the advisory sentence itself, e.g.:
+  <p>In line with the program, customers are strongly advised to spend the night prior to the start of
+  this package.</p>
+  Only add this paragraph if the source genuinely contains such a package-wide advisory - never invent
+  one. If the source has no such advisory, skip this entirely.
 - hotels_text MUST always follow this EXACT template (confirmed against a real published tour) - a fixed intro paragraph (always exactly this wording), then a bulleted list:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
@@ -80,18 +82,26 @@ Rules:
   date range for that period and say so in pricing_notes - don't leave the date range empty just because
   exact dates weren't spelled out.
   - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where you can (e.g. 20% of
-    the base per-person price) and show the calculation in the name, e.g. "Christmas/New Year surcharge
-    (20% of base price)". If a percentage genuinely can't be converted to a safe real amount, still create
-    the mandatory supplement with your best estimate and flag it clearly in pricing_notes for review.
+    the base per-person price) and put that resulting number in the "price" field as normal. If a
+    percentage genuinely can't be converted to a safe real amount, still create the mandatory supplement
+    with your best estimate and flag it clearly in pricing_notes for review.
   - Per-night/per-component surcharges: pre-calculate the TOTAL amount by multiplying the per-night rate by
       the actual number of nights spent at that specific hotel/component (determine this from the
       day-by-day itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total).
       CRITICAL SELF-CHECK - this exact multiplication has been missed before: before finalizing the
       supplement price, explicitly verify you multiplied rate x nights and did NOT just copy the
-      per-night rate as if it were the total. State the calculation in the name so it's checkable by a
-      human, e.g. "Peak season surcharge - Hotel X (2 nights x $11 = $22)".
+      per-night rate as if it were the total.
       If the number of nights at that specific component genuinely can't be determined from the source,
       say so plainly in pricing_notes rather than guessing.
+  CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge specifically, the "name" must stay a
+  clean, customer-facing label ONLY - e.g. "Christmas/New Year Surcharge" or "Peak Season Surcharge -
+  Hotel X" - and must NEVER include the price, percentage, or the calculation (no "(20% of base price)",
+  no "(2 nights x $11 = $22)", no dollar amounts of any kind in the name). The customer sees this name
+  directly and must not be shown that price breakdown. The actual number still goes in the "price" field
+  as always (that's what makes the surcharge real) - only put the calculation itself (the math you did to
+  arrive at it, so a human can double-check it before publishing) in pricing_notes, never in the name.
+  This does NOT apply to normal optional supplements (non-peak-season add-ons/upgrades) - only to
+  peak-season/holiday surcharges.
   For each TRUE supplement (optional add-on, or a peak-season surcharge per the rule above), output:
   {
     "name": "clear, specific short label - always required, never leave blank",
@@ -117,6 +127,16 @@ Rules:
   its own entry in supplements (see below) so guests clearly see they can request a different language,
   e.g. {"name": "German-speaking guide (upon request)", "price": 0 unless a price is stated, "on_request": true}.
   The goal is always maximum clarity for the guest: what's the standard language, and what other options exist.
+  DUAL-LANGUAGE GUIDE RULE: this is a DIFFERENT case from the one above - if the source lists TWO (or
+  more) languages joined by "/" or "or" as EQUAL standard options for the guiding/transfer service (e.g.
+  "licenced English/German-speaking guiding service", "English or German speaking guide"), that is NOT a
+  base-language-plus-on-request-extra - both languages are included as standard, so keep the included
+  bullet as the source states it (e.g. "Licenced English/German-speaking guiding service") rather than
+  splitting one off into supplements. In this case the description ALSO MUST clearly state, in plain
+  words, that the tour/transfer can run in EITHER English OR German - work one clear sentence to that
+  effect into whichever day's paragraph naturally covers the guide/transfer (usually Day 1), e.g. "This
+  tour is guided in either English or German." Never leave it ambiguous or worded so it could be read as
+  both languages being provided at once - the guest must clearly understand they get ONE of the two.
 - policy_remarks: include genuinely relevant NON-MONETARY policy info such as age restrictions/supervision
   requirements, payment/deposit schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include
   any of the following from the source document, since Momira (as tour operator) applies its own fee
@@ -830,9 +850,11 @@ Extract:
   PRE-ARRIVAL ADVISORY: if the source mentions an important advisory affecting the whole booking that the
   traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
   beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
-  short standalone lead-in paragraph at the VERY BEGINNING of the description, e.g. <p><strong>⚠️
-  Important:</strong> ...</p>, before the normal descriptive paragraphs. Only add it if the source
-  genuinely contains such an advisory - never invent one.
+  standalone paragraph at the VERY END of the description - after the normal descriptive paragraphs, so
+  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "⚠️") and NO
+  "Important:" label or other bold prefix - those have caused downstream coding/encoding issues, so the
+  paragraph must contain nothing but the advisory sentence itself, e.g. <p>...</p>. Only add it if the
+  source genuinely contains such an advisory - never invent one.
 - city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
@@ -841,6 +863,16 @@ Extract:
   available (e.g. "German/French on request"), do NOT list them here - add each as its own supplement
   instead (see below) so guests clearly see the option, e.g. {"name": "German-speaking guide (upon
   request)", "adult_price": 0 unless a price is stated, "children_price": 0, "infant_price": 0}.
+  DUAL-LANGUAGE GUIDE RULE: this is a DIFFERENT case from the one above - if the source lists TWO (or
+  more) languages joined by "/" or "or" as EQUAL standard options for the guiding/transfer service (e.g.
+  "licenced English/German-speaking guiding service", "English or German speaking guide"), that is NOT a
+  base-language-plus-on-request-extra - both languages are included as standard, so keep the includes
+  entry as the source states it (e.g. "Licenced English/German-speaking guiding service") rather than
+  splitting one off into supplements. In this case the description ALSO MUST clearly state, in plain
+  words, that the tour/transfer can run in EITHER English OR German - work one clear sentence to that
+  effect into the description, e.g. "This transfer is guided in either English or German." Never leave it
+  ambiguous or worded so it could be read as both languages being provided at once - the guest must
+  clearly understand they get ONE of the two.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
   fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
@@ -932,15 +964,22 @@ Extract:
       assumption in pricing_notes. This supplement OVERLAYS the normal modality price - it's an ADDITIONAL
       charge for bookings that fall inside that date range, not a replacement/alternative price.
       - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where possible (e.g. 20%
-        of the base adult/child/infant prices) and show the calculation in the name, e.g. "Christmas/New
-        Year surcharge (20% of base price)". If a percentage genuinely can't be converted to a safe real
-        amount, still create the supplement with your best estimate and flag it in pricing_notes.
+        of the base adult/child/infant prices) and put that resulting number in the price fields as
+        normal. If a percentage genuinely can't be converted to a safe real amount, still create the
+        supplement with your best estimate and flag it in pricing_notes.
       - Per-night/per-component surcharges: pre-calculate the TOTAL by multiplying the per-night rate by
         the actual number of nights/units (same CRITICAL SELF-CHECK as ClosedTour above - verify you
-        multiplied rate x nights/units and did not just copy the per-night rate as the total; state the
-        calculation in the name, e.g. "Peak season surcharge (2 nights x $11 = $22)").
+        multiplied rate x nights/units and did not just copy the per-night rate as the total).
       These always apply uniformly and don't compete with anything else, so they're safe as supplements
       even though (2) above forbids mutually-exclusive alternative supplements.
+      CRITICAL - CONFIRMED RULE: the "name" must stay a clean, customer-facing label ONLY - e.g.
+      "Christmas/New Year Surcharge" or "Peak Season Surcharge" - and must NEVER include the price,
+      percentage, or the calculation (no "(20% of base price)", no "(2 nights x $11 = $22)", no dollar
+      amounts of any kind in the name). The customer sees this name directly and must not be shown that
+      price breakdown. The actual numbers still go in the adult_price/children_price/infant_price fields
+      as always (that's what makes the surcharge real) - only put the calculation itself (the math you
+      did, so a human can double-check it before publishing) in pricing_notes, never in the name. This
+      does NOT apply to normal optional supplements - only to peak-season/holiday surcharges.
   (4) CRITICAL - a common real case: if the source has SEPARATE FULL PRICE TABLES per guide language
       (e.g. "English Speaking Guide" table with its own prices, then a separate "German Speaking Guide"
       table with DIFFERENT prices), each language is its OWN distinct product with its own real price -
