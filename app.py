@@ -19,6 +19,7 @@ Reuses everything already built and tested:
 """
 import json
 import re
+import copy
 import tempfile
 import os
 from datetime import datetime
@@ -38,7 +39,7 @@ from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig
 from builder import build_closed_tour_payloads, build_ticket_payloads
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, extract_option_only_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
+from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
 from web_extractor import get_page_text, get_page_images
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
@@ -635,35 +636,75 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         return
 
 
-def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files, min_pax=1, max_pax=9, default_tour_code=""):
+def _reset_mct_state():
+    """Clears all state for the single-ClosedTour create flow, ready to start over."""
+    for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_doc_raw_images",
+               "mct_hosted_image_candidates", "mct_tour"]:
+        st.session_state.pop(key, None)
+    _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+
+
+def _new_mct_tour(candidate, tour_code):
+    """Builds the single-tour state dict once the human has picked (or auto-picked,
+    if only one was ever detected) which ClosedTour to create."""
+    return {
+        "label": candidate.get("label", ""),
+        "nights_hint": candidate.get("nights"),
+        "is_genuine_variant": candidate.get("is_genuine_variant", False),
+        "tour_code": tour_code,
+        "main_data": None,
+        "modality_candidates": None,
+        "modalities": [],
+        "modality_index": 0,
+    }
+
+
+def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files,
+                          min_pax=1, max_pax=9, default_tour_code="", extraction_hint=None):
     """
-    Batch flow for creating MULTIPLE full ClosedTours from one document that
-    describes several distinct tour variants (e.g. a 7-night and 10-night
-    version of the same itinerary) - mirrors render_multi_ticket_flow's
-    proven pattern (detect -> explicit multi-select -> per-item review ->
-    sequential publish), adapted to ClosedTour's fields (itinerary
-    destinations, hotels, seasonal room-occupancy pricing) instead of
-    Ticket's (city/geolocation, passenger-type pricing):
-    1. Reuse the URL/document(s) already provided above, detect distinct
-       tour variants, let the human explicitly SELECT which to create + assign
-       each its own ClosedTour/Provider Code and Modality Code
-    2. Review each SELECTED one individually - its OWN focused AI extraction
-       (via a per-item variant hint), so variants never get mixed up
-    3. Publish all of them SEQUENTIALLY - each gets its own full
-       create-tour(active) -> create-option -> deactivate sequence, with its
-       own clear success/failure status (not one opaque batch call)
+    Single-ClosedTour create flow (CONFIRMED REDESIGN - replaces the old
+    multi-tour batch/queue flow, which let several AI-detected "variants"
+    each become their own separate ClosedTour in one pass - that's exactly
+    what caused real confusion in practice: a document describing ONE tour
+    with two Modalities ("Standard | English" / "Superior | English", same
+    itinerary) got misdetected as "2 variants", and the old flow tried to
+    create TWO separate ClosedTours for it.
+
+    New design: only ONE ClosedTour is ever created per run through this
+    flow. If the AI detects what might be multiple distinct ClosedTours in
+    the source, the human picks exactly ONE to proceed with - Tour Code and
+    Modality Code are NOT collected at that stage (Tour Code already came
+    from Step 3; Modality Code isn't relevant until Modalities are set up
+    later). Step by step:
+      1. gather            - reuse URL/document(s) from Step 4, detect distinct ClosedTours
+      2. select_tour       - human picks ONE (skipped automatically if only one was found)
+      3. reviewing_main    - review the TOUR-level info only (name, description, itinerary,
+                              hotels, included/excluded, meeting point, policy, images) - no
+                              pricing/supplements/operational days here, those are per-Modality
+      4. select_modalities - AI detects distinct Modalities (room/cabin/pricing categories);
+                              human confirms which to include (min. 1 required), can add more
+      5. reviewing_modality - EACH Modality reviewed individually and sequentially: its own
+                              focused extraction (with an editable AI hint), operational days,
+                              stop sales, pricing, and supplements - a universal supplement
+                              entered on Modality 1 is carried forward as an editable starting
+                              point for the rest, instead of being retyped every time
+      6. final_review      - recap of the main tour info + every Modality, with "Edit" links
+                              back into any earlier step
+      7. publishing        - unchanged from before: create the tour + first Modality's option
+                              (active), then each remaining Modality's option, then deactivate
+                              if the human chose draft/inactive
     """
     if "mct_phase" not in st.session_state:
         st.session_state.mct_phase = "gather"
 
     # ------------------------------------------------------------------
-    # PHASE 1: detect tour variants from the source already provided above
+    # PHASE 1: detect distinct ClosedTours from the source already provided above
     # ------------------------------------------------------------------
     if st.session_state.mct_phase == "gather":
         if not (url or uploaded_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("🔎 Detect Tour Variants", disabled=not (url or uploaded_files)):
-            with st.spinner("Gathering content and detecting distinct tour variants..."):
+        if st.button("🔎 Detect ClosedTour(s)", disabled=not (url or uploaded_files)):
+            with st.spinner("Gathering content and detecting distinct ClosedTours..."):
                 try:
                     combined_parts = []
                     doc_raw_images = []
@@ -695,24 +736,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     for v in detected:
                         candidates.append({
                             "label": v.get("label", ""), "nights": v.get("nights"),
-                            "tour_code": "", "modality_code": "Standard", "selected": True,
-                            # This label came from a REAL AI-detected variant, so it's safe
-                            # to later tell the extraction "only extract this named variant,
-                            # ignore the rest" - see is_genuine_variant usage in PHASE 3 below.
+                            # This label came from a REAL AI-detected candidate, so it's safe
+                            # to later tell the extraction "only extract this one, ignore the
+                            # rest" - see is_genuine_variant usage in PHASE 3 below.
                             "is_genuine_variant": True,
                         })
                     if not candidates:
-                        # No real variants detected - this is the single-tour case. The
-                        # "Tour Name" the human types here (see PHASE 2) is just a label for
-                        # display, NOT a real variant to filter the source by - is_genuine_variant
-                        # stays False so PHASE 3 never sends it to the AI as a variant filter
-                        # (doing so previously caused the AI to search the source for a variant
-                        # literally named that, find no match, and return an empty extraction).
-                        # Prefill the Tour Code from what was already entered back in Step 3
-                        # (default_tour_code) so the human doesn't have to type it again here
-                        # - still editable in case they want to change it, but no longer blank.
-                        candidates = [{"label": "", "nights": None, "tour_code": default_tour_code, "modality_code": "Standard",
-                                      "selected": True, "is_genuine_variant": False}]
+                        candidates = [{"label": "", "nights": None, "is_genuine_variant": False}]
 
                     # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
                     # if every image already got a real URL, showing them again in a second
@@ -724,323 +754,133 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     st.session_state.mct_candidates = candidates
                     st.session_state.mct_doc_raw_images = doc_raw_images
                     st.session_state.mct_hosted_image_candidates = list(dict.fromkeys((get_page_images(url) if url else []) + doc_image_urls))
-                    st.session_state.mct_phase = "prepare_queue"
+                    st.session_state.mct_phase = "select_tour"
                     st.rerun()
                 except Exception as e:
                     st.error(f"Detection failed: {friendly_error_message(e)}")
         return
 
     # ------------------------------------------------------------------
-    # PHASE 2: explicitly SELECT which tour variants to create
+    # PHASE 2: human picks exactly ONE ClosedTour to create (only shown if
+    # more than one was detected - otherwise auto-proceeds with the one found)
     # ------------------------------------------------------------------
-    if st.session_state.mct_phase == "prepare_queue":
+    if st.session_state.mct_phase == "select_tour":
         candidates = st.session_state.mct_candidates
-        single_tour = len(candidates) == 1
 
-        # "Tour variant" and "Modality" are two DIFFERENT Travel Compositor
-        # concepts, and this screen must not blur them: a "tour variant" is
-        # a genuinely different tour PRODUCT (different itinerary/length),
-        # each becoming its own separate ClosedTour, while a "Modality" is
-        # just the pricing option code a single tour is created with. Most
-        # documents describe only ONE tour - in that (the common) case, no
-        # variant was actually detected, so the wording below must say so
-        # plainly rather than defaulting to "variants detected" language
-        # that doesn't apply.
-        if single_tour:
-            st.subheader("Set up this tour")
-            st.caption("This document describes one tour - no other tour variants were found, so nothing "
-                      "to choose between here. The Tour Code is already carried over from Step 3 below "
-                      "(edit it here if you want to change it). It still needs a Modality Code before it "
-                      "can be created (a 'Modality', Travel Compositor's own term, is the pricing option "
-                      "for the tour, e.g. 'Standard' or 'Deluxe' - you can add more Modalities for this "
-                      "same tour in the next step).")
-        else:
-            st.subheader(f"{len(candidates)} tour variants detected - choose which ones to create")
-            st.caption("The AI found what look like several different tour variants below (e.g. different "
-                      "lengths or itineraries) - each ticked row becomes its own separate ClosedTour. "
-                      "Untick any row you don't actually want. For each ticked row, fill in the two code "
-                      "fields on the right (hover the ⓘ next to each for what it means).")
+        if len(candidates) <= 1:
+            chosen = candidates[0] if candidates else {"label": "", "nights": None, "is_genuine_variant": False}
+            st.session_state.mct_tour = _new_mct_tour(chosen, default_tour_code)
+            st.session_state.mct_phase = "reviewing_main"
+            st.rerun()
+            return
 
-            # SAFETY NET (confirmed real case): genuine tour variants almost always
-            # differ in duration - that's usually the whole point of them being
-            # different products (e.g. a 3-night vs 4-night cruise). If every detected
-            # "variant" here reports the SAME nights, that's a strong signal the AI
-            # actually found different Modalities/room-categories (e.g. separate
-            # "Standard | English" / "Superior | English" pricing+accommodation blocks
-            # for the SAME itinerary) and mislabeled them as tour variants instead of
-            # Modalities of one tour. In that case they'd need the SAME Tour Code, which
-            # the duplicate-code check further down correctly refuses (you can't create
-            # 2 separate ClosedTours sharing one code) - leaving the human stuck without
-            # an obvious way out. Offer a one-click fix instead.
-            distinct_nights = {c.get("nights") for c in candidates if c.get("nights") is not None}
-            if len(candidates) > 1 and len(distinct_nights) <= 1:
-                st.warning(
-                    "🤔 These all report the same length - that often means the document actually describes "
-                    "ONE tour with different Modalities (e.g. 'Standard' vs 'Superior' pricing/accommodation "
-                    "for the same itinerary), not genuinely different tour products. If that's the case here, "
-                    "merge them below instead of trying to create separate tours with the same Tour Code "
-                    "(which isn't allowed)."
-                )
-                if st.button("🔀 Merge into ONE tour with different Modalities instead", key="mct_merge_variants"):
-                    st.session_state.mct_candidates = [{
-                        "label": "", "nights": candidates[0].get("nights"), "tour_code": default_tour_code,
-                        "modality_code": "Standard", "selected": True, "is_genuine_variant": False,
-                    }]
-                    st.rerun()
+        st.subheader(f"{len(candidates)} possible ClosedTours detected - choose ONE to create")
+        st.caption("This document seems to describe more than one distinct tour product (different "
+                  "length/itinerary) - only ONE ClosedTour is created per run through this flow. Pick "
+                  "the one you want below; run this again with a different Tour Code (Step 3) for any "
+                  "others. Tour Code and Modality Code aren't needed here - Modalities are set up in "
+                  "the next steps, after the main tour info is confirmed.")
 
-        for i, cand in enumerate(candidates):
-            ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
-            with ccol1:
-                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mct_sel_{i}")
-            with ccol2:
-                nights_note = f" ({cand['nights']} nights)" if cand.get("nights") else ""
-                label_text = "Tour Name" if single_tour else f"Variant{nights_note}"
-                cand["label"] = st.text_input(label_text, value=cand["label"], key=f"mct_label_{i}")
-            with ccol3:
-                cand["tour_code"] = st.text_input(
-                    "Tour Code", value=cand["tour_code"], key=f"mct_code_{i}", placeholder="e.g. BKK-1",
-                    help="Your own reference code for THIS tour - make it up yourself, e.g. 'BKK-1'. "
-                         "Travel Compositor's system also calls this same code the 'ClosedTour Code' or "
-                         "'Provider Code' in different places - they all mean this one code, not three "
-                         "different things."
-                )
-            with ccol4:
-                cand["modality_code"] = st.text_input(
-                    "Modality Code", value=cand["modality_code"], key=f"mct_modcode_{i}",
-                    help="The name of the pricing option for this tour, e.g. 'Standard' or 'Deluxe'. "
-                         "Cannot contain the characters / \\ + or - (Travel Compositor's system rejects "
-                         "those in this field)."
-                )
+        # SAFETY NET (confirmed real case): genuine different ClosedTours almost
+        # always differ in duration - that's usually the whole point of them being
+        # different products. If every candidate here reports the SAME nights,
+        # that's a strong signal the AI actually found different Modalities/room-
+        # categories (e.g. separate "Standard | English" / "Superior | English"
+        # pricing+accommodation blocks for the SAME itinerary), not different tour
+        # products - in that case just pick any one below (they're really the same
+        # tour) and add the others as Modalities in the next steps.
+        distinct_nights = {c.get("nights") for c in candidates if c.get("nights") is not None}
+        if len(distinct_nights) <= 1:
+            st.warning(
+                "🤔 These all report the same length - that often means this is really ONE tour with "
+                "different Modalities (e.g. 'Standard' vs 'Superior' pricing/accommodation for the same "
+                "itinerary), not genuinely different tour products. If so, just pick any one below - "
+                "you'll be able to add the others as Modalities of this same tour in the next steps."
+            )
 
-        if st.button("➕ Add another variant manually"):
-            candidates.append({"label": "", "nights": None, "tour_code": "", "modality_code": "Standard",
-                              "selected": True, "is_genuine_variant": False})
+        labels = [
+            (c.get("label") or "(unnamed)") + (f" ({c['nights']} nights)" if c.get("nights") else "")
+            for c in candidates
+        ]
+        choice_idx = st.radio("Which ClosedTour do you want to create?", list(range(len(candidates))),
+                             format_func=lambda i: labels[i], key="mct_tour_choice")
+
+        if st.button("➡️ Start Reviewing", type="primary"):
+            st.session_state.mct_tour = _new_mct_tour(candidates[choice_idx], default_tour_code)
+            st.session_state.mct_phase = "reviewing_main"
             st.rerun()
 
-        invalid_codes = []
-        missing_codes = []
-        bad_format_codes = []
-        new_queue = []
-        seen_tour_codes = {}
-        for cand in candidates:
-            if not cand["selected"]:
-                continue
-            code = cand["tour_code"].strip().upper()
-            mod_code = cand["modality_code"].strip()
-            if not code or not mod_code:
-                missing_codes.append(cand["label"] or "(unnamed variant)")
-                continue
-            if any(c in mod_code for c in ["/", "\\", "+", "-"]):
-                invalid_codes.append(mod_code)
-                continue
-            # CONFIRMED REQUIRED FORMAT: Travel Compositor's own Provider Code must be
-            # 3 letters, a dash, then a number (e.g. "BKK-1") - this is enforced deep
-            # inside HumanPreConfig's own validation, which used to only surface as an
-            # unhandled crash on the publish-preview screen further down. Catch it here
-            # instead, at the earliest point, with a message that says exactly what's
-            # wrong and how to fix it.
-            if not re.match(r"^[A-Z]{3}-\d+$", code):
-                bad_format_codes.append((cand["label"] or "(unnamed variant)", cand["tour_code"]))
-                continue
-            seen_tour_codes.setdefault(code, []).append(cand["label"] or "(unnamed variant)")
-            new_queue.append({"label": cand["label"], "tour_code": code, "modality_code": mod_code, "data": None,
-                             "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
-
-        duplicate_codes = {code: labels for code, labels in seen_tour_codes.items() if len(labels) > 1}
-
-        if missing_codes:
-            st.error(f"🚫 These selected variants are missing a ClosedTour Code or Modality Code and were "
-                    f"excluded - enter one for each before continuing: {missing_codes}")
-        if invalid_codes:
-            st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
-        if bad_format_codes:
-            bad_list = ", ".join(f"{label} (\"{raw}\")" for label, raw in bad_format_codes)
-            st.error(f"🚫 These Tour Codes don't match the required format and were excluded: {bad_list}. "
-                    f"A Tour Code must be exactly 3 letters, a dash, then a number - e.g. 'BKK-1' or 'ASW-12' "
-                    f"(letters are automatically capitalized for you, but the letters-dash-number shape is "
-                    f"required by Travel Compositor). This is your own made-up reference code, not the "
-                    f"Modality name - if you typed something like 'Private Standard' here, that likely "
-                    f"belongs in the Modality Code field instead.")
-        if duplicate_codes:
-            for code, labels in duplicate_codes.items():
-                st.error(f"🚫 ClosedTour Code `{code}` is used by more than one selected variant ({', '.join(labels)}) "
-                        f"- each tour needs its own unique code. If these are actually the SAME tour with "
-                        f"different Modalities (not genuinely different tour products), use the '🔀 Merge into "
-                        f"ONE tour' button above instead of giving them matching Tour Codes here.")
-
-        for q in new_queue:
-            existing_check = check_code_availability(client, "tour", supplier_id, q["tour_code"])
-            if existing_check and existing_check["exists"]:
-                st.error(f"🚫 ClosedTour Code `{q['tour_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
-                        f"by an existing tour (\"{existing_check.get('name') or '(unnamed)'}\") - choose a "
-                        f"different code before publishing, or this will fail.")
-
-        ready_to_review = new_queue and not missing_codes and not duplicate_codes
-        st.caption(f"**{len(new_queue)}** tour(s) ready to review." if ready_to_review else
-                  "Fix the issues above before continuing.")
-
-        if st.button("➡️ Start Reviewing", type="primary", disabled=not ready_to_review):
-            st.session_state.mct_queue = new_queue
-            st.session_state.mct_queue_index = 0
-            st.session_state.mct_phase = "reviewing"
-            st.rerun()
+        with st.expander("Not what you wanted?"):
+            if st.button("🔙 Start over", key="mct_cancel_select"):
+                _reset_mct_state()
+                st.rerun()
         return
 
     # ------------------------------------------------------------------
-    # PHASE 3: review each selected tour individually, one at a time
+    # PHASE 3: review the TOUR-LEVEL info only (no pricing/supplements here -
+    # those are handled per-Modality in the phases below)
     # ------------------------------------------------------------------
-    if st.session_state.mct_phase == "reviewing":
-        idx = st.session_state.mct_queue_index
-        queue = st.session_state.mct_queue
-        current = queue[idx]
+    if st.session_state.mct_phase == "reviewing_main":
+        tour = st.session_state.mct_tour
 
-        st.subheader(f"Reviewing tour {idx + 1} of {len(queue)}: **{current['label'] or current['tour_code']}** (code: {current['tour_code']})")
-        st.progress(idx / len(queue))
+        st.subheader(f"Tour details: {tour['label'] or tour['tour_code'] or '(new tour)'}")
         with st.expander("Not what you wanted?"):
-            if st.button("🔙 Cancel this batch - return to single-tour flow", key=f"mct_cancel_{idx}"):
-                for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
-                           "mct_doc_raw_images", "mct_hosted_image_candidates"]:
-                    st.session_state.pop(key, None)
-                _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+            if st.button("🔙 Start over", key="mct_cancel_main"):
+                _reset_mct_state()
                 st.rerun()
 
-        if current["data"] is None:
+        if tour["main_data"] is None:
             # CONFIRMED BUG FIX: only pass a variant_hint when this label came from a
-            # REAL AI-detected variant (is_genuine_variant). Passing the human-typed
-            # "Tour Name" (single-tour case) as a variant_hint told the AI "extract
-            # ONLY the variant named X, ignore everything else" - since the source
-            # document has no variant literally named that (it's just a label the
-            # human typed, not a heading in the source), the AI found no match and
-            # returned an empty extraction (every field blank). Only real detected
-            # variants (e.g. "7 nights" vs "10 nights", genuinely present in the
-            # source) should ever restrict the extraction this way.
-            variant_hint = current["label"] if current.get("is_genuine_variant") else None
-            with st.spinner(f"Extracting details{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
-                # This used to be able to crash the whole app if the AI call itself
-                # failed (e.g. rate limit, network hiccup) - never leave a call that
-                # can genuinely fail unguarded, contain it and let the human retry.
+            # REAL AI-detected candidate (is_genuine_variant). Passing a human-typed
+            # label as a variant_hint told the AI "extract ONLY the variant named X,
+            # ignore everything else" - if the source has no variant literally named
+            # that, the AI finds no match and returns an empty extraction.
+            variant_hint = tour["label"] if tour.get("is_genuine_variant") else None
+            with st.spinner(f"Extracting tour details{f' focused on ' + repr(tour['label']) if variant_hint else ''}..."):
                 try:
-                    current["data"] = extract_structured_data(st.session_state.mct_raw_text, variant_hint=variant_hint)
-                    current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                    tour["main_data"] = extract_structured_data(
+                        st.session_state.mct_raw_text, variant_hint=variant_hint, human_hint=extraction_hint
+                    )
+                    tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
                 except Exception as e:
-                    st.error(f"⚠️ Couldn't extract details for this tour: {friendly_error_message(e)}")
-                    if st.button("🔄 Retry extraction", key=f"mct_retry_extract_{idx}"):
+                    st.error(f"⚠️ Couldn't extract tour details: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key="mct_retry_main"):
                         st.rerun()
                     return
 
-            # CONFIRMED FIX (triple-charging bug): auto-detect other room/cabin pricing
-            # categories (Modalities) described in the SAME document (e.g. "Standard" /
-            # "Superior" / "Deluxe") and pre-queue them here as extra_modalities, instead
-            # of requiring the human to manually click "Add another Modality" and retype
-            # each one. Runs exactly once - this whole branch only executes the first time
-            # this queue item is reviewed (guarded by current["data"] being None above) -
-            # and is best-effort: wrapped in its own try/except so a failure here never
-            # blocks the main extraction that already succeeded above.
-            if "extra_modalities" not in current:
-                current["extra_modalities"] = []
-            try:
-                if not current["extra_modalities"]:
-                    detected_modalities = detect_multiple_modalities(st.session_state.mct_raw_text)
-                    base_modality_label = (current.get("modality_code") or "").strip().lower()
-                    for m in detected_modalities:
-                        label = (m.get("label") or "").strip()
-                        raw_code = (m.get("suggested_code") or label or "").strip()
-                        clean_code = "".join(c for c in raw_code if c not in "/\\+-")
-                        # Skip a detected category that's clearly the SAME one already
-                        # covered by this tour's own base Modality Code, so it doesn't
-                        # get queued as a redundant duplicate "extra" modality.
-                        if base_modality_label and label and (base_modality_label in label.lower() or label.lower() in base_modality_label):
-                            continue
-                        if clean_code:
-                            current["extra_modalities"].append({"code": clean_code, "hint": label, "data": None})
-            except Exception:
-                pass  # best-effort only - the human can still add Modalities manually below
-
-            # CONFIRMED FIX (triple-charging bug): the single extraction above scans the
-            # WHOLE document, so when it describes multiple Modalities, any peak-season
-            # surcharges/add-ons mentioned under EACH category all land in this ONE
-            # "supplements" list together. Left unresolved, every one of them would be
-            # attached to EVERY Modality once published (Travel Compositor's own
-            # SupplementVO.modalityCodes field means "applies to ALL Modalities" when
-            # left empty), silently stacking every category's surcharges on top of each
-            # other - exactly the reported bug (price >3x too high). The extraction
-            # prompt now tags each supplement with which category it believes it belongs
-            # to ("applies_to"); translate that tag into an actual Modality Code here,
-            # defaulting to "All Modalities" (today's prior behavior) whenever the tag is
-            # missing/unclear/unmatched - and remember which ones so the human can be
-            # warned to double-check the "Applies To" column below before publishing.
-            known_modality_codes = {}
-            base_code = (current.get("modality_code") or "").strip()
-            if base_code:
-                known_modality_codes[base_code.lower()] = base_code
-            for m in current["extra_modalities"]:
-                code = (m.get("code") or "").strip()
-                if code:
-                    known_modality_codes[code.lower()] = code
-                    hint = (m.get("hint") or "").strip()
-                    if hint:
-                        known_modality_codes.setdefault(hint.lower(), code)
-            uncertain_supplement_names = []
-            for s in current["data"].get("supplements", []):
-                raw_tag = str(s.pop("applies_to", "") or "").strip()
-                if not raw_tag or raw_tag.upper() == "ALL":
-                    s["applies_to"] = "All Modalities"
-                    continue
-                if raw_tag.upper() == "UNCLEAR":
-                    s["applies_to"] = "All Modalities"
-                    uncertain_supplement_names.append(s.get("name", "(unnamed)"))
-                    continue
-                tag_lower = raw_tag.lower()
-                match = None
-                for known_lower, real_code in known_modality_codes.items():
-                    if known_lower and (known_lower in tag_lower or tag_lower in known_lower):
-                        match = real_code
-                        break
-                if match:
-                    s["applies_to"] = match
-                else:
-                    s["applies_to"] = "All Modalities"
-                    uncertain_supplement_names.append(s.get("name", "(unnamed)"))
-            if uncertain_supplement_names:
-                current["supplement_scope_warnings"] = uncertain_supplement_names
-
-        data = current["data"]
+        data = tour["main_data"]
         if not data.get("meeting_point"):
             data["meeting_point"] = ("Meet your guide in the airport arrival hall or, if you are already in "
                                      "the tour's starting city, in your hotel lobby.")
 
-        editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix=f"_{idx}")
-        editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix=f"_{idx}")
-
-        render_skip_item_button(
-            current['label'] or current['tour_code'], queue, idx,
-            "mct_queue", "mct_queue_index",
-            ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
-             "mct_doc_raw_images", "mct_hosted_image_candidates"],
-            button_key=f"mct_skip_{idx}",
-            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
+        tour["tour_code"] = st.text_input(
+            "Tour Code", value=tour["tour_code"], key="mct_tour_code",
+            help="Your own reference code for this tour, e.g. 'BKK-1' - carried over from Step 3, edit "
+                 "here if you want to change it."
         )
 
-        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix=f"_{idx}")
-        editable_field("Included", data, "included", widget="text_area", height=100, key_suffix=f"_{idx}")
-        editable_field("Excluded", data, "excluded", widget="text_area", height=100, key_suffix=f"_{idx}")
-        editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix=f"_{idx}")
-        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
-        editable_field("Nights", data, "nights", widget="number_input", key_suffix=f"_{idx}")
+        editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix="_main")
+        editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix="_main")
+        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix="_main")
+        editable_field("Included", data, "included", widget="text_area", height=100, key_suffix="_main")
+        editable_field("Excluded", data, "excluded", widget="text_area", height=100, key_suffix="_main")
+        editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
+        editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
+        editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
         tcol1, tcol2 = st.columns(2)
         with tcol1:
-            render_optional_time_input("Start Time", data, "start_time", f"mct_start_time_{idx}")
+            render_optional_time_input("Start Time", data, "start_time", "mct_start_time_main")
         with tcol2:
-            render_optional_time_input("End Time", data, "end_time", f"mct_end_time_{idx}", default_time_str="18:00:00")
+            render_optional_time_input("End Time", data, "end_time", "mct_end_time_main", default_time_str="18:00:00")
 
         acol1, acol2 = st.columns(2)
         with acol1:
             data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("min_child_age", 2) or 2), key=f"mct_min_child_age_{idx}")
+                                                     value=int(data.get("min_child_age", 2) or 2), key="mct_min_child_age_main")
         with acol2:
             data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("max_child_age", 12) or 12), key=f"mct_max_child_age_{idx}")
+                                                     value=int(data.get("max_child_age", 12) or 12), key="mct_max_child_age_main")
 
         dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
         dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
@@ -1051,19 +891,19 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if str(row.get("Destination", "")).strip()
             ]
         editable_table(
-            f"Itinerary destinations (in visit order) - {current['label'] or current['tour_code']}", dest_df, f"mct_destinations_{idx}",
+            "Itinerary destinations (in visit order)", dest_df, "mct_destinations_main",
             on_save=_save_mct_destinations,
             column_config={"#": st.column_config.NumberColumn(disabled=True)}
         )
 
-        st.markdown(f"**Images for {current['label'] or current['tour_code']}**")
+        st.markdown("**Images**")
         if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
             st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real image below.")
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 
         def _mct_add_url_images():
-            selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, f"mct_found_{idx}")
+            selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, "mct_found_main")
             if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
                 data["image_urls"] = current_imgs + selected
@@ -1073,11 +913,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         render_closable_image_section(
             bool(st.session_state.get("mct_hosted_image_candidates")),
             f"🖼️ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
-            f"mct_found_{idx}_closed", _mct_add_url_images
+            "mct_found_main_closed", _mct_add_url_images
         )
 
         def _mct_add_doc_image():
-            added = render_doc_image_picker(st.session_state.mct_doc_raw_images, f"mct_doc_{idx}")
+            added = render_doc_image_picker(st.session_state.mct_doc_raw_images, "mct_doc_main")
             if added:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
                 data["image_urls"] = current_imgs + [added]
@@ -1087,37 +927,199 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         render_closable_image_section(
             bool(st.session_state.get("mct_doc_raw_images")),
             f"📥 Images needing hosting ({len(st.session_state.get('mct_doc_raw_images') or [])})",
-            f"mct_doc_{idx}_closed", _mct_add_doc_image
+            "mct_doc_main_closed", _mct_add_doc_image
         )
 
-        mct_default_query = current["label"] or data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0] if data.get("itinerary_destinations") else "")
+        mct_default_query = tour["label"] or data.get("tour_name", "") or (data.get("itinerary_destinations", [""])[0] if data.get("itinerary_destinations") else "")
 
         def _mct_add_pexels():
-            selected = render_stock_photo_picker("Pexels", search_images, mct_default_query, f"mct_pexels_{idx}")
+            selected = render_stock_photo_picker("Pexels", search_images, mct_default_query, "mct_pexels_main")
             if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
                 data["image_urls"] = current_imgs + selected
                 return len(selected)
             return 0
 
-        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mct_pexels_{idx}_closed", _mct_add_pexels)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "mct_pexels_main_closed", _mct_add_pexels)
 
         def _mct_add_pixabay():
-            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mct_default_query, f"mct_pixabay_{idx}")
+            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mct_default_query, "mct_pixabay_main")
             if selected:
                 current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
                 data["image_urls"] = current_imgs + selected
                 return len(selected)
             return 0
 
-        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mct_pixabay_{idx}_closed", _mct_add_pixabay)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "mct_pixabay_main_closed", _mct_add_pixabay)
+
+        st.markdown("**🤖 Tell AI what to fix**")
+        mct_clarify_q = st.text_input("Your message", key="mct_clarify_input_main")
+        if st.button("Send", disabled=not mct_clarify_q.strip(), key="mct_clarify_send_main"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
+                st.session_state["mct_clarify_result_main"] = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                st.rerun()
+        if st.session_state.get("mct_clarify_result_main"):
+            r = st.session_state["mct_clarify_result_main"]
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+
+        ready = bool((data.get("tour_name") or "").strip()) and bool((tour["tour_code"] or "").strip())
+        if st.button("✅ Confirm main tour info & Continue to Modalities", type="primary", disabled=not ready):
+            st.session_state.mct_phase = "select_modalities"
+            st.rerun()
+        if not ready:
+            st.info("Tour name and Tour Code are required before continuing to Modalities.")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 4: AI detects distinct Modalities - human confirms which to include
+    # ------------------------------------------------------------------
+    if st.session_state.mct_phase == "select_modalities":
+        tour = st.session_state.mct_tour
+        main_name = (tour["main_data"] or {}).get("tour_name") or tour["tour_code"]
+        st.subheader(f"Modalities for: {main_name}")
+
+        if tour["modality_candidates"] is None:
+            with st.spinner("Detecting pricing categories (Modalities)..."):
+                try:
+                    detected = detect_multiple_modalities(st.session_state.mct_raw_text)
+                except Exception:
+                    detected = []  # best-effort - human can still add Modalities manually below
+                candidates = []
+                for m in detected:
+                    label = (m.get("label") or "").strip()
+                    raw_code = (m.get("suggested_code") or label or "").strip()
+                    clean_code = "".join(c for c in raw_code if c not in "/\\+-")
+                    candidates.append({"code": clean_code, "hint": label, "selected": True})
+                if not candidates:
+                    candidates = [{"code": "", "hint": "", "selected": True}]
+                tour["modality_candidates"] = candidates
+
+        candidates = tour["modality_candidates"]
+        st.caption("Auto-detected from your document where possible - untick any you don't want, edit the "
+                  "code/hint, or add more manually. At least one Modality is required (a 'Modality' is "
+                  "Travel Compositor's own term for the pricing option, e.g. 'Standard' or 'Deluxe').")
+
+        for i, cand in enumerate(candidates):
+            c1, c2, c3, c4 = st.columns([1, 2, 3, 1])
+            with c1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mct_modcand_sel_{i}")
+            with c2:
+                cand["code"] = st.text_input(
+                    "Modality Code", value=cand["code"], key=f"mct_modcand_code_{i}",
+                    help="Cannot contain the characters / \\ + or - (Travel Compositor's system rejects those)."
+                )
+            with c3:
+                cand["hint"] = st.text_input("AI focus hint (optional)", value=cand["hint"], key=f"mct_modcand_hint_{i}")
+            with c4:
+                st.write("")
+                if st.button("🗑️", key=f"mct_modcand_remove_{i}", help="Remove this Modality"):
+                    candidates.pop(i)
+                    st.rerun()
+
+            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-"]):
+                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -).")
+
+        if st.button("➕ Add another Modality manually"):
+            candidates.append({"code": "", "hint": "", "selected": True})
+            st.rerun()
+
+        selected = [c for c in candidates if c["selected"]]
+        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-")]
+        missing = [c for c in selected if not (c["code"] or "").strip()]
+        seen = {}
+        for c in selected:
+            seen.setdefault((c["code"] or "").strip(), []).append(c)
+        dup_codes = {code: v for code, v in seen.items() if code and len(v) > 1}
+
+        if missing:
+            st.error("🚫 Every included Modality needs a Modality Code.")
+        if dup_codes:
+            st.error(f"🚫 Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
+        if not selected:
+            st.info("Include at least one Modality to continue.")
+
+        ready = bool(selected) and not invalid and not missing and not dup_codes
+        if st.button("➡️ Start Reviewing Modalities", type="primary", disabled=not ready):
+            tour["modalities"] = [
+                {"code": c["code"].strip(), "hint": c["hint"], "data": None, "confirmed": False}
+                for c in selected
+            ]
+            tour["modality_index"] = 0
+            st.session_state.mct_phase = "reviewing_modality"
+            st.rerun()
+
+        with st.expander("Not what you wanted?"):
+            wcol1, wcol2 = st.columns(2)
+            with wcol1:
+                if st.button("🔙 Back to main tour info", key="mct_back_to_main"):
+                    st.session_state.mct_phase = "reviewing_main"
+                    st.rerun()
+            with wcol2:
+                if st.button("🔙 Start over", key="mct_cancel_modsel"):
+                    _reset_mct_state()
+                    st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 5: review EACH Modality individually, one at a time
+    # ------------------------------------------------------------------
+    if st.session_state.mct_phase == "reviewing_modality":
+        tour = st.session_state.mct_tour
+        modalities = tour["modalities"]
+        midx = tour["modality_index"]
+        mod = modalities[midx]
+
+        st.subheader(f"Modality {midx + 1} of {len(modalities)}: **{mod['code']}**")
+        st.progress(midx / len(modalities))
+
+        mod["hint"] = st.text_input(
+            "AI focus hint (optional - helps the AI find the right pricing table for this Modality)",
+            value=mod.get("hint", ""), key=f"mct_mod_hint_{midx}"
+        )
+
+        if mod["data"] is None:
+            with st.spinner(f"Extracting pricing/schedule for '{mod['code']}'..."):
+                try:
+                    tour_nights = (tour["main_data"] or {}).get("nights")
+                    mod["data"] = extract_modality_data(
+                        st.session_state.mct_raw_text, tour_nights=tour_nights,
+                        human_hint=mod["hint"] or mod["code"]
+                    )
+                except Exception as e:
+                    st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mct_mod_retry_{midx}"):
+                        st.rerun()
+                    return
+
+                # CONFIRMED (per your answer): a universal supplement (e.g. an
+                # airport transfer upgrade that applies to every Modality) is
+                # carried forward from Modality 1 as an editable starting point
+                # for every Modality after it, instead of making the human
+                # retype a shared surcharge on every single Modality's screen.
+                # Still fully editable/removable per Modality below - this is
+                # just a convenience starting point, not a hard link between
+                # them (editing Modality 2's copy never touches Modality 1's).
+                if midx > 0 and modalities[0]["data"]:
+                    mod["data"]["supplements"] = copy.deepcopy(modalities[0]["data"].get("supplements", []))
+
+        if st.button("🔄 Re-extract with updated hint", key=f"mct_mod_reextract_{midx}"):
+            mod["data"] = None
+            st.rerun()
+
+        data = mod["data"]
 
         data["operational_days"] = st.multiselect(
-            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_days_{idx}"
+            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_mod_days_{midx}"
         )
         with st.expander("Stop Sales"):
             mct_stop_sales_json = st.text_area(
-                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mct_stops_{idx}"
+                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mct_mod_stops_{midx}"
             )
             try:
                 data["stop_sales"] = json.loads(mct_stop_sales_json)
@@ -1157,39 +1159,20 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "")).strip() and str(r.get("End Date", "")).strip()],
                 key=lambda e: e.get("startDate", "")
             )
-        editable_table(f"Pricing - {current['label'] or current['tour_code']}", price_df, f"mct_pricing_{idx}", on_save=_save_mct_price_list)
+        editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
 
-        st.markdown(f"**Optional Add-ons / Upgrades / Excursions (Supplements) - {current['label'] or current['tour_code']}**")
+        st.markdown(f"**Optional Add-ons / Upgrades / Excursions (Supplements) - {mod['code']}**")
         st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
-                  "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
-                  "Every row needs a clear Name. Special Travel Date is optional. "
-                  "**Applies To** decides which Modality/Modalities actually get charged this supplement when "
-                  "published - 'All Modalities' means every room/cabin category on this tour gets it, or pick "
-                  "one specific Modality (e.g. 'Superior') if it should only apply there. "
-                  "**Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per room' (e.g. "
-                  "'USD 71.00 per room per night') - since that flat per-room charge must be split by how "
-                  "many people share the room, these 4 columns hold the resulting per-person amount for "
-                  "each occupancy. For a normal per-person add-on, just fill 'Price (per person)' - the 4 "
-                  "occupancy columns default to matching it.")
-
-        # CONFIRMED FIX (triple-charging bug): options for the "Applies To" dropdown are
-        # built fresh on every render from whatever Modalities are known RIGHT NOW (this
-        # tour's own base Modality Code + every extra Modality's code below) - so newly
-        # added/renamed/removed Modalities immediately show up here too.
-        mct_modality_options = ["All Modalities"]
-        if (current.get("modality_code") or "").strip():
-            mct_modality_options.append(current["modality_code"].strip())
-        for _mod in current.get("extra_modalities", []):
-            _mod_code = (_mod.get("code") or "").strip()
-            if _mod_code and _mod_code not in mct_modality_options:
-                mct_modality_options.append(_mod_code)
-
-        if current.get("supplement_scope_warnings"):
-            st.warning(
-                "🤖 Couldn't confidently tell which Modality these supplements belong to, so they were "
-                "left on **'All Modalities'** for now - please double-check the 'Applies To' column below "
-                "before publishing: " + ", ".join(current["supplement_scope_warnings"])
-            )
+                  "upgrade, a meal upgrade, or an optional excursion day, OR a peak-season surcharge, "
+                  "SPECIFIC TO THIS MODALITY. Leave empty if this Modality has none. Every row needs a "
+                  "clear Name. **Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per "
+                  "room' (e.g. 'USD 71.00 per room per night') - since that flat per-room charge must be "
+                  "split by how many people share the room, these 4 columns hold the resulting per-person "
+                  "amount for each occupancy. For a normal per-person add-on, just fill 'Price (per "
+                  "person)' - the 4 occupancy columns default to matching it.")
+        if midx > 0:
+            st.caption("💡 Pre-filled below with whatever was entered for Modality 1's supplements, as a "
+                      "starting point - edit or remove any that don't actually apply to this Modality.")
 
         mct_default_supplements = data.get("supplements") or []
         mct_supp_df_rows = [
@@ -1203,7 +1186,6 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 "Per Pax": s.get("per_pax", True),
                 "Mandatory": s.get("mandatory", False),
                 "On Request": s.get("on_request", False),
-                "Applies To": s.get("applies_to") if s.get("applies_to") in mct_modality_options else "All Modalities",
                 "Special Travel Start Date": s.get("travel_start_date", ""),
                 "Special Travel End Date": s.get("travel_end_date", ""),
             }
@@ -1211,11 +1193,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         ]
         mct_supp_df = pd.DataFrame(mct_supp_df_rows) if mct_supp_df_rows else pd.DataFrame(
             columns=["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
-                     "Per Pax", "Mandatory", "On Request", "Applies To",
-                     "Special Travel Start Date", "Special Travel End Date"]
+                     "Per Pax", "Mandatory", "On Request", "Special Travel Start Date", "Special Travel End Date"]
         )
 
-        def _save_mct_supplements(edited_df, data=data, idx=idx, modality_options=mct_modality_options):
+        def _save_mct_supplements(edited_df, data=data, midx=midx):
             missing_name = False
             new_supplements = []
             for _, row in edited_df.iterrows():
@@ -1227,9 +1208,6 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     continue
                 if not name:
                     continue
-                applies_to = str(row.get("Applies To", "All Modalities") or "All Modalities").strip()
-                if applies_to not in modality_options:
-                    applies_to = "All Modalities"
                 flat_price = float(price_given or 0)
 
                 def _occ(col, fallback=flat_price):
@@ -1248,132 +1226,137 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
-                    "applies_to": applies_to,
                     "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
                     "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
                 })
             data["supplements"] = new_supplements
-            st.session_state[f"_mct_supplements_missing_name_{idx}"] = missing_name
+            st.session_state[f"_mct_mod_supplements_missing_name_{midx}"] = missing_name
 
-        editable_table(
-            f"Supplements - {current['label'] or current['tour_code']}", mct_supp_df, f"mct_supplements_{idx}",
-            on_save=_save_mct_supplements,
-            column_config={"Applies To": st.column_config.SelectboxColumn("Applies To", options=mct_modality_options, required=True)}
-        )
-        if st.session_state.get(f"_mct_supplements_missing_name_{idx}"):
+        editable_table(f"Supplements - {mod['code']}", mct_supp_df, f"mct_mod_supplements_{midx}", on_save=_save_mct_supplements)
+        if st.session_state.get(f"_mct_mod_supplements_missing_name_{midx}"):
             st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
-        st.markdown(f"**➕ Additional Modalities for {current['label'] or current['tour_code']} (optional)**")
-        st.caption("Auto-detected from your document where possible (edit/remove as needed) - add more room/"
-                  "cabin/product types for THIS tour now, all get created together with this tour's single "
-                  "deactivation, so you don't need to manually reactivate it afterward.")
-        if "extra_modalities" not in current:
-            current["extra_modalities"] = []
-
-        for j, mod in enumerate(current["extra_modalities"]):
-            st.markdown(f"*Modality {j + 2}*")
-            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
-            with mcol1:
-                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"mct_extramod_code_{idx}_{j}")
-            with mcol2:
-                mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"mct_extramod_hint_{idx}_{j}")
-            with mcol3:
-                st.write("")
-                if st.button("🗑️ Remove", key=f"mct_extramod_remove_{idx}_{j}"):
-                    current["extra_modalities"].pop(j)
-                    st.rerun()
-
-            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
-                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
-
-            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mct_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
-                with st.spinner("Extracting..."):
-                    mod["data"] = extract_option_only_data(st.session_state.mct_raw_text, human_hint=mod["hint"])
-                    st.rerun()
-
-            if mod["data"]:
-                render_seasonal_price_editor(f"Pricing - {mod['code'] or f'Modality {j + 2}'}", mod["data"], f"mct_extramod_pricing_{idx}_{j}", currency)
-            else:
-                st.info("Click 'Extract pricing' above to get started for this modality.")
-            st.divider()
-
-        if st.button("➕ Add another Modality", key=f"mct_add_extramod_{idx}"):
-            current["extra_modalities"].append({"code": "", "hint": "", "data": None})
-            st.rerun()
-
-        st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['tour_code']}**")
-        mct_clarify_q = st.text_input("Your message", key=f"mct_clarify_input_{idx}")
-        if st.button("Send", disabled=not mct_clarify_q.strip(), key=f"mct_clarify_send_{idx}"):
-            with st.spinner("Thinking..."):
-                result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
-                st.session_state[f"mct_clarify_result_{idx}"] = result
-                if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
-                    if "price_list" in result["changes"]:
-                        st.session_state[f"_editing_table_mct_pricing_{idx}"] = False
-                    if "operational_days" in result["changes"]:
-                        st.session_state.pop(f"mct_days_{idx}", None)
-                    if "stop_sales" in result["changes"]:
-                        st.session_state.pop(f"mct_stops_{idx}", None)
-                st.rerun()
-        if st.session_state.get(f"mct_clarify_result_{idx}"):
-            r = st.session_state[f"mct_clarify_result_{idx}"]
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
-
-        is_last = idx == len(queue) - 1
-        btn_label = "✅ Confirm this tour & Finish Review" if is_last else "✅ Confirm this tour & Continue →"
+        is_last = midx == len(modalities) - 1
+        btn_label = "✅ Confirm this Modality & Finish Modalities" if is_last else "✅ Confirm this Modality & Continue →"
         if st.button(btn_label, type="primary", disabled=not data.get("price_list")):
-            current["confirmed"] = True
+            mod["confirmed"] = True
             if is_last:
-                st.session_state.mct_phase = "publishing"
+                st.session_state.mct_phase = "final_review"
             else:
-                st.session_state.mct_queue_index += 1
+                tour["modality_index"] += 1
             st.rerun()
         if not data.get("price_list"):
             st.info("Add at least one price row before continuing.")
+
+        with st.expander("Not what you wanted?"):
+            ncol1, ncol2, ncol3 = st.columns(3)
+            with ncol1:
+                if midx > 0 and st.button("⬅️ Previous Modality", key=f"mct_mod_prev_{midx}"):
+                    tour["modality_index"] -= 1
+                    st.rerun()
+            with ncol2:
+                if st.button("🔙 Back to Modality selection", key=f"mct_mod_back_{midx}"):
+                    st.session_state.mct_phase = "select_modalities"
+                    st.rerun()
+            with ncol3:
+                if st.button("🔙 Start over", key=f"mct_mod_cancel_{midx}"):
+                    _reset_mct_state()
+                    st.rerun()
         return
 
     # ------------------------------------------------------------------
-    # PHASE 4: publish all confirmed tours, ONE BY ONE
+    # PHASE 6: final recap of the tour + all Modalities, still editable
+    # ------------------------------------------------------------------
+    if st.session_state.mct_phase == "final_review":
+        tour = st.session_state.mct_tour
+        main_data = tour["main_data"]
+
+        st.subheader(f"Final review: {main_data.get('tour_name') or tour['tour_code']}")
+        st.caption("Review everything below before publishing - click 'Edit' on any section to go back "
+                  "and adjust it, your other progress is kept.")
+
+        with st.expander("📋 Main tour info", expanded=False):
+            st.write(f"**Tour Code:** {tour['tour_code']}")
+            st.write(f"**Name:** {main_data.get('tour_name')}")
+            st.write(f"**Nights:** {main_data.get('nights')}")
+            st.write(f"**Itinerary:** {', '.join(main_data.get('itinerary_destinations', [])) or '(none)'}")
+            st.write(f"**Images:** {len([u for u in main_data.get('image_urls', []) if u != FALLBACK_IMAGE])} selected")
+        if st.button("✏️ Edit main tour info"):
+            st.session_state.mct_phase = "reviewing_main"
+            st.rerun()
+
+        for i, mod in enumerate(tour["modalities"]):
+            mdata = mod["data"] or {}
+            with st.expander(f"📋 Modality: {mod['code']}", expanded=False):
+                st.write(f"**Price rows:** {len(mdata.get('price_list', []))}")
+                st.write(f"**Supplements:** {len(mdata.get('supplements', []))}")
+                st.write(f"**Operational Days:** {', '.join(mdata.get('operational_days', []))}")
+            if st.button(f"✏️ Edit Modality '{mod['code']}'", key=f"mct_final_edit_mod_{i}"):
+                tour["modality_index"] = i
+                st.session_state.mct_phase = "reviewing_modality"
+                st.rerun()
+
+        if st.button("➕ Add another Modality"):
+            st.session_state.mct_phase = "select_modalities"
+            st.rerun()
+
+        if st.button("✅ Confirm this tour & Finish Review", type="primary"):
+            st.session_state.mct_phase = "publishing"
+            st.rerun()
+
+        with st.expander("Not what you wanted?"):
+            if st.button("🔙 Start over", key="mct_cancel_final"):
+                _reset_mct_state()
+                st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 7: publish - unchanged sequence (create tour + first Modality's
+    # option active, then each remaining Modality's option, then deactivate
+    # if the human chose draft/inactive)
     # ------------------------------------------------------------------
     if st.session_state.mct_phase == "publishing":
-        queue = st.session_state.mct_queue
-        st.subheader(f"Ready to publish {len(queue)} tours - one by one")
+        tour = st.session_state.mct_tour
+        main_data = tour["main_data"]
+        modalities = tour["modalities"]
+        st.subheader(f"Ready to publish: {main_data.get('tour_name') or tour['tour_code']}")
 
-        st.markdown("**🌍 Destination Check — verify these against Travel Compositor before publishing**")
-        for q in queue:
-            extra_count = len(q.get("extra_modalities", []))
-            extra_note = f" + {extra_count} additional modalit{'y' if extra_count == 1 else 'ies'}" if extra_count else ""
-            with st.expander(f"**{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}{extra_note}", expanded=False):
-                dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
-                if dup_warning:
-                    st.warning(dup_warning)
-                # Never let one bad item crash the WHOLE app/batch - this preview used
-                # to construct HumanPreConfig() unguarded, so a single item with a code
-                # that failed its strict pydantic validation (e.g. not matching the
-                # required "XXX-Number" Tour Code format) took down the entire page for
-                # every tour in the queue, not just the bad one. Contain it here instead.
-                try:
-                    preview_pre_config = HumanPreConfig(
-                        supplier_id=supplier_id, provider_code=q["tour_code"],
-                        min_pax=min_pax, max_pax=max_pax, currency=currency,
-                        modality_code=q["modality_code"], on_request=on_request,
-                        days_available_before_release=release_days
-                    )
-                    preview_payloads = build_closed_tour_payloads(preview_pre_config, q["data"], client)
-                except Exception as e:
-                    # NOT an AI-service failure (friendly_error_message() is meant for
-                    # those) - this is almost always the Tour Code not matching the
-                    # required "XXX-Number" format, so say that plainly rather than
-                    # showing a misleading "AI service" message or a raw traceback.
-                    st.error(f"⚠️ Couldn't preview this tour's destinations - most likely the Tour Code "
-                            f"`{q['tour_code']}` doesn't match the required format (3 letters, a dash, then "
-                            f"a number, e.g. 'BKK-1'). Details: {str(e)[:300]}. This item will also fail to "
-                            f"publish below until fixed - go back and correct its Tour Code / Modality Code.")
-                    continue
+        # Merge every Modality's own supplements into ONE list for the main tour
+        # payload, each explicitly tagged to its own Modality Code via "applies_to"
+        # (builder.py turns this into SupplementVO.modalityCodes) - no guessing
+        # needed, since each Modality's supplements were reviewed on its own
+        # dedicated screen and are already correctly scoped by construction.
+        merged_supplements = []
+        for m in modalities:
+            for s in (m["data"].get("supplements") or []):
+                s_copy = dict(s)
+                s_copy["applies_to"] = m["code"]
+                merged_supplements.append(s_copy)
+
+        combined_data = dict(main_data)
+        combined_data.update(modalities[0]["data"])
+        combined_data["supplements"] = merged_supplements
+
+        extra_note = f" + {len(modalities) - 1} more Modalit{'y' if len(modalities) == 2 else 'ies'}" if len(modalities) > 1 else ""
+        with st.expander(f"**{tour['tour_code']}** - Modality: {modalities[0]['code']}{extra_note}", expanded=True):
+            dup_warning = check_duplicate_tour_name(client, supplier_id, main_data.get("tour_name"))
+            if dup_warning:
+                st.warning(dup_warning)
+            preview_payloads = None
+            try:
+                preview_pre_config = HumanPreConfig(
+                    supplier_id=supplier_id, provider_code=tour["tour_code"],
+                    min_pax=min_pax, max_pax=max_pax, currency=currency,
+                    modality_code=modalities[0]["code"], on_request=on_request,
+                    days_available_before_release=release_days
+                )
+                preview_payloads = build_closed_tour_payloads(preview_pre_config, combined_data, client)
+            except Exception as e:
+                st.error(f"⚠️ Couldn't preview this tour's destinations - most likely the Tour Code "
+                        f"`{tour['tour_code']}` doesn't match the required format (3 letters, a dash, then "
+                        f"a number, e.g. 'BKK-1'). Details: {str(e)[:300]}. Publishing below will also fail "
+                        f"until fixed - go back and correct the Tour Code.")
+            if preview_payloads:
                 for res in preview_payloads.get("itinerary_resolution", []):
                     if res["valid"]:
                         st.markdown(
@@ -1391,113 +1374,99 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         )
 
         mct_activation_choice = st.radio(
-            "After publishing, should these Tours be Active or Inactive (draft)?",
-            ["Inactive (draft) - recommended, review inside Travel Compositor before they go live",
+            "After publishing, should this Tour be Active or Inactive (draft)?",
+            ["Inactive (draft) - recommended, review inside Travel Compositor before it goes live",
              "Active - live immediately"],
             index=0, key="mct_activation_choice"
         )
         mct_publish_as_active = mct_activation_choice.startswith("Active")
 
-        if st.button("🚀 Publish all (one by one)", type="primary"):
-            for q in queue:
-                with st.spinner(f"Publishing '{q['tour_code']}'..."):
-                    try:
-                        pre_config = HumanPreConfig(
-                            supplier_id=supplier_id, provider_code=q["tour_code"],
-                            min_pax=min_pax, max_pax=max_pax, currency=currency,
-                            modality_code=q["modality_code"], on_request=on_request,
-                            days_available_before_release=release_days
-                        )
-                        payloads = build_closed_tour_payloads(pre_config, q["data"], client)
-                        if payloads.get("main_tour_error"):
-                            show_publish_error(f"prepare **{q['tour_code']}**'s payload", payloads["main_tour_error"])
-                            continue
-                        if payloads["tour_option_error"]:
-                            show_publish_error(f"prepare **{q['tour_code']}**'s payload", payloads['tour_option_error'])
-                            continue
-                        if payloads["unresolved_destinations"]:
-                            st.error(f"❌ **{q['tour_code']}**: couldn't resolve destination(s) "
-                                    f"{payloads['unresolved_destinations']} - skipped. Fix the itinerary "
-                                    f"destinations and create this one individually via the normal Create flow instead.")
-                            continue
-
+        if st.button("🚀 Publish", type="primary"):
+            with st.spinner(f"Publishing '{tour['tour_code']}'..."):
+                try:
+                    pre_config = HumanPreConfig(
+                        supplier_id=supplier_id, provider_code=tour["tour_code"],
+                        min_pax=min_pax, max_pax=max_pax, currency=currency,
+                        modality_code=modalities[0]["code"], on_request=on_request,
+                        days_available_before_release=release_days
+                    )
+                    payloads = build_closed_tour_payloads(pre_config, combined_data, client)
+                    if payloads.get("main_tour_error"):
+                        show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["main_tour_error"])
+                    elif payloads["tour_option_error"]:
+                        show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["tour_option_error"])
+                    elif payloads["unresolved_destinations"]:
+                        st.error(f"❌ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
+                                f"fix the itinerary destinations and try again.")
+                    else:
                         creation_payload = dict(payloads["main_tour_payload"])
                         creation_payload["active"] = True
                         result = client.create_closed_tour(supplier_id, creation_payload)
                         if "error" in result:
-                            show_publish_error(f"create **{q['tour_code']}**", result)
-                            continue
-                        real_code = result.get("code", payloads["main_tour_code"])
-
-                        # api_client.py's _request() already retries each individual POST
-                        # attempt up to 6 times internally now - this loop just still tries
-                        # BOTH candidate codes (that part isn't a retry, it's genuinely two
-                        # different possible identifiers - see comment below at the other
-                        # occurrence of this pattern).
-                        option_result = None
-                        used_code = None
-                        for candidate_code in [q["tour_code"], real_code]:
-                            option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
-                            if "error" not in option_result:
-                                used_code = candidate_code
-                                break
-                        if "error" in option_result:
-                            show_publish_error(f"create **{q['tour_code']}**'s option (created as `{real_code}`)", option_result)
-                            continue
+                            show_publish_error(f"create **{tour['tour_code']}**", result)
                         else:
-                            st.success(f"✅ **{q['tour_code']}**: base modality '{q['modality_code']}' created (option code used: `{used_code}`).")
+                            real_code = result.get("code", payloads["main_tour_code"])
 
-                        for mod in q.get("extra_modalities", []):
-                            if not mod.get("code") or not mod.get("data"):
-                                st.warning(f"⚠️ **{q['tour_code']}**: skipped an extra modality - missing code or pricing data.")
-                                continue
-                            with st.spinner(f"Creating '{q['tour_code']}' modality '{mod['code']}'..."):
-                                try:
-                                    mod_pre_config = HumanPreConfig(
-                                        supplier_id=supplier_id, provider_code=q["tour_code"],
-                                        min_pax=min_pax, max_pax=max_pax, currency=currency,
-                                        modality_code=mod["code"], on_request=on_request,
-                                        days_available_before_release=release_days
-                                    )
-                                    mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
-                                    if mod_payloads["tour_option_error"]:
-                                        show_publish_error(f"prepare **{q['tour_code']}** modality '{mod['code']}'", mod_payloads["tour_option_error"])
-                                        continue
-                                    mod_result, mod_used_code = try_code_variants(
-                                        lambda c: client.create_closed_tour_option(supplier_id, c, mod_payloads["tour_option_payload"]),
-                                        real_code
-                                    )
-                                    if "error" in mod_result:
-                                        show_publish_error(f"create **{q['tour_code']}** modality '{mod['code']}'", mod_result)
-                                    else:
-                                        st.success(f"✅ **{q['tour_code']}**: modality '{mod['code']}' created (code used: `{mod_used_code}`).")
-                                except Exception as e:
-                                    show_publish_error(f"create **{q['tour_code']}** modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
-                                    continue
-
-                        if mct_publish_as_active:
-                            st.success(f"✅ **{q['tour_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
-                        else:
-                            deactivate_payload = dict(creation_payload)
-                            deactivate_payload["active"] = False
-                            deactivate_payload["code"] = real_code
-                            deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
-                            if "error" in deactivate_result:
-                                st.warning(f"⚠️ **{q['tour_code']}**: created and published, but switching back to "
-                                          f"inactive failed - {deactivate_result}")
+                            # api_client.py's _request() already retries each individual POST
+                            # attempt up to 6 times internally - this loop just still tries BOTH
+                            # candidate codes (genuinely two different possible identifiers).
+                            option_result = None
+                            used_code = None
+                            for candidate_code in [tour["tour_code"], real_code]:
+                                option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
+                                if "error" not in option_result:
+                                    used_code = candidate_code
+                                    break
+                            if "error" in option_result:
+                                show_publish_error(f"create **{tour['tour_code']}**'s option (created as `{real_code}`)", option_result)
                             else:
-                                st.success(f"✅ **{q['tour_code']}** published successfully as `{real_code}` (inactive/draft).")
-                    except Exception as e:
-                        show_publish_error(f"publish **{q['tour_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
-                        continue
+                                st.success(f"✅ **{tour['tour_code']}**: base modality '{modalities[0]['code']}' created (option code used: `{used_code}`).")
 
-        if st.button("🆕 Start a new batch"):
-            for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
-                       "mct_doc_raw_images", "mct_hosted_image_candidates"]:
-                st.session_state.pop(key, None)
-            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+                            for m in modalities[1:]:
+                                with st.spinner(f"Creating '{tour['tour_code']}' modality '{m['code']}'..."):
+                                    try:
+                                        mod_pre_config = HumanPreConfig(
+                                            supplier_id=supplier_id, provider_code=tour["tour_code"],
+                                            min_pax=min_pax, max_pax=max_pax, currency=currency,
+                                            modality_code=m["code"], on_request=on_request,
+                                            days_available_before_release=release_days
+                                        )
+                                        mod_payloads = build_closed_tour_payloads(mod_pre_config, m["data"], client)
+                                        if mod_payloads["tour_option_error"]:
+                                            show_publish_error(f"prepare **{tour['tour_code']}** modality '{m['code']}'", mod_payloads["tour_option_error"])
+                                            continue
+                                        mod_result, mod_used_code = try_code_variants(
+                                            lambda c: client.create_closed_tour_option(supplier_id, c, mod_payloads["tour_option_payload"]),
+                                            real_code
+                                        )
+                                        if "error" in mod_result:
+                                            show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}'", mod_result)
+                                        else:
+                                            st.success(f"✅ **{tour['tour_code']}**: modality '{m['code']}' created (code used: `{mod_used_code}`).")
+                                    except Exception as e:
+                                        show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                        continue
+
+                            if mct_publish_as_active:
+                                st.success(f"✅ **{tour['tour_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
+                            else:
+                                deactivate_payload = dict(creation_payload)
+                                deactivate_payload["active"] = False
+                                deactivate_payload["code"] = real_code
+                                deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
+                                if "error" in deactivate_result:
+                                    st.warning(f"⚠️ **{tour['tour_code']}**: created and published, but switching back to "
+                                              f"inactive failed - {deactivate_result}")
+                                else:
+                                    st.success(f"✅ **{tour['tour_code']}** published successfully as `{real_code}` (inactive/draft).")
+                except Exception as e:
+                    show_publish_error(f"publish **{tour['tour_code']}** (unexpected error)", str(e))
+
+        if st.button("🆕 Start a new ClosedTour"):
+            _reset_mct_state()
             st.rerun()
         return
+
 
 
 def render_closable_image_section(condition, header, closed_key, picker_call):
@@ -4502,7 +4471,8 @@ if multi_modality_mode:
 # regardless of count).
 if action == "create":
     render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files,
-                          min_pax=min_pax, max_pax=max_pax, default_tour_code=provider_code)
+                          min_pax=min_pax, max_pax=max_pax, default_tour_code=provider_code,
+                          extraction_hint=extraction_hint or None)
     st.stop()
 
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
