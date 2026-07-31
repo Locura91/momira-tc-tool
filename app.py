@@ -765,18 +765,28 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         invalid_codes = []
         missing_codes = []
+        bad_format_codes = []
         new_queue = []
         seen_tour_codes = {}
         for cand in candidates:
             if not cand["selected"]:
                 continue
-            code = cand["tour_code"].strip()
+            code = cand["tour_code"].strip().upper()
             mod_code = cand["modality_code"].strip()
             if not code or not mod_code:
                 missing_codes.append(cand["label"] or "(unnamed variant)")
                 continue
             if any(c in mod_code for c in ["/", "\\", "+", "-"]):
                 invalid_codes.append(mod_code)
+                continue
+            # CONFIRMED REQUIRED FORMAT: Travel Compositor's own Provider Code must be
+            # 3 letters, a dash, then a number (e.g. "BKK-1") - this is enforced deep
+            # inside HumanPreConfig's own validation, which used to only surface as an
+            # unhandled crash on the publish-preview screen further down. Catch it here
+            # instead, at the earliest point, with a message that says exactly what's
+            # wrong and how to fix it.
+            if not re.match(r"^[A-Z]{3}-\d+$", code):
+                bad_format_codes.append((cand["label"] or "(unnamed variant)", cand["tour_code"]))
                 continue
             seen_tour_codes.setdefault(code, []).append(cand["label"] or "(unnamed variant)")
             new_queue.append({"label": cand["label"], "tour_code": code, "modality_code": mod_code, "data": None, "confirmed": False})
@@ -788,6 +798,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     f"excluded - enter one for each before continuing: {missing_codes}")
         if invalid_codes:
             st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
+        if bad_format_codes:
+            bad_list = ", ".join(f"{label} (\"{raw}\")" for label, raw in bad_format_codes)
+            st.error(f"🚫 These Tour Codes don't match the required format and were excluded: {bad_list}. "
+                    f"A Tour Code must be exactly 3 letters, a dash, then a number - e.g. 'BKK-1' or 'ASW-12' "
+                    f"(letters are automatically capitalized for you, but the letters-dash-number shape is "
+                    f"required by Travel Compositor). This is your own made-up reference code, not the "
+                    f"Modality name - if you typed something like 'Private Standard' here, that likely "
+                    f"belongs in the Modality Code field instead.")
         if duplicate_codes:
             for code, labels in duplicate_codes.items():
                 st.error(f"🚫 ClosedTour Code `{code}` is used by more than one selected variant ({', '.join(labels)}) "
@@ -1126,13 +1144,29 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
                 if dup_warning:
                     st.warning(dup_warning)
-                preview_pre_config = HumanPreConfig(
-                    supplier_id=supplier_id, provider_code=q["tour_code"],
-                    min_pax=min_pax, max_pax=max_pax, currency=currency,
-                    modality_code=q["modality_code"], on_request=on_request,
-                    days_available_before_release=release_days
-                )
-                preview_payloads = build_closed_tour_payloads(preview_pre_config, q["data"], client)
+                # Never let one bad item crash the WHOLE app/batch - this preview used
+                # to construct HumanPreConfig() unguarded, so a single item with a code
+                # that failed its strict pydantic validation (e.g. not matching the
+                # required "XXX-Number" Tour Code format) took down the entire page for
+                # every tour in the queue, not just the bad one. Contain it here instead.
+                try:
+                    preview_pre_config = HumanPreConfig(
+                        supplier_id=supplier_id, provider_code=q["tour_code"],
+                        min_pax=min_pax, max_pax=max_pax, currency=currency,
+                        modality_code=q["modality_code"], on_request=on_request,
+                        days_available_before_release=release_days
+                    )
+                    preview_payloads = build_closed_tour_payloads(preview_pre_config, q["data"], client)
+                except Exception as e:
+                    # NOT an AI-service failure (friendly_error_message() is meant for
+                    # those) - this is almost always the Tour Code not matching the
+                    # required "XXX-Number" format, so say that plainly rather than
+                    # showing a misleading "AI service" message or a raw traceback.
+                    st.error(f"⚠️ Couldn't preview this tour's destinations - most likely the Tour Code "
+                            f"`{q['tour_code']}` doesn't match the required format (3 letters, a dash, then "
+                            f"a number, e.g. 'BKK-1'). Details: {str(e)[:300]}. This item will also fail to "
+                            f"publish below until fixed - go back and correct its Tour Code / Modality Code.")
+                    continue
                 for res in preview_payloads.get("itinerary_resolution", []):
                     if res["valid"]:
                         st.markdown(
@@ -4834,15 +4868,22 @@ if st.session_state.extracted:
     if st.button("🔎 Resolve Destinations & Build Payload",
                 disabled=not price_list_valid):
         _real_provider_code = st.session_state.get("fetched_tour_provider_code", "")
-        pre_config = HumanPreConfig(
-            supplier_id=supplier_id,
-            provider_code=provider_code or _real_provider_code or "XXX-1",
-            min_pax=min_pax, max_pax=max_pax, currency=currency,
-            modality_code=modality_code, on_request=on_request,
-            days_available_before_release=days_available_before_release
-        )
         with st.spinner("Resolving destinations against Travel Compositor..."):
             try:
+                # HumanPreConfig() itself used to be constructed OUTSIDE this
+                # try block - if provider_code didn't match the required
+                # "XXX-Number" format, its pydantic validation raised
+                # unguarded and crashed the whole app instead of showing a
+                # contained error here. Moved inside the try so that failure
+                # mode is caught too, not just failures inside
+                # build_closed_tour_payloads.
+                pre_config = HumanPreConfig(
+                    supplier_id=supplier_id,
+                    provider_code=provider_code or _real_provider_code or "XXX-1",
+                    min_pax=min_pax, max_pax=max_pax, currency=currency,
+                    modality_code=modality_code, on_request=on_request,
+                    days_available_before_release=days_available_before_release
+                )
                 st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
                 st.session_state.pre_config = pre_config
             except Exception as e:
