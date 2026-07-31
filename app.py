@@ -1475,6 +1475,236 @@ def render_code_availability_check(client, kind, supplier_id, code, label):
         st.success(f"✅ `{(code or '').strip()}` is available.")
 
 
+def _diff_tour_price_list(old_list, new_list):
+    """
+    Compares two ClosedTour price_list arrays (each entry: startDate/endDate/
+    price{singlePrice,doublePrice,triplePrice,quadruplePrice}), matched by
+    (startDate, endDate) - not by 'name', since that's just a free-text label
+    that can differ without the actual price changing. Returns only the
+    periods that actually differ: [{"period": str, "status": "added"|
+    "removed"|"changed", "old": dict|None, "new": dict|None}] - unchanged
+    periods are omitted so the human only sees what matters.
+    """
+    def _key(row):
+        return (row.get("startDate", ""), row.get("endDate", ""))
+
+    def _amounts(row):
+        price = row.get("price") or {}
+        out = {}
+        for k, label in [("singlePrice", "Single"), ("doublePrice", "Double"),
+                         ("triplePrice", "Triple"), ("quadruplePrice", "Quad")]:
+            block = price.get(k)
+            if isinstance(block, dict) and block.get("amount") is not None:
+                out[label] = block["amount"]
+        return out
+
+    old_by_key = {_key(r): r for r in (old_list or [])}
+    new_by_key = {_key(r): r for r in (new_list or [])}
+    changes = []
+    for key in sorted(set(old_by_key) | set(new_by_key)):
+        old_row, new_row = old_by_key.get(key), new_by_key.get(key)
+        period = f"{key[0]} → {key[1]}"
+        if old_row and not new_row:
+            changes.append({"period": period, "status": "removed", "old": _amounts(old_row), "new": None})
+        elif new_row and not old_row:
+            changes.append({"period": period, "status": "added", "old": None, "new": _amounts(new_row)})
+        else:
+            old_amt, new_amt = _amounts(old_row), _amounts(new_row)
+            if old_amt != new_amt:
+                changes.append({"period": period, "status": "changed", "old": old_amt, "new": new_amt})
+    return changes
+
+
+def render_tour_update_comparison(publish_action, data, payloads, client, supplier_id,
+                                  existing_tour_code, working_tour_code, modality_code):
+    """
+    For "Update an existing tour's details" / "Update an existing option":
+    fetches what's CURRENTLY live on Travel Compositor (already cached in
+    st.session_state.fetched_tour from Step 3's "Check what's already
+    online") and compares it against the freshly-extracted new data, so a
+    human sees exactly what's changing before publishing an update instead
+    of blindly overwriting whatever was there.
+
+    CONFIRMED RULE #1: a ClosedTour's number of NIGHTS is a structural fact
+    about the product, not a detail that gets "updated" - if the new source
+    describes a different night count than what's currently live, this is a
+    DIFFERENT tour, not a revision of the same one (the itinerary/pricing
+    structure is built around a fixed night count). Returns True if this
+    hard block applies - the caller must then refuse to let the human
+    publish, since Travel Compositor's PUT is meant for genuine detail
+    corrections, not restructuring the whole product.
+    """
+    st.subheader("🔄 Comparing with what's already online")
+    blocks_publish = False
+    old = st.session_state.get("fetched_tour")
+    have_old_tour = isinstance(old, dict) and "error" not in old
+
+    if publish_action == "Update an existing tour's details":
+        if not have_old_tour:
+            st.info("ℹ️ No 'what's already online' data was fetched for this tour - skipping the "
+                   "before/after comparison. Go back to Step 3 and click 'Check what's already online "
+                   "for this code' to compare against what's currently live before publishing this update.")
+            return False
+
+        old_nights, new_nights = old.get("nights"), data.get("nights")
+        if old_nights is not None and new_nights is not None and int(old_nights) != int(new_nights):
+            blocks_publish = True
+            st.error(
+                f"🚫 **Number of nights changed: {old_nights} → {new_nights}.** This is treated as a "
+                f"DIFFERENT tour, not an update of `{existing_tour_code}` - the itinerary and pricing "
+                f"structure is built around a fixed night count, so pushing this through as an update "
+                f"would corrupt the existing tour rather than genuinely revise it.\n\n"
+                f"**What to do instead:** go back to Step 1 and choose **'Create a brand-new tour "
+                f"(+ first option)'**, with a NEW ClosedTour Code and Modality Code for this "
+                f"{new_nights}-night variant."
+            )
+        else:
+            st.caption(f"✅ Nights unchanged ({new_nights}) - safe to update in place.")
+
+        old_name, new_name = old.get("name"), data.get("tour_name")
+        if old_name and new_name and old_name.strip() != new_name.strip():
+            st.info(f"✏️ Name changing: **{old_name}** → **{new_name}**")
+
+        old_stops, new_stops = len(old.get("itinerary") or []), len(data.get("itinerary_destinations") or [])
+        if old_stops and new_stops and old_stops != new_stops:
+            st.warning(f"🗺️ Itinerary stop count changing: **{old_stops}** → **{new_stops}** stops - "
+                      f"double-check the new itinerary reflects a genuine route change, not a misread "
+                      f"source document.")
+
+        old_hotels, new_hotels = old.get("hotels"), data.get("hotels_count")
+        if old_hotels is not None and new_hotels is not None and old_hotels != new_hotels:
+            st.info(f"🏨 Hotel count changing: **{old_hotels}** → **{new_hotels}**")
+
+    elif publish_action == "Update an existing option":
+        cache_key = f"_cmp_fetched_option_{modality_code}"
+        if cache_key not in st.session_state:
+            with st.spinner("Fetching current live pricing for this modality..."):
+                st.session_state[cache_key] = client.get_closed_tour_option(
+                    supplier_id, working_tour_code or existing_tour_code, modality_code
+                )
+        old_option = st.session_state[cache_key]
+        if isinstance(old_option, dict) and "error" not in old_option:
+            old_price_list = old_option.get("priceList", [])
+            new_price_list = (payloads.get("tour_option_payload") or {}).get("priceList", [])
+            changes = _diff_tour_price_list(old_price_list, new_price_list)
+            if not changes:
+                st.success("✅ No pricing changes detected for this modality vs. what's currently live.")
+            else:
+                st.write(f"**{len(changes)} price period(s) changing:**")
+                for c in changes:
+                    if c["status"] == "changed":
+                        st.markdown(f"- 🔁 **{c['period']}**: {c['old']} → **{c['new']}**")
+                    elif c["status"] == "added":
+                        st.markdown(f"- ➕ **{c['period']}** (new): **{c['new']}**")
+                    else:
+                        st.markdown(f"- ➖ **{c['period']}** (removed, was {c['old']})")
+        else:
+            err_detail = old_option.get("message", old_option) if isinstance(old_option, dict) else old_option
+            st.warning(f"⚠️ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
+
+    return blocks_publish
+
+
+def _diff_ticket_option_pricing(old_option, new_payload):
+    """
+    Compares an existing (GET) ContractTicketModalityVO dict against a
+    freshly-built new one (same field names, confirmed against the real
+    GET response) - returns a list of human-readable "field: old → new"
+    strings for whichever priced fields actually changed. Handles all three
+    pricing modes (Distribution/Occupancy/Service).
+    """
+    changes = []
+    old_type = old_option.get("priceType", "DISTRIBUTION")
+    new_type = new_payload.get("priceType", "DISTRIBUTION")
+    if old_type != new_type:
+        changes.append(f"Pricing mode: **{old_type}** → **{new_type}**")
+
+    for field, label in [("baseAdultPrice", "Adult price"), ("baseChildrenPrice", "Child price"),
+                         ("baseInfantPrice", "Infant price"), ("baseServicePrice", "Service price")]:
+        old_val, new_val = old_option.get(field), new_payload.get(field)
+        if old_val is not None and new_val is not None and float(old_val) != float(new_val):
+            changes.append(f"{label}: **{old_val}** → **{new_val}**")
+
+    old_occ = {o.get("occupancy"): o.get("amount") for o in (old_option.get("occupancyPrices") or [])}
+    new_occ = {o.get("occupancy"): o.get("amount") for o in (new_payload.get("occupancyPrices") or [])}
+    if old_occ != new_occ:
+        for k in sorted(set(old_occ) | set(new_occ), key=lambda x: (x is None, x)):
+            if old_occ.get(k) != new_occ.get(k):
+                changes.append(f"Occupancy {k} pax: **{old_occ.get(k, '-')}** → **{new_occ.get(k, '-')}**")
+
+    old_dates = (old_option.get("startDate"), old_option.get("endDate"))
+    new_dates = (new_payload.get("startDate"), new_payload.get("endDate"))
+    if old_dates != new_dates:
+        changes.append(f"Validity dates: **{old_dates[0]} → {old_dates[1]}** → **{new_dates[0]} → {new_dates[1]}**")
+
+    return changes
+
+
+def render_ticket_update_comparison(publish_action, data, payloads, client, supplier_id,
+                                    existing_ticket_code, modality_code):
+    """
+    Ticket equivalent of render_tour_update_comparison() - see that function
+    for the full rationale. Tickets have no "nights" concept (single-day
+    excursions), so there's no hard-block rule here - just a clear
+    before/after comparison so an update is never a silent overwrite.
+    Always returns False (nothing about a Ticket update is hard-blocked).
+    """
+    st.subheader("🔄 Comparing with what's already online")
+    old = st.session_state.get("tk_fetched_ticket")
+    have_old_ticket = isinstance(old, dict) and "error" not in old
+
+    if publish_action == "Update an existing ticket's details":
+        if not have_old_ticket:
+            st.info("ℹ️ No 'what's already online' data was fetched for this ticket - skipping the "
+                   "before/after comparison. Go back to Step 3 and click 'Check what's already online "
+                   "for this code' to compare against what's currently live before publishing this update.")
+            return False
+
+        old_name, new_name = old.get("name"), data.get("ticket_name")
+        if old_name and new_name and old_name.strip() != new_name.strip():
+            st.info(f"✏️ Name changing: **{old_name}** → **{new_name}**")
+
+        old_duration, new_duration = old.get("duration"), data.get("duration")
+        if old_duration is not None and new_duration is not None and old_duration != new_duration:
+            st.warning(f"⏱️ Duration changing: **{old_duration}** → **{new_duration}** "
+                      f"({data.get('duration_type', '')}) - double-check this is a genuine change, not a "
+                      f"misread source value.")
+
+        # The real GET response's geolocation only has latitude/longitude (no city name stored) -
+        # compare coordinates instead, with a loose threshold since minor geocoding rounding
+        # shouldn't itself read as "the city changed".
+        old_geo = old.get("geolocation") or {}
+        old_lat, old_lng = old_geo.get("latitude"), old_geo.get("longitude")
+        new_lat, new_lng = payloads.get("geolocation_latitude"), payloads.get("geolocation_longitude")
+        if None not in (old_lat, old_lng, new_lat, new_lng):
+            moved_far = abs(old_lat - new_lat) > 0.05 or abs(old_lng - new_lng) > 0.05  # roughly > ~5km
+            if moved_far:
+                st.warning(f"📍 Location moved noticeably: was ({old_lat:.4f}, {old_lng:.4f}), now resolves to "
+                          f"({new_lat:.4f}, {new_lng:.4f}) for city '{data.get('city', '')}' - a big location "
+                          f"shift usually means a genuinely different excursion, not just a detail update. "
+                          f"Double-check this is intentional.")
+
+    elif publish_action == "Update an existing ticket option":
+        cache_key = f"_cmp_fetched_tk_option_{modality_code}"
+        if cache_key not in st.session_state:
+            with st.spinner("Fetching current live pricing for this modality..."):
+                st.session_state[cache_key] = client.get_ticket_option(supplier_id, existing_ticket_code, modality_code)
+        old_option = st.session_state[cache_key]
+        if isinstance(old_option, dict) and "error" not in old_option:
+            changes = _diff_ticket_option_pricing(old_option, payloads.get("ticket_option_payload") or {})
+            if not changes:
+                st.success("✅ No pricing changes detected for this modality vs. what's currently live.")
+            else:
+                st.write(f"**{len(changes)} change(s):**")
+                for c in changes:
+                    st.markdown(f"- 🔁 {c}")
+        else:
+            err_detail = old_option.get("message", old_option) if isinstance(old_option, dict) else old_option
+            st.warning(f"⚠️ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
+
+    return False
+
+
 def _summarize_modality_pricing(kind, data, currency):
     """
     Renders a compact, read-only summary of one modality's key facts
@@ -3290,6 +3520,11 @@ def render_ticket_flow(client):
                 st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "
                         "of its own (geolocation lives on the main ticket only) - nothing to confirm here.")
 
+            if publish_action in ("Update an existing ticket's details", "Update an existing ticket option"):
+                render_ticket_update_comparison(
+                    publish_action, data, payloads, client, supplier_id, existing_ticket_code, modality_code
+                )
+
             with st.expander("🔧 Main Ticket Payload", expanded=False):
                 if payloads["main_ticket_error"]:
                     st.error(f"Invalid: {payloads['main_ticket_error']}")
@@ -4537,6 +4772,13 @@ if st.session_state.extracted:
                 f"the exact name Travel Compositor uses, then click 'Resolve Destinations & Build Payload' again."
             )
 
+        tour_update_blocks_publish = False
+        if publish_action in ("Update an existing tour's details", "Update an existing option"):
+            tour_update_blocks_publish = render_tour_update_comparison(
+                publish_action, data, payloads, client, payloads["supplier_id"],
+                existing_tour_code, st.session_state.get("working_tour_code"), modality_code
+            )
+
         col3, col4 = st.columns(2)
         with col3:
             if publish_action == "Create a brand-new tour (+ first option)":
@@ -4587,8 +4829,12 @@ if st.session_state.extracted:
             and not payloads["tour_option_error"]
             and not missing_existing_code
             and not missing_provider_code_for_update
+            and not tour_update_blocks_publish
         )
 
+        if tour_update_blocks_publish:
+            st.info("Publishing is blocked until you either switch to 'Create a brand-new tour' (see the "
+                   "message above) or fix the source so the night count matches what's currently live.")
         if missing_existing_code:
             st.info("Existing Tour Code is missing - go back to Step 3.")
         elif not can_publish:
