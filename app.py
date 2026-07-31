@@ -761,6 +761,33 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                       "Untick any row you don't actually want. For each ticked row, fill in the two code "
                       "fields on the right (hover the ⓘ next to each for what it means).")
 
+            # SAFETY NET (confirmed real case): genuine tour variants almost always
+            # differ in duration - that's usually the whole point of them being
+            # different products (e.g. a 3-night vs 4-night cruise). If every detected
+            # "variant" here reports the SAME nights, that's a strong signal the AI
+            # actually found different Modalities/room-categories (e.g. separate
+            # "Standard | English" / "Superior | English" pricing+accommodation blocks
+            # for the SAME itinerary) and mislabeled them as tour variants instead of
+            # Modalities of one tour. In that case they'd need the SAME Tour Code, which
+            # the duplicate-code check further down correctly refuses (you can't create
+            # 2 separate ClosedTours sharing one code) - leaving the human stuck without
+            # an obvious way out. Offer a one-click fix instead.
+            distinct_nights = {c.get("nights") for c in candidates if c.get("nights") is not None}
+            if len(candidates) > 1 and len(distinct_nights) <= 1:
+                st.warning(
+                    "🤔 These all report the same length - that often means the document actually describes "
+                    "ONE tour with different Modalities (e.g. 'Standard' vs 'Superior' pricing/accommodation "
+                    "for the same itinerary), not genuinely different tour products. If that's the case here, "
+                    "merge them below instead of trying to create separate tours with the same Tour Code "
+                    "(which isn't allowed)."
+                )
+                if st.button("🔀 Merge into ONE tour with different Modalities instead", key="mct_merge_variants"):
+                    st.session_state.mct_candidates = [{
+                        "label": "", "nights": candidates[0].get("nights"), "tour_code": default_tour_code,
+                        "modality_code": "Standard", "selected": True, "is_genuine_variant": False,
+                    }]
+                    st.rerun()
+
         for i, cand in enumerate(candidates):
             ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
             with ccol1:
@@ -837,7 +864,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if duplicate_codes:
             for code, labels in duplicate_codes.items():
                 st.error(f"🚫 ClosedTour Code `{code}` is used by more than one selected variant ({', '.join(labels)}) "
-                        f"- each tour needs its own unique code.")
+                        f"- each tour needs its own unique code. If these are actually the SAME tour with "
+                        f"different Modalities (not genuinely different tour products), use the '🔀 Merge into "
+                        f"ONE tour' button above instead of giving them matching Tour Codes here.")
 
         for q in new_queue:
             existing_check = check_code_availability(client, "tour", supplier_id, q["tour_code"])
