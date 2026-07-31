@@ -81,18 +81,41 @@ Rules:
   season/holiday without exact dates (e.g. "Christmas/New Year", "Peak Season"), use your best real-world
   date range for that period and say so in pricing_notes - don't leave the date range empty just because
   exact dates weren't spelled out.
-  - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where you can (e.g. 20% of
-    the base per-person price) and put that resulting number in the "price" field as normal. If a
-    percentage genuinely can't be converted to a safe real amount, still create the mandatory supplement
-    with your best estimate and flag it clearly in pricing_notes for review.
-  - Per-night/per-component surcharges: pre-calculate the TOTAL amount by multiplying the per-night rate by
-      the actual number of nights spent at that specific hotel/component (determine this from the
-      day-by-day itinerary if possible - e.g. rate $11 x 2 nights at that hotel = $22 supplement total).
-      CRITICAL SELF-CHECK - this exact multiplication has been missed before: before finalizing the
-      supplement price, explicitly verify you multiplied rate x nights and did NOT just copy the
-      per-night rate as if it were the total.
-      If the number of nights at that specific component genuinely can't be determined from the source,
-      say so plainly in pricing_notes rather than guessing.
+  CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND
+  the "per_pax" flag below; getting the combination wrong over- or under-charges the customer, so follow
+  this exactly:
+  - "per stay" / a flat one-time amount (source says neither "per person" nor "per night"): charged ONCE
+    regardless of group size or how long the surcharge period runs. price = the stated flat amount,
+    per_pax: false. Never multiply this by anything.
+  - "per person" (and NOT also "per night"): price = the stated per-person amount, exactly as given - do
+    NOT multiply it by a pax count yourself. Set per_pax: true instead, so Travel Compositor's own booking
+    engine multiplies this amount by however many travelers actually book. This is the only correct way to
+    handle it, since the real pax count isn't knowable at extraction time - a tour's pax is a min/max
+    RANGE, never one fixed number.
+  - "per night" (and NOT also "per person") - e.g. "USD 11 per night surcharge during peak season":
+    Travel Compositor's supplement schema has NO native "per night" concept, so this multiplication
+    genuinely must be done by you. price = the per-night rate x the actual number of TOUR nights that
+    fall inside the surcharge's date range, capped at the tour's own total length - e.g. if peak season
+    covers the whole of August but the tour itself is only 5 nights long, the multiplier is 5 (the tour's
+    own length), NEVER the length of the peak season period itself. Work out the actual affected nights
+    from the day-by-day itinerary/dates where possible (e.g. rate $11 x 2 affected nights = $22 total).
+    per_pax: false.
+    CRITICAL SELF-CHECK - this exact multiplication has been missed before: before finalizing the
+    supplement price, explicitly verify you multiplied rate x nights and did NOT just copy the per-night
+    rate as if it were the total. If the actual number of affected nights genuinely can't be determined,
+    say so plainly in pricing_notes rather than guessing.
+  - "per person per night" - e.g. "USD 11 per person per night surcharge at the Deluxe Cabin during peak
+    season": combine the two rules above. price = the per-night rate x the actual affected TOUR nights
+    ONLY (same calculation and same tour-length cap as the "per night" case just above - this part must
+    be pre-calculated by you, since Travel Compositor can't do it). Then set per_pax: true so Travel
+    Compositor further multiplies that per-night total by the actual booked pax count - together giving
+    the correct rate x nights x pax total without you ever needing to guess a pax number.
+  - Whole-trip/percentage surcharges (e.g. "20% higher during Christmas", not tied to a per-night rate):
+    pre-calculate an actual currency amount where you can (e.g. 20% of the base per-person price) and put
+    that resulting number in "price", with per_pax: true (a percentage of a per-person price is itself
+    per-person, so let Travel Compositor scale it by actual pax the same way). If a percentage genuinely
+    can't be converted to a safe real amount, still create the mandatory supplement with your best
+    estimate and flag it clearly in pricing_notes for review.
   CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge specifically, the "name" must stay a
   clean, customer-facing label ONLY - e.g. "Christmas/New Year Surcharge" or "Peak Season Surcharge -
   Hotel X" - and must NEVER include the price, percentage, or the calculation (no "(20% of base price)",
@@ -963,13 +986,29 @@ Extract:
       season/holiday without exact dates, use your best real-world date range for that period and note the
       assumption in pricing_notes. This supplement OVERLAYS the normal modality price - it's an ADDITIONAL
       charge for bookings that fall inside that date range, not a replacement/alternative price.
+      CONFIRMED BASIS RULE (same principle as ClosedTour, adapted to Tickets' schema):
+      - "per person" (the default/normal case for Tickets - adult_price/children_price/infant_price are
+        ALREADY inherently per-person-of-that-type by definition; Travel Compositor charges each booked
+        adult/child/infant that amount automatically): just use the stated per-person amounts as-is - no
+        multiplication needed, and there's no separate per_pax-style flag to set for Tickets.
+      - "per night" - e.g. "USD 11 per person per night surcharge during peak season": Ticket supplements
+        have no native "per night" concept either, so pre-calculate the TOTAL by multiplying the per-night
+        rate by the actual number of nights/units the surcharge period overlaps with THIS ticket's own
+        duration (capped at the ticket's own length, exactly like the ClosedTour tour-length cap above -
+        never just the surcharge period's full length). Same CRITICAL SELF-CHECK as ClosedTour above:
+        verify you multiplied rate x nights/units and did not just copy the per-night rate as the total.
+        The per-person part is already handled by the adult/children/infant price fields themselves - only
+        the nights dimension needs your manual multiplication.
+      - "per stay" / a flat one-time amount not tied to passenger type: Ticket supplements have NO flat/
+        one-time option in this schema (every field is inherently per-passenger-type) - if the source
+        genuinely describes a flat per-booking surcharge, put your best per-person estimate in each of
+        adult_price/children_price/infant_price and clearly flag in pricing_notes that the source
+        described a flat per-booking charge that had to be approximated as per-person, so a human can
+        review and adjust if needed.
       - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where possible (e.g. 20%
         of the base adult/child/infant prices) and put that resulting number in the price fields as
         normal. If a percentage genuinely can't be converted to a safe real amount, still create the
         supplement with your best estimate and flag it in pricing_notes.
-      - Per-night/per-component surcharges: pre-calculate the TOTAL by multiplying the per-night rate by
-        the actual number of nights/units (same CRITICAL SELF-CHECK as ClosedTour above - verify you
-        multiplied rate x nights/units and did not just copy the per-night rate as the total).
       These always apply uniformly and don't compete with anything else, so they're safe as supplements
       even though (2) above forbids mutually-exclusive alternative supplements.
       CRITICAL - CONFIRMED RULE: the "name" must stay a clean, customer-facing label ONLY - e.g.
