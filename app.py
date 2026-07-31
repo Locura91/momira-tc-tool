@@ -956,6 +956,43 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             )
         editable_table(f"Pricing - {current['label'] or current['tour_code']}", price_df, f"mct_pricing_{idx}", on_save=_save_mct_price_list)
 
+        st.markdown(f"**➕ Additional Modalities for {current['label'] or current['tour_code']} (optional)**")
+        st.caption("Add more room/cabin/product types for THIS tour now - all get created together with "
+                  "this tour's single deactivation, so you don't need to manually reactivate it afterward.")
+        if "extra_modalities" not in current:
+            current["extra_modalities"] = []
+
+        for j, mod in enumerate(current["extra_modalities"]):
+            st.markdown(f"*Modality {j + 2}*")
+            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
+            with mcol1:
+                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"mct_extramod_code_{idx}_{j}")
+            with mcol2:
+                mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"mct_extramod_hint_{idx}_{j}")
+            with mcol3:
+                st.write("")
+                if st.button("🗑️ Remove", key=f"mct_extramod_remove_{idx}_{j}"):
+                    current["extra_modalities"].pop(j)
+                    st.rerun()
+
+            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
+                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
+
+            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mct_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
+                with st.spinner("Extracting..."):
+                    mod["data"] = extract_option_only_data(st.session_state.mct_raw_text, human_hint=mod["hint"])
+                    st.rerun()
+
+            if mod["data"]:
+                render_seasonal_price_editor(f"Pricing - {mod['code'] or f'Modality {j + 2}'}", mod["data"], f"mct_extramod_pricing_{idx}_{j}", currency)
+            else:
+                st.info("Click 'Extract pricing' above to get started for this modality.")
+            st.divider()
+
+        if st.button("➕ Add another Modality", key=f"mct_add_extramod_{idx}"):
+            current["extra_modalities"].append({"code": "", "hint": "", "data": None})
+            st.rerun()
+
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['tour_code']}**")
         mct_clarify_q = st.text_input("Your message", key=f"mct_clarify_input_{idx}")
         if st.button("Send", disabled=not mct_clarify_q.strip(), key=f"mct_clarify_send_{idx}"):
@@ -1000,7 +1037,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown("**🌍 Destination Check — verify these against Travel Compositor before publishing**")
         for q in queue:
-            with st.expander(f"**{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}", expanded=False):
+            extra_count = len(q.get("extra_modalities", []))
+            extra_note = f" + {extra_count} additional modalit{'y' if extra_count == 1 else 'ies'}" if extra_count else ""
+            with st.expander(f"**{q['tour_code']}** ({q['label']}) - Modality: {q['modality_code']}{extra_note}", expanded=False):
                 dup_warning = check_duplicate_tour_name(client, supplier_id, q["data"].get("tour_name"))
                 if dup_warning:
                     st.warning(dup_warning)
@@ -1083,6 +1122,34 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             continue
                         else:
                             st.success(f"✅ **{q['tour_code']}**: base modality '{q['modality_code']}' created (option code used: `{used_code}`).")
+
+                        for mod in q.get("extra_modalities", []):
+                            if not mod.get("code") or not mod.get("data"):
+                                st.warning(f"⚠️ **{q['tour_code']}**: skipped an extra modality - missing code or pricing data.")
+                                continue
+                            with st.spinner(f"Creating '{q['tour_code']}' modality '{mod['code']}'..."):
+                                try:
+                                    mod_pre_config = HumanPreConfig(
+                                        supplier_id=supplier_id, provider_code=q["tour_code"],
+                                        min_pax=min_pax, max_pax=max_pax, currency=currency,
+                                        modality_code=mod["code"], on_request=on_request,
+                                        days_available_before_release=release_days
+                                    )
+                                    mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
+                                    if mod_payloads["tour_option_error"]:
+                                        show_publish_error(f"prepare **{q['tour_code']}** modality '{mod['code']}'", mod_payloads["tour_option_error"])
+                                        continue
+                                    mod_result, mod_used_code = try_code_variants(
+                                        lambda c: client.create_closed_tour_option(supplier_id, c, mod_payloads["tour_option_payload"]),
+                                        real_code
+                                    )
+                                    if "error" in mod_result:
+                                        show_publish_error(f"create **{q['tour_code']}** modality '{mod['code']}'", mod_result)
+                                    else:
+                                        st.success(f"✅ **{q['tour_code']}**: modality '{mod['code']}' created (code used: `{mod_used_code}`).")
+                                except Exception as e:
+                                    show_publish_error(f"create **{q['tour_code']}** modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                    continue
 
                         if mct_publish_as_active:
                             st.success(f"✅ **{q['tour_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
