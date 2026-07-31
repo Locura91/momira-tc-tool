@@ -37,7 +37,7 @@ if hasattr(st, "secrets"):
 
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig
-from builder import build_closed_tour_payloads, build_ticket_payloads
+from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos
 from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
 from web_extractor import get_page_text, get_page_images
@@ -4806,7 +4806,23 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 # Lightweight path: no variant detection needed - we're adding
                 # pricing/schedule to an ALREADY-KNOWN modality, not identifying
                 # which tour variant this is.
-                data = extract_option_only_data(raw_text, human_hint=extraction_hint or None)
+                #
+                # CONFIRMED FIX: "Add a new option to an existing tour" is
+                # introducing a genuinely NEW Modality - if that Modality has
+                # its own supplements, they need to be captured too (supplements
+                # live on the MAIN tour, not the option, so they get folded into
+                # the follow-up update_closed_tour PUT below - see the publish
+                # step). extract_option_only_data() deliberately excludes
+                # supplements (it's shared with "update an existing option",
+                # where introducing a brand-new supplement doesn't make sense),
+                # so use extract_modality_data() instead specifically for
+                # add_option, which extracts the exact same price_list/schedule
+                # fields PLUS supplements, scoped to this one new Modality.
+                if action == "add_option":
+                    tour_nights = (st.session_state.get("fetched_tour") or {}).get("nights")
+                    data = extract_modality_data(raw_text, human_hint=extraction_hint or None, tour_nights=tour_nights)
+                else:
+                    data = extract_option_only_data(raw_text, human_hint=extraction_hint or None)
                 st.session_state.extracted = data
                 sources_desc = " + ".join(filter(None, [url] + doc_names))
                 st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
@@ -5660,6 +5676,52 @@ if st.session_state.extracted:
                             st.session_state.just_published_tour_code = target_tour_code
                             st.session_state.just_published_supplier_id = payloads["supplier_id"]
                             st.session_state.just_published_is_inactive = False
+
+                            # CONFIRMED FIX: supplements live on the MAIN tour
+                            # (ContractClosedTourVO), NOT the option just created
+                            # above - if this new Modality has its own supplements,
+                            # they can only be attached via a follow-up PUT to the
+                            # tour, now that the option genuinely exists (Travel
+                            # Compositor validates a supplement's modalityCodes
+                            # against Modalities that already exist as real options -
+                            # same rule that drove the "not found in contract
+                            # modalities" fix for brand-new tours). The PUT payload
+                            # is built from the tour's OWN current live GET data
+                            # (not a fresh extraction) so every other field stays
+                            # exactly as it is - only supplements/modalityCodes change.
+                            new_supplements = data.get("supplements") or []
+                            if new_supplements:
+                                with st.spinner(f"Adding '{modality_code}''s supplements to the tour..."):
+                                    old_tour = st.session_state.get("fetched_tour")
+                                    if not isinstance(old_tour, dict) or "error" in old_tour:
+                                        st.warning(
+                                            f"⚠️ '{modality_code}' was created, but its {len(new_supplements)} "
+                                            f"supplement(s) were NOT added - couldn't find the tour's current "
+                                            f"live data. Go back to Step 3, click 'Check what's already online "
+                                            f"for this code', then use 'Update an existing tour's details' to "
+                                            f"add the supplements separately."
+                                        )
+                                    else:
+                                        new_vos = [v.dict() for v in build_supplement_vos(new_supplements)]
+                                        for v in new_vos:
+                                            v["modalityCodes"] = [modality_code]  # this Modality only, regardless of what "applies_to" said
+                                        update_payload = dict(old_tour)
+                                        update_payload["supplements"] = (old_tour.get("supplements") or []) + new_vos
+                                        update_payload["modalityCodes"] = list(dict.fromkeys(
+                                            (old_tour.get("modalityCodes") or []) + [modality_code]
+                                        ))
+                                        supp_result, supp_used_code = try_code_variants(
+                                            lambda c: client.update_closed_tour(payloads["supplier_id"], {**update_payload, "code": c}),
+                                            target_tour_code
+                                        )
+                                        if "error" in supp_result:
+                                            show_publish_error(f"add '{modality_code}''s supplements to the tour", supp_result)
+                                            st.info(f"'{modality_code}' itself was created successfully above - "
+                                                   f"only its supplements failed to attach. Retry via 'Update "
+                                                   f"an existing tour's details' once the issue above is fixed.")
+                                        else:
+                                            st.success(f"✅ Added {len(new_supplements)} supplement(s) for "
+                                                      f"'{modality_code}' to the tour (code `{supp_used_code}`).")
 
                     elif publish_action == "Update an existing tour's details":
                         update_payload = dict(payloads["main_tour_payload"])
