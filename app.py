@@ -994,7 +994,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 for m in detected:
                     label = (m.get("label") or "").strip()
                     raw_code = (m.get("suggested_code") or label or "").strip()
-                    clean_code = "".join(c for c in raw_code if c not in "/\\+-")
+                    # CONFIRMED FIX (real production failure): this code gets sent straight
+                    # to Travel Compositor's API - "." used to slip through here (stripped
+                    # were only / \ + -), and an AI-suggested code with extra descriptive
+                    # text (e.g. "Standard English min. 2 people") got rejected outright by
+                    # the real API ("Modality code ... not found in contract modalities").
+                    # Strip periods too, and flag anything still suspicious below.
+                    clean_code = "".join(c for c in raw_code if c not in "/\\+-.")
                     candidates.append({"code": clean_code, "hint": label, "selected": True})
                 if not candidates:
                     candidates = [{"code": "", "hint": "", "selected": True}]
@@ -1005,6 +1011,26 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                   "code/hint, or add more manually. At least one Modality is required (a 'Modality' is "
                   "Travel Compositor's own term for the pricing option, e.g. 'Standard' or 'Deluxe').")
 
+        def _mct_modality_code_suspicious(code):
+            # CONFIRMED FIX (real production failure): a Modality Code is only ever safe
+            # if it's the short category name itself - anything with a stray junk word or
+            # unusually long text is almost certainly going to be rejected by the real API
+            # the same way "Standard English min. 2 people" was.
+            c = (code or "")
+            if len(c) > 24:
+                return True
+            lowered = c.lower()
+            return any(junk in lowered for junk in ("people", " pax", "person", " min ", " max ", "min ", "max "))
+
+        suspicious_codes = [c["code"] for c in candidates if c["selected"] and _mct_modality_code_suspicious(c["code"])]
+        if suspicious_codes:
+            st.warning(
+                "🤔 These Modality Codes look unusually long/descriptive for a real code, which has "
+                "caused real publish failures before (Travel Compositor rejects anything that isn't "
+                "the short category name itself, e.g. 'Standard' not 'Standard English min. 2 people') "
+                "- please shorten them to just the core category name: " + ", ".join(f"'{c}'" for c in suspicious_codes)
+            )
+
         for i, cand in enumerate(candidates):
             c1, c2, c3, c4 = st.columns([1, 2, 3, 1])
             with c1:
@@ -1012,7 +1038,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             with c2:
                 cand["code"] = st.text_input(
                     "Modality Code", value=cand["code"], key=f"mct_modcand_code_{i}",
-                    help="Cannot contain the characters / \\ + or - (Travel Compositor's system rejects those)."
+                    help="Just the short category name, e.g. 'Standard' or 'Deluxe' - cannot contain the "
+                         "characters / \\ + - or . (Travel Compositor's system rejects those), and should "
+                         "NOT include descriptive text like the language or a minimum-pax note."
                 )
             with c3:
                 cand["hint"] = st.text_input("AI focus hint (optional)", value=cand["hint"], key=f"mct_modcand_hint_{i}")
@@ -1022,15 +1050,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     candidates.pop(i)
                     st.rerun()
 
-            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-"]):
-                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -).")
+            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-", "."]):
+                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -, .).")
 
         if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
         selected = [c for c in candidates if c["selected"]]
-        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-")]
+        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-.")]
         missing = [c for c in selected if not (c["code"] or "").strip()]
         seen = {}
         for c in selected:
@@ -1235,6 +1263,33 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_table(f"Supplements - {mod['code']}", mct_supp_df, f"mct_mod_supplements_{midx}", on_save=_save_mct_supplements)
         if st.session_state.get(f"_mct_mod_supplements_missing_name_{midx}"):
             st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+
+        st.markdown(f"**🤖 Tell AI what to fix - {mod['code']}**")
+        mct_mod_clarify_q = st.text_input("Your message", key=f"mct_mod_clarify_input_{midx}")
+        if st.button("Send", disabled=not mct_mod_clarify_q.strip(), key=f"mct_mod_clarify_send_{midx}"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.mct_raw_text, data, mct_mod_clarify_q)
+                st.session_state[f"mct_mod_clarify_result_{midx}"] = result
+                if result.get("changes"):
+                    for field_name, new_value in result["changes"].items():
+                        data[field_name] = new_value
+                    # Reset the affected widgets' state so they immediately reflect the
+                    # AI's change instead of showing stale previously-typed/edited values -
+                    # same fix applied to the main tour info's own clarify box.
+                    if "price_list" in result["changes"]:
+                        st.session_state[f"_editing_table_mct_mod_pricing_{midx}"] = False
+                    if "supplements" in result["changes"]:
+                        st.session_state[f"_editing_table_mct_mod_supplements_{midx}"] = False
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop(f"mct_mod_days_{midx}", None)
+                    if "stop_sales" in result["changes"]:
+                        st.session_state.pop(f"mct_mod_stops_{midx}", None)
+                st.rerun()
+        if st.session_state.get(f"mct_mod_clarify_result_{midx}"):
+            r = st.session_state[f"mct_mod_clarify_result_{midx}"]
+            st.info(r.get("summary", ""))
+            if r.get("changes"):
+                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
 
         is_last = midx == len(modalities) - 1
         btn_label = "✅ Confirm this Modality & Finish Modalities" if is_last else "✅ Confirm this Modality & Continue →"
