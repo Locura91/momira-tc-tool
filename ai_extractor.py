@@ -14,6 +14,19 @@ VARIANT_DETECTION_PROMPT = """You are checking whether a DMC (Destination Manage
 
 Only count it as multiple variants if they are genuinely DIFFERENT products a customer would choose between (different duration, different direction/route, or different itinerary) - not just different room categories, optional add-ons, or price tiers for the SAME single itinerary.
 
+CRITICAL - CONFIRMED MISTAKE TO AVOID: a document that gives ONE single day-by-day itinerary (same
+duration, same route, same days) followed by SEPARATE pricing/accommodation blocks labeled by a room or
+service TIER - e.g. "Standard | English" and "Superior | English", each with its own price grid and its
+own named hotel - is NOT multiple tour variants. This is exactly ONE tour sold at multiple Modalities
+(pricing options/room categories), which is a completely different Travel Compositor concept from a tour
+variant. The giveaway: these tiered blocks always share the identical nights/duration and the identical
+itinerary described once above them - a genuine tour variant, by contrast, almost always has ITS OWN
+different duration or route, because that's the actual point of it being a different product. If you see
+two or more pricing blocks that share the same nights value and sit under one single itinerary narrative,
+set "multiple_variants": false regardless of how many differently-labeled pricing tables follow - tag
+each with the same duration and let modality detection (a separate, later step) handle the room/tier
+categories instead.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_variants": true or false,
@@ -638,12 +651,20 @@ def match_modalities_to_existing(existing_codes: list, candidates: list, model: 
     return safe_matches
 
 
-def detect_tour_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
+def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     """
     Checks whether the source text describes ONE tour or MULTIPLE distinct
     variants (e.g. a 3-night and 4-night version of the same cruise).
     Returns an empty list if there's just one tour, or a list of
     {"label": ..., "nights": ...} dicts if genuinely multiple are found.
+
+    CONFIRMED: upgraded from HAIKU_MODEL to the main model after a real
+    misdetection - a document with ONE itinerary but 2 Modality-tiered
+    pricing blocks ("Standard | English" / "Superior | English", same
+    duration) got wrongly split into "2 tour variants". Getting this call
+    wrong is more consequential than most other detection calls in this
+    file (it decides whether the app tries to create ONE ClosedTour or
+    SEVERAL), so it's worth the extra cost/latency of the stronger model.
     """
     print("🔎 Checking for multiple tour variants in this content...")
     result = _call_claude(VARIANT_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
