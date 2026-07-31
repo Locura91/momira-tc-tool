@@ -73,7 +73,12 @@ TICKET_ACTION_LABELS = {
     "update_option": "4: Update existing Ticket Modality",
 }
 TICKET_ACTION_FIELDS = {
-    "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "modality_code", "on_request", "release_days"],
+    # NOTE: "create" deliberately does NOT include "modality_code" - Step 4's
+    # queue-based flow (render_multi_ticket_flow) collects the Modality Code
+    # per Ticket there instead, right next to the Ticket Code, so it's asked
+    # exactly once instead of twice. See "modality_code" in ACTION_FIELDS below
+    # for the identical ClosedTour case.
+    "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "on_request", "release_days"],
     "add_option": ["existing_ticket_code", "modality_code", "on_request"],
     "update_ticket": ["existing_ticket_code", "release_days"],
     "update_option": ["existing_ticket_code", "modality_code", "on_request"],
@@ -86,7 +91,13 @@ ACTION_LABELS = {
     "update_option": "4: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
-    "create": ["provider_code", "min_pax", "max_pax", "currency", "modality_code", "on_request", "release_days"],
+    # NOTE: "create" deliberately does NOT include "modality_code" - Step 4's
+    # queue-based flow (render_multi_tour_flow / the "Set up this tour" screen)
+    # collects the Modality Code per tour there instead, right next to the Tour
+    # Code, so it's asked exactly once instead of twice (previously a human had
+    # to type it here in Step 3 AND again in Step 4 - pure double work, since
+    # Step 3's value was never even used).
+    "create": ["provider_code", "min_pax", "max_pax", "currency", "on_request", "release_days"],
     "add_option": ["existing_tour_code", "modality_code", "on_request"],
     "update_tour": ["existing_tour_code", "release_days"],
     "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
@@ -624,7 +635,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         return
 
 
-def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files, min_pax=1, max_pax=9):
+def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files, min_pax=1, max_pax=9, default_tour_code=""):
     """
     Batch flow for creating MULTIPLE full ClosedTours from one document that
     describes several distinct tour variants (e.g. a 7-night and 10-night
@@ -684,10 +695,24 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     for v in detected:
                         candidates.append({
                             "label": v.get("label", ""), "nights": v.get("nights"),
-                            "tour_code": "", "modality_code": "Standard", "selected": True
+                            "tour_code": "", "modality_code": "Standard", "selected": True,
+                            # This label came from a REAL AI-detected variant, so it's safe
+                            # to later tell the extraction "only extract this named variant,
+                            # ignore the rest" - see is_genuine_variant usage in PHASE 3 below.
+                            "is_genuine_variant": True,
                         })
                     if not candidates:
-                        candidates = [{"label": "", "nights": None, "tour_code": "", "modality_code": "Standard", "selected": True}]
+                        # No real variants detected - this is the single-tour case. The
+                        # "Tour Name" the human types here (see PHASE 2) is just a label for
+                        # display, NOT a real variant to filter the source by - is_genuine_variant
+                        # stays False so PHASE 3 never sends it to the AI as a variant filter
+                        # (doing so previously caused the AI to search the source for a variant
+                        # literally named that, find no match, and return an empty extraction).
+                        # Prefill the Tour Code from what was already entered back in Step 3
+                        # (default_tour_code) so the human doesn't have to type it again here
+                        # - still editable in case they want to change it, but no longer blank.
+                        candidates = [{"label": "", "nights": None, "tour_code": default_tour_code, "modality_code": "Standard",
+                                      "selected": True, "is_genuine_variant": False}]
 
                     # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
                     # if every image already got a real URL, showing them again in a second
@@ -724,10 +749,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if single_tour:
             st.subheader("Set up this tour")
             st.caption("This document describes one tour - no other tour variants were found, so nothing "
-                      "to choose between here. It just needs a Tour Code and a Modality Code below before "
-                      "it can be created (a 'Modality', Travel Compositor's own term, is the pricing "
-                      "option for the tour, e.g. 'Standard' or 'Deluxe' - you can add more Modalities for "
-                      "this same tour in the next step).")
+                      "to choose between here. The Tour Code is already carried over from Step 3 below "
+                      "(edit it here if you want to change it). It still needs a Modality Code before it "
+                      "can be created (a 'Modality', Travel Compositor's own term, is the pricing option "
+                      "for the tour, e.g. 'Standard' or 'Deluxe' - you can add more Modalities for this "
+                      "same tour in the next step).")
         else:
             st.subheader(f"{len(candidates)} tour variants detected - choose which ones to create")
             st.caption("The AI found what look like several different tour variants below (e.g. different "
@@ -760,7 +786,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 )
 
         if st.button("➕ Add another variant manually"):
-            candidates.append({"label": "", "nights": None, "tour_code": "", "modality_code": "Standard", "selected": True})
+            candidates.append({"label": "", "nights": None, "tour_code": "", "modality_code": "Standard",
+                              "selected": True, "is_genuine_variant": False})
             st.rerun()
 
         invalid_codes = []
@@ -789,7 +816,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 bad_format_codes.append((cand["label"] or "(unnamed variant)", cand["tour_code"]))
                 continue
             seen_tour_codes.setdefault(code, []).append(cand["label"] or "(unnamed variant)")
-            new_queue.append({"label": cand["label"], "tour_code": code, "modality_code": mod_code, "data": None, "confirmed": False})
+            new_queue.append({"label": cand["label"], "tour_code": code, "modality_code": mod_code, "data": None,
+                             "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
 
         duplicate_codes = {code: labels for code, labels in seen_tour_codes.items() if len(labels) > 1}
 
@@ -848,9 +876,28 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.rerun()
 
         if current["data"] is None:
-            with st.spinner(f"Extracting details focused on '{current['label']}'..."):
-                current["data"] = extract_structured_data(st.session_state.mct_raw_text, variant_hint=current["label"])
-                current["data"]["image_urls"] = [FALLBACK_IMAGE]
+            # CONFIRMED BUG FIX: only pass a variant_hint when this label came from a
+            # REAL AI-detected variant (is_genuine_variant). Passing the human-typed
+            # "Tour Name" (single-tour case) as a variant_hint told the AI "extract
+            # ONLY the variant named X, ignore everything else" - since the source
+            # document has no variant literally named that (it's just a label the
+            # human typed, not a heading in the source), the AI found no match and
+            # returned an empty extraction (every field blank). Only real detected
+            # variants (e.g. "7 nights" vs "10 nights", genuinely present in the
+            # source) should ever restrict the extraction this way.
+            variant_hint = current["label"] if current.get("is_genuine_variant") else None
+            with st.spinner(f"Extracting details{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
+                # This used to be able to crash the whole app if the AI call itself
+                # failed (e.g. rate limit, network hiccup) - never leave a call that
+                # can genuinely fail unguarded, contain it and let the human retry.
+                try:
+                    current["data"] = extract_structured_data(st.session_state.mct_raw_text, variant_hint=variant_hint)
+                    current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                except Exception as e:
+                    st.error(f"⚠️ Couldn't extract details for this tour: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mct_retry_extract_{idx}"):
+                        st.rerun()
+                    return
 
         data = current["data"]
         if not data.get("meeting_point"):
@@ -1978,7 +2025,7 @@ def try_code_variants(call_fn, code):
     return result, None
 
 
-def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files, min_passengers=1, max_passengers=9):
+def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files, min_passengers=1, max_passengers=9, default_ticket_code=""):
     """
     Batch flow for creating MULTIPLE full Tickets from one document that
     describes several distinct excursions:
@@ -2034,10 +2081,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         candidates.append({
                             "label": e.get("label", ""), "ticket_code": "",
                             "modality_code": "Standard Private" if e.get("is_private") else "Standard",
-                            "selected": True
+                            "selected": True,
+                            # Real AI-detected excursion - safe to later restrict extraction
+                            # to just this one (see is_genuine_variant usage in PHASE 3 below).
+                            "is_genuine_variant": True,
                         })
                     if not candidates:
-                        candidates = [{"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True}]
+                        # No real excursion variants detected (single-excursion case) - the
+                        # "Ticket Name" typed in PHASE 2 is just a display label, not a real
+                        # variant to filter the source by - is_genuine_variant stays False so
+                        # PHASE 3 never sends it to the AI as a variant filter (doing so
+                        # caused the AI to search for a nonexistent named variant and return
+                        # an empty extraction - same bug as the ClosedTour flow had).
+                        # Prefill the Ticket Code from what was already entered back in Step 3
+                        # (default_ticket_code) so the human doesn't have to type it again here.
+                        candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "Standard",
+                                      "selected": True, "is_genuine_variant": False}]
 
                     if len(doc_image_urls) >= len(doc_raw_images):
                         doc_raw_images = []
@@ -2067,10 +2126,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if single_ticket:
             st.subheader("Set up this Ticket")
             st.caption("This document describes one excursion - no other variants were found, so nothing "
-                      "to choose between here. It just needs a Ticket Code and a Modality Code below "
-                      "before it can be created (a 'Modality', Travel Compositor's own term, is the "
-                      "pricing option for the Ticket, e.g. 'Standard' - you can add more Modalities for "
-                      "this same Ticket in the next step).")
+                      "to choose between here. The Ticket Code is already carried over from Step 3 below "
+                      "(edit it here if you want to change it). It still needs a Modality Code before it "
+                      "can be created (a 'Modality', Travel Compositor's own term, is the pricing option "
+                      "for the Ticket, e.g. 'Standard' - you can add more Modalities for this same Ticket "
+                      "in the next step).")
         else:
             st.subheader(f"{len(candidates)} excursions detected - choose which ones to create as Tickets")
             st.caption("The AI found what look like several different excursions below - each ticked row "
@@ -2099,7 +2159,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 )
 
         if st.button("➕ Add another excursion manually"):
-            candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True})
+            candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard",
+                              "selected": True, "is_genuine_variant": False})
             st.rerun()
 
         invalid_codes = []
@@ -2118,7 +2179,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 invalid_codes.append(mod_code)
                 continue
             seen_ticket_codes.setdefault(code, []).append(cand["label"] or "(unnamed excursion)")
-            new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None, "confirmed": False})
+            new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None,
+                             "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
 
         duplicate_codes = {code: labels for code, labels in seen_ticket_codes.items() if len(labels) > 1}
 
@@ -2169,9 +2231,23 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.rerun()
 
         if current["data"] is None:
-            with st.spinner(f"Extracting details focused on '{current['label']}'..."):
-                current["data"] = extract_ticket_data(st.session_state.mt_raw_text, variant_hint=current["label"])
-                current["data"]["image_urls"] = [FALLBACK_IMAGE]
+            # Same fix as the ClosedTour batch flow: only pass a variant_hint when this
+            # label came from a REAL AI-detected excursion (is_genuine_variant) - the
+            # human-typed "Ticket Name" (single-excursion case) is just a display label,
+            # not a real variant present in the source, and passing it as a filter caused
+            # the AI to find no match and return an empty extraction.
+            variant_hint = current["label"] if current.get("is_genuine_variant") else None
+            with st.spinner(f"Extracting details{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
+                # Same crash-prevention as the ClosedTour batch flow - never leave a
+                # call that can genuinely fail (rate limit, network hiccup) unguarded.
+                try:
+                    current["data"] = extract_ticket_data(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                    current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                except Exception as e:
+                    st.error(f"⚠️ Couldn't extract details for this excursion: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mt_retry_extract_{idx}"):
+                        st.rerun()
+                    return
 
         data = current["data"]
 
@@ -2956,7 +3032,8 @@ def render_ticket_flow(client):
     # auto-detect, one unified queue-based UI regardless of count).
     if action == "create":
         render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files,
-                                min_passengers=min_passengers, max_passengers=max_passengers)
+                                min_passengers=min_passengers, max_passengers=max_passengers,
+                                default_ticket_code=ticket_code)
         return
 
     if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
@@ -4265,7 +4342,7 @@ if multi_modality_mode:
 # regardless of count).
 if action == "create":
     render_multi_tour_flow(client, supplier_id, currency, on_request, days_available_before_release, url, uploaded_files,
-                          min_pax=min_pax, max_pax=max_pax)
+                          min_pax=min_pax, max_pax=max_pax, default_tour_code=provider_code)
     st.stop()
 
 if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
