@@ -9,6 +9,56 @@ DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you
                           "tour's starting city, in your hotel lobby.")
 
 
+def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
+    """
+    Converts the app's internal flat supplement dicts (name/price/single_price/
+    double_price/triple_price/quadruple_price/mandatory/on_request/applies_to/
+    travel_start_date/travel_end_date) into the real SupplementVO wire shape.
+
+    Factored out of build_closed_tour_payloads() so it can also be used
+    standalone - e.g. when adding a brand-new Modality to an ALREADY-LIVE
+    tour: that Modality's own supplements need to be folded into the tour's
+    existing (already-live) supplements list via a follow-up PUT, entirely
+    independent of building a full ContractClosedTourVO payload.
+    """
+    supplements_list = []
+    for s in (supplements or []):
+        price_val = float(s.get("price", 0) or 0)
+        single_val = float(s.get("single_price", price_val) or 0)
+        double_val = float(s.get("double_price", price_val) or 0)
+        triple_val = float(s.get("triple_price", 0) or 0)
+        quadruple_val = float(s.get("quadruple_price", 0) or 0)
+        # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
+        # per-person amounts (that's what "per occupancy" means in this API).
+        # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
+        # have a confirmed API field for a genuinely flat/non-per-pax supplement
+        # charge - if you need that, verify with Travel Compositor directly.
+        travel_windows = []
+        if s.get("travel_start_date") and s.get("travel_end_date"):
+            travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
+
+        # CONFIRMED FIX (triple-charging bug): scope this supplement to the
+        # specific Modality it belongs to, instead of leaving modalityCodes
+        # empty (which Travel Compositor treats as "applies to ALL Modalities"
+        # on this tour) - previously EVERY supplement silently applied to
+        # every Modality/room-category, stacking Standard + Superior +
+        # Deluxe surcharges on top of each other on every single one of them.
+        applies_to = str(s.get("applies_to") or "").strip()
+        modality_codes = [] if applies_to in ("", "All Modalities", "ALL") else [applies_to]
+
+        supplements_list.append(SupplementVO(
+            translations={"EN": SupplementTranslation(name=s.get("name", ""))},
+            price=SupplementPriceVO(singlePrice=single_val, doublePrice=double_val,
+                                   triplePrice=triple_val, quadruplePrice=quadruple_val),
+            modalityCodes=modality_codes,
+            mandatory=bool(s.get("mandatory", False)),
+            onRequest=bool(s.get("on_request", False)),
+            free=(price_val == 0),
+            travelWindows=travel_windows,
+        ))
+    return supplements_list
+
+
 def normalize_time_hhmmss(value: str) -> str:
     """
     CONFIRMED via a real API error: Travel Compositor's startTime/endTime
@@ -280,48 +330,10 @@ def build_closed_tour_payloads(
     main_tour_payload = None
     try:
         # Convert the simple flat supplement table into the confirmed real
-        # SupplementVO structure. Per-occupancy amounts (single/double/triple/
-        # quadruple) are read straight from the extracted/human-edited data -
-        # for a normal per-person add-on these 4 are all equal to the flat
-        # price (set that way by ai_extractor.py's defaults), and for a "per
-        # room" surcharge (e.g. "$71 per room per night") they're genuinely
-        # different values, each already the correct final per-person amount
-        # for that occupancy - see ai_extractor.py's BASIS RULE for the math.
-        supplements_list = []
-        for s in extracted_dmc_data.get("supplements", []):
-            price_val = float(s.get("price", 0) or 0)
-            single_val = float(s.get("single_price", price_val) or 0)
-            double_val = float(s.get("double_price", price_val) or 0)
-            triple_val = float(s.get("triple_price", 0) or 0)
-            quadruple_val = float(s.get("quadruple_price", 0) or 0)
-            # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
-            # per-person amounts (that's what "per occupancy" means in this API).
-            # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
-            # have a confirmed API field for a genuinely flat/non-per-pax supplement
-            # charge - if you need that, verify with Travel Compositor directly.
-            travel_windows = []
-            if s.get("travel_start_date") and s.get("travel_end_date"):
-                travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
-
-            # CONFIRMED FIX (triple-charging bug): scope this supplement to the
-            # specific Modality it belongs to, instead of leaving modalityCodes
-            # empty (which Travel Compositor treats as "applies to ALL Modalities"
-            # on this tour) - previously EVERY supplement silently applied to
-            # every Modality/room-category, stacking Standard + Superior +
-            # Deluxe surcharges on top of each other on every single one of them.
-            applies_to = str(s.get("applies_to") or "").strip()
-            modality_codes = [] if applies_to in ("", "All Modalities", "ALL") else [applies_to]
-
-            supplements_list.append(SupplementVO(
-                translations={"EN": SupplementTranslation(name=s.get("name", ""))},
-                price=SupplementPriceVO(singlePrice=single_val, doublePrice=double_val,
-                                       triplePrice=triple_val, quadruplePrice=quadruple_val),
-                modalityCodes=modality_codes,
-                mandatory=bool(s.get("mandatory", False)),
-                onRequest=bool(s.get("on_request", False)),
-                free=(price_val == 0),
-                travelWindows=travel_windows,
-            ))
+        # SupplementVO structure (per-occupancy amounts are read straight from
+        # the extracted/human-edited data - see build_supplement_vos()'s own
+        # docstring/BASIS RULE reference for the math).
+        supplements_list = build_supplement_vos(extracted_dmc_data.get("supplements", []))
 
         datasheet_en = DatasheetEN(
             name=extracted_dmc_data.get("tour_name") or "",
