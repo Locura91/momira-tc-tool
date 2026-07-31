@@ -280,13 +280,20 @@ def build_closed_tour_payloads(
     main_tour_payload = None
     try:
         # Convert the simple flat supplement table into the confirmed real
-        # SupplementVO structure. A flat per-person price applies to both single
-        # and double occupancy (the common real-world pattern - e.g. an optional
-        # dinner costs the same whether traveling solo or as a couple); triple/
-        # quadruple stay at 0 unless a future refinement adds per-occupancy input.
+        # SupplementVO structure. Per-occupancy amounts (single/double/triple/
+        # quadruple) are read straight from the extracted/human-edited data -
+        # for a normal per-person add-on these 4 are all equal to the flat
+        # price (set that way by ai_extractor.py's defaults), and for a "per
+        # room" surcharge (e.g. "$71 per room per night") they're genuinely
+        # different values, each already the correct final per-person amount
+        # for that occupancy - see ai_extractor.py's BASIS RULE for the math.
         supplements_list = []
         for s in extracted_dmc_data.get("supplements", []):
             price_val = float(s.get("price", 0) or 0)
+            single_val = float(s.get("single_price", price_val) or 0)
+            double_val = float(s.get("double_price", price_val) or 0)
+            triple_val = float(s.get("triple_price", 0) or 0)
+            quadruple_val = float(s.get("quadruple_price", 0) or 0)
             # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
             # per-person amounts (that's what "per occupancy" means in this API).
             # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
@@ -296,9 +303,20 @@ def build_closed_tour_payloads(
             if s.get("travel_start_date") and s.get("travel_end_date"):
                 travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
 
+            # CONFIRMED FIX (triple-charging bug): scope this supplement to the
+            # specific Modality it belongs to, instead of leaving modalityCodes
+            # empty (which Travel Compositor treats as "applies to ALL Modalities"
+            # on this tour) - previously EVERY supplement silently applied to
+            # every Modality/room-category, stacking Standard + Superior +
+            # Deluxe surcharges on top of each other on every single one of them.
+            applies_to = str(s.get("applies_to") or "").strip()
+            modality_codes = [] if applies_to in ("", "All Modalities", "ALL") else [applies_to]
+
             supplements_list.append(SupplementVO(
                 translations={"EN": SupplementTranslation(name=s.get("name", ""))},
-                price=SupplementPriceVO(singlePrice=price_val, doublePrice=price_val),
+                price=SupplementPriceVO(singlePrice=single_val, doublePrice=double_val,
+                                       triplePrice=triple_val, quadruplePrice=quadruple_val),
+                modalityCodes=modality_codes,
                 mandatory=bool(s.get("mandatory", False)),
                 onRequest=bool(s.get("on_request", False)),
                 free=(price_val == 0),
