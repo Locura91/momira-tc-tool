@@ -1895,6 +1895,152 @@ def _diff_tour_price_list(old_list, new_list):
     return changes
 
 
+def _map_fetched_supplements(fetched_supplements):
+    """
+    Best-effort reverse mapping of GET-response SupplementVO dicts back into
+    the internal editing shape (name/price/single_price/.../applies_to/
+    travel_start_date/travel_end_date) used throughout the review UI and by
+    build_closed_tour_payloads(). Some detail (e.g. exactly how per_pax was
+    originally set) isn't recoverable from the GET response, so this
+    defaults conservatively - always double-check supplements on the review
+    screen after they're pulled in this way.
+    """
+    mapped = []
+    for s in (fetched_supplements or []):
+        if not isinstance(s, dict):
+            continue
+        translations = s.get("translations") or {}
+        name = (translations.get("EN") or {}).get("name", "")
+        price = s.get("price") or {}
+        modality_codes = s.get("modalityCodes") or []
+        if not modality_codes:
+            applies_to = "All Modalities"
+        elif len(modality_codes) == 1:
+            applies_to = modality_codes[0]
+        else:
+            applies_to = modality_codes[0]  # editing UI only supports one code per row - keep the first, flag via name
+            name = f"{name} (also applies to: {', '.join(modality_codes[1:])})".strip()
+        windows = s.get("travelWindows") or []
+        travel_start = (windows[0] or {}).get("start", "") if windows else ""
+        travel_end = (windows[0] or {}).get("end", "") if windows else ""
+        flat_price = price.get("singlePrice", 0) or 0
+        mapped.append({
+            "name": name,
+            "price": flat_price,
+            "single_price": price.get("singlePrice", flat_price),
+            "double_price": price.get("doublePrice", flat_price),
+            "triple_price": price.get("triplePrice", flat_price),
+            "quadruple_price": price.get("quadruplePrice", flat_price),
+            "per_pax": True,
+            "mandatory": s.get("mandatory", False),
+            "on_request": s.get("onRequest", False),
+            "applies_to": applies_to,
+            "travel_start_date": travel_start,
+            "travel_end_date": travel_end,
+        })
+    return mapped
+
+
+def _map_fetched_tour_to_data(fetched):
+    """
+    CONFIRMED FIX (real near-data-loss report): "Update an existing tour's
+    details" used to require a FRESH extraction from a newly-uploaded
+    document/URL before Step 5 (the review/edit screen) would render at
+    all - if the human didn't have a new source handy (e.g. they just
+    wanted to tweak one field), every field started completely BLANK, and
+    nothing stopped them from publishing that blank data straight over the
+    real, live tour.
+
+    This builds the SAME internal `data` shape extract_structured_data()
+    produces, but sourced from the tour's OWN currently-live GET response
+    (already fetched in Step 3's "Check what's already online for this
+    code") - so the review screen always starts from the tour's real
+    values, never blank ones. If the human also runs a fresh extraction
+    from a newly-uploaded document, that gets merged ON TOP of this
+    baseline (see _merge_extraction_over_baseline) rather than replacing it
+    outright, so an incomplete new extraction can't blank out real fields
+    the fresh source just didn't happen to mention.
+
+    price_list/operational_days/stop_sales are intentionally left at their
+    empty defaults here - those live on the OPTION, not the tour, and this
+    action ("update tour details") never touches them.
+    """
+    if not isinstance(fetched, dict) or "error" in fetched:
+        return {}
+    datasheet = (fetched.get("datasheets") or {}).get("EN", {}) or {}
+    itinerary = fetched.get("itinerary") or []
+    return {
+        "tour_name": datasheet.get("name", "") or fetched.get("name", ""),
+        "description": datasheet.get("description", ""),
+        "hotels_text": datasheet.get("hotels", ""),
+        "hotels_count": fetched.get("hotels", 1),
+        "supplements": _map_fetched_supplements(fetched.get("supplements")),
+        "included": datasheet.get("included", ""),
+        "excluded": datasheet.get("excluded", ""),
+        "meeting_point": datasheet.get("meetingPoint", ""),
+        "policy_remarks": datasheet.get("remarksDescription", ""),
+        "itinerary_destinations": [d.get("destination", "") for d in itinerary if isinstance(d, dict) and d.get("destination")],
+        "nights": fetched.get("nights", 0),
+        "start_time": fetched.get("startTime", ""),
+        "end_time": fetched.get("endTime", ""),
+        "min_child_age": fetched.get("minChildAge", 2),
+        "max_child_age": fetched.get("maxChildAge", 12),
+        "image_urls": fetched.get("images") or [FALLBACK_IMAGE],
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "schedule_notes": "",
+        "pricing_notes": "",
+        "price_list": [],
+        "release_days_mentions": [],
+    }
+
+
+def _map_fetched_ticket_to_data(fetched):
+    """
+    Ticket equivalent of _map_fetched_tour_to_data() - see that function for
+    the full rationale. Pre-fills "Update an existing ticket's details" from
+    the ticket's own live GET response instead of leaving every field blank
+    until a fresh document/URL is extracted.
+    """
+    if not isinstance(fetched, dict) or "error" in fetched:
+        return {}
+    datasheet = (fetched.get("datasheets") or {}).get("EN", {}) or {}
+    geoloc = fetched.get("geolocation") or {}
+    return {
+        "ticket_name": datasheet.get("name", "") or fetched.get("name", ""),
+        "description": datasheet.get("description", ""),
+        "city": fetched.get("city", "") or geoloc.get("name", ""),
+        "includes": datasheet.get("includes") or [],
+        "excludes": datasheet.get("excludes") or [],
+        "meeting_points": [],
+        "meeting_point_summary": datasheet.get("meetingPoint", ""),
+        "duration": fetched.get("duration", 0),
+        "duration_type": fetched.get("durationType", "HOURS"),
+        "activity_type": datasheet.get("activityType") or "",
+        "is_private": False,
+        "image_urls": fetched.get("imageUrls") or [FALLBACK_IMAGE],
+    }
+
+
+def _merge_extraction_over_baseline(baseline, fresh):
+    """
+    Merges a freshly-extracted dict ON TOP of an existing baseline (e.g. a
+    tour/ticket's real live values pulled via _map_fetched_tour_to_data /
+    _map_fetched_ticket_to_data) - keeps the baseline's value for any field
+    the fresh extraction left empty/default, instead of letting an
+    incomplete new extraction silently blank out real data that was already
+    correctly pre-filled. Only used for "update" actions; "create" always
+    uses the fresh extraction as-is (no baseline exists to merge over).
+    """
+    if not baseline:
+        return fresh
+    merged = dict(baseline)
+    empty_values = (None, "", [], {}, 0)
+    for k, v in (fresh or {}).items():
+        if v not in empty_values:
+            merged[k] = v
+    return merged
+
+
 def render_tour_update_comparison(publish_action, data, payloads, client, supplier_id,
                                   existing_tour_code, working_tour_code, modality_code):
     """
@@ -3159,6 +3305,22 @@ def render_ticket_flow(client):
                     st.session_state.tk_fetched_option = None
                     if isinstance(fetched, dict) and "error" not in fetched:
                         st.session_state.tk_fetched_currency = fetched.get("currency")
+                        # Same fix as ClosedTours: pre-fill Step 5 from this ticket's OWN live
+                        # data immediately, instead of leaving it blank until a fresh document
+                        # is extracted - see _map_fetched_ticket_to_data()'s docstring.
+                        if action == "update_ticket":
+                            st.session_state.tk_extracted = _map_fetched_ticket_to_data(fetched)
+                            st.session_state.tk_raw_preview = (
+                                f"(No new document/URL provided - these fields were pre-filled from "
+                                f"the ticket's CURRENT live data on Travel Compositor, code "
+                                f"`{existing_ticket_code_in}`. Edit below, or provide a new source and "
+                                f"click Extract to bring in updates - your existing values won't be "
+                                f"blanked out by an incomplete new extraction.)"
+                            )
+                            st.session_state.tk_payloads = None
+                            st.session_state.tk_geo_confirmed = False
+                            st.session_state.tk_doc_raw_images = []
+                            st.session_state.tk_hosted_image_candidates = []
 
             if st.session_state.get("tk_fetched_ticket"):
                 t = st.session_state.tk_fetched_ticket
@@ -3318,6 +3480,8 @@ def render_ticket_flow(client):
                     else:
                         data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
                         data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                        if action == "update_ticket":
+                            data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
                         st.session_state.tk_extracted = data
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
@@ -3371,6 +3535,8 @@ def render_ticket_flow(client):
                         )
                         tk_pending_url = st.session_state.get("tk_pending_url")
                         data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                        if action == "update_ticket":
+                            data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
 
                         st.session_state.tk_extracted = data
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
@@ -4414,6 +4580,22 @@ else:
                     st.session_state.fetched_tour_min_pax = fetched.get("minPax")
                     st.session_state.fetched_tour_max_pax = fetched.get("maxPax")
                     st.session_state.fetched_tour_currency = fetched.get("currency")
+                    # CONFIRMED FIX (real near-data-loss report): pre-fill the Step 5 review
+                    # screen from this tour's OWN live data immediately, instead of leaving it
+                    # blank until/unless a fresh document is extracted - see
+                    # _map_fetched_tour_to_data()'s docstring for the full story.
+                    if action == "update_tour":
+                        st.session_state.extracted = _map_fetched_tour_to_data(fetched)
+                        st.session_state.raw_preview = (
+                            f"(No new document/URL provided - these fields were pre-filled from the "
+                            f"tour's CURRENT live data on Travel Compositor, code `{existing_tour_code_in}`. "
+                            f"Edit below, or provide a new source and click Extract to bring in updates - "
+                            f"your existing values won't be blanked out by an incomplete new extraction.)"
+                        )
+                        st.session_state.payloads = None
+                        st.session_state.images_text_value = ""
+                        st.session_state.doc_raw_images = []
+                        st.session_state.hosted_image_candidates = []
 
         if st.session_state.get("fetched_tour"):
             t = st.session_state.fetched_tour
@@ -4644,6 +4826,11 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 else:
                     data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
                     data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                    if action == "update_tour":
+                        # Merge on top of the tour's real live values (pre-filled in Step 3) rather
+                        # than replacing them outright - an incomplete fresh extraction shouldn't
+                        # blank out fields the new source just didn't happen to mention.
+                        data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
                     st.session_state.extracted = data
                     st.session_state.images_text_value = ""
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
@@ -4701,6 +4888,8 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     pending_url = st.session_state.get("pending_url")
                     data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                     preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
+                    if action == "update_tour":
+                        data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
 
                     st.session_state.extracted = data
                     st.session_state.images_text_value = ""
