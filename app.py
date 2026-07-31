@@ -709,22 +709,55 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
     # PHASE 2: explicitly SELECT which tour variants to create
     # ------------------------------------------------------------------
     if st.session_state.mct_phase == "prepare_queue":
-        st.subheader("Tour variants detected - select which ones to create")
-        st.caption("Untick any that don't apply - only SELECTED variants will be reviewed and published. "
-                  "Each needs its own unique ClosedTour/Provider Code and a valid Modality Code (no / \\ + -).")
-
         candidates = st.session_state.mct_candidates
+        single_tour = len(candidates) == 1
+
+        # "Tour variant" and "Modality" are two DIFFERENT Travel Compositor
+        # concepts, and this screen must not blur them: a "tour variant" is
+        # a genuinely different tour PRODUCT (different itinerary/length),
+        # each becoming its own separate ClosedTour, while a "Modality" is
+        # just the pricing option code a single tour is created with. Most
+        # documents describe only ONE tour - in that (the common) case, no
+        # variant was actually detected, so the wording below must say so
+        # plainly rather than defaulting to "variants detected" language
+        # that doesn't apply.
+        if single_tour:
+            st.subheader("Set up this tour")
+            st.caption("This document describes one tour - no other tour variants were found, so nothing "
+                      "to choose between here. It just needs a Tour Code and a Modality Code below before "
+                      "it can be created (a 'Modality', Travel Compositor's own term, is the pricing "
+                      "option for the tour, e.g. 'Standard' or 'Deluxe' - you can add more Modalities for "
+                      "this same tour in the next step).")
+        else:
+            st.subheader(f"{len(candidates)} tour variants detected - choose which ones to create")
+            st.caption("The AI found what look like several different tour variants below (e.g. different "
+                      "lengths or itineraries) - each ticked row becomes its own separate ClosedTour. "
+                      "Untick any row you don't actually want. For each ticked row, fill in the two code "
+                      "fields on the right (hover the ⓘ next to each for what it means).")
+
         for i, cand in enumerate(candidates):
             ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
             with ccol1:
                 cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mct_sel_{i}")
             with ccol2:
                 nights_note = f" ({cand['nights']} nights)" if cand.get("nights") else ""
-                cand["label"] = st.text_input(f"Variant{nights_note}", value=cand["label"], key=f"mct_label_{i}")
+                label_text = "Tour Name" if single_tour else f"Variant{nights_note}"
+                cand["label"] = st.text_input(label_text, value=cand["label"], key=f"mct_label_{i}")
             with ccol3:
-                cand["tour_code"] = st.text_input("ClosedTour/Provider Code", value=cand["tour_code"], key=f"mct_code_{i}", placeholder="e.g. BKK-1")
+                cand["tour_code"] = st.text_input(
+                    "Tour Code", value=cand["tour_code"], key=f"mct_code_{i}", placeholder="e.g. BKK-1",
+                    help="Your own reference code for THIS tour - make it up yourself, e.g. 'BKK-1'. "
+                         "Travel Compositor's system also calls this same code the 'ClosedTour Code' or "
+                         "'Provider Code' in different places - they all mean this one code, not three "
+                         "different things."
+                )
             with ccol4:
-                cand["modality_code"] = st.text_input("Modality Code", value=cand["modality_code"], key=f"mct_modcode_{i}")
+                cand["modality_code"] = st.text_input(
+                    "Modality Code", value=cand["modality_code"], key=f"mct_modcode_{i}",
+                    help="The name of the pricing option for this tour, e.g. 'Standard' or 'Deluxe'. "
+                         "Cannot contain the characters / \\ + or - (Travel Compositor's system rejects "
+                         "those in this field)."
+                )
 
         if st.button("➕ Add another variant manually"):
             candidates.append({"label": "", "nights": None, "tour_code": "", "modality_code": "Standard", "selected": True})
@@ -1989,21 +2022,47 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
     # PHASE 2: explicitly SELECT which excursions to create as Tickets
     # ------------------------------------------------------------------
     if st.session_state.mt_phase == "prepare_queue":
-        st.subheader("Excursions detected - select which ones to create as Tickets")
-        st.caption("Untick any that don't apply - only SELECTED excursions will be reviewed and published. "
-                  "Each needs its own unique Ticket Code and a valid Modality Code (no / \\ + -).")
-
         candidates = st.session_state.mt_candidates
+        single_ticket = len(candidates) == 1
+
+        # Same distinction as the ClosedTour batch flow: an "excursion" here
+        # means a genuinely different Ticket PRODUCT, never a "Modality"
+        # (the pricing option within one Ticket) - most documents describe
+        # only ONE excursion, and the wording must say so plainly rather
+        # than implying variants were found when none were.
+        if single_ticket:
+            st.subheader("Set up this Ticket")
+            st.caption("This document describes one excursion - no other variants were found, so nothing "
+                      "to choose between here. It just needs a Ticket Code and a Modality Code below "
+                      "before it can be created (a 'Modality', Travel Compositor's own term, is the "
+                      "pricing option for the Ticket, e.g. 'Standard' - you can add more Modalities for "
+                      "this same Ticket in the next step).")
+        else:
+            st.subheader(f"{len(candidates)} excursions detected - choose which ones to create as Tickets")
+            st.caption("The AI found what look like several different excursions below - each ticked row "
+                      "becomes its own separate Ticket. Untick any row you don't actually want. For each "
+                      "ticked row, fill in the two code fields on the right (hover the ⓘ next to each for "
+                      "what it means).")
+
         for i, cand in enumerate(candidates):
             ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
             with ccol1:
                 cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mt_sel_{i}")
             with ccol2:
-                cand["label"] = st.text_input("Excursion", value=cand["label"], key=f"mt_label_{i}")
+                label_text = "Ticket Name" if single_ticket else "Excursion"
+                cand["label"] = st.text_input(label_text, value=cand["label"], key=f"mt_label_{i}")
             with ccol3:
-                cand["ticket_code"] = st.text_input("Ticket Code", value=cand["ticket_code"], key=f"mt_code_{i}", placeholder="e.g. BALI-T1")
+                cand["ticket_code"] = st.text_input(
+                    "Ticket Code", value=cand["ticket_code"], key=f"mt_code_{i}", placeholder="e.g. BALI-T1",
+                    help="Your own reference code for THIS ticket - make it up yourself, e.g. 'BALI-T1'."
+                )
             with ccol4:
-                cand["modality_code"] = st.text_input("Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}")
+                cand["modality_code"] = st.text_input(
+                    "Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}",
+                    help="The name of the pricing option for this ticket, e.g. 'Standard' or 'Standard "
+                         "Private'. Cannot contain the characters / \\ + or - (Travel Compositor's system "
+                         "rejects those in this field)."
+                )
 
         if st.button("➕ Add another excursion manually"):
             candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard", "selected": True})
