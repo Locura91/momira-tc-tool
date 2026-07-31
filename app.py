@@ -1456,6 +1456,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     else:
                         creation_payload = dict(payloads["main_tour_payload"])
                         creation_payload["active"] = True
+                        # CONFIRMED FIX (real production failure, KNO-1): build_closed_tour_payloads()
+                        # only ever declares the BASE Modality's code in modalityCodes (it doesn't know
+                        # about the other Modalities being queued here). But merged_supplements above
+                        # already tags each supplement with its OWN Modality's code via applies_to ->
+                        # SupplementVO.modalityCodes - and Travel Compositor rejects the whole tour
+                        # creation if any supplement references a Modality code that isn't ALSO present
+                        # in the tour's own top-level modalityCodes list ("Modality code X not found in
+                        # contract modalities"). Fix: declare ALL of this tour's Modality codes upfront,
+                        # not just the first one, so every supplement's reference is already covered.
+                        creation_payload["modalityCodes"] = list(dict.fromkeys(
+                            creation_payload.get("modalityCodes", []) + [m["code"] for m in modalities]
+                        ))
                         result = client.create_closed_tour(supplier_id, creation_payload)
                         if "error" in result:
                             show_publish_error(f"create **{tour['tour_code']}**", result)
@@ -5307,6 +5319,16 @@ if st.session_state.extracted:
                     if publish_action == "Create a brand-new tour (+ first option)":
                         creation_payload = dict(payloads["main_tour_payload"])
                         creation_payload["active"] = True
+                        # CONFIRMED FIX (real production failure, KNO-1): same issue as the restructured
+                        # create flow - build_closed_tour_payloads() only declares the BASE Modality's
+                        # code in modalityCodes, but supplements tagged (via applies_to) to any of the
+                        # OTHER queued Modalities reference codes not yet in that list, and Travel
+                        # Compositor rejects the whole tour creation for it ("Modality code X not found
+                        # in contract modalities"). Declare every queued Modality's code upfront.
+                        _extra_mod_codes = [m.get("code") for m in st.session_state.get("extra_modalities", []) if m.get("code")]
+                        creation_payload["modalityCodes"] = list(dict.fromkeys(
+                            creation_payload.get("modalityCodes", []) + _extra_mod_codes
+                        ))
 
                         result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
                         if "error" in result:
