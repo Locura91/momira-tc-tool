@@ -832,6 +832,130 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 }"""
 
 
+MODALITY_EXTRACTION_SYSTEM_PROMPT = """You are extracting PRICING/SCHEDULE data for ONE SPECIFIC Modality
+(room/cabin/pricing category - e.g. "Standard", "Superior", "Deluxe") of a Travel Compositor ClosedTour,
+from a DMC supplier document that may describe multiple such Modalities for the same tour. Focus ONLY on
+the pricing table(s), supplements, and schedule information for the Modality named in the human guidance
+you're given - IGNORE pricing/supplements that are clearly labeled as belonging to a DIFFERENT named
+Modality/room category in the same document (e.g. if you're asked for "Superior", ignore anything
+explicitly tied to "Standard" or "Deluxe" instead).
+
+This is NOT a full tour extraction - do NOT extract tour name, description, itinerary, hotels,
+included/excluded, or meeting point/policy remarks - those are handled separately, ONCE, for the whole
+tour (not per Modality).
+
+CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up time").
+Momira Travel is the tour operator the client actually deals with - the client must NEVER be told to
+contact the DMC/supplier directly. Silently drop/omit this kind of text if present, anywhere it appears.
+
+Extract:
+- price_list: the pricing table(s) for THIS Modality only. Use this EXACT shape per entry (confirmed against the real API schema):
+  {
+    "name": "optional label, e.g. the season/date range description",
+    "startDate": "YYYY-MM-DD",
+    "endDate": "YYYY-MM-DD",
+    "price": {
+      "singlePrice": {"amount": 0, "currency": "EUR"},
+      "doublePrice": {"amount": 0, "currency": "EUR"},
+      "triplePrice": {"amount": 0, "currency": "EUR"},
+      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+    }
+  }
+  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
+  CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
+- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them (upgrades, optional excursions), OR a peak-season/holiday surcharge, that apply SPECIFICALLY to bookings of THIS Modality. Do NOT include anything already covered in included/excluded, and do NOT include a supplement that the source clearly ties to a DIFFERENT Modality.
+  CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional CO2 offset contribution") - never add these as a supplement. This is a deliberate exclusion, not an oversight.
+  CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes.
+  CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND the "per_pax" flag; getting the combination wrong over- or under-charges the customer:
+  - "per stay" / a flat one-time amount (neither "per person" nor "per night"): price = the stated flat amount, per_pax: false. Never multiply.
+  - "per person" (and NOT also "per night"): price = the stated per-person amount as-is - do NOT multiply by a pax count. Set per_pax: true so Travel Compositor's own booking engine multiplies it by however many travelers actually book (pax is a min/max range at extraction time, never one fixed number).
+  - "per night" (and NOT also "per person") - e.g. "USD 11 per night surcharge during peak season": Travel Compositor's schema has no native "per night" concept, so YOU must pre-multiply. price = the per-night rate x the actual number of affected nights within THIS Modality's own stay{tour_nights_clause}, capped at that length. per_pax: false. CRITICAL SELF-CHECK: verify you multiplied rate x nights and didn't just copy the per-night rate as the total.
+  - "per person per night": combine the two rules above - price = per-night rate x actual affected nights ONLY (pre-calculated by you), then per_pax: true so Travel Compositor further multiplies by the actual booked pax count.
+  - "per room" / "per room per night" - e.g. "USD 71.00 per room per night" (a flat charge for the WHOLE room, not per traveler): compute the TOTAL charge for the whole room for the whole stay - the per-room rate x the actual affected nights (same nights rule as above; if "per room" with no "per night" attached, treat as already a flat one-time per-room total). Then divide that SAME total by 1, 2, 3, and 4 to get single_price/double_price/triple_price/quadruple_price - e.g. rate $71 x 3 nights = $213 total, so single_price=213, double_price=106.50, triple_price=71, quadruple_price=53.25. Set per_pax: false and put double_price in "price" too. CRITICAL SELF-CHECK: verify all four occupancy amounts come from dividing the SAME total by 1/2/3/4 - never compute them independently.
+  - Whole-trip/percentage surcharges (e.g. "20% higher during Christmas"): pre-calculate an actual currency amount (e.g. 20% of the base per-person price) into "price", with per_pax: true.
+  - For every basis OTHER than "per room"/"per room per night", set single_price = double_price = triple_price = quadruple_price = "price" (the per-person amount is the same regardless of occupancy).
+  CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge, "name" must stay a clean customer-facing label ONLY (e.g. "Peak Season Surcharge") - NEVER include the price/percentage/calculation in the name. Put the calculation itself in pricing_notes instead, never in the name.
+  For each TRUE supplement, output:
+  {
+    "name": "clear, specific short label - always required, never leave blank",
+    "price": per-person amount as a number,
+    "single_price": per-person amount for SINGLE occupancy - equal to "price" unless a "per room" surcharge, see BASIS RULE,
+    "double_price": per-person amount for DOUBLE occupancy - equal to "price" unless a "per room" surcharge,
+    "triple_price": per-person amount for TRIPLE occupancy - equal to "price" unless a "per room" surcharge,
+    "quadruple_price": per-person amount for QUADRUPLE occupancy - equal to "price" unless a "per room" surcharge,
+    "per_pax": true if per-traveler (normal case), false if flat/one-time or a "per room" surcharge,
+    "mandatory": true if required or a peak-season surcharge, false for a normal optional add-on,
+    "on_request": true if the source says this needs advance request/confirmation,
+    "travel_start_date": "YYYY-MM-DD" if restricted to a date range - ALWAYS required for a peak-season surcharge, otherwise empty,
+    "travel_end_date": "YYYY-MM-DD" - same condition as above
+  }
+  If nothing optional with its own price is mentioned for this Modality, leave this as an empty list.
+- pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a table into the 4-slot schema, or note a peak-season surcharge calculation - explain exactly what, with real numbers.
+- schedule_notes: plain-English description of departure timing/pattern if mentioned - informational only.
+- operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names. If genuinely unclear, return all 7 days.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} for any explicitly mentioned blackout/non-operating date ranges. Empty list if none.
+
+Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
+  "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+  "stop_sales": []
+}"""
+
+
+def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None, tour_nights=None) -> dict:
+    """
+    Focused per-Modality extraction for the NEW single-tour ClosedTour create
+    flow (each Modality reviewed individually - see app.py's render_multi_tour_flow):
+    pulls price_list, supplements, operational_days and stop_sales for ONE
+    named Modality only. Unlike extract_option_only_data (used by the
+    separate add-a-modality-to-an-existing-tour flow), this DOES extract
+    supplements - each Modality is reviewed on its own screen now, so its
+    supplements are naturally scoped to it by construction, with no need for
+    the AI to guess/tag which Modality a supplement belongs to.
+
+    tour_nights: the ALREADY-CONFIRMED tour length (from the one main
+    extraction done once for the whole tour) - passed through as known
+    context so "per night" surcharge math is anchored to the real tour
+    length instead of the AI having to (potentially wrongly) re-derive it
+    from a pricing-only source snippet.
+    """
+    tour_nights_clause = f" (this tour is confirmed to be {tour_nights} nights long)" if tour_nights else ""
+    system_prompt = MODALITY_EXTRACTION_SYSTEM_PROMPT.replace("{tour_nights_clause}", tour_nights_clause)
+
+    user_content = raw_text
+    if human_hint:
+        user_content = (
+            f"IMPORTANT: focus ONLY on the Modality/pricing category matching this guidance, ignore all "
+            f"others in the document: {human_hint}\n\n--- Source content ---\n{raw_text}"
+        )
+
+    data = _call_claude(system_prompt, user_content, model, max_tokens=4096)
+
+    defaults = {
+        "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "stop_sales": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+
+    # Defensive per-supplement defaults, same convention as extract_structured_data.
+    for _s in data.get("supplements") or []:
+        if not isinstance(_s, dict):
+            continue
+        _flat_price = _s.get("price", 0) or 0
+        for _occ_key in ("single_price", "double_price", "triple_price", "quadruple_price"):
+            if _s.get(_occ_key) is None:
+                _s[_occ_key] = _flat_price
+
+    return data
+
+
 def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None) -> dict:
     """
     Lightweight extraction for adding/updating a Modality to an EXISTING
