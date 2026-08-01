@@ -303,6 +303,27 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _sanitize_supplement_price_fields(supplement: dict) -> None:
+    """
+    CONFIRMED FIX (real production crash, SUB-1): supplements' price fields
+    ("price"/"single_price"/"double_price"/"triple_price"/"quadruple_price")
+    must be flat numbers, but the model has occasionally returned a nested
+    {"amount": ..., "currency": ...} object instead - the shape price_list
+    rows use, sitting right next to the supplement schema in the same
+    prompt, so the two are an easy mix-up. That dict then survives silently
+    all the way through the review UI (a Streamlit numeric cell just shows
+    it oddly, it doesn't error) until it hits builder.py's float() call at
+    publish time and crashes with "float() argument must be a string or a
+    real number, not 'dict'". Catch and unwrap it immediately at extraction
+    time instead, so a malformed value never has the chance to look normal
+    on the review screen. Mutates `supplement` in place.
+    """
+    for key in ("price", "single_price", "double_price", "triple_price", "quadruple_price"):
+        val = supplement.get(key)
+        if isinstance(val, dict):
+            supplement[key] = val.get("amount", 0) or 0
+
+
 _client_singleton = None
 
 
@@ -962,6 +983,7 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
     for _s in data.get("supplements") or []:
         if not isinstance(_s, dict):
             continue
+        _sanitize_supplement_price_fields(_s)
         _flat_price = _s.get("price", 0) or 0
         for _occ_key in ("single_price", "double_price", "triple_price", "quadruple_price"):
             if _s.get(_occ_key) is None:
@@ -1056,6 +1078,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     for _s in defaults.get("supplements") or []:
         if not isinstance(_s, dict):
             continue
+        _sanitize_supplement_price_fields(_s)
         _flat_price = _s.get("price", 0) or 0
         _s.setdefault("applies_to", "ALL")
         for _occ_key in ("single_price", "double_price", "triple_price", "quadruple_price"):
