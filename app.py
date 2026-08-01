@@ -561,6 +561,9 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
 
         data = current["data"]
 
+        if data.get("schedule_notes"):
+            st.info(f"🔎 {data['schedule_notes']}")
+
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mm_days_{idx}"
         )
@@ -1190,6 +1193,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             st.rerun()
 
         data = mod["data"]
+
+        if data.get("schedule_notes"):
+            st.info(f"🔎 {data['schedule_notes']}")
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_mod_days_{midx}"
