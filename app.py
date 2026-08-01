@@ -138,13 +138,13 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
                 val = row.get(col)
                 if val is not None and not pd.isna(val):
                     price[key] = {"amount": float(val), "currency": currency}
-            entry = {"startDate": str(row.get("Start Date", "") or "").strip(), "endDate": str(row.get("End Date", "") or "").strip(), "price": price}
-            name = str(row.get("Name", "") or "").strip()
+            entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+            name = _safe_cell_str(row.get("Name")).strip()
             if name:
                 entry["name"] = name
             return entry
         target_data["price_list"] = sorted(
-            [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "") or "").strip() and str(r.get("End Date", "") or "").strip()],
+            [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
             key=lambda e: e.get("startDate", "")
         )
 
@@ -170,6 +170,29 @@ def render_readonly_source(text, height):
         st.code(text, language=None, height=height)
     except Exception:
         st.text_area("Raw content (read-only reference)", text, height=height, disabled=True)
+
+
+def _safe_cell_str(value):
+    """
+    Safely converts a single st.data_editor/DataFrame cell value to a plain
+    stripped string. CONFIRMED FIX (real production bug): a blank/new row
+    added via the data_editor's "+" button holds None for every cell, but
+    once that row sits in the SAME DataFrame column as other rows holding
+    real strings, pandas silently promotes the blank cell's None to NaN (its
+    own missing-value marker) to keep the column's dtype consistent. NaN is
+    NOT falsy in Python (`nan or ""` evaluates to `nan`, not ""), so the
+    previous guard pattern `str(row.get(col, "") or "")` still let a blank
+    row's NaN through as the literal 4-character text "nan" - the exact
+    same class of bug as the earlier "None"-string crash, just with pandas'
+    own missing-value marker instead of Python's. This treats BOTH None and
+    NaN as genuinely empty. Returns "" for either; str(value) unchanged
+    otherwise.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    return str(value)
 
 
 def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
@@ -205,6 +228,39 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
             on_save(edited)
             st.session_state[edit_flag_key] = False
             st.rerun()
+
+
+def render_stop_sales_editor(data, key_prefix, help_text=None):
+    """
+    Friendly Start/End Date table for a ClosedTour Modality's stop_sales
+    (blocked date ranges - ContractClosedTourOptionVO.stopSales). Replaces a
+    raw JSON array text box: a typo there silently produced a JSON error
+    that was easy to miss inside a collapsed expander, and it wasn't obvious
+    that MULTIPLE separate blocked periods are fully supported (this is a
+    list, not a single range - a tour can have several unrelated closures,
+    e.g. two different maintenance windows plus a holiday blackout). Mirrors
+    the same editable_table pattern already used for price_list/itinerary/
+    supplements elsewhere, so adding/removing rows works the same way.
+    """
+    with st.expander(f"Stop Sales ({len(data.get('stop_sales') or [])} blocked date range(s))"):
+        if help_text:
+            st.caption(help_text)
+        st.caption("Each row blocks bookings for that date range. There's no limit to how many rows you can "
+                  "add - use a separate row for each distinct blocked period (e.g. a maintenance closure AND "
+                  "a holiday blackout are two rows, not one).")
+        stop_rows = [{"Start Date": s.get("start", ""), "End Date": s.get("end", "")} for s in (data.get("stop_sales") or []) if isinstance(s, dict)]
+        stop_df = pd.DataFrame(stop_rows) if stop_rows else pd.DataFrame(columns=["Start Date", "End Date"])
+
+        def _save_stop_sales(edited_df, data=data):
+            new_stops = []
+            for _, row in edited_df.iterrows():
+                start = _safe_cell_str(row.get("Start Date")).strip()
+                end = _safe_cell_str(row.get("End Date")).strip()
+                if start and end:
+                    new_stops.append({"start": start, "end": end})
+            data["stop_sales"] = new_stops
+
+        editable_table("Blocked date ranges", stop_df, f"{key_prefix}_stop_sales", on_save=_save_stop_sales)
 
 
 def render_optional_time_input(label, data_dict, field_key, widget_key, default_time_str="08:00:00"):
@@ -508,14 +564,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mm_days_{idx}"
         )
-        with st.expander("Stop Sales"):
-            stop_sales_json = st.text_area(
-                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mm_stops_{idx}"
-            )
-            try:
-                data["stop_sales"] = json.loads(stop_sales_json)
-            except json.JSONDecodeError as e:
-                st.error(f"stopSales isn't valid JSON: {e}")
+        render_stop_sales_editor(data, f"mm_{idx}")
 
         default_price_list = sorted(
             data.get("price_list") or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
@@ -541,13 +590,13 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     val = row.get(col)
                     if val is not None and not pd.isna(val):
                         price[key] = {"amount": float(val), "currency": currency}
-                entry = {"startDate": str(row.get("Start Date", "") or "").strip(), "endDate": str(row.get("End Date", "") or "").strip(), "price": price}
-                name = str(row.get("Name", "") or "").strip()
+                entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+                name = _safe_cell_str(row.get("Name")).strip()
                 if name:
                     entry["name"] = name
                 return entry
             data["price_list"] = sorted(
-                [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "") or "").strip() and str(r.get("End Date", "") or "").strip()],
+                [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
                 key=lambda e: e.get("startDate", "")
             )
 
@@ -569,7 +618,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     if "operational_days" in result["changes"]:
                         st.session_state.pop(f"mm_days_{idx}", None)
                     if "stop_sales" in result["changes"]:
-                        st.session_state.pop(f"mm_stops_{idx}", None)
+                        st.session_state[f"_editing_table_mm_{idx}_stop_sales"] = False
                 st.rerun()
         if st.session_state.get(f"mm_clarify_result_{idx}"):
             r = st.session_state[f"mm_clarify_result_{idx}"]
@@ -888,7 +937,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         def _save_mct_destinations(edited_df, data=data):
             data["itinerary_destinations"] = [
                 str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
-                if str(row.get("Destination", "") or "").strip()
+                if _safe_cell_str(row.get("Destination")).strip()
             ]
         editable_table(
             "Itinerary destinations (in visit order)", dest_df, "mct_destinations_main",
@@ -1145,14 +1194,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_mod_days_{midx}"
         )
-        with st.expander("Stop Sales"):
-            mct_stop_sales_json = st.text_area(
-                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mct_mod_stops_{midx}"
-            )
-            try:
-                data["stop_sales"] = json.loads(mct_stop_sales_json)
-            except json.JSONDecodeError as e:
-                st.error(f"stopSales isn't valid JSON: {e}")
+        render_stop_sales_editor(data, f"mct_mod_{midx}")
 
         default_price_list = sorted(
             data.get("price_list") or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
@@ -1178,13 +1220,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     val = row.get(col)
                     if val is not None and not pd.isna(val):
                         price[key] = {"amount": float(val), "currency": currency}
-                entry = {"startDate": str(row.get("Start Date", "") or "").strip(), "endDate": str(row.get("End Date", "") or "").strip(), "price": price}
-                name = str(row.get("Name", "") or "").strip()
+                entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+                name = _safe_cell_str(row.get("Name")).strip()
                 if name:
                     entry["name"] = name
                 return entry
             data["price_list"] = sorted(
-                [_row_to_entry(r) for _, r in edited_df.iterrows() if str(r.get("Start Date", "") or "").strip() and str(r.get("End Date", "") or "").strip()],
+                [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
                 key=lambda e: e.get("startDate", "")
             )
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
@@ -1228,7 +1270,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             missing_name = False
             new_supplements = []
             for _, row in edited_df.iterrows():
-                name = str(row.get("Name", "") or "").strip()
+                name = _safe_cell_str(row.get("Name")).strip()
                 price_given = row.get("Price (per person)", 0)
                 has_any_data = name or (price_given not in (0, "", None))
                 if not name and has_any_data:
@@ -1254,8 +1296,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
-                    "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+                    "travel_start_date": _safe_cell_str(row.get("Special Travel Start Date")).strip(),
+                    "travel_end_date": _safe_cell_str(row.get("Special Travel End Date")).strip(),
                 })
             data["supplements"] = new_supplements
             st.session_state[f"_mct_mod_supplements_missing_name_{midx}"] = missing_name
@@ -1283,7 +1325,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     if "operational_days" in result["changes"]:
                         st.session_state.pop(f"mct_mod_days_{midx}", None)
                     if "stop_sales" in result["changes"]:
-                        st.session_state.pop(f"mct_mod_stops_{midx}", None)
+                        st.session_state[f"_editing_table_mct_mod_{midx}_stop_sales"] = False
                 st.rerun()
         if st.session_state.get(f"mct_mod_clarify_result_{midx}"):
             r = st.session_state[f"mct_mod_clarify_result_{midx}"]
@@ -1446,7 +1488,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             def _save_mct_publish_destinations(edited_df, main_data=main_data):
                 main_data["itinerary_destinations"] = [
                     str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
-                    if str(row.get("Destination", "") or "").strip()
+                    if _safe_cell_str(row.get("Destination")).strip()
                 ]
 
             editable_table(
@@ -2815,12 +2857,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
         def _save_mt_includes(edf, data=data):
-            data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if str(r.get("Item", "") or "").strip()]
+            data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
         editable_table("Includes", inc_df, f"mt_includes_{idx}", on_save=_save_mt_includes)
 
         exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
         def _save_mt_excludes(edf, data=data):
-            data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if str(r.get("Item", "") or "").strip()]
+            data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
         editable_table("Excludes", exc_df, f"mt_excludes_{idx}", on_save=_save_mt_excludes)
 
         mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
@@ -2828,7 +2870,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         def _save_mt_mp(edf, data=data):
             data["meeting_points"] = [
                 {"description": str(r.get("Description") or "").strip(), "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
-                for _, r in edf.iterrows() if str(r.get("Description", "") or "").strip()
+                for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
             ]
         editable_table("Meeting Points", mp_df, f"mt_mp_{idx}", on_save=_save_mt_mp)
 
@@ -2943,13 +2985,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         def _save_mt_supplements(edf, data=data):
             new_supp = []
             for _, r in edf.iterrows():
-                name = str(r.get("Name", "") or "").strip()
+                name = _safe_cell_str(r.get("Name")).strip()
                 if not name:
                     continue
                 new_supp.append({
                     "name": name, "adult_price": float(r.get("Adult", 0) or 0),
                     "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
-                    "travel_start_date": str(r.get("Start", "") or "").strip(), "travel_end_date": str(r.get("End", "") or "").strip(),
+                    "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
                 })
             data["supplements"] = new_supp
         editable_table(f"Supplements - {current['label'] or current['ticket_code']}", mt_supp_df, f"mt_supplements_{idx}", on_save=_save_mt_supplements)
@@ -3676,12 +3718,12 @@ def render_ticket_flow(client):
 
                 inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_includes(edf, data=data):
-                    data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if str(r.get("Item", "") or "").strip()]
+                    data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
                 editable_table("Includes", inc_df, "tk_includes", on_save=_save_tk_includes)
 
                 exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_excludes(edf, data=data):
-                    data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if str(r.get("Item", "") or "").strip()]
+                    data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
                 editable_table("Excludes", exc_df, "tk_excludes", on_save=_save_tk_excludes)
 
                 mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
@@ -3690,7 +3732,7 @@ def render_ticket_flow(client):
                     data["meeting_points"] = [
                         {"description": str(r.get("Description") or "").strip(),
                          "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
-                        for _, r in edf.iterrows() if str(r.get("Description", "") or "").strip()
+                        for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
                     ]
                 editable_table("Meeting Points", mp_df, "tk_meeting_points", on_save=_save_tk_mp)
 
@@ -3997,13 +4039,13 @@ def render_ticket_flow(client):
         def _save_tk_supplements(edf, data=data):
             new_supp = []
             for _, r in edf.iterrows():
-                name = str(r.get("Name", "") or "").strip()
+                name = _safe_cell_str(r.get("Name")).strip()
                 if not name:
                     continue
                 new_supp.append({
                     "name": name, "adult_price": float(r.get("Adult", 0) or 0),
                     "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
-                    "travel_start_date": str(r.get("Start", "") or "").strip(), "travel_end_date": str(r.get("End", "") or "").strip(),
+                    "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
                 })
             data["supplements"] = new_supp
         editable_table("Supplements", supp_df, "tk_supplements", on_save=_save_tk_supplements)
@@ -5048,7 +5090,7 @@ if st.session_state.extracted:
             def _save_destinations(edited_df):
                 data["itinerary_destinations"] = [
                     str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
-                    if str(row.get("Destination", "") or "").strip()
+                    if _safe_cell_str(row.get("Destination")).strip()
                 ]
 
             editable_table(
@@ -5142,19 +5184,12 @@ if st.session_state.extracted:
         default=data.get("operational_days", ALL_WEEKDAYS)
     )
 
-    with st.expander("Stop Sales (block specific date ranges - e.g. for monthly-only or irregular departures)"):
-        st.caption("For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days above "
-                   "to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT the ones "
-                   "you want to allow.")
-        stop_sales_json = st.text_area(
-            "stopSales (JSON array of {\"start\": \"YYYY-MM-DD\", \"end\": \"YYYY-MM-DD\"})",
-            json.dumps(data.get("stop_sales", []), indent=2),
-            height=100
-        )
-        try:
-            data["stop_sales"] = json.loads(stop_sales_json)
-        except json.JSONDecodeError as e:
-            st.error(f"stopSales isn't valid JSON: {e}")
+    render_stop_sales_editor(
+        data, "ct_single",
+        help_text="For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days "
+                  "above to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT "
+                  "the ones you want to allow."
+    )
 
     # Clear at-a-glance summary of what kind of schedule this actually is.
     num_days = len(data.get("operational_days", []))
@@ -5227,11 +5262,11 @@ if st.session_state.extracted:
             if val is not None and not pd.isna(val):
                 price[key] = {"amount": float(val), "currency": currency}
         entry = {
-            "startDate": str(row.get("Start Date", "") or "").strip(),
-            "endDate": str(row.get("End Date", "") or "").strip(),
+            "startDate": _safe_cell_str(row.get("Start Date")).strip(),
+            "endDate": _safe_cell_str(row.get("End Date")).strip(),
             "price": price
         }
-        name = str(row.get("Name", "") or "").strip()
+        name = _safe_cell_str(row.get("Name")).strip()
         if name:
             entry["name"] = name
         return entry
@@ -5240,7 +5275,7 @@ if st.session_state.extracted:
         data["price_list"] = sorted(
             [
                 _row_to_price_entry(row) for _, row in edited_df.iterrows()
-                if str(row.get("Start Date", "") or "").strip() and str(row.get("End Date", "") or "").strip()
+                if _safe_cell_str(row.get("Start Date")).strip() and _safe_cell_str(row.get("End Date")).strip()
             ],
             key=lambda entry: entry.get("startDate", "")
         )
@@ -5350,7 +5385,7 @@ if st.session_state.extracted:
             missing_name = False
             new_supplements = []
             for _, row in edited_df.iterrows():
-                name = str(row.get("Name", "") or "").strip()
+                name = _safe_cell_str(row.get("Name")).strip()
                 price_given = row.get("Price (per person)", 0)
                 has_any_data = name or (price_given not in (0, "", None))
                 if not name and has_any_data:
@@ -5364,8 +5399,8 @@ if st.session_state.extracted:
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": str(row.get("Special Travel Start Date", "") or "").strip(),
-                    "travel_end_date": str(row.get("Special Travel End Date", "") or "").strip(),
+                    "travel_start_date": _safe_cell_str(row.get("Special Travel Start Date")).strip(),
+                    "travel_end_date": _safe_cell_str(row.get("Special Travel End Date")).strip(),
                 })
             data["supplements"] = new_supplements
             st.session_state._supplements_missing_name = missing_name
@@ -5397,6 +5432,7 @@ if st.session_state.extracted:
                     "supplements": "_editing_table_supplements",
                     "price_list": "_editing_table_pricing",
                     "itinerary_destinations": "_editing_table_destinations",
+                    "stop_sales": "_editing_table_ct_single_stop_sales",
                 }
                 for field_name in result["changes"]:
                     table_key = field_to_table_key.get(field_name)
