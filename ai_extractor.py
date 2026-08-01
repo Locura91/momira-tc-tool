@@ -6,6 +6,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 """
 import os
 import json
+import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -322,6 +323,144 @@ def _sanitize_supplement_price_fields(supplement: dict) -> None:
         val = supplement.get(key)
         if isinstance(val, dict):
             supplement[key] = val.get("amount", 0) or 0
+
+
+_WEEKDAY_NAME_TO_INDEX = {
+    "MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2, "THURSDAY": 3,
+    "FRIDAY": 4, "SATURDAY": 5, "SUNDAY": 6,
+}
+
+
+def compute_non_guaranteed_stop_sales(rule: dict) -> list:
+    """
+    CONFIRMED REAL CASE (RV River Kwai Cruise contract): some DMC contracts
+    describe a "guaranteed departure" pattern - the tour runs weekly on one
+    fixed weekday, but only SPECIFIC ordinal occurrences of that weekday
+    within each month are guaranteed to operate without a minimum-passenger
+    requirement (e.g. "the 1st and 3rd Monday of every month"); every OTHER
+    occurrence of that same weekday still nominally exists on the schedule
+    but requires the stated minimum passenger count to actually run.
+
+    Travel Compositor's ContractClosedTourOptionVO schema has no native
+    "guaranteed departure" concept - only operationalDays (a plain weekday
+    set) and stopSales (blocked date ranges). Asking the AI to directly
+    enumerate every individual non-guaranteed calendar date itself is an
+    unreliable task (off-by-one and month-boundary risk over a full year),
+    so instead the AI extracts the STATED RULE as structured data, and this
+    function does the exact calendar math in plain deterministic Python:
+    operational_days gets narrowed to just the guaranteed weekday, and every
+    OTHER occurrence of that weekday in the stated range becomes its own
+    single-day stop_sales entry (so it's visibly blocked instead of quietly
+    bookable without enough passengers).
+
+    rule: {"weekday": "MONDAY", "ordinals": [1, 3], "range_start": "YYYY-MM-DD",
+           "range_end": "YYYY-MM-DD", "min_pax_otherwise": 4}
+    (ordinals are 1-based "1st/2nd/3rd/... occurrence of that weekday within
+    its calendar month" - the standard everyday meaning of "1st and 3rd Monday
+    of every month").
+
+    Returns a list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} entries
+    (single-day ranges), one per NON-guaranteed occurrence. Returns an empty
+    list if `rule` is missing/malformed/incomplete rather than raising, so a
+    bad or partial AI extraction never crashes the pipeline - it just means
+    no automatic stop_sales get added and the human reviews it manually.
+    """
+    if not isinstance(rule, dict):
+        return []
+    try:
+        weekday_name = str(rule.get("weekday", "")).strip().upper()
+        weekday_index = _WEEKDAY_NAME_TO_INDEX[weekday_name]
+        ordinals = {int(o) for o in (rule.get("ordinals") or [])}
+        range_start = datetime.date.fromisoformat(str(rule.get("range_start", "")).strip())
+        range_end = datetime.date.fromisoformat(str(rule.get("range_end", "")).strip())
+    except (KeyError, ValueError, TypeError):
+        return []
+    if not ordinals or range_end < range_start:
+        return []
+
+    # Find the first occurrence of the target weekday on/after range_start.
+    days_until_weekday = (weekday_index - range_start.weekday()) % 7
+    current = range_start + datetime.timedelta(days=days_until_weekday)
+
+    occurrence_count = {}  # (year, month) -> how many of this weekday seen so far
+    non_guaranteed = []
+    while current <= range_end:
+        month_key = (current.year, current.month)
+        occurrence_count[month_key] = occurrence_count.get(month_key, 0) + 1
+        ordinal = occurrence_count[month_key]
+        if ordinal not in ordinals:
+            date_str = current.isoformat()
+            non_guaranteed.append({"start": date_str, "end": date_str})
+        current += datetime.timedelta(days=7)
+
+    return non_guaranteed
+
+
+def _ordinal_label(n) -> str:
+    n = int(n)
+    if 10 <= (n % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _apply_guaranteed_departure_rule(data: dict) -> None:
+    """
+    Applies data["guaranteed_departure_rule"] (if the AI extracted one - see
+    MODALITY_EXTRACTION_SYSTEM_PROMPT / OPTION_ONLY_SYSTEM_PROMPT) to the rest
+    of `data` in place: narrows operational_days to just the guaranteed
+    weekday, and merges the computed non-guaranteed occurrences into
+    stop_sales (skipping any day already covered by an AI-extracted range,
+    e.g. a dry-dock closure, so the two don't produce redundant/overlapping
+    entries). Also appends a plain-English note to schedule_notes so the
+    human reviewing the Modality can see exactly what was inferred and why,
+    before publishing. No-op if guaranteed_departure_rule is missing/null or
+    the rule doesn't compute to anything (malformed/incomplete rule).
+    """
+    rule = data.get("guaranteed_departure_rule")
+    if not isinstance(rule, dict):
+        return
+
+    computed = compute_non_guaranteed_stop_sales(rule)
+    if not computed:
+        return
+
+    existing = [r for r in (data.get("stop_sales") or []) if isinstance(r, dict)]
+
+    def _already_covered(day_str: str) -> bool:
+        try:
+            day = datetime.date.fromisoformat(day_str)
+        except ValueError:
+            return False
+        for r in existing:
+            try:
+                start = datetime.date.fromisoformat(str(r.get("start", "")))
+                end = datetime.date.fromisoformat(str(r.get("end", "")))
+            except ValueError:
+                continue
+            if start <= day <= end:
+                return True
+        return False
+
+    new_entries = [c for c in computed if not _already_covered(c["start"])]
+    data["stop_sales"] = existing + new_entries
+
+    weekday_name = str(rule.get("weekday", "")).strip().upper()
+    if weekday_name in _WEEKDAY_NAME_TO_INDEX:
+        data["operational_days"] = [weekday_name]
+
+    ordinals = sorted({int(o) for o in (rule.get("ordinals") or [])})
+    ordinals_label = " and ".join(_ordinal_label(o) for o in ordinals) if ordinals else "guaranteed"
+    note = (
+        f"Guaranteed departure rule detected: only the {ordinals_label} {weekday_name.title()} of each month "
+        f"(between {rule.get('range_start', '?')} and {rule.get('range_end', '?')}) is guaranteed to operate "
+        f"without a minimum passenger count. The other {len(new_entries)} {weekday_name.title()} date(s) in that "
+        f"range require {rule.get('min_pax_otherwise', '?')} passengers minimum, and have been added to Stop "
+        f"Sales below - please review before publishing."
+    )
+    existing_notes = str(data.get("schedule_notes") or "").strip()
+    data["schedule_notes"] = f"{existing_notes} {note}".strip() if existing_notes else note
 
 
 _client_singleton = None
@@ -854,6 +993,19 @@ Extract ONLY:
 - schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only. NEVER include an instruction telling the customer to contact the operator/supplier directly (e.g. "contact the operator 48h before to confirm pick-up time") - Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
 - stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies (e.g. an explicit gap in an otherwise fully-dated operating calendar). Empty list if genuinely none.
+- guaranteed_departure_rule: CONFIRMED REAL PATTERN - some contracts state that a weekly departure normally
+  needs a minimum passenger count to run, EXCEPT specific ordinal occurrences of that weekday each month
+  which are "guaranteed" to operate regardless of passenger count (e.g. "need a minimum of 4 clients to
+  guarantee operation, except for departures which can be operated without minimum of passengers on the 1st
+  and 3rd Monday of every month during November 2026 - October 2027"). If the source states a rule like
+  this, extract it as: {"weekday": "MONDAY", "ordinals": [1, 3], "range_start": "YYYY-MM-DD",
+  "range_end": "YYYY-MM-DD", "min_pax_otherwise": 4} - weekday is the single uppercase weekday name that
+  departs weekly, ordinals is the list of 1-based occurrence-within-month numbers that are guaranteed (1st
+  = 1, 2nd = 2, 3rd = 3, etc.), range_start/range_end is the date range the stated rule covers (use the
+  full stated validity window - if unstated, use a wide default), min_pax_otherwise is the minimum
+  passenger count required for the non-guaranteed occurrences. Set this to null if the source does not
+  describe this specific pattern (a plain weekly schedule with no guaranteed-vs-not distinction is NOT
+  this - leave null in that ordinary case). Never invent a rule that isn't actually stated.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
@@ -863,7 +1015,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "pricing_notes": "",
   "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-  "stop_sales": []
+  "stop_sales": [],
+  "guaranteed_departure_rule": null
 }"""
 
 
@@ -930,6 +1083,21 @@ Extract:
 - schedule_notes: plain-English description of departure timing/pattern if mentioned - informational only.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names. If genuinely unclear, return all 7 days.
 - stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when THIS Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside its normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. Empty list if genuinely none.
+- guaranteed_departure_rule: CONFIRMED REAL PATTERN (e.g. a river cruise contract: "need a minimum of 4
+  clients to guarantee operation of any cruises, except for Upstream departures which can be operated
+  without minimum of passengers on the 1st and 3rd Monday of every month during November 2026 - October
+  2027") - some contracts state that a weekly departure normally needs a minimum passenger count to run,
+  EXCEPT specific ordinal occurrences of that weekday each month which are "guaranteed" to operate
+  regardless of passenger count. If THIS Modality's source describes a rule like this, extract it as:
+  {"weekday": "MONDAY", "ordinals": [1, 3], "range_start": "YYYY-MM-DD", "range_end": "YYYY-MM-DD",
+  "min_pax_otherwise": 4} - weekday is the single uppercase weekday name that departs weekly, ordinals is
+  the list of 1-based occurrence-within-month numbers that are guaranteed (1st = 1, 2nd = 2, 3rd = 3,
+  etc.), range_start/range_end is the date range the stated rule covers (use the full stated validity
+  window - if unstated, use a wide default), min_pax_otherwise is the minimum passenger count required for
+  the non-guaranteed occurrences. Set this to null if the source does not describe this specific pattern (a
+  plain weekly schedule with no guaranteed-vs-not distinction is NOT this - leave null in that ordinary
+  case, and null if this rule clearly belongs to a DIFFERENT Modality than the one you're extracting).
+  Never invent a rule that isn't actually stated.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
@@ -937,7 +1105,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 {
   "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-  "stop_sales": []
+  "stop_sales": [], "guaranteed_departure_rule": null
 }"""
 
 
@@ -973,7 +1141,7 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
     defaults = {
         "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [],
+        "stop_sales": [], "guaranteed_departure_rule": None,
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -988,6 +1156,8 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
         for _occ_key in ("single_price", "double_price", "triple_price", "quadruple_price"):
             if _s.get(_occ_key) is None:
                 _s[_occ_key] = _flat_price
+
+    _apply_guaranteed_departure_rule(data)
 
     return data
 
@@ -1010,7 +1180,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     defaults = {
         "price_list": [], "pricing_notes": "", "schedule_notes": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [],
+        "stop_sales": [], "guaranteed_departure_rule": None,
         # Defensive: fields builder.py's main_tour_payload construction still
         # reads, even though it's unused/not sent for option-only actions.
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1,
@@ -1020,6 +1190,9 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
+
+    _apply_guaranteed_departure_rule(data)
+
     return data
 
 
