@@ -1411,6 +1411,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         f"`{tour['tour_code']}` doesn't match the required format (3 letters, a dash, then "
                         f"a number, e.g. 'BKK-1'). Details: {str(e)[:300]}. Publishing below will also fail "
                         f"until fixed - go back and correct the Tour Code.")
+            mct_has_unresolved = False
             if preview_payloads:
                 for res in preview_payloads.get("itinerary_resolution", []):
                     if res["valid"]:
@@ -1421,12 +1422,38 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             unsafe_allow_html=True
                         )
                     else:
+                        mct_has_unresolved = True
                         st.markdown(
                             f"<div style='background-color:#f8d7da; color:#721c24; padding:4px 10px; "
                             f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>❌ <b>{res['input']}</b> → "
                             f"NOT FOUND in Travel Compositor</div>",
                             unsafe_allow_html=True
                         )
+
+            # CONFIRMED FIX: a human used to be stuck here with no way to fix an
+            # unresolved destination short of abandoning the whole tour ("Start a
+            # new ClosedTour") - the itinerary is editable right on this screen
+            # now, and saving it immediately re-checks against Travel Compositor
+            # above (editable_table triggers a rerun on save, which rebuilds
+            # combined_data/preview_payloads fresh from the updated main_data).
+            if mct_has_unresolved:
+                st.warning("🚫 Fix the destination(s) marked NOT FOUND above before publishing - either "
+                          "correct the spelling/name, or replace it with the exact name Travel Compositor "
+                          "uses. Edit the itinerary below, then Save to re-check.")
+            mct_dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(main_data.get("itinerary_destinations", []))]
+            mct_dest_df = pd.DataFrame(mct_dest_rows) if mct_dest_rows else pd.DataFrame(columns=["#", "Destination"])
+
+            def _save_mct_publish_destinations(edited_df, main_data=main_data):
+                main_data["itinerary_destinations"] = [
+                    str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
+                    if str(row.get("Destination", "") or "").strip()
+                ]
+
+            editable_table(
+                "Itinerary destinations (in visit order)", mct_dest_df, "mct_publish_destinations",
+                on_save=_save_mct_publish_destinations,
+                column_config={"#": st.column_config.NumberColumn(disabled=True)}
+            )
 
         mct_activation_choice = st.radio(
             "After publishing, should this Tour be Active or Inactive (draft)?",
@@ -1436,7 +1463,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         )
         mct_publish_as_active = mct_activation_choice.startswith("Active")
 
-        if st.button("🚀 Publish", type="primary"):
+        if mct_has_unresolved:
+            st.info("Publishing is disabled until every destination above resolves - fix them in the "
+                   "itinerary table above and re-check.")
+        if st.button("🚀 Publish", type="primary", disabled=mct_has_unresolved):
             with st.spinner(f"Publishing '{tour['tour_code']}'..."):
                 try:
                     pre_config = HumanPreConfig(
