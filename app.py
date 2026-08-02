@@ -20,6 +20,7 @@ Reuses everything already built and tested:
 import json
 import re
 import copy
+import math
 import tempfile
 import os
 from datetime import datetime
@@ -193,6 +194,41 @@ def _safe_cell_str(value):
     if isinstance(value, float) and pd.isna(value):
         return ""
     return str(value)
+
+
+def _safe_float(value, fallback=0.0):
+    """
+    Numeric counterpart to _safe_cell_str(), for reading a NUMERIC
+    data_editor cell (a price, an occupancy count, etc.) instead of a text
+    one. CONFIRMED FIX (real production crash, LXR-3): "Out of range float
+    values are not JSON compliant: nan" - the same blank-row NaN promotion
+    _safe_cell_str() guards against for text columns also happens to numeric
+    columns, but the common "value or 0" guard pattern used around the app
+    does NOT catch it, because NaN is TRUTHY in Python (only 0/0.0/None/""/
+    False are falsy) - float(nan or 0) still returns nan, not 0. That nan
+    then survives all the way to publish time, where requests' json=
+    serialization explicitly rejects it (unlike Python's own json.dumps,
+    which allows NaN by default) and crashes with this exact error. This
+    explicitly checks for NaN (and Infinity, equally invalid JSON) on top of
+    the normal None/non-numeric cases float() itself would raise on.
+    """
+    if value is None:
+        return fallback
+    if isinstance(value, float) and pd.isna(value):
+        return fallback
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if math.isnan(result) or math.isinf(result):
+        return fallback
+    return result
+
+
+def _safe_int(value, fallback=0):
+    """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
+    result = _safe_float(value, fallback=None)
+    return fallback if result is None else int(result)
 
 
 def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
@@ -1278,19 +1314,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             for _, row in edited_df.iterrows():
                 name = _safe_cell_str(row.get("Name")).strip()
                 price_given = row.get("Price (per person)", 0)
-                has_any_data = name or (price_given not in (0, "", None))
+                price_given_is_blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
+                has_any_data = name or (not price_given_is_blank and price_given not in (0, ""))
                 if not name and has_any_data:
                     missing_name = True
                     continue
                 if not name:
                     continue
-                flat_price = float(price_given or 0)
+                flat_price = _safe_float(price_given)
 
                 def _occ(col, fallback=flat_price):
-                    val = row.get(col)
-                    if val is None or (isinstance(val, float) and pd.isna(val)):
-                        return fallback
-                    return float(val)
+                    return _safe_float(row.get(col), fallback)
 
                 new_supplements.append({
                     "name": name,
@@ -3016,7 +3050,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             mt_occ_df = pd.DataFrame(mt_occ_rows)
             def _save_mt_occupancy(edf, data=data):
                 data["occupancy_prices"] = [
-                    {"occupancy": int(r.get("Occupancy (exact # pax)", 2) or 2), "amount": float(r.get("Price", 0) or 0)}
+                    {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
                     for _, r in edf.iterrows()
                 ]
             editable_table("Occupancy Price Tiers", mt_occ_df, f"mt_occupancy_{idx}", on_save=_save_mt_occupancy)
@@ -3078,8 +3112,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 if not name:
                     continue
                 new_supp.append({
-                    "name": name, "adult_price": float(r.get("Adult", 0) or 0),
-                    "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
+                    "name": name, "adult_price": _safe_float(r.get("Adult")),
+                    "children_price": _safe_float(r.get("Child")), "infant_price": _safe_float(r.get("Infant")),
                     "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
                 })
             data["supplements"] = new_supp
@@ -4014,7 +4048,7 @@ def render_ticket_flow(client):
             occ_df = pd.DataFrame(occ_rows)
             def _save_occupancy(edf, data=data):
                 data["occupancy_prices"] = [
-                    {"occupancy": int(r.get("Occupancy (exact # pax)", 2) or 2), "amount": float(r.get("Price", 0) or 0)}
+                    {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
                     for _, r in edf.iterrows()
                 ]
             editable_table("Occupancy Price Tiers", occ_df, "tk_occupancy", on_save=_save_occupancy)
@@ -4132,8 +4166,8 @@ def render_ticket_flow(client):
                 if not name:
                     continue
                 new_supp.append({
-                    "name": name, "adult_price": float(r.get("Adult", 0) or 0),
-                    "children_price": float(r.get("Child", 0) or 0), "infant_price": float(r.get("Infant", 0) or 0),
+                    "name": name, "adult_price": _safe_float(r.get("Adult")),
+                    "children_price": _safe_float(r.get("Child")), "infant_price": _safe_float(r.get("Infant")),
                     "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
                 })
             data["supplements"] = new_supp
@@ -5476,7 +5510,8 @@ if st.session_state.extracted:
             for _, row in edited_df.iterrows():
                 name = _safe_cell_str(row.get("Name")).strip()
                 price_given = row.get("Price (per person)", 0)
-                has_any_data = name or (price_given not in (0, "", None))
+                price_given_is_blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
+                has_any_data = name or (not price_given_is_blank and price_given not in (0, ""))
                 if not name and has_any_data:
                     missing_name = True
                     continue
@@ -5484,7 +5519,7 @@ if st.session_state.extracted:
                     continue
                 new_supplements.append({
                     "name": name,
-                    "price": float(price_given or 0),
+                    "price": _safe_float(price_given),
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
