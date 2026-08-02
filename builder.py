@@ -9,6 +9,27 @@ DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you
                           "tour's starting city, in your hotel lobby.")
 
 
+def _safe_supplement_price(value, fallback=0.0):
+    """
+    CONFIRMED FIX (real production crash, SUB-1): "float() argument must be
+    a string or a real number, not 'dict'" - a supplement's price fields are
+    supposed to be flat numbers, but AI extraction has occasionally produced
+    a nested {"amount": ..., "currency": ...} object instead (the shape
+    price_list rows use, and the two schemas sit right next to each other in
+    the same prompt, so the AI confusing them is a real, observed failure
+    mode) - or a merge/carry-forward step could copy one through unchanged.
+    Rather than crashing the whole publish on one bad field, unwrap the
+    common dict shape if present, and fall back to 0 for anything else that
+    genuinely isn't numeric, instead of ever calling float() on it directly.
+    """
+    if isinstance(value, dict):
+        value = value.get("amount", fallback)
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
     """
     Converts the app's internal flat supplement dicts (name/price/single_price/
@@ -23,11 +44,11 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     """
     supplements_list = []
     for s in (supplements or []):
-        price_val = float(s.get("price", 0) or 0)
-        single_val = float(s.get("single_price", price_val) or 0)
-        double_val = float(s.get("double_price", price_val) or 0)
-        triple_val = float(s.get("triple_price", 0) or 0)
-        quadruple_val = float(s.get("quadruple_price", 0) or 0)
+        price_val = _safe_supplement_price(s.get("price", 0))
+        single_val = _safe_supplement_price(s.get("single_price", price_val), fallback=price_val)
+        double_val = _safe_supplement_price(s.get("double_price", price_val), fallback=price_val)
+        triple_val = _safe_supplement_price(s.get("triple_price", 0))
+        quadruple_val = _safe_supplement_price(s.get("quadruple_price", 0))
         # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
         # per-person amounts (that's what "per occupancy" means in this API).
         # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
@@ -446,18 +467,33 @@ def build_ticket_payloads(
     if manual_lat is not None and manual_lng is not None:
         geoloc = {"latitude": float(manual_lat), "longitude": float(manual_lng), "name": city, "valid": True, "source": "manual override"}
     else:
-        geo_result = geocode(city)
-        # geocode() tries Nominatim first, then falls back to Photon if
-        # Nominatim comes back empty (confirmed real issue: Nominatim often
-        # returns zero results for cloud-hosted traffic like this app's,
-        # even for well-known places) - report whichever provider actually
-        # served this result rather than assuming it was always Nominatim.
-        provider_labels = {"nominatim": "OpenStreetMap/Nominatim", "photon": "OpenStreetMap/Photon"}
-        geoloc = {
-            "latitude": geo_result["latitude"], "longitude": geo_result["longitude"],
-            "name": geo_result.get("display_name") or city, "valid": geo_result["valid"],
-            "source": provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geo_result["valid"] else "not_found",
-        }
+        # CONFIRMED ORDER (team decision): try Travel Compositor's own data
+        # first - this supplier's transfer zones, if it has any configured -
+        # before falling back to the free OpenStreetMap geocoder. TC's own
+        # data is more reliable when it's actually there (no rate limits, no
+        # cloud-IP blocking), but only covers suppliers that also do
+        # transfers, so a miss here is normal and just means falling through
+        # to the geocoder exactly as before.
+        tz_result = api_client.resolve_transfer_zone_geolocation(pre_config.supplier_id, city)
+        if tz_result.get("valid"):
+            geoloc = {
+                "latitude": tz_result["latitude"], "longitude": tz_result["longitude"],
+                "name": tz_result.get("name") or city, "valid": True,
+                "source": "Travel Compositor transfer zone (this supplier's own data)",
+            }
+        else:
+            geo_result = geocode(city)
+            # geocode() tries Nominatim first, then falls back to Photon if
+            # Nominatim comes back empty (confirmed real issue: Nominatim often
+            # returns zero results for cloud-hosted traffic like this app's,
+            # even for well-known places) - report whichever provider actually
+            # served this result rather than assuming it was always Nominatim.
+            provider_labels = {"nominatim": "OpenStreetMap/Nominatim", "photon": "OpenStreetMap/Photon"}
+            geoloc = {
+                "latitude": geo_result["latitude"], "longitude": geo_result["longitude"],
+                "name": geo_result.get("display_name") or city, "valid": geo_result["valid"],
+                "source": provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geo_result["valid"] else "not_found",
+            }
 
     # Indonesia / Vesak Day rule (human instruction): excursions in Indonesia
     # can never start on Vesak Day - automatically block it as a stop-sale
@@ -481,9 +517,17 @@ def build_ticket_payloads(
         if is_variable:
             lat, lng = geoloc.get("latitude"), geoloc.get("longitude")
         else:
-            mp_geo = geocode(f"{mp_desc}, {city}" if city else mp_desc)
-            lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
-            lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
+            # Same TC-first, OpenStreetMap-fallback order as the main city
+            # above - a named meeting point (a station, landmark, terminal)
+            # is exactly the kind of thing that can show up as a transfer
+            # zone's own POINT/AIRPORT/PORT entry for this supplier.
+            mp_tz = api_client.resolve_transfer_zone_geolocation(pre_config.supplier_id, mp_desc)
+            if mp_tz.get("valid"):
+                lat, lng = mp_tz["latitude"], mp_tz["longitude"]
+            else:
+                mp_geo = geocode(f"{mp_desc}, {city}" if city else mp_desc)
+                lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
+                lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
         if lat is not None and lng is not None:
             meeting_points_out.append(MeetingPointVO(description=mp_desc, latitude=lat, longitude=lng))
 
