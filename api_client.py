@@ -25,6 +25,7 @@ class TravelCompositorAPI:
         self.password = os.getenv("TRAVELC_PASSWORD", "")
         self.auth_token: Optional[str] = None
         self._destination_cache: Optional[List[Dict[str, Any]]] = None
+        self._transfer_zone_cache: Dict[str, List[Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # AUTH
@@ -278,6 +279,119 @@ class TravelCompositorAPI:
             }
 
         return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "not_found"}
+
+    # ------------------------------------------------------------------
+    # TRANSFER ZONES  (real TC-native coordinates, but scoped to whatever
+    # a given supplier has already set up - a supplementary geolocation
+    # source, not a replacement for the free OpenStreetMap fallback below)
+    # ------------------------------------------------------------------
+    def get_transfer_zones(self, supplier_id: str, zone_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetches and caches GET /transfer/zones/{supplierId} - the list of
+        pickup/dropoff zones (ContractTransferZoneVO: id, geolocation,
+        zoneType [AIRPORT|PORT|DESTINATION|POINT], name, code, terminal,
+        zoneRadius) a TRANSFER supplier has configured.
+
+        CONFIRMED SCOPE LIMIT: this is per-supplier data, not a general
+        place database - a supplier that only sells tours/tickets (never
+        transfers) will have no zones at all, and that's a completely
+        normal/expected result, not an error. Any failure (404, timeout,
+        non-2xx, malformed body) is swallowed and returns an empty list so
+        callers can silently fall back to another geolocation source rather
+        than crashing over what's an expected gap in coverage.
+
+        Cached per (supplier_id, zone_type) for the life of this client
+        instance, since the zone list for one supplier doesn't change
+        mid-session and may be looked up repeatedly (once per Ticket city,
+        once per meeting point, etc.).
+        """
+        cache_key = f"{supplier_id}::{zone_type or 'ALL'}"
+        if cache_key in self._transfer_zone_cache:
+            return self._transfer_zone_cache[cache_key]
+
+        zones: List[Dict[str, Any]] = []
+        try:
+            url = f"{self.api_base_url}/transfer/zones/{supplier_id}"
+            params = {"zoneType": zone_type} if zone_type else None
+            res = self._request("GET", url, params=params)
+            if res.status_code == 200:
+                data = res.json()
+                zones = data.get("zone", []) if isinstance(data, dict) else (data or [])
+        except requests.RequestException:
+            zones = []
+        except ValueError:
+            # res.json() failed to parse - treat exactly like "no zones found".
+            zones = []
+
+        self._transfer_zone_cache[cache_key] = zones or []
+        print(f"📥 Cached {len(self._transfer_zone_cache[cache_key])} transfer zone(s) for supplier '{supplier_id}'"
+              + (f" (zoneType={zone_type})" if zone_type else "") + ".")
+        return self._transfer_zone_cache[cache_key]
+
+    def resolve_transfer_zone_geolocation(self, supplier_id: str, query_term: str) -> Dict[str, Any]:
+        """
+        Tries to resolve a place name to real coordinates using the GIVEN
+        supplier's own transfer zones, before the caller falls back to free
+        OpenStreetMap geocoding (per the confirmed team decision: try
+        Travel Compositor's own data first, only use the free geocoder as a
+        fallback when TC has nothing for this specific supplier).
+
+        Matches on zone name (exact match first, then substring), searching
+        ALL zone types together since a meeting point/city name could
+        legitimately be any of AIRPORT/PORT/DESTINATION/POINT - but exact
+        matches against a DESTINATION zone are preferred when the same name
+        matches more than one zone type, since that's the closest analogue
+        to a Ticket's city-level location.
+
+        Returns the SAME shape as resolve_destination_geolocation() /
+        geocoding_client.geocode(), so callers can use either interchangeably:
+        {"latitude": float|None, "longitude": float|None, "name": str,
+         "valid": bool, "source": "transfer_zone"}
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query or not supplier_id:
+            return {"latitude": None, "longitude": None, "name": query_term, "valid": False, "source": "transfer_zone_skipped"}
+
+        def _extract_coords(zone: dict):
+            geo = zone.get("geolocation") or {}
+            lat, lng = geo.get("latitude"), geo.get("longitude")
+            if lat is None or lng is None:
+                return None, None
+            try:
+                return float(lat), float(lng)
+            except (TypeError, ValueError):
+                return None, None
+
+        try:
+            zones = self.get_transfer_zones(supplier_id)
+        except Exception:
+            zones = []
+
+        if not zones:
+            return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "transfer_zone_none_for_supplier"}
+
+        query_lower = clean_query.lower()
+
+        def _rank(zone: dict) -> tuple:
+            # Lower rank sorts first: exact match beats substring; DESTINATION
+            # zoneType beats other types when otherwise tied.
+            name = (zone.get("name") or "").strip().lower()
+            exact = 0 if name == query_lower else 1
+            is_destination = 0 if zone.get("zoneType") == "DESTINATION" else 1
+            return (exact, is_destination)
+
+        candidates = [z for z in zones if query_lower == (z.get("name") or "").strip().lower()
+                      or query_lower in (z.get("name") or "").lower()]
+        if not candidates:
+            return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "transfer_zone_not_found"}
+
+        candidates.sort(key=_rank)
+        best = candidates[0]
+        lat, lng = _extract_coords(best)
+        return {
+            "latitude": lat, "longitude": lng, "name": best.get("name", clean_query),
+            "valid": lat is not None and lng is not None, "source": "transfer_zone",
+        }
 
     def resolve_destination(self, query_term: str) -> Dict[str, Any]:
         """
