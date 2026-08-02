@@ -1,3 +1,4 @@
+import math
 from typing import Dict, Any, List
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation
@@ -7,6 +8,42 @@ from geocoding_client import geocode
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
+
+
+def _safe_float(value, fallback=0.0):
+    """
+    CONFIRMED FIX (real production crash, LXR-3): "Out of range float
+    values are not JSON compliant: nan" - the `requests` library explicitly
+    disallows NaN when serializing a `json=` payload (unlike Python's own
+    json.dumps, which allows it by default), so any NaN float reaching a
+    numeric payload field crashes at publish time with exactly this error.
+
+    NaN commonly reaches here from a blank Streamlit data_editor cell: when
+    a numeric column mixes a blank row with other rows holding real numbers,
+    pandas silently promotes the blank cell to NaN (float) to keep the
+    column's dtype consistent - the exact same promotion behavior already
+    confirmed for text columns (see app.py's _safe_cell_str), just showing
+    up in a numeric field this time. CRITICAL: NaN is TRUTHY in Python (only
+    0/0.0/None/""/False are falsy), so the common "value or 0" guard does
+    NOT catch it - float(nan or 0) still returns nan, not 0. This checks for
+    NaN (and Infinity, equally invalid JSON) explicitly, on top of the
+    normal None/non-numeric cases float() itself would raise on.
+    """
+    if value is None:
+        return fallback
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if math.isnan(result) or math.isinf(result):
+        return fallback
+    return result
+
+
+def _safe_int(value, fallback=0):
+    """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
+    result = _safe_float(value, fallback=None)
+    return fallback if result is None else int(result)
 
 
 def _safe_supplement_price(value, fallback=0.0):
@@ -19,15 +56,13 @@ def _safe_supplement_price(value, fallback=0.0):
     the same prompt, so the AI confusing them is a real, observed failure
     mode) - or a merge/carry-forward step could copy one through unchanged.
     Rather than crashing the whole publish on one bad field, unwrap the
-    common dict shape if present, and fall back to 0 for anything else that
-    genuinely isn't numeric, instead of ever calling float() on it directly.
+    common dict shape if present, then run it through _safe_float() (which
+    also catches the separate NaN class of bug above) instead of ever
+    calling float() on a raw, unchecked value.
     """
     if isinstance(value, dict):
         value = value.get("amount", fallback)
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return fallback
+    return _safe_float(value, fallback)
 
 
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
@@ -567,9 +602,9 @@ def build_ticket_payloads(
         supplements_list = []
         for s in extracted_ticket_data.get("supplements", []):
             supplements_list.append(TicketSupplementVO(
-                adultPriceSupplement=float(s.get("adult_price", 0) or 0),
-                childrenPriceSupplement=float(s.get("children_price", 0) or 0),
-                infantPriceSupplement=float(s.get("infant_price", 0) or 0),
+                adultPriceSupplement=_safe_float(s.get("adult_price", 0)),
+                childrenPriceSupplement=_safe_float(s.get("children_price", 0)),
+                infantPriceSupplement=_safe_float(s.get("infant_price", 0)),
                 startDate=s.get("travel_start_date") or "",
                 endDate=s.get("travel_end_date") or "",
                 translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
@@ -596,11 +631,11 @@ def build_ticket_payloads(
             datasheets={"EN": datasheet_en},
             currency=pre_config.currency,
             imageUrls=extracted_ticket_data.get("image_urls", []),
-            adultTaxesAmount=float(extracted_ticket_data.get("adult_taxes_amount", 0) or 0),
-            childTaxesAmount=float(extracted_ticket_data.get("child_taxes_amount", 0) or 0),
-            infantTaxesAmount=float(extracted_ticket_data.get("infant_taxes_amount", 0) or 0),
+            adultTaxesAmount=_safe_float(extracted_ticket_data.get("adult_taxes_amount", 0)),
+            childTaxesAmount=_safe_float(extracted_ticket_data.get("child_taxes_amount", 0)),
+            infantTaxesAmount=_safe_float(extracted_ticket_data.get("infant_taxes_amount", 0)),
             daysAvailableBeforeRelease=effective_release_days,
-            duration=float(extracted_ticket_data.get("duration", 0) or 0),
+            duration=_safe_float(extracted_ticket_data.get("duration", 0)),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
             cancellationRanges=[TicketCancellationRange()],  # LOCKED default: always 30 days / 100%, matching ClosedTour's confirmed convention
             meetingPoints=meeting_points_out,
@@ -635,11 +670,17 @@ def build_ticket_payloads(
         # the actually-selected price_type, regardless of what's still
         # sitting in the extracted/session data.
         selected_price_type = extracted_ticket_data.get("price_type") or "OCCUPANCY"
-        base_adult_price = float(extracted_ticket_data.get("base_adult_price", 0) or 0)
-        base_children_price = float(extracted_ticket_data.get("base_children_price", 0) or 0)
-        base_infant_price = float(extracted_ticket_data.get("base_infant_price", 0) or 0)
-        base_service_price = float(extracted_ticket_data.get("base_service_price", 0) or 0)
-        occupancy_prices = extracted_ticket_data.get("occupancy_prices", [])
+        base_adult_price = _safe_float(extracted_ticket_data.get("base_adult_price", 0))
+        base_children_price = _safe_float(extracted_ticket_data.get("base_children_price", 0))
+        base_infant_price = _safe_float(extracted_ticket_data.get("base_infant_price", 0))
+        base_service_price = _safe_float(extracted_ticket_data.get("base_service_price", 0))
+        # Each row can carry the same NaN-from-a-blank-data_editor-cell risk
+        # as any other numeric UI field (see _safe_float's docstring) - sanitize
+        # every entry rather than trusting the list as passed through.
+        occupancy_prices = [
+            {"occupancy": _safe_int(o.get("occupancy", 1), fallback=1), "amount": _safe_float(o.get("amount", 0))}
+            for o in (extracted_ticket_data.get("occupancy_prices") or []) if isinstance(o, dict)
+        ]
         if selected_price_type != "DISTRIBUTION":
             # baseAdultPrice is REQUIRED on ContractTicketModalityVO regardless
             # of price mode (schemas.py: Field(...)) - confirmed the real API
@@ -687,7 +728,7 @@ def build_ticket_payloads(
             childAgeMax=extracted_ticket_data.get("child_age_max") if extracted_ticket_data.get("child_age_max") is not None else 12,
             languages=extracted_ticket_data.get("languages") or ["EN"],
             timeTables=time_tables_list,
-            duration=float(extracted_ticket_data.get("duration", 0) or 0),
+            duration=_safe_float(extracted_ticket_data.get("duration", 0)),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
         )
         ticket_option_payload = ticket_option.dict()
