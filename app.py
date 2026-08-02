@@ -1854,6 +1854,54 @@ def get_existing_tour_names(client, supplier_id):
     return cache[supplier_id]
 
 
+def get_existing_ticket_codes(client, supplier_id):
+    """
+    Ticket equivalent of get_existing_tour_names() - fetches and caches the
+    full list of Tickets already published for this supplier, so a
+    candidate code/name can be cross-checked against what Travel
+    Compositor actually has, not just a single direct GET-by-code lookup
+    (see check_code_availability's docstring for why the direct lookup
+    alone isn't reliable enough on its own).
+    Returns (items_list, error_message) - each item is {"name": str,
+    "code": str}. error_message is None on success.
+    """
+    if "_existing_tickets_cache" not in st.session_state:
+        st.session_state._existing_tickets_cache = {}
+    cache = st.session_state._existing_tickets_cache
+    if supplier_id in cache:
+        return cache[supplier_id]
+
+    try:
+        result = client.get_tickets(supplier_id, first=0, limit=200)
+    except Exception as e:
+        cache[supplier_id] = ([], friendly_error_message(e))
+        return cache[supplier_id]
+
+    if isinstance(result, dict) and "error" in result:
+        cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing tickets")
+        return cache[supplier_id]
+
+    items = []
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        for key in ("ticket", "tickets", "items", "data", "results", "content"):
+            if isinstance(result.get(key), list):
+                items = result[key]
+                break
+
+    names = []
+    for item in items:
+        if isinstance(item, dict) and item.get("name"):
+            names.append({"name": item["name"], "code": item.get("code", "")})
+
+    if not items and not names:
+        cache[supplier_id] = ([], "no existing tickets found (or couldn't recognize the response format)")
+    else:
+        cache[supplier_id] = (names, None)
+    return cache[supplier_id]
+
+
 def check_duplicate_tour_name(client, supplier_id, tour_name):
     """
     Returns a human-readable warning string if `tour_name` (case/whitespace-
@@ -1874,17 +1922,33 @@ def check_duplicate_tour_name(client, supplier_id, tour_name):
 
 def check_code_availability(client, kind, supplier_id, code):
     """
-    Directly asks Travel Compositor (GET by exact code) whether a
-    ClosedTour/Ticket CODE already exists for this supplier - this is the
-    real, authoritative check for the "code already exists" publish error
-    (different from - and more definitive than - the name-based duplicate
-    check above, since the actual API rejection is keyed on the code, not
-    the name). `kind` is "tour" or "ticket". Cached per (kind, supplier_id,
-    code) in session_state so re-checking the same code (e.g. re-rendering
-    on every keystroke elsewhere on the page) costs nothing extra.
-    Returns {"exists": bool, "name": str|None} on a successful lookup, or
-    None if the check itself couldn't be completed (e.g. API/network
-    issue) - callers should treat None as "couldn't verify" rather than
+    Asks Travel Compositor whether a ClosedTour/Ticket CODE already exists
+    for this supplier - the real, authoritative check for the "code already
+    exists" publish error (different from - and more definitive than - the
+    name-based duplicate check above, since the actual API rejection is
+    keyed on the code, not the name). `kind` is "tour" or "ticket". Cached
+    per (kind, supplier_id, code) in session_state so re-checking the same
+    code (e.g. re-rendering on every keystroke elsewhere on the page) costs
+    nothing extra.
+
+    CONFIRMED REAL BUG (reported: "LXR-2 is available" while LXR-2 was
+    actually already taken): this used to treat ANY non-200 response from a
+    direct GET-by-code (client.get_closed_tour/get_ticket) as "doesn't
+    exist" - but a non-200 here isn't reliably a clean 404. It can also be a
+    transient failure (rate limit, brief 5xx - GET calls deliberately don't
+    auto-retry, see api_client._request), or the code being stored under a
+    different variant than what was typed (the same CLOSEDTOUR-XXXXX-vs-
+    human-code ambiguity that try_code_variants() exists to handle
+    elsewhere) - any of which would wrongly report a genuinely taken code as
+    free. Fixed by treating a failed direct GET as INCONCLUSIVE, not a
+    confirmed miss: it now cross-checks the candidate code against the
+    supplier's full existing-items list (get_existing_tour_names() /
+    get_existing_ticket_codes() - a different endpoint with different
+    failure modes) as a second opinion before ever calling a code available.
+
+    Returns {"exists": bool, "name": str|None} on a successful/confident
+    lookup, or None if the check couldn't be completed with confidence
+    either way - callers should treat None as "couldn't verify" rather than
     either a pass or a fail.
     """
     clean_code = (code or "").strip()
@@ -1900,17 +1964,36 @@ def check_code_availability(client, kind, supplier_id, code):
     try:
         result = client.get_closed_tour(supplier_id, clean_code) if kind == "tour" else client.get_ticket(supplier_id, clean_code)
     except Exception:
-        return None
+        result = None
 
-    if not isinstance(result, dict):
-        return None
-    if "error" in result:
-        # A clean "not found" - some accounts return 404, treat any error
-        # response here as "doesn't exist" rather than "couldn't check",
-        # since that's what get_closed_tour/get_ticket already normalize to.
-        outcome = {"exists": False, "name": None}
-    else:
+    if isinstance(result, dict) and "error" not in result:
+        # Direct GET succeeded - definitive, real data, no need for a
+        # second opinion.
         outcome = {"exists": True, "name": result.get("name")}
+        cache[cache_key] = outcome
+        return outcome
+
+    # The direct GET did NOT confirm the code exists - but per the bug above,
+    # that alone doesn't mean it's free. Cross-check the supplier's full
+    # existing-items list before concluding "available".
+    existing_items, list_error = (
+        get_existing_tour_names(client, supplier_id) if kind == "tour"
+        else get_existing_ticket_codes(client, supplier_id)
+    )
+    clean_code_lower = clean_code.lower()
+    match = next(
+        (item for item in existing_items if (item.get("code") or "").strip().lower() == clean_code_lower),
+        None
+    )
+    if match:
+        outcome = {"exists": True, "name": match.get("name")}
+    elif list_error is not None:
+        # Neither the direct GET nor the list check could be completed with
+        # confidence - don't claim "available" off of two failed checks.
+        return None
+    else:
+        outcome = {"exists": False, "name": None}
+
     cache[cache_key] = outcome
     return outcome
 
