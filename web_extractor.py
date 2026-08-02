@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import requests
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from api_client import TravelCompositorAPI
@@ -89,10 +90,51 @@ def get_page_text(target_url: str) -> str:
     return main_content.get_text(separator="\n", strip=True)
 
 
+def _first_image_src(img) -> str:
+    """
+    Returns the best real source URL/path for one <img> tag, or "" if none
+    found. CRITICAL ORDER: checks the common lazy-load attribute names
+    (data-src/data-lazy-src/data-original) BEFORE the plain src - when a
+    lazy-load attribute is present at all, the real src is almost always
+    still pointing at a tiny throwaway placeholder (a 1x1 pixel, a
+    "blank.gif"/"spacer.png") until JS swaps it in on scroll, so checking
+    src first would just return that placeholder instead of falling through
+    to the real image. Only when NO lazy-load attribute is present does
+    plain src win. Falls back to srcset/data-srcset last (takes the first
+    URL listed, before any width descriptor like " 800w"). Skips inline
+    data: URIs (base64 placeholders, not real hosted images) everywhere.
+    """
+    for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+        val = (img.get(attr) or "").strip()
+        if val and not val.startswith("data:"):
+            return val
+    for attr in ("srcset", "data-srcset"):
+        val = (img.get(attr) or "").strip()
+        if val:
+            first_entry = val.split(",")[0].strip()
+            first_url = first_entry.split(" ")[0].strip()
+            if first_url and not first_url.startswith("data:"):
+                return first_url
+    return ""
+
+
 def get_page_images(target_url: str) -> list:
     """
     Heuristic-only image grab (AI text extraction can't see <img> tags).
-    Returns real hosted URLs found on the page, or a placeholder if none.
+    Returns real, absolute, hosted image URLs found on the page.
+
+    CONFIRMED REAL BUG (reported: a real supplier page - a plain multi-page
+    PHP site, http://sabenagroup.com/kahila/boat_facilities.php - returned
+    ZERO images even though it has real usable photos): the old filter
+    required img.get("src") to ALREADY start with "http", which silently
+    drops every image referenced by a RELATIVE path (e.g. "images/boat1.jpg"
+    or "/kahila/images/boat1.jpg") - extremely common on older/simpler sites
+    that don't use a CDN with absolute URLs. Fixed by resolving every
+    candidate src (including relative and protocol-relative "//..." forms)
+    against the page's own URL via urljoin(), instead of requiring it to
+    already be absolute. Also now falls back to common lazy-load attributes
+    (see _first_image_src) for sites that defer loading via JS, since a
+    blank/placeholder src there used to look like "no image" too.
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(target_url, headers=headers, timeout=15)
@@ -100,11 +142,26 @@ def get_page_images(target_url: str) -> list:
     soup = BeautifulSoup(response.content, "html.parser")
     main_content = soup.find("article") or soup.find("main") or soup
 
-    extracted_images = [
-        img.get("src") for img in main_content.find_all("img")
-        if img.get("src") and img.get("src").startswith("http") and "logo" not in img.get("src").lower()
-    ]
-    return extracted_images[:5] if extracted_images else [FALLBACK_IMAGE]
+    extracted_images = []
+    seen = set()
+    for img in main_content.find_all("img"):
+        raw_src = _first_image_src(img)
+        if not raw_src:
+            continue
+        absolute_url = urljoin(target_url, raw_src)
+        parsed = urlparse(absolute_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if "logo" in absolute_url.lower():
+            continue
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        extracted_images.append(absolute_url)
+        if len(extracted_images) >= 12:
+            break
+
+    return extracted_images
 
 
 def extract_from_url(target_url: str, api_client: TravelCompositorAPI,
