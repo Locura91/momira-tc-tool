@@ -5,6 +5,7 @@ into structured English tour data, matching the shape builder.py expects.
 Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 """
 import os
+import re
 import json
 import datetime
 from dotenv import load_dotenv
@@ -43,6 +44,22 @@ Rules:
 - Translate ALL content into English, regardless of the source document's original language.
 - Output ONLY valid JSON. No markdown code fences, no explanation, no preamble.
 - Never fabricate information that isn't present in the source document. Use empty string "" or empty list [] for anything you can't determine.
+- nights: the total number of overnight stays in the itinerary - count them directly from the day-by-day
+  schedule (the number of distinct nights spent somewhere), not from a day-count the source's own title
+  might use.
+- CONFIRMED NAMING RULE - Nights vs Days: an itinerary of N nights always spans N+1 days (e.g. spending 4
+  nights somewhere means the trip runs across 5 calendar days - day 1 you arrive, day 5 you depart). Apply
+  this EVERY time a "Days" count is used to describe the trip's overall length - in tour_name (e.g. a
+  4-night itinerary must be named "5 Days ..." not "4 Days ...") and anywhere the description refers to
+  the whole trip's length in days (e.g. "this 5-day journey..."). This applies regardless of what the
+  source document's own title/wording says - if the source itself is inconsistent (e.g. it calls a
+  4-night itinerary a "4 Days" tour), correct it to the right day count (nights + 1) rather than copying
+  the source's own possibly-wrong number. Concretely: a 4-night tour is a 5 Days tour; a 2-night tour is a
+  3 Days tour; a 6-night tour is a 7 Days tour. This does NOT apply to single-day excursions with no
+  overnight stay (0 nights) - those are never renamed to "1 Day" by this rule, since they're a different
+  product type (Tickets) that doesn't use this convention.
+- tour_name: keep the product name close to what the source calls it, but apply the Nights-vs-Days naming
+  rule above if the source's title states a day count - fix it to nights + 1 if it doesn't already match.
 - CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
   directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up
   time, and note that the starting time and duration may vary according to traffic, weather and
@@ -323,6 +340,31 @@ def _sanitize_supplement_price_fields(supplement: dict) -> None:
         val = supplement.get(key)
         if isinstance(val, dict):
             supplement[key] = val.get("amount", 0) or 0
+
+
+def _fix_days_count_in_tour_name(tour_name: str, nights) -> str:
+    """
+    CONFIRMED NAMING RULE: an N-night itinerary is always described as an
+    (N+1)-Day tour (e.g. a 4-night tour is a 5 Days tour, a 2-night tour is
+    a 3 Days tour) - standard travel-industry convention (day 1 = arrival,
+    the last day = departure, so N nights always span N+1 calendar days).
+    The AI is instructed to apply this itself (see EXTRACTION_SYSTEM_PROMPT),
+    but this is a fully deterministic correction, so double-check/fix it
+    here too rather than relying on the AI alone - catches the real-world
+    case where the SOURCE document's own title already uses a wrong day
+    count (e.g. calling a 4-night itinerary a "4 Days" tour) and the AI
+    copies it verbatim instead of correcting it.
+
+    Only touches an existing "<number> Day(s)" token in the name (the first
+    one found) - leaves a tour_name with no day-count mention completely
+    untouched, and does nothing for a 0-night (single-day, no overnight)
+    product, since that's a different product type (Ticket) this
+    convention doesn't apply to.
+    """
+    if not tour_name or not isinstance(nights, (int, float)) or nights <= 0:
+        return tour_name
+    correct_days = int(nights) + 1
+    return re.sub(r"\b\d+\s*(Days?)\b", lambda m: f"{correct_days} {m.group(1)}", tour_name, count=1, flags=re.I)
 
 
 _WEEKDAY_NAME_TO_INDEX = {
@@ -1242,6 +1284,11 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }
     defaults.update(data)
+
+    # Deterministic double-check of the Nights-vs-Days naming rule (see
+    # _fix_days_count_in_tour_name's docstring) - catches the AI copying a
+    # wrong day count straight from the source document's own title.
+    defaults["tour_name"] = _fix_days_count_in_tour_name(defaults.get("tour_name", ""), defaults.get("nights"))
 
     # Defensive per-supplement defaults (in case the model omits a field despite
     # the prompt's instructions above) - "applies_to" defaults to "ALL" (today's
