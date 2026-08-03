@@ -41,7 +41,7 @@ from schemas import HumanPreConfig, TicketHumanPreConfig
 from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos
 from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
-from web_extractor import get_page_text, get_page_images
+from web_extractor import get_page_text, get_page_image_bytes
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
@@ -832,6 +832,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     if not candidates:
                         candidates = [{"label": "", "nights": None, "is_genuine_variant": False}]
 
+                    # Fold any images found on the page into the SAME pool as
+                    # document-embedded images (downloaded server-side, not
+                    # hotlinked) - see _add_page_images_to_doc_pool's docstring.
+                    _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls)
+
                     # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
                     # if every image already got a real URL, showing them again in a second
                     # section would just be a confusing, redundant duplicate of "Images found" above.
@@ -841,7 +846,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     st.session_state.mct_raw_text = raw_text
                     st.session_state.mct_candidates = candidates
                     st.session_state.mct_doc_raw_images = doc_raw_images
-                    st.session_state.mct_hosted_image_candidates = list(dict.fromkeys((get_page_images(url) if url else []) + doc_image_urls))
+                    st.session_state.mct_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     st.session_state.mct_phase = "select_tour"
                     st.rerun()
                 except Exception as e:
@@ -1702,6 +1707,54 @@ def render_closable_image_section(condition, header, closed_key, picker_call):
         st.session_state[closed_key] = True
         st.session_state[f"{closed_key}_count"] = st.session_state.get(f"{closed_key}_count", 0) + added
         st.rerun()
+
+
+def _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls):
+    """
+    Downloads any images found on `url` server-side and folds them into the
+    SAME doc_raw_images/doc_image_urls pool already used for document-
+    embedded images, instead of handing the browser a raw hotlink back to
+    the source site.
+
+    CONFIRMED REAL BUG (reported: images "from document and/or URL" showing
+    broken in the picker): URL-scraped images used to be kept in their own
+    separate list (fed straight from get_page_images()'s raw URLs into
+    render_url_image_picker, which renders each via a plain <img src=...>
+    that the USER'S BROWSER has to fetch directly from the ORIGINAL source
+    site). Two real things break that: (1) mixed content blocking - this
+    app is served over HTTPS, and browsers silently drop an http:// image
+    if its auto-upgraded https:// version fails, which it does for a site
+    with no valid HTTPS setup (confirmed against a real supplier site with
+    a certificate hostname mismatch); (2) hotlink protection some sites
+    apply against other domains. Routing through get_page_image_bytes()
+    (downloads server-side, exactly like document images already do) and
+    merging into the same doc_raw_images/doc_image_urls lists fixes this
+    for both sources at once, and means the picker only ever needs ONE
+    reliable pipeline instead of two - one solid, one fragile.
+
+    Mutates doc_raw_images/doc_image_urls IN PLACE (extends both): every
+    downloaded image goes into doc_raw_images (renders via raw bytes -
+    st.image() never has the browser fetch anything, so this always works
+    regardless of the source site's own HTTPS/hotlink situation) AND gets
+    an upload attempt to freeimage.host so it can also show up pre-hosted,
+    one click away, instead of needing a manual "Upload & Add" - matching
+    the exact fallback pattern document images already use.
+    """
+    if not url:
+        return
+    try:
+        page_images_bytes = get_page_image_bytes(url)
+    except Exception:
+        page_images_bytes = []
+    if not page_images_bytes:
+        return
+    doc_raw_images.extend(page_images_bytes)
+    try:
+        doc_image_urls.extend(upload_images_freeimage(
+            [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg") for fname, img_bytes in page_images_bytes]
+        ))
+    except Exception:
+        pass
 
 
 def render_url_image_picker(image_urls, state_prefix):
@@ -2670,13 +2723,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "Standard",
                                       "selected": True, "is_genuine_variant": False}]
 
+                    _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
+
                     if len(doc_image_urls) >= len(doc_raw_images):
                         doc_raw_images = []
 
                     st.session_state.mt_raw_text = raw_text
                     st.session_state.mt_candidates = candidates
                     st.session_state.mt_doc_raw_images = doc_raw_images
-                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
+                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     st.session_state.mt_phase = "prepare_queue"
                     st.rerun()
                 except Exception as e:
@@ -3681,8 +3736,9 @@ def render_ticket_flow(client):
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
                         st.session_state.tk_geo_confirmed = False
+                        _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
                         st.session_state.tk_doc_raw_images = doc_raw_images
-                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_url) if tk_url else []) + doc_image_urls))
+                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                         st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {friendly_error_message(e)}")
@@ -3737,8 +3793,11 @@ def render_ticket_flow(client):
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
                         st.session_state.tk_payloads = None
                         st.session_state.tk_geo_confirmed = False
-                        st.session_state.tk_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
-                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
+                        pending_doc_raw_images = list(st.session_state.get("tk_pending_doc_raw_images", []))
+                        pending_doc_image_urls = list(st.session_state.get("tk_pending_doc_images", []))
+                        _add_page_images_to_doc_pool(tk_pending_url, pending_doc_raw_images, pending_doc_image_urls)
+                        st.session_state.tk_doc_raw_images = pending_doc_raw_images
+                        st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
                         st.session_state.tk_pending_variants = None
                         st.session_state.tk_pending_raw_text = None
                         st.session_state.tk_pending_variant_selection = None
@@ -3777,8 +3836,11 @@ def render_ticket_flow(client):
                         for s in tkpv_selection if s["selected"]
                     ]
                     st.session_state.mt_raw_text = st.session_state.tk_pending_raw_text
-                    st.session_state.mt_doc_raw_images = st.session_state.get("tk_pending_doc_raw_images", [])
-                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys((get_page_images(tk_pending_url) if tk_pending_url else []) + st.session_state.get("tk_pending_doc_images", [])))
+                    mt_pending_doc_raw_images = list(st.session_state.get("tk_pending_doc_raw_images", []))
+                    mt_pending_doc_image_urls = list(st.session_state.get("tk_pending_doc_images", []))
+                    _add_page_images_to_doc_pool(tk_pending_url, mt_pending_doc_raw_images, mt_pending_doc_image_urls)
+                    st.session_state.mt_doc_raw_images = mt_pending_doc_raw_images
+                    st.session_state.mt_hosted_image_candidates = list(dict.fromkeys(mt_pending_doc_image_urls))
                     st.session_state.mt_queue = new_mt_queue
                     st.session_state.mt_queue_index = 0
                     st.session_state.mt_phase = "reviewing"
@@ -4852,6 +4914,22 @@ else:
     required_ok = True
     if "provider_code" in needed and not provider_code_in.strip():
         required_ok = False
+    # CONFIRMED REAL BUG (reported: a human was able to continue past this
+    # step with a ClosedTour Code that was ALREADY TAKEN - the availability
+    # check above was purely informational, an st.error the human could
+    # simply ignore and click through anyway). The actual publish-time
+    # rejection for a duplicate code is much harder to recover from (it
+    # happens after the whole batch is built), so block progression here
+    # instead - reuses check_code_availability's own session-state cache
+    # (already populated by render_code_availability_check above), so this
+    # costs no extra API call. Only blocks on a CONFIRMED "exists" - a None
+    # result (couldn't verify, e.g. Travel Compositor briefly unreachable)
+    # doesn't block, matching render_code_availability_check's own display
+    # logic (which also stays silent on None rather than claiming a pass).
+    if "provider_code" in needed and provider_code_in.strip():
+        provider_code_check = check_code_availability(client, "tour", supplier_id, provider_code_in)
+        if provider_code_check and provider_code_check["exists"]:
+            required_ok = False
     if "currency" in needed and not (currency_in or "").strip():
         required_ok = False
     if "modality_code" in needed and not (modality_code_in or "").strip():
@@ -4884,7 +4962,10 @@ else:
         st.rerun()
 
     if not required_ok:
-        st.info("Fill in all fields above to continue.")
+        if "provider_code" in needed and provider_code_in.strip() and st.session_state.get("_code_exists_cache", {}).get(("tour", supplier_id, provider_code_in.strip()), {}).get("exists"):
+            st.info("Choose a different ClosedTour Code above (the one you entered is already taken) to continue.")
+        else:
+            st.info("Fill in all fields above to continue.")
     st.stop()
 
 
@@ -5047,8 +5128,9 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
+                    _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls)
                     st.session_state.doc_raw_images = doc_raw_images
-                    st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(url) if url else []) + doc_image_urls))
+                    st.session_state.hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
             st.error(f"Extraction failed: {friendly_error_message(e)}")
@@ -5106,8 +5188,11 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     st.session_state.images_text_value = ""
                     st.session_state.raw_preview = preview
                     st.session_state.payloads = None
-                    st.session_state.doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
-                    st.session_state.hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
+                    pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
+                    pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
+                    _add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls)
+                    st.session_state.doc_raw_images = pending_doc_raw_images
+                    st.session_state.hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
                     st.session_state.pending_variants = None
                     st.session_state.pending_raw_text = None
                     st.session_state.pending_url = None
@@ -5146,8 +5231,11 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     for s in pv_selection if s["selected"]
                 ]
                 st.session_state.mct_raw_text = st.session_state.pending_raw_text
-                st.session_state.mct_doc_raw_images = st.session_state.get("pending_doc_raw_images", [])
-                st.session_state.mct_hosted_image_candidates = list(dict.fromkeys((get_page_images(pending_url) if pending_url else []) + st.session_state.get("pending_doc_images", [])))
+                mct_pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
+                mct_pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
+                _add_page_images_to_doc_pool(pending_url, mct_pending_doc_raw_images, mct_pending_doc_image_urls)
+                st.session_state.mct_doc_raw_images = mct_pending_doc_raw_images
+                st.session_state.mct_hosted_image_candidates = list(dict.fromkeys(mct_pending_doc_image_urls))
                 st.session_state.mct_queue = new_mct_queue
                 st.session_state.mct_queue_index = 0
                 st.session_state.mct_phase = "reviewing"
