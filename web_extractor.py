@@ -35,6 +35,20 @@ from ai_extractor import extract_structured_data, detect_tour_variants
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 
+# Full, realistic browser request headers - CONFIRMED REAL FAILURE (2026-08):
+# a site (farahnilecruise.com) rejected a bare-User-Agent-only request with
+# "406 Client Error: Not Acceptable". Many sites' bot-protection checks for a
+# plausible Accept/Accept-Language set (a real browser always sends these
+# together) and rejects requests missing them, even when the User-Agent
+# itself looks like a normal browser. Used for every outbound fetch in this
+# module so all of them benefit, not just page-text fetching.
+_BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 def get_price_list_interactively(default_currency: str = "EUR") -> list:
     """
@@ -78,8 +92,7 @@ def get_price_list_interactively(default_currency: str = "EUR") -> list:
 
 def get_page_text(target_url: str) -> str:
     """Fetches a URL and returns clean, readable visible text for AI extraction."""
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(target_url, headers=headers, timeout=15)
+    response = requests.get(target_url, headers=_BROWSER_HEADERS, timeout=15)
     response.raise_for_status()
     soup = BeautifulSoup(response.content, "html.parser")
     main_content = soup.find("article") or soup.find("main") or soup
@@ -136,8 +149,7 @@ def get_page_images(target_url: str) -> list:
     (see _first_image_src) for sites that defer loading via JS, since a
     blank/placeholder src there used to look like "no image" too.
     """
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(target_url, headers=headers, timeout=15)
+    response = requests.get(target_url, headers=_BROWSER_HEADERS, timeout=15)
     response.raise_for_status()
     soup = BeautifulSoup(response.content, "html.parser")
     main_content = soup.find("article") or soup.find("main") or soup
@@ -196,13 +208,12 @@ def get_page_image_bytes(target_url: str) -> list:
     image (404, timeout, non-image response) is skipped rather than
     aborting the whole batch.
     """
-    headers = {"User-Agent": "Mozilla/5.0"}
     candidate_urls = get_page_images(target_url)
 
     results = []
     for i, img_url in enumerate(candidate_urls):
         try:
-            res = requests.get(img_url, headers=headers, timeout=10)
+            res = requests.get(img_url, headers=_BROWSER_HEADERS, timeout=10)
             res.raise_for_status()
         except requests.RequestException:
             continue
