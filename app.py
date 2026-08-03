@@ -23,6 +23,7 @@ import copy
 import math
 import tempfile
 import os
+import requests
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -229,6 +230,41 @@ def _safe_int(value, fallback=0):
     """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
     result = _safe_float(value, fallback=None)
     return fallback if result is None else int(result)
+
+
+def _fetch_url_text_safe(url_val):
+    """
+    Fetches a product page URL's text via get_page_text(), but never lets a
+    fetch failure abort the whole "gather content" step - the URL field is
+    always optional, so a site refusing the request (bot protection, a dead
+    link, a timeout) shouldn't block extraction when document(s) were also
+    provided.
+
+    CONFIRMED REAL BUG: a supplier site (farahnilecruise.com) rejected the
+    fetch with "406 Client Error: Not Acceptable" - this used to bubble up
+    through the generic except-block and get shown as "Something went wrong
+    while talking to the AI service", which is actively misleading (the AI
+    was never involved; the failure was fetching the web page itself) and,
+    worse, threw away an uploaded document that had already been provided
+    alongside the URL.
+
+    Returns (text, None) on success, or (None, human_readable_error) on
+    failure - the error is phrased around "the product page URL" specifically.
+    """
+    try:
+        return get_page_text(url_val), None
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403, 406, 429):
+            return None, (f"the website blocked the request (HTTP {status}) - some sites reject automated "
+                           f"fetching; try downloading the page as a PDF and uploading it instead")
+        return None, f"the website returned an error (HTTP {status})"
+    except requests.exceptions.Timeout:
+        return None, "the website took too long to respond and timed out"
+    except requests.exceptions.RequestException as e:
+        return None, f"couldn't reach the website ({str(e)[:150]})"
+    except Exception as e:
+        return None, f"unexpected error reading the page ({str(e)[:150]})"
 
 
 def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_config=None):
@@ -556,7 +592,11 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 try:
                     combined_parts = []
                     if url:
-                        combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+                        page_text, page_text_err = _fetch_url_text_safe(url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (uploaded_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -564,6 +604,10 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                             tmp_path = tmp.name
                         combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
                         os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
                     detected = detect_multiple_modalities(raw_text)
@@ -858,7 +902,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     doc_image_urls = []
                     seen_image_hashes = set()
                     if url:
-                        combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+                        page_text, page_text_err = _fetch_url_text_safe(url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (uploaded_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -875,6 +923,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             except Exception:
                                 pass
                         os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
                     detected = detect_tour_variants(raw_text)
@@ -2813,7 +2865,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     doc_image_urls = []
                     seen_image_hashes = set()
                     if tk_url:
-                        combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
+                        page_text, page_text_err = _fetch_url_text_safe(tk_url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (tk_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -2830,6 +2886,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             except Exception:
                                 pass
                         os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
                     detected = detect_ticket_variants(raw_text)
@@ -3820,7 +3880,11 @@ def render_ticket_flow(client):
                 doc_image_urls = []
                 seen_image_hashes = set()
                 if tk_url:
-                    combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{get_page_text(tk_url)}")
+                    page_text, page_text_err = _fetch_url_text_safe(tk_url)
+                    if page_text is not None:
+                        combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
+                    else:
+                        st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                 for uploaded in (tk_files or []):
                     suffix = os.path.splitext(uploaded.name)[1]
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -3837,6 +3901,10 @@ def render_ticket_flow(client):
                         except Exception:
                             pass
                     os.remove(tmp_path)
+
+                if not combined_parts:
+                    st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                    st.stop()
 
                 if len(doc_image_urls) >= len(doc_raw_images):
                     doc_raw_images = []
@@ -5175,7 +5243,11 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
             combined_parts = []
             doc_names = []
             if url:
-                combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{get_page_text(url)}")
+                page_text, page_text_err = _fetch_url_text_safe(url)
+                if page_text is not None:
+                    combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
+                else:
+                    st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
             doc_image_urls = []
             doc_raw_images = []  # [(filename, bytes), ...] - always kept as a guaranteed fallback
             seen_image_hashes = set()  # shared across all documents in this batch, so a logo repeated across files is only extracted once
@@ -5205,6 +5277,10 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                                       f"{uploaded.name} will be available to download instead (see Step 5).")
 
                 os.remove(tmp_path)
+
+            if not combined_parts:
+                st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                st.stop()
 
             if len(doc_image_urls) >= len(doc_raw_images):
                 doc_raw_images = []
