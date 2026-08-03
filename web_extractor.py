@@ -164,6 +164,60 @@ def get_page_images(target_url: str) -> list:
     return extracted_images
 
 
+def get_page_image_bytes(target_url: str) -> list:
+    """
+    Same discovery logic as get_page_images(), but DOWNLOADS each image's
+    raw bytes server-side instead of handing the browser a raw URL to fetch
+    directly from the source site.
+
+    CONFIRMED REAL BUG (reported: URL-scraped images showed as broken/blank
+    in the app's picker, while document-embedded images worked fine): the
+    two picture sources used to be treated differently - document images
+    are downloaded once during extraction and re-hosted via freeimage.host
+    (always a working, HTTPS-served URL), but URL-scraped images were
+    instead handed to the browser as a raw hotlink straight back to the
+    ORIGINAL source site. Two real things break that in practice: (1) mixed
+    content blocking - this app is served over HTTPS, and modern browsers
+    silently upgrade an http:// <img> src to https:// and drop it entirely
+    if that upgraded request fails, which it will for a site with no valid
+    HTTPS setup (confirmed against a real supplier site - a certificate
+    hostname mismatch on the exact domain that surfaced this bug); (2)
+    hotlink protection some sites apply, blocking direct image requests
+    from other domains/referrers. Downloading server-side here sidesteps
+    both, since the browser then never talks to the original source site at
+    all for these images - only to Streamlit itself (raw bytes) or to
+    freeimage.host (a reliable, always-HTTPS host), exactly like document
+    images already do.
+
+    Returns [(filename, bytes), ...] - the SAME shape as the app's
+    doc_raw_images - so callers can feed this straight into the existing
+    document-image hosting/preview pipeline instead of needing a separate
+    one. Each individual image download is best-effort: a failure on ONE
+    image (404, timeout, non-image response) is skipped rather than
+    aborting the whole batch.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    candidate_urls = get_page_images(target_url)
+
+    results = []
+    for i, img_url in enumerate(candidate_urls):
+        try:
+            res = requests.get(img_url, headers=headers, timeout=10)
+            res.raise_for_status()
+        except requests.RequestException:
+            continue
+        if not res.content:
+            continue
+
+        path_only = img_url.split("?", 1)[0].split("#", 1)[0]
+        ext = path_only.rsplit(".", 1)[-1].lower() if "." in path_only.rsplit("/", 1)[-1] else ""
+        if ext not in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+            ext = "jpg"
+        results.append((f"page_img{i + 1}.{ext}", res.content))
+
+    return results
+
+
 def extract_from_url(target_url: str, api_client: TravelCompositorAPI,
                       variant_hint: str = None, model: str = "claude-sonnet-5") -> dict:
     """
