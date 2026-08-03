@@ -395,6 +395,55 @@ def _plain_to_html_for_saving(text):
     return "".join(html_parts)
 
 
+def _html_list_to_plain_for_editing(html):
+    """
+    Bullet-list counterpart to _html_to_plain_for_editing() - converts a
+    <ul><li>item</li>...</ul> string (the format Included/Excluded are
+    stored in, per ai_extractor.py's EXTRACTION_SYSTEM_PROMPT) into plain
+    text, one item per line, no visible tags. CONFIRMED REAL BUG: Included/
+    Excluded used to be edited with the generic "text_area" widget, which
+    just showed the raw stored value - meaning a human clicking the pencil
+    to edit it saw literal "<ul><li>Breakfast</li><li>Lunch</li></ul>" code
+    instead of a plain list, exactly the "code language" a non-technical
+    human shouldn't have to deal with.
+    """
+    if not html:
+        return ""
+    text = html
+    text = re.sub(r"<(strong|b)>(.*?)</\1>", r"**\2**", text, flags=re.I | re.S)
+    text = re.sub(r"<(em|i)>(.*?)</\1>", r"*\2*", text, flags=re.I | re.S)
+    items = re.findall(r"<li[^>]*>(.*?)</li>", text, flags=re.I | re.S)
+    if items:
+        lines = [re.sub(r"<[^>]+>", "", item).strip() for item in items]
+        return "\n".join(line for line in lines if line)
+    # No <li> tags found (e.g. older plain-text data, or a stray format) -
+    # just strip any tags rather than showing them raw, so this is always
+    # safe to call regardless of what shape the stored value happens to be.
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _plain_list_to_html_for_saving(text):
+    """
+    Reverses _html_list_to_plain_for_editing(): one item per line (blank
+    lines ignored) becomes a <ul><li>...</li></ul> bullet list - the EXACT
+    format Travel Compositor's Included/Excluded fields require (confirmed
+    against a real published tour, see ai_extractor.py's prompt) - so the
+    human only ever types/sees plain lines, never HTML, while the correct
+    markup still gets saved underneath automatically.
+    """
+    if not text or not text.strip():
+        return ""
+    items = [line.strip() for line in text.strip().split("\n") if line.strip()]
+    if not items:
+        return ""
+    li_parts = []
+    for item in items:
+        item_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
+        item_html = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", item_html)
+        li_parts.append(f"<li>{item_html}</li>")
+    return "<ul>" + "".join(li_parts) + "</ul>"
+
+
 def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value="", key_suffix=""):
     """
     Renders a field in READ-ONLY display mode by default, with a small
@@ -450,6 +499,14 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                       "between paragraphs/days.")
             new_plain_value = st.text_area(label, value=_html_to_plain_for_editing(current_value),
                                            height=height or 120, key=widget_key)
+        elif widget == "html_list_area":
+            # Bullet-list counterpart to html_text_area, for fields stored as
+            # <ul><li>...</li></ul> (Included/Excluded) - one plain line per
+            # bullet, no HTML ever shown to the human.
+            st.caption("One item per line - each line becomes its own bullet point automatically. "
+                      "Use **word** for bold if needed.")
+            new_plain_value = st.text_area(label, value=_html_list_to_plain_for_editing(current_value),
+                                           height=height or 120, key=widget_key)
         elif widget == "text_area":
             new_value = st.text_area(label, value=current_value, height=height or 120, key=widget_key)
         elif widget == "number_input":
@@ -459,6 +516,8 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
         if st.button("✅ Save", key=f"save_{field_key}{key_suffix}", type="primary"):
             if widget == "html_text_area":
                 data_dict[field_key] = _plain_to_html_for_saving(new_plain_value)
+            elif widget == "html_list_area":
+                data_dict[field_key] = _plain_list_to_html_for_saving(new_plain_value)
             else:
                 data_dict[field_key] = new_value
             st.session_state[edit_flag_key] = False
@@ -955,8 +1014,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix="_main")
         editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix="_main")
         editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix="_main")
-        editable_field("Included", data, "included", widget="text_area", height=100, key_suffix="_main")
-        editable_field("Excluded", data, "excluded", widget="text_area", height=100, key_suffix="_main")
+        editable_field("Included", data, "included", widget="html_list_area", height=100, key_suffix="_main")
+        editable_field("Excluded", data, "excluded", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
         editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
@@ -1853,12 +1912,78 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
     return None
 
 
-def show_publish_error(context_label, raw_error):
+# CONFIRMED REAL REQUEST (human feedback): a publish failure used to just
+# show the raw error and leave the human to guess what to actually go fix.
+# Each tuple is (substring to match in the error text - lowercase, a short
+# "step_key" naming what kind of field is at fault, a plain-English
+# description of what to check) - drawn from every real failure mode this
+# app has hit and fixed over the course of this project, so these are
+# CONFIRMED real patterns, not guesses.
+_PUBLISH_ERROR_PATTERNS = [
+    ("not found in contract modalities", "modality",
+     "the Modality Code - it needs to exactly match (spelling and case) an option that actually exists for this tour/ticket"),
+    ("closed tour not found", "code", "the Tour Code - it doesn't match an existing ClosedTour on Travel Compositor"),
+    ("ticket not found", "code", "the Ticket Code - it doesn't match an existing Ticket on Travel Compositor"),
+    ("already taken", "code", "the Tour/Ticket Code - choose a different one, the one entered is already in use"),
+    ("already exists", "code", "the Tour/Ticket Code - choose a different one, the one entered is already in use"),
+    ("localdate", "pricing", "every Start Date / End Date field (the Pricing table and Stop Sales) - one is blank or invalid"),
+    ("localtime", "pricing", "the Start Time(s) field - one of the times isn't in a valid HH:MM format"),
+    ("not json compliant", "pricing", "the Pricing / Supplements numbers - one is blank or invalid and needs a real number (or 0)"),
+    ("argument must be a string or a real number", "pricing", "the Pricing / Supplements numbers - one of them isn't a valid number"),
+    ("geolocation", "geolocation", "the Geolocation section - confirm the City resolved to a real location, or search/pick one manually if not"),
+    ("not found in travel compositor", "destinations", "the itinerary destination(s) marked as not found - edit the spelling or pick a nearby place name"),
+    ("modality code cannot contain", "modality", "the Modality Code - remove the '/', '\\\\', '+', or '-' character (these break URL lookups)"),
+    ("field required", "review", "the field named just above this message - it was left blank"),
+]
+
+# Real numbered-step labels, ONLY for the two flows that actually have them
+# (the legacy single-tour and single-ticket flows - "Step 1" through "Step
+# 7"). The newer queue-based flows (mct/mt/tk multi-item flows) don't have
+# numbered steps at all, so they fall back to flow-agnostic phrasing below
+# rather than a made-up step number.
+_LEGACY_TOUR_STEP_NAMES = {
+    "modality": "Step 5 (Review & Edit)", "code": "Step 3 (Details for this action)",
+    "pricing": "Step 5 (Review & Edit)", "geolocation": "Step 6 (Destination Resolution & Payload Preview)",
+    "destinations": "Step 6 (Destination Resolution & Payload Preview)", "review": "Step 5 (Review & Edit)",
+}
+_LEGACY_TICKET_STEP_NAMES = {
+    "modality": "Step 5 (Review & Edit)", "code": "Step 3 (Details for this action)",
+    "pricing": "Step 5 (Review & Edit)", "geolocation": "Step 6 (Geolocation & Payload Preview)",
+    "destinations": "Step 5 (Review & Edit)", "review": "Step 5 (Review & Edit)",
+}
+
+
+def _publish_error_guidance(error_text, flow=None):
+    """
+    Pattern-matches a publish-time error against _PUBLISH_ERROR_PATTERNS and
+    returns a ready-to-show "here's what to go check" hint, or None if the
+    error doesn't match anything recognized (callers should show a generic
+    fallback in that case rather than nothing).
+
+    flow: "tour_legacy" / "ticket_legacy" for the two flows with real
+    numbered Steps - gives a literal "Step N" pointer. Any other value (or
+    None, the default) gives flow-agnostic phrasing instead, since the
+    newer queue-based flows don't have numbered steps to point to.
+    """
+    if not error_text:
+        return None
+    text = str(error_text).lower()
+    step_names = {"tour_legacy": _LEGACY_TOUR_STEP_NAMES, "ticket_legacy": _LEGACY_TICKET_STEP_NAMES}.get(flow)
+    for pattern, step_key, what_to_check in _PUBLISH_ERROR_PATTERNS:
+        if pattern in text:
+            where = step_names[step_key] if step_names else "the relevant section above"
+            return f"👉 To fix this: go back to {where} and check {what_to_check}."
+    return None
+
+
+def show_publish_error(context_label, raw_error, flow=None):
     """
     Shows a simple, human-readable error summary by default - extracted from
     Travel Compositor's own nested error message when possible - with the
     full raw technical detail available in an expander for anyone who needs
-    to see or report the exact API response.
+    to see or report the exact API response. Also shows an actionable
+    "go back and check ___" hint (see _publish_error_guidance) so a human
+    isn't just left staring at a rejected error with no idea what to change.
     """
     extracted_detail = None
     try:
@@ -1885,6 +2010,14 @@ def show_publish_error(context_label, raw_error):
         st.error(f"❌ Couldn't {context_label}: {extracted_detail}")
     else:
         st.error(f"❌ Couldn't {context_label}.")
+
+    guidance = _publish_error_guidance(extracted_detail or raw_error, flow)
+    if not guidance:
+        guidance = (
+            "👉 To fix this: open the technical details below to see exactly what "
+            "was rejected, then go back and review/edit that field before trying again."
+        )
+    st.info(guidance)
 
     with st.expander("🔧 Technical details"):
         st.code(str(raw_error))
@@ -4478,7 +4611,7 @@ def render_ticket_flow(client):
                             creation_payload["active"] = True
                             result = client.create_ticket(supplier_id, creation_payload)
                             if "error" in result:
-                                show_publish_error("create the ticket", result)
+                                show_publish_error("create the ticket", result, flow="ticket_legacy")
                             else:
                                 real_code = result.get("code", payloads["main_ticket_code"])
                                 st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
@@ -4488,7 +4621,7 @@ def render_ticket_flow(client):
                                 option_result = client.create_ticket_option(supplier_id, real_code, payloads["ticket_option_payload"])
 
                                 if "error" in option_result:
-                                    show_publish_error("create the ticket option after retrying", option_result)
+                                    show_publish_error("create the ticket option after retrying", option_result, flow="ticket_legacy")
                                     st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
                                     # The ticket itself WAS created successfully (real_code) and is still
                                     # ACTIVE - only the option failed. Don't leave the human stuck on this
@@ -4521,15 +4654,15 @@ def render_ticket_flow(client):
                                                     )
                                                     mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
                                                     if mod_payloads["ticket_option_error"]:
-                                                        show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"])
+                                                        show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"], flow="ticket_legacy")
                                                         continue
                                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                                     if "error" in mod_option_result:
-                                                        show_publish_error(f"create modality '{mod['code']}'", mod_option_result)
+                                                        show_publish_error(f"create modality '{mod['code']}'", mod_option_result, flow="ticket_legacy")
                                                     else:
                                                         st.success(f"✅ Modality '{mod['code']}' created.")
                                                 except Exception as e:
-                                                    show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                                    show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e), flow="ticket_legacy")
                                                     continue
 
                                     if tk_publish_as_active:
@@ -4559,7 +4692,7 @@ def render_ticket_flow(client):
                         elif publish_action == "Add a new option to an existing ticket":
                             result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
                             if "error" in result:
-                                show_publish_error("add the option", result)
+                                show_publish_error("add the option", result, flow="ticket_legacy")
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
@@ -4573,7 +4706,7 @@ def render_ticket_flow(client):
                             update_payload["code"] = target_ticket_code
                             result = client.update_ticket(supplier_id, update_payload)
                             if "error" in result:
-                                show_publish_error("update the ticket", result)
+                                show_publish_error("update the ticket", result, flow="ticket_legacy")
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ Ticket `{target_ticket_code}` updated.")
@@ -4587,7 +4720,7 @@ def render_ticket_flow(client):
                             update_option_payload["code"] = modality_code
                             result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
                             if "error" in result:
-                                show_publish_error("update the option", result)
+                                show_publish_error("update the option", result, flow="ticket_legacy")
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
@@ -4599,7 +4732,7 @@ def render_ticket_flow(client):
                         # This used to be able to crash the whole app on any
                         # unhandled exception partway through publishing -
                         # now it shows a contained error instead.
-                        show_publish_error("publish the ticket (unexpected error)", str(e))
+                        show_publish_error("publish the ticket (unexpected error)", str(e), flow="ticket_legacy")
 
     if st.session_state.get("tk_just_published_code"):
         st.divider()
@@ -5275,8 +5408,8 @@ if st.session_state.extracted:
             editable_field("Tour name", data, "tour_name", widget="text_input")
             editable_field("Description", data, "description", widget="html_text_area", height=200)
             editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
-            editable_field("Included", data, "included", widget="text_area", height=120)
-            editable_field("Excluded", data, "excluded", widget="text_area", height=120)
+            editable_field("Included", data, "included", widget="html_list_area", height=120)
+            editable_field("Excluded", data, "excluded", widget="html_list_area", height=120)
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
             editable_field("Nights", data, "nights", widget="number_input")
@@ -5685,7 +5818,7 @@ if st.session_state.extracted:
                 # main construction, but keep this as a last-resort net for
                 # anything upstream (e.g. the destination-resolution API
                 # calls themselves).
-                show_publish_error("resolve destinations / build the payload", str(e))
+                show_publish_error("resolve destinations / build the payload", str(e), flow="tour_legacy")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
@@ -5749,7 +5882,7 @@ if st.session_state.extracted:
             else:
                 title = "Main Tour Payload (not sent this time)"
             if payloads.get("main_tour_error"):
-                show_publish_error("build the main tour payload", payloads["main_tour_error"])
+                show_publish_error("build the main tour payload", payloads["main_tour_error"], flow="tour_legacy")
             else:
                 with st.expander(f"🔧 {title}", expanded=False):
                     if publish_action not in ("Create a brand-new tour (+ first option)", "Update an existing tour's details"):
@@ -5763,7 +5896,7 @@ if st.session_state.extracted:
             else:
                 title = "Tour Option Payload (not sent this time)"
             if payloads["tour_option_error"]:
-                show_publish_error("build the tour option payload", payloads["tour_option_error"])
+                show_publish_error("build the tour option payload", payloads["tour_option_error"], flow="tour_legacy")
             else:
                 with st.expander(f"🔧 {title}", expanded=False):
                     st.json(payloads["tour_option_payload"])
@@ -5850,7 +5983,7 @@ if st.session_state.extracted:
 
                         result = client.create_closed_tour(payloads["supplier_id"], creation_payload)
                         if "error" in result:
-                            show_publish_error("create the main tour", result)
+                            show_publish_error("create the main tour", result, flow="tour_legacy")
                         else:
                             real_code = result.get('code', payloads['main_tour_code'])
                             st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
@@ -5877,7 +6010,7 @@ if st.session_state.extracted:
                                 st.caption(f"(Option succeeded using code: `{used_code}`)")
 
                             if "error" in option_result:
-                                show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result)
+                                show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result, flow="tour_legacy")
                                 st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                        f"aren't visible via the API. The tour was created with active:true, but if "
                                        f"this keeps failing, check inside Travel Compositor whether `{real_code}` "
@@ -5902,18 +6035,18 @@ if st.session_state.extracted:
                                                 )
                                                 mod_payloads = build_closed_tour_payloads(mod_pre_config, mod["data"], client)
                                                 if mod_payloads["tour_option_error"]:
-                                                    show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["tour_option_error"])
+                                                    show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["tour_option_error"], flow="tour_legacy")
                                                     continue
                                                 mod_result, mod_used_code = try_code_variants(
                                                     lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, mod_payloads["tour_option_payload"]),
                                                     [provider_code or _real_provider_code, real_code]
                                                 )
                                                 if "error" in mod_result:
-                                                    show_publish_error(f"create modality '{mod['code']}'", mod_result)
+                                                    show_publish_error(f"create modality '{mod['code']}'", mod_result, flow="tour_legacy")
                                                 else:
                                                     st.success(f"✅ Modality '{mod['code']}' created.")
                                             except Exception as e:
-                                                show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                                show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e), flow="tour_legacy")
                                                 continue
 
                                 if ct_publish_as_active:
@@ -5945,7 +6078,7 @@ if st.session_state.extracted:
                             target_tour_code
                         )
                         if "error" in option_result:
-                            show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                            show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
                             st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel "
                                    f"Compositor first, then retry (you can switch it back to inactive/draft afterward).")
@@ -5993,7 +6126,7 @@ if st.session_state.extracted:
                                             target_tour_code
                                         )
                                         if "error" in supp_result:
-                                            show_publish_error(f"add '{modality_code}''s supplements to the tour", supp_result)
+                                            show_publish_error(f"add '{modality_code}''s supplements to the tour", supp_result, flow="tour_legacy")
                                             st.info(f"'{modality_code}' itself was created successfully above - "
                                                    f"only its supplements failed to attach. Retry via 'Update "
                                                    f"an existing tour's details' once the issue above is fixed.")
@@ -6009,7 +6142,7 @@ if st.session_state.extracted:
                             target_tour_code
                         )
                         if "error" in result:
-                            show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result)
+                            show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result, flow="tour_legacy")
                             st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                         else:
@@ -6026,7 +6159,7 @@ if st.session_state.extracted:
                             target_tour_code
                         )
                         if "error" in option_result:
-                            show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result)
+                            show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
                             st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                         else:
@@ -6039,7 +6172,7 @@ if st.session_state.extracted:
                     # unhandled exception (network error, unexpected API
                     # response shape, etc.) partway through publishing -
                     # now it shows a contained error instead.
-                    show_publish_error("publish the tour (unexpected error)", str(e))
+                    show_publish_error("publish the tour (unexpected error)", str(e), flow="tour_legacy")
 
 # ----------------------------------------------------------------------
 # Post-publish follow-up: what next?
