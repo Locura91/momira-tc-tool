@@ -407,6 +407,49 @@ class TravelCompositorAPI:
               + (f" (zoneType={zone_type})" if zone_type else "") + ".")
         return self._transfer_zone_cache[cache_key]
 
+    def _find_best_transfer_zone(self, supplier_id: str, query_term: str) -> Optional[Dict[str, Any]]:
+        """
+        Shared matching logic behind both resolve_transfer_zone_geolocation()
+        (coordinates only, used by Tickets) and resolve_transfer_zone() (full
+        zone dict including 'id', used by Transfers for zone-based/area
+        routing) - factored out so both stay in sync instead of drifting.
+
+        Matches on zone name (exact match first, then substring), searching
+        ALL zone types together since a place name could legitimately be any
+        of AIRPORT/PORT/DESTINATION/POINT - but exact matches against a
+        DESTINATION zone are preferred when the same name matches more than
+        one zone type. Returns the raw zone dict, or None if no match / no
+        zones configured for this supplier.
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query or not supplier_id:
+            return None
+
+        try:
+            zones = self.get_transfer_zones(supplier_id)
+        except Exception:
+            zones = []
+        if not zones:
+            return None
+
+        query_lower = clean_query.lower()
+
+        def _rank(zone: dict) -> tuple:
+            # Lower rank sorts first: exact match beats substring; DESTINATION
+            # zoneType beats other types when otherwise tied.
+            name = (zone.get("name") or "").strip().lower()
+            exact = 0 if name == query_lower else 1
+            is_destination = 0 if zone.get("zoneType") == "DESTINATION" else 1
+            return (exact, is_destination)
+
+        candidates = [z for z in zones if query_lower == (z.get("name") or "").strip().lower()
+                      or query_lower in (z.get("name") or "").lower()]
+        if not candidates:
+            return None
+
+        candidates.sort(key=_rank)
+        return candidates[0]
+
     def resolve_transfer_zone_geolocation(self, supplier_id: str, query_term: str) -> Dict[str, Any]:
         """
         Tries to resolve a place name to real coordinates using the GIVEN
@@ -414,13 +457,6 @@ class TravelCompositorAPI:
         OpenStreetMap geocoding (per the confirmed team decision: try
         Travel Compositor's own data first, only use the free geocoder as a
         fallback when TC has nothing for this specific supplier).
-
-        Matches on zone name (exact match first, then substring), searching
-        ALL zone types together since a meeting point/city name could
-        legitimately be any of AIRPORT/PORT/DESTINATION/POINT - but exact
-        matches against a DESTINATION zone are preferred when the same name
-        matches more than one zone type, since that's the closest analogue
-        to a Ticket's city-level location.
 
         Returns the SAME shape as resolve_destination_geolocation() /
         geocoding_client.geocode(), so callers can use either interchangeably:
@@ -441,35 +477,51 @@ class TravelCompositorAPI:
             except (TypeError, ValueError):
                 return None, None
 
-        try:
-            zones = self.get_transfer_zones(supplier_id)
-        except Exception:
-            zones = []
+        best = self._find_best_transfer_zone(supplier_id, clean_query)
+        if not best:
+            zones_exist = bool(self.get_transfer_zones(supplier_id))
+            return {"latitude": None, "longitude": None, "name": clean_query, "valid": False,
+                    "source": "transfer_zone_not_found" if zones_exist else "transfer_zone_none_for_supplier"}
 
-        if not zones:
-            return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "transfer_zone_none_for_supplier"}
-
-        query_lower = clean_query.lower()
-
-        def _rank(zone: dict) -> tuple:
-            # Lower rank sorts first: exact match beats substring; DESTINATION
-            # zoneType beats other types when otherwise tied.
-            name = (zone.get("name") or "").strip().lower()
-            exact = 0 if name == query_lower else 1
-            is_destination = 0 if zone.get("zoneType") == "DESTINATION" else 1
-            return (exact, is_destination)
-
-        candidates = [z for z in zones if query_lower == (z.get("name") or "").strip().lower()
-                      or query_lower in (z.get("name") or "").lower()]
-        if not candidates:
-            return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "transfer_zone_not_found"}
-
-        candidates.sort(key=_rank)
-        best = candidates[0]
         lat, lng = _extract_coords(best)
         return {
             "latitude": lat, "longitude": lng, "name": best.get("name", clean_query),
             "valid": lat is not None and lng is not None, "source": "transfer_zone",
+        }
+
+    def resolve_transfer_zone(self, supplier_id: str, query_term: str) -> Dict[str, Any]:
+        """
+        Like resolve_transfer_zone_geolocation(), but also returns the zone's
+        own TC 'id' - needed for TRANSFER products' departureLocationId/
+        arrivalLocationId fields (zone-based/area routing, e.g. a Bali-style
+        rate sheet where "South Bali (Tuban/Kuta/...)" is a named area rather
+        than one specific GPS point - see builder.py's build_transfer_payload).
+
+        Returns: {"zone_id": int|None, "latitude": float|None, "longitude": float|None,
+                   "name": str, "zone_radius": float|None, "valid": bool, "source": str}
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query or not supplier_id:
+            return {"zone_id": None, "latitude": None, "longitude": None, "name": query_term,
+                    "zone_radius": None, "valid": False, "source": "transfer_zone_skipped"}
+
+        best = self._find_best_transfer_zone(supplier_id, clean_query)
+        if not best:
+            zones_exist = bool(self.get_transfer_zones(supplier_id))
+            return {"zone_id": None, "latitude": None, "longitude": None, "name": clean_query,
+                    "zone_radius": None, "valid": False,
+                    "source": "transfer_zone_not_found" if zones_exist else "transfer_zone_none_for_supplier"}
+
+        geo = best.get("geolocation") or {}
+        try:
+            lat = float(geo.get("latitude")) if geo.get("latitude") is not None else None
+            lng = float(geo.get("longitude")) if geo.get("longitude") is not None else None
+        except (TypeError, ValueError):
+            lat, lng = None, None
+        return {
+            "zone_id": best.get("id"), "latitude": lat, "longitude": lng,
+            "name": best.get("name", clean_query), "zone_radius": best.get("zoneRadius"),
+            "valid": best.get("id") is not None, "source": "transfer_zone",
         }
 
     def resolve_destination(self, query_term: str) -> Dict[str, Any]:
@@ -765,6 +817,66 @@ class TravelCompositorAPI:
     def update_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /tickets/{supplierId}/{ticketCode} — updates an EXISTING ticket option/modality."""
         url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    # ------------------------------------------------------------------
+    # TRANSFER UPLOADS
+    # Confirmed against the real Swagger + 13 real GET examples across 2
+    # real suppliers. See transfer_matcher.py for how an existing transfer
+    # is identified for an update - there is no human-assigned code on this
+    # product type, only a TC-generated id like "TRANSFER-412545".
+    # ------------------------------------------------------------------
+    def get_transfers(self, supplier_id: str) -> Dict[str, Any]:
+        """
+        Executes GET /transfer/{supplierId} — returns ALL transfers for this
+        supplier (no pagination/filter parameter exists in the Swagger).
+        Used as the candidate pool for the departure/arrival matching
+        fallback when the app has no locally-tracked id for a route yet -
+        see transfer_matcher.suggest_existing_transfer_matches.
+        """
+        url = f"{self.api_base_url}/transfer/{supplier_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_transfer(self, supplier_id: str, transfer_id: str) -> Dict[str, Any]:
+        """Executes GET /transfer/{supplierId}/{transferId} — returns one specific transfer by its TC-generated id."""
+        url = f"{self.api_base_url}/transfer/{supplier_id}/{transfer_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /transfer/{supplierId} — creates a new transfer. Travel Compositor
+        assigns and returns the new 'id' in the response - remember it via
+        transfer_matcher.remember_transfer_id so future updates to this same route auto-match."""
+        url = f"{self.api_base_url}/transfer/{supplier_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /transfer/{supplierId} — updates an EXISTING transfer.
+        UNLIKE ClosedTour/Ticket's PUT, the transfer id is NOT in the URL
+        path — it must be set on the payload's own 'id' field (confirmed
+        via Swagger), pointing at the transfer being updated.
+        """
+        url = f"{self.api_base_url}/transfer/{supplier_id}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
