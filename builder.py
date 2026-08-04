@@ -1,7 +1,7 @@
 import math
 from typing import Dict, Any, List
 from pydantic import ValidationError
-from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation
+from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
@@ -63,6 +63,53 @@ def _safe_supplement_price(value, fallback=0.0):
     if isinstance(value, dict):
         value = value.get("amount", fallback)
     return _safe_float(value, fallback)
+
+
+def _cancellation_ranges_from_tiers(tiers):
+    """
+    Converts AI-extracted cancellation_policy_tiers (the SOURCE's own stated
+    fee tiers, e.g. [{"days": 91, "fee_percentage": 25}, ...] - already
+    sanitized upstream by ai_extractor.py's _sanitize_cancellation_tiers)
+    into (days, refund_percentage) pairs matching Travel Compositor's
+    CancellationRange/TicketCancellationRange shape.
+
+    CONFIRMED (schemas.py's CancellationRange.percentage docstring, checked
+    against real data): TC's "percentage" field is the REFUND percentage,
+    the INVERSE of how suppliers normally state their policy ("25% fee" ->
+    75% refund) - converted here via refund% = 100 - fee%.
+
+    ASSUMPTION (not independently confirmed against a real multi-tier
+    example - only the single flat 30-days/100%-refund case is confirmed):
+    each entry means "cancel at least `days` days before arrival -> refund
+    `percentage`%", i.e. Travel Compositor applies the entry with the
+    largest `days` threshold that is <= the actual number of days before
+    arrival at cancellation time. Sorted descending by days to match that
+    reading - review this against a real multi-tier tour/ticket on Travel
+    Compositor once one is live, and adjust here if the actual behavior
+    turns out to be different.
+
+    CONFIRMED REAL RULE (human feedback): this used to be hardcoded to a
+    flat 30-days/100%-refund default regardless of what the source document
+    actually said. Returns None (not an empty list) when `tiers` is falsy,
+    so callers can tell "use the existing flat default" apart from "the
+    source genuinely wants a 0-day/0%-refund policy".
+    """
+    if not tiers:
+        return None
+    cleaned = []
+    for t in tiers:
+        if not isinstance(t, dict):
+            continue
+        days = t.get("days")
+        fee_pct = t.get("fee_percentage")
+        if not isinstance(days, (int, float)) or not isinstance(fee_pct, (int, float)):
+            continue
+        refund_pct = max(0.0, min(100.0, 100.0 - _safe_float(fee_pct)))
+        cleaned.append((int(days), refund_pct))
+    if not cleaned:
+        return None
+    cleaned.sort(key=lambda pair: pair[0], reverse=True)
+    return cleaned
 
 
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
@@ -403,6 +450,20 @@ def build_closed_tour_payloads(
             remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
         )
 
+        # CONFIRMED REAL RULE (human feedback): cancellation used to be
+        # hardcoded to a flat 30-days/100%-refund default for every tour
+        # regardless of what the supplier's own contract actually said -
+        # that was wrong. Use the source's own extracted tiers (see
+        # _cancellation_ranges_from_tiers's docstring for the fee->refund%
+        # conversion and days-threshold assumption) whenever the source
+        # stated a specific policy; otherwise keep the existing flat default
+        # (CancellationRange()'s own 30-days/100% default) untouched.
+        cancellation_tiers = _cancellation_ranges_from_tiers(extracted_dmc_data.get("cancellation_policy_tiers"))
+        cancellation_ranges = (
+            [CancellationRange(days=d, percentage=p) for d, p in cancellation_tiers]
+            if cancellation_tiers else [CancellationRange()]
+        )
+
         main_tour = ContractClosedTourVO(
             supplier=pre_config.supplier_code or pre_config.supplier_id,
             userId=pre_config.user_id,
@@ -425,6 +486,7 @@ def build_closed_tour_payloads(
             maxPax=pre_config.max_pax,
             modalityCodes=[pre_config.modality_code],
             daysAvailableBeforeRelease=effective_release_days,
+            cancellationRanges=cancellation_ranges,
             active=False  # LOCKED: Strictly upload as inactive/draft
         )
         main_tour_payload = main_tour.dict()
@@ -615,11 +677,25 @@ def build_ticket_payloads(
             description=extracted_ticket_data.get("description") or "",
             meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
             departureTime=time_tables_list[0] if time_tables_list else "",
-            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or "",
+            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or extracted_ticket_data.get("cancellation_policy_text") or "",
             includes=extracted_ticket_data.get("includes") or [],
             excludes=extracted_ticket_data.get("excludes") or [],
             activityType=extracted_ticket_data.get("activity_type"),
         )
+
+        # CONFIRMED REAL RULE (human feedback): cancellation used to be
+        # hardcoded to a flat 30-days/100%-refund default for every ticket
+        # regardless of what the supplier's own contract actually said -
+        # that was wrong. Use the source's own extracted tiers whenever the
+        # source stated a specific policy (see _cancellation_ranges_from_tiers's
+        # docstring for the fee->refund% conversion and days-threshold
+        # assumption); otherwise keep the existing flat default untouched.
+        ticket_cancellation_tiers = _cancellation_ranges_from_tiers(extracted_ticket_data.get("cancellation_policy_tiers"))
+        ticket_cancellation_ranges = (
+            [TicketCancellationRange(cancellationDays=d, cancellationPercentage=p) for d, p in ticket_cancellation_tiers]
+            if ticket_cancellation_tiers else [TicketCancellationRange()]
+        )
+
         main_ticket_kwargs = dict(
             code=pre_config.ticket_code,
             name=extracted_ticket_data.get("ticket_name", ""),
@@ -637,7 +713,7 @@ def build_ticket_payloads(
             daysAvailableBeforeRelease=effective_release_days,
             duration=_safe_float(extracted_ticket_data.get("duration", 0)),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
-            cancellationRanges=[TicketCancellationRange()],  # LOCKED default: always 30 days / 100%, matching ClosedTour's confirmed convention
+            cancellationRanges=ticket_cancellation_ranges,
             meetingPoints=meeting_points_out,
             active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
         )
@@ -702,7 +778,11 @@ def build_ticket_payloads(
         ticket_option = ContractTicketModalityVO(
             code=pre_config.modality_code,
             operationalDays=extracted_ticket_data.get("operational_days", WEEKDAY_NAMES.copy()),
-            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=None)},
+            # CONFIRMED REAL REQUEST (human feedback): the "Condition" field
+            # (Travel Compositor's per-modality remarks) used to always be
+            # blank - now carries the same extracted cancellation policy text
+            # shown on the Voucher Remarks field above, so staff see it too.
+            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=extracted_ticket_data.get("cancellation_policy_text") or None)},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
