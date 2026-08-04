@@ -232,6 +232,40 @@ def _safe_int(value, fallback=0):
     return fallback if result is None else int(result)
 
 
+def _data_fingerprint(data):
+    """
+    A stable snapshot of an extracted-data dict, used to detect "this was
+    edited after the payload was last built" in the legacy (non-queue)
+    single-Tour/single-Ticket flows.
+
+    CONFIRMED REAL BUG (internal audit): in those legacy flows, clicking
+    "Resolve Destinations & Build Payload" builds st.session_state.payloads
+    ONCE and caches it - but the price/supplements/stop-sales/itinerary
+    tables above that button stay fully editable and visible afterward too.
+    Editing one of those tables mutates `data` in place and reruns the
+    script (editable_table always reruns on save), but nothing rebuilt the
+    cached payload - so the human sees their edit reflected on screen, but
+    the STALE pre-edit payload is what actually gets published, silently
+    discarding the edit. The newer queue-based flow avoids this entirely by
+    rebuilding the payload fresh on every render instead of caching it -
+    not adopted wholesale here since that would mean re-resolving
+    destinations against Travel Compositor on every single keystroke
+    anywhere on the page, which is wasteful. Instead: fingerprint `data`
+    right after a successful build, and re-check it on every render -  if
+    it no longer matches, the cached payload is stale and must be
+    discarded, forcing an explicit rebuild rather than silently publishing
+    outdated data.
+
+    Returns None (never matches anything, safest default - always treated
+    as "changed") if `data` can't be serialized for some unexpected reason,
+    rather than crashing the page over what is just a staleness check.
+    """
+    try:
+        return json.dumps(data, sort_keys=True, default=str)
+    except Exception:
+        return None
+
+
 def _fetch_url_text_safe(url_val):
     """
     Fetches a product page URL's text via get_page_text(), but never lets a
@@ -3445,6 +3479,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.write("")
                 if st.button("🗑️ Remove", key=f"mt_extramod_remove_{idx}_{j}"):
                     current["extra_modalities"].pop(j)
+                    # CONFIRMED REAL BUG (internal audit): every widget below is
+                    # keyed off this positional slot j (e.g. f"mt_extramod_code_{idx}_{j}")
+                    # - removing one shifts every later extra modality down one slot,
+                    # so the item now AT that slot would otherwise inherit the
+                    # removed item's stale typed Code/Hint/prices (Streamlit widgets
+                    # with a fixed key ignore value= after first render). Clear all
+                    # of them so the next render reads fresh from the data instead.
+                    _clear_batch_widget_state(["mt_extramod_"])
                     st.rerun()
 
             if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
@@ -4429,6 +4471,13 @@ def render_ticket_flow(client):
                     st.write("")
                     if st.button("🗑️ Remove", key=f"tk_extramod_remove_{i}"):
                         st.session_state.tk_extra_modalities.pop(i)
+                        # CONFIRMED REAL BUG (internal audit): every widget here is
+                        # keyed off this positional slot i (e.g. f"tk_extramod_code_{i}")
+                        # - removing one shifts every later extra modality down one
+                        # slot, so the item now AT that slot would otherwise inherit
+                        # the removed item's stale typed Code/Hint/prices (Streamlit
+                        # widgets with a fixed key ignore value= after first render).
+                        _clear_batch_widget_state(["tk_extramod_"])
                         st.rerun()
 
                 if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
@@ -4550,6 +4599,17 @@ def render_ticket_flow(client):
             )
             with st.spinner("Resolving geolocation..."):
                 st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
+
+        # CONFIRMED REAL BUG (internal audit) - see _data_fingerprint's docstring:
+        # the pricing/supplements/occupancy tables above stay editable after a
+        # payload was already built, and an edit there used to publish silently
+        # using the STALE pre-edit payload. Discard it here the moment `data`
+        # no longer matches what it was built from, forcing an explicit rebuild.
+        if st.session_state.get("tk_payloads") and _data_fingerprint(data) != st.session_state.get("tk_payloads_data_fingerprint"):
+            st.session_state.tk_payloads = None
+            st.warning("✏️ You edited the data above after building the payload - click "
+                      "**🔎 Resolve Geolocation & Build Payload** again to refresh it before publishing.")
 
         # ------------------------------------------------------------------
         # TICKET STEP 6: Geolocation & Payload Preview
@@ -4602,6 +4662,7 @@ def render_ticket_flow(client):
                                             days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                                         )
                                         st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                        st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
                                         st.session_state.tk_geo_confirmed = False
                                         st.session_state.tk_geo_search_results = None
                                         st.rerun()
@@ -4652,6 +4713,7 @@ def render_ticket_flow(client):
                                         days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                                     )
                                     st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                    st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
                                     st.session_state.tk_geo_confirmed = False
                                     st.session_state.tk_geo_search_results2 = None
                                     st.rerun()
@@ -4674,6 +4736,7 @@ def render_ticket_flow(client):
                             days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                         )
                         st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                        st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
                         st.session_state.tk_geo_confirmed = False
                         st.rerun()
             else:
@@ -5817,6 +5880,17 @@ if st.session_state.extracted:
                 st.write("")
                 if st.button("🗑️ Remove", key=f"extramod_remove_{i}"):
                     st.session_state.extra_modalities.pop(i)
+                    # CONFIRMED REAL BUG (internal audit): every widget here is
+                    # keyed off this positional slot i (e.g. f"extramod_code_{i}")
+                    # - removing one shifts every later extra modality down one
+                    # slot, so the item now AT that slot would otherwise inherit
+                    # the removed item's stale typed Code/Hint/prices (Streamlit
+                    # widgets with a fixed key ignore value= after first render).
+                    # Also sweep SHARED_WIDGET_STATE_PREFIXES since each modality's
+                    # pricing below is a render_seasonal_price_editor -> editable_table,
+                    # whose own internal open/closed-edit-mode state is keyed off
+                    # those generic prefixes, not "extramod_" itself.
+                    _clear_batch_widget_state(["extramod_"] + SHARED_WIDGET_STATE_PREFIXES)
                     st.rerun()
 
             if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
@@ -5950,6 +6024,7 @@ if st.session_state.extracted:
                 )
                 st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
                 st.session_state.pre_config = pre_config
+                st.session_state.payloads_data_fingerprint = _data_fingerprint(data)
             except Exception as e:
                 # This used to be able to crash the whole app on a bad
                 # destination/network hiccup instead of showing a contained
@@ -5958,6 +6033,17 @@ if st.session_state.extracted:
                 # anything upstream (e.g. the destination-resolution API
                 # calls themselves).
                 show_publish_error("resolve destinations / build the payload", str(e), flow="tour_legacy")
+
+    # CONFIRMED REAL BUG (internal audit) - see _data_fingerprint's docstring:
+    # the price/supplements/stop-sales/itinerary tables above stay editable
+    # after a payload was already built, and an edit there used to publish
+    # silently using the STALE pre-edit payload. Discard it here the moment
+    # `data` no longer matches what it was built from, forcing an explicit
+    # rebuild instead of letting a stale payload reach Step 6/7 below.
+    if st.session_state.payloads and _data_fingerprint(data) != st.session_state.get("payloads_data_fingerprint"):
+        st.session_state.payloads = None
+        st.warning("✏️ You edited the data above after building the payload - click "
+                  "**🔎 Resolve Destinations & Build Payload** again to refresh it before publishing.")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
