@@ -390,3 +390,174 @@ class ContractTicketModalityVO(BaseModel):
     timeTables: List[str] = []
     duration: float = 0.0
     durationType: str = "HOURS"
+
+
+# ==========================================
+# 6. TRANSFER SCHEMAS
+# Confirmed field-by-field against the real Transfer Swagger (Contract -
+# Transfer: GET/POST/PUT /transfer/{supplierId}, GET /transfer/{supplierId}/
+# {transferId}) plus 13 real GET responses across 2 real suppliers
+# (Hurghada/El Gouna point-to-point routes, and a Bali zone-based rate
+# sheet) confirmed 2026-08. See builder.py for how DMC rate-sheet
+# conventions (charge-unit-per-pax vs per-service, guide-language pricing,
+# bracket occupancy tiers) map onto this shape.
+# ==========================================
+
+class TransferHumanPreConfig(BaseModel):
+    """Mirrors TicketHumanPreConfig - human-supplied config a Transfer needs that
+    isn't extractable from the supplier document itself."""
+    supplier_id: str = Field(..., example="50696")
+    currency: str = Field(..., example="EUR")
+    days_available_before_release: int = Field(
+        5, description="Confirmed real field name is releaseContract; confirmed real value seen in live data = 5."
+    )
+
+
+class TransferLocationVO(BaseModel):
+    """Confirmed shape via real data: point-to-point suppliers (e.g. Hurghada) populate geolocation
+    directly with raw coordinates; zone-based suppliers (e.g. Bali, where 'departure'/'arrival' are
+    named AREAS covering several localities, not one GPS pin) should instead be resolved against the
+    supplier's own Transfer Zones and use ContractTransferVO.departureLocationId/arrivalLocationId -
+    see api_client.py's get_transfer_zones/resolve_transfer_zone_geolocation."""
+    name: str
+    geolocation: Optional[GeolocationVO] = None
+    zoneRadius: Optional[float] = None
+
+
+class TransferDescriptorVO(BaseModel):
+    """Per-language datasheet entry (confirmed real fields via Swagger). Only EN populated by this
+    tool - same convention as ClosedTour/Ticket; Travel Compositor's own translation tooling fills in
+    other languages afterward (confirmed via one real example with ~30 languages populated)."""
+    name: str
+    description: str = ""
+    pickupDescription: str = ""
+    voucherRemarks: str = ""  # cancellation policy text + any location-conditional cost notes (e.g. harbor fee) go here
+
+
+class TransferPropertyTranslation(BaseModel):
+    description: str
+
+
+class TransferPropertyVO(BaseModel):
+    """Confirmed real shape, e.g. {"propertyType": "AIRCONDITION", "translations": {"EN": {"description": "Air Condition"}}}.
+    Only AIRCONDITION/DOORTODOOR confirmed via real data so far - other enum values unconfirmed."""
+    propertyType: str
+    translations: Dict[str, TransferPropertyTranslation] = {}
+
+
+class TransferAdditionalServiceTranslation(BaseModel):
+    name: str
+
+
+class TransferAdditionalServiceVO(BaseModel):
+    """OPTIONAL/on-request extras only (child seat, non-default guide language, etc) - confirmed real
+    shape via a live example ({"currency": "EUR", "maximum": 2, "price": 10.0, "translations": {"EN":
+    {"name": "Child Seat"}}}). NOTE: flat single price only - no per-occupancy or per-duration
+    variation is possible in this schema, so per-day supplier pricing collapses to one flat per-transfer
+    charge (a transfer only runs a few hours, never multiple days - confirmed decision), and an "on
+    request" qualifier from the source document must be folded directly into the name text (e.g. "Child
+    Seat (on request)"), since there is no structured on-request flag here."""
+    currency: str = "EUR"
+    maximum: int = 1
+    price: float = 0.0
+    translations: Dict[str, TransferAdditionalServiceTranslation] = {}
+
+
+class TransferMoneyVO(BaseModel):
+    """Mirrors the real GET response's per-occupancy Money object. The naN/zero/negative/positive/etc
+    boolean flags seen on real GET responses are server-computed/derived - never set them on write,
+    only amount+currency are meaningful here."""
+    amount: float = 0.0
+    currency: str = "EUR"
+
+
+class TransferOccupancyPriceVO(BaseModel):
+    """Confirmed real shape via pricesByOccupancy. CONFIRMED SEMANTICS (per product-owner clarification):
+    the top-level ContractTransferVO.basePrice is the DEFAULT per-occupancy rate; an entry here is only
+    needed for an occupancy whose rate genuinely DIFFERS from that default (e.g. a real example had
+    basePrice=11 covering occupancy 2-4, with only occupancy=1 listed here at double that rate as a
+    solo-traveler surcharge) - this is NOT a fixed/derived duplicate of basePrice, despite every
+    single-supplier example so far happening to show a clean 2x ratio. When a document gives a fully
+    explicit rate for every occupancy bracket (no implicit "default"), write an explicit entry for each
+    bracket instead of relying on any fallback - see builder.py."""
+    occupancy: int
+    basePrice: TransferMoneyVO
+    childPrice: TransferMoneyVO = TransferMoneyVO()
+    infantPrice: TransferMoneyVO = TransferMoneyVO()
+    priceByPax: bool = True
+    onRequest: bool = False
+
+
+class TransferSupplementVO(BaseModel):
+    """MANDATORY, automatically-applied surcharges ONLY (confirmed product-owner rule) - e.g. a genuine
+    date/time-based surcharge. NEVER used for optional/on-request extras (those belong in
+    additionalServices instead) and NEVER for anything conditional on WHICH pickup point was used within
+    a broader zone (e.g. a harbor-only pickup fee) - this schema can only condition a supplement on a
+    date/time window (startDate/endDate/startTime/endTime), not on location, so a location-conditional
+    fee applied here would incorrectly charge every booking on the route, including the common case
+    (e.g. airport pickup) that shouldn't be charged it. Real examples always show this empty - the
+    `type` enum's real values are unconfirmed, "AMOUNT" is a placeholder default pending confirmation."""
+    active: bool = True
+    name: str = ""
+    startDate: Optional[str] = None
+    endDate: Optional[str] = None
+    startTime: Optional[str] = None
+    endTime: Optional[str] = None
+    type: str = "AMOUNT"
+    amount: float = 0.0
+
+
+class TransferOperationalDayVO(BaseModel):
+    """Confirmed real shape - fromHour/toHour are optional and omitted in every real example seen."""
+    operationalDays: str  # one of WEEKDAY_NAMES
+    fromHour: Optional[str] = None
+    toHour: Optional[str] = None
+
+
+class ContractTransferVO(BaseModel):
+    """Main Transfer payload - confirmed field-by-field against real Swagger + 13 real
+    GET /transfer/{supplierId}[/{transferId}] examples across 2 suppliers.
+
+    KEY DIFFERENCE from ClosedTour/Ticket: Travel Compositor assigns 'id' itself
+    (format "TRANSFER-412545") - there is NO human-assigned code field anywhere in
+    this schema, so recognizing which existing transfer to update on a supplier
+    rate refresh cannot rely on a code the way ClosedTour (providerCode) or Ticket
+    (code) do. See transfer_matcher.py for the confirmed matching strategy
+    (app-tracked id as primary key, departure/arrival similarity as a human-
+    confirmed fallback).
+
+    ALSO KEY DIFFERENCE: PUT /transfer/{supplierId} does NOT take the id in the
+    URL path (unlike ClosedTour/Ticket's PUT) - the id must be set on this
+    payload's own 'id' field for an update; leave it None for a create.
+    """
+    active: bool = True
+    id: Optional[str] = None
+    name: str
+    productType: str = "ECONOMY"  # ECONOMY/STANDARD/EXPRESS/SPECIAL/PREMIUM/LUXURY
+    serviceType: str = "PRIVATE"  # PRIVATE/SHUTTLE/SHARED
+    vehicleType: str = "CAR"
+    departure: TransferLocationVO
+    arrival: TransferLocationVO
+    departureLocationId: Optional[int] = None  # Transfer Zone id - populated for zone-based (area) routing
+    arrivalLocationId: Optional[int] = None
+    pickupInformation: Optional[str] = None
+    datasheets: Dict[str, TransferDescriptorVO]  # keyed "EN" only, by our tool's design choice
+    images: List[str] = []
+    properties: List[TransferPropertyVO] = []
+    startDate: str  # real season validity as stated in the supplier document (confirmed decision - NOT a fixed far-future default)
+    endDate: str
+    releaseContract: int = 5
+    currency: str = "EUR"
+    basePrice: float = 0.0  # the default per-occupancy rate - see TransferOccupancyPriceVO's docstring
+    maxOccupancy: int = 4
+    minOccupancy: int = 1
+    maxVehicles: int = 4
+    allowMultipleVehicles: bool = True
+    operationalDaysWithHours: List[TransferOperationalDayVO] = [
+        TransferOperationalDayVO(operationalDays=d) for d in WEEKDAY_NAMES
+    ]
+    priceByPax: bool = True
+    pricesByOccupancy: List[TransferOccupancyPriceVO] = []
+    supplements: List[TransferSupplementVO] = []  # MANDATORY charges only - see TransferSupplementVO's docstring
+    stopSales: List[StopSale] = []
+    additionalServices: List[TransferAdditionalServiceVO] = []  # OPTIONAL/on-request extras only
