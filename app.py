@@ -335,6 +335,61 @@ def render_stop_sales_editor(data, key_prefix, help_text=None):
         editable_table("Blocked date ranges", stop_df, f"{key_prefix}_stop_sales", on_save=_save_stop_sales)
 
 
+def render_cancellation_policy_editor(data, key_prefix, help_text=None):
+    """
+    Friendly Days/Fee% table for the tour's or ticket's cancellation policy
+    (cancellation_policy_tiers - see ai_extractor.py's extraction rule and
+    builder.py's _cancellation_ranges_from_tiers for how this gets converted
+    into Travel Compositor's cancellationRanges field).
+
+    CONFIRMED REAL RULE (human feedback): this used to be silently hardcoded
+    to a flat 30-days/100%-refund default for every tour/ticket regardless
+    of what the supplier's own contract said - now the AI extracts the
+    supplier's own specific policy when the source states one, but a human
+    should always review/adjust it here before publishing since this
+    directly affects real money.
+
+    Rows are entered the way a supplier's contract normally states them (a
+    cancellation FEE % charged from N days before arrival) - the fee-to-
+    refund-percentage conversion for Travel Compositor's own API field
+    happens later in builder.py, not here, so what's shown here matches
+    what's actually in the source document.
+    """
+    with st.expander(f"💰 Cancellation Policy ({len(data.get('cancellation_policy_tiers') or [])} tier(s) - leave empty for the default 30 days / no fee)"):
+        if help_text:
+            st.caption(help_text)
+        st.caption("Each row: from this many days before arrival (or more), this cancellation fee % applies. "
+                  "Leave the table empty to use the standard default (free cancellation 30+ days before "
+                  "arrival, 100% fee after). Add one row per tier from the supplier's contract, e.g. a row "
+                  "with Days=91 and Fee=25 means \"91+ days before arrival: 25% cancellation fee\".")
+        tier_rows = [
+            {"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+            for t in (data.get("cancellation_policy_tiers") or []) if isinstance(t, dict)
+        ]
+        tier_df = pd.DataFrame(tier_rows) if tier_rows else pd.DataFrame(columns=["Days before arrival (or more)", "Cancellation Fee %"])
+
+        def _save_cancellation_tiers(edited_df, data=data):
+            new_tiers = []
+            for _, row in edited_df.iterrows():
+                days_val = row.get("Days before arrival (or more)")
+                fee_val = row.get("Cancellation Fee %")
+                if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
+                    continue
+                new_tiers.append({
+                    "days": _safe_int(days_val, fallback=0),
+                    "fee_percentage": max(0.0, min(100.0, _safe_float(fee_val, fallback=0.0))),
+                })
+            new_tiers.sort(key=lambda t: t["days"], reverse=True)
+            data["cancellation_policy_tiers"] = new_tiers
+
+        editable_table("Cancellation fee tiers", tier_df, f"{key_prefix}_cancellation_tiers",
+                       on_save=_save_cancellation_tiers,
+                       column_config={
+                           "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
+                           "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+                       })
+
+
 def render_optional_time_input(label, data_dict, field_key, widget_key, default_time_str="08:00:00"):
     """
     Easier way to enter a Start/End Time than typing "HH:MM:SS" by hand
@@ -1070,6 +1125,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("Excluded", data, "excluded", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
         editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
+        render_cancellation_policy_editor(data, "mct_main")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
         tcol1, tcol2 = st.columns(2)
@@ -3073,6 +3129,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
         editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
+        render_cancellation_policy_editor(data, f"mt_{idx}")
+        editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
+        editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
 
         render_skip_item_button(
             current['label'] or current['ticket_code'], queue, idx,
@@ -4072,6 +4131,9 @@ def render_ticket_flow(client):
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
                 editable_field("Description", data, "description", widget="html_text_area", height=150)
                 editable_field("City", data, "city", widget="text_input")
+                render_cancellation_policy_editor(data, "legacy_ticket")
+                editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
+                editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80)
 
                 if data.get("is_private") and "private" not in (modality_code or "").lower():
                     st.info(f"💡 This excursion is described as **PRIVATE** in the source - a genuine "
@@ -5488,6 +5550,7 @@ if st.session_state.extracted:
             editable_field("Excluded", data, "excluded", widget="html_list_area", height=120)
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
+            render_cancellation_policy_editor(data, "legacy_tour")
             editable_field("Nights", data, "nights", widget="number_input")
 
             tcol1, tcol2 = st.columns(2)
