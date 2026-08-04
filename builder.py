@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
+from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
 
@@ -838,4 +839,302 @@ def build_ticket_payloads(
             extracted_ticket_data.get("base_children_price", 0),
             extracted_ticket_data.get("base_infant_price", 0),
         ]),
+    }
+
+
+# ==========================================
+# TRANSFER PAYLOAD BUILDER
+# Confirmed against 3 real supplier rate sheets and a series of
+# product-owner clarifications - see schemas.py's Transfer section for the
+# field-by-field real-data confirmations this maps onto.
+# ==========================================
+
+_TRANSFER_PRODUCT_TYPE_KEYWORDS = [
+    ("LUXURY", ["luxury"]),
+    ("PREMIUM", ["premium", "superior"]),
+    ("SPECIAL", ["special"]),
+    ("EXPRESS", ["express"]),
+    ("STANDARD", ["standard"]),
+    ("ECONOMY", ["economy", "budget"]),
+]
+
+
+def _map_transfer_product_type(class_hint: str) -> str:
+    """Best-effort mapping of a supplier's free-text tier label to Travel Compositor's
+    productType enum - UNCONFIRMED against real data beyond "Standard" (an exact match),
+    reviewable/editable per record in the UI rather than blocking on a perfect mapping."""
+    text = (class_hint or "").lower()
+    for enum_val, keywords in _TRANSFER_PRODUCT_TYPE_KEYWORDS:
+        if any(k in text for k in keywords):
+            return enum_val
+    return "ECONOMY"
+
+
+_TRANSFER_SERVICE_TYPE_KEYWORDS = [
+    ("SHARED", ["seat in coach", "seat-in-coach", "joint", "shared"]),
+    ("SHUTTLE", ["shuttle"]),
+    ("PRIVATE", ["private", "exclusive"]),
+]
+
+
+def _map_transfer_service_type(service_name: str) -> str:
+    """CONFIRMED distinction from real data: a supplier's 'ChargeUnit-Pax' shared/seat-in-coach
+    service maps to SHARED/SHUTTLE, while a 'ChargeUnit-Service' flat-per-vehicle service maps to
+    PRIVATE - every real live example seen so far was PRIVATE. Order matters: check the more
+    specific "seat in coach" phrasing before the generic "shuttle" keyword."""
+    text = (service_name or "").lower()
+    for enum_val, keywords in _TRANSFER_SERVICE_TYPE_KEYWORDS:
+        if any(k in text for k in keywords):
+            return enum_val
+    return "PRIVATE"
+
+
+_TRANSFER_VEHICLE_TYPE_KEYWORDS = [
+    ("MINIVAN", ["mini-van", "minivan", "mini van", "van"]),
+    ("COACH", ["coach", "bus", "micro bus", "minibus"]),
+    ("LIMOUSINE", ["limo", "limousine"]),
+    ("CAR", ["car", "sedan", "avanza", "innova", "premio"]),
+]
+
+
+def _map_transfer_vehicle_type(vehicle_hint: str, service_name: str) -> str:
+    """Best-effort mapping - UNCONFIRMED against the full ~30-value vehicleType enum (only
+    the exact text "CAR" is confirmed via real live data), reviewable/editable per record."""
+    text = f"{vehicle_hint or ''} {service_name or ''}".lower()
+    for enum_val, keywords in _TRANSFER_VEHICLE_TYPE_KEYWORDS:
+        if any(k in text for k in keywords):
+            return enum_val
+    return "CAR"
+
+
+def build_transfer_payload(
+    pre_config: TransferHumanPreConfig,
+    extracted_transfer_data: Dict[str, Any],
+    api_client: TravelCompositorAPI,
+    existing_transfer_id: str = None,
+) -> Dict[str, Any]:
+    """
+    Builds one ContractTransferVO payload from AI-extracted rate-sheet data
+    (see ai_extractor.py's extract_transfer_data). Unlike ClosedTour/Ticket,
+    there's no human-assigned code to key this off of - `existing_transfer_id`
+    (from a confirmed match, see transfer_matcher.py) gets set on the
+    payload's own 'id' field when this is an update, and left None for a
+    fresh create; api_client.create_transfer/update_transfer decide which
+    endpoint to call based on which flow the human is in, not on this value.
+    """
+    departure_name = extracted_transfer_data.get("departure_name", "") or ""
+    arrival_name = extracted_transfer_data.get("arrival_name", "") or ""
+    is_zone_based = bool(extracted_transfer_data.get("is_zone_based", False))
+
+    def _resolve_location(place_name):
+        """CONFIRMED ORDER: for zone-based (area) routing, resolve against this supplier's
+        own Transfer Zones first, using resolve_transfer_zone() (returns a real zone id for
+        departureLocationId/arrivalLocationId - appropriate for a broad named area rather
+        than one GPS pin, e.g. Bali's "South Bali (Tuban/Kuta/...)"). For point-to-point
+        routing, or when no matching zone exists for this supplier, fall back to raw
+        geolocation - transfer-zone coordinates first, then the free OpenStreetMap geocoder -
+        same confirmed TC-first order used everywhere else in this app."""
+        if is_zone_based:
+            zr = api_client.resolve_transfer_zone(pre_config.supplier_id, place_name)
+            if zr.get("valid"):
+                return {
+                    "name": zr.get("name") or place_name, "latitude": zr.get("latitude"),
+                    "longitude": zr.get("longitude"), "zone_radius": zr.get("zone_radius"),
+                    "zone_id": zr.get("zone_id"), "valid": True, "source": "transfer_zone",
+                }
+        tz_result = api_client.resolve_transfer_zone_geolocation(pre_config.supplier_id, place_name)
+        if tz_result.get("valid"):
+            return {
+                "name": tz_result.get("name") or place_name, "latitude": tz_result["latitude"],
+                "longitude": tz_result["longitude"], "zone_radius": None, "zone_id": None,
+                "valid": True, "source": "transfer_zone",
+            }
+        geo_result = geocode(place_name)
+        provider_labels = {"nominatim": "OpenStreetMap/Nominatim", "photon": "OpenStreetMap/Photon"}
+        return {
+            "name": geo_result.get("display_name") or place_name,
+            "latitude": geo_result.get("latitude"), "longitude": geo_result.get("longitude"),
+            "zone_radius": None, "zone_id": None,
+            "valid": geo_result.get("valid", False),
+            "source": provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geo_result.get("valid") else "not_found",
+        }
+
+    departure_geo = _resolve_location(departure_name)
+    arrival_geo = _resolve_location(arrival_name)
+
+    payload_error = None
+    payload = None
+    try:
+        departure_loc = TransferLocationVO(
+            name=departure_geo.get("name") or departure_name,
+            geolocation=(GeolocationVO(latitude=departure_geo["latitude"], longitude=departure_geo["longitude"])
+                         if departure_geo.get("latitude") is not None and departure_geo.get("longitude") is not None else None),
+            zoneRadius=departure_geo.get("zone_radius"),
+        )
+        arrival_loc = TransferLocationVO(
+            name=arrival_geo.get("name") or arrival_name,
+            geolocation=(GeolocationVO(latitude=arrival_geo["latitude"], longitude=arrival_geo["longitude"])
+                         if arrival_geo.get("latitude") is not None and arrival_geo.get("longitude") is not None else None),
+            zoneRadius=arrival_geo.get("zone_radius"),
+        )
+
+        service_name = extracted_transfer_data.get("service_name") or "Transfer"
+        class_hint = extracted_transfer_data.get("class_or_product_type") or ""
+        name_prefix = service_name if not class_hint or class_hint.lower() in service_name.lower() \
+            else f"{service_name} ({class_hint})"
+        transfer_name = f"{name_prefix}: {departure_name} - {arrival_name}".strip(": ")
+
+        # CONFIRMED FALLBACK RULE (product owner decision): when the document states no
+        # specific cancellation terms, fall back to the same 30-day/100%-refund default
+        # used everywhere else in this app - expressed as text here since Transfer has no
+        # structured cancellation field, unlike ClosedTour/Ticket.
+        cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transfer_data.get("cancellation_policy_tiers"))
+        if cancellation_tiers:
+            voucher_text = extracted_transfer_data.get("cancellation_policy_text") or ""
+        else:
+            voucher_text = ("Free cancellation up to 30 days before arrival. Cancellation fees apply "
+                             "within 30 days of arrival or for no-shows.")
+        # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
+        # auto-applied to price (e.g. a harbor-only pickup fee on a route that also serves
+        # airport pickups) becomes an informational voucher note instead - never a mandatory
+        # charge applied to every booking on the route.
+        location_note = extracted_transfer_data.get("location_notes") or ""
+        if location_note:
+            voucher_text = f"{voucher_text}\n\n{location_note}" if voucher_text else location_note
+
+        datasheet_en = TransferDescriptorVO(
+            name=transfer_name,
+            description=extracted_transfer_data.get("description") or "",
+            pickupDescription=extracted_transfer_data.get("pickup_information") or "",
+            voucherRemarks=voucher_text,
+        )
+
+        charge_unit = (extracted_transfer_data.get("charge_unit") or "per_pax").lower()
+        price_by_pax = charge_unit != "per_service"
+        currency = extracted_transfer_data.get("currency") or pre_config.currency
+
+        tiers = [t for t in (extracted_transfer_data.get("occupancy_price_tiers") or []) if isinstance(t, dict)]
+        tiers_sorted = sorted(tiers, key=lambda t: _safe_int(t.get("occupancy", 1), fallback=1))
+
+        # CONFIRMED SEMANTICS (product owner): basePrice is the DEFAULT per-occupancy rate;
+        # pricesByOccupancy only needs entries for occupancies that DIFFER from it (real
+        # example: basePrice=11 covering occupancy 2-4, with only occupancy=1 listed at
+        # double that as a solo-traveler surcharge). When a document instead gives a fully
+        # explicit rate per bracket (e.g. Bali's 1/2/3-5/6-8/9-14 tiers), we don't try to
+        # guess which single tier TC would treat as "the" implicit default - safer to list
+        # every stated tier explicitly here, and use the smallest occupancy's rate as the
+        # top-level basePrice (a visible, editable default).
+        base_price = _safe_float(tiers_sorted[0].get("price", 0)) if tiers_sorted else 0.0
+        min_occupancy = _safe_int(extracted_transfer_data.get("min_occupancy", 1), fallback=1) or 1
+        max_occupancy = _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1
+
+        def _money(amount):
+            return TransferMoneyVO(amount=_safe_float(amount), currency=currency)
+
+        prices_by_occupancy = []
+        for t in tiers_sorted:
+            occ = _safe_int(t.get("occupancy", 1), fallback=1)
+            child_price = t.get("child_price")
+            infant_price = t.get("infant_price")
+            prices_by_occupancy.append(TransferOccupancyPriceVO(
+                occupancy=occ,
+                basePrice=_money(t.get("price", 0)),
+                childPrice=_money(child_price) if child_price is not None else TransferMoneyVO(currency=currency),
+                infantPrice=_money(infant_price) if infant_price is not None else TransferMoneyVO(currency=currency),
+                priceByPax=price_by_pax,
+            ))
+
+        # OPTIONAL/on-request extras - confirmed rule: child seats, non-default guide
+        # languages, and similar all belong here (never in supplements, which is mandatory-
+        # only). An "on request" qualifier gets folded into the name text itself since this
+        # schema has no structured on-request flag.
+        additional_services = []
+        for a in (extracted_transfer_data.get("additional_services") or []):
+            if not isinstance(a, dict):
+                continue
+            svc_name = a.get("name") or ""
+            if a.get("on_request") and "request" not in svc_name.lower():
+                svc_name = f"{svc_name} (on request)".strip()
+            additional_services.append(TransferAdditionalServiceVO(
+                currency=a.get("currency") or currency,
+                maximum=_safe_int(a.get("max_quantity", 1), fallback=1) or 1,
+                price=_safe_float(a.get("price", 0)),
+                translations={"EN": TransferAdditionalServiceTranslation(name=svc_name)},
+            ))
+        # CONFIRMED RULE: guide language is never included by default (driver-only is the
+        # base) - each other language priced in the source becomes its own optional
+        # additionalServices surcharge rather than a separate whole transfer record.
+        for g in (extracted_transfer_data.get("guide_language_surcharges") or []):
+            if not isinstance(g, dict):
+                continue
+            language = g.get("language") or ""
+            if not language:
+                continue
+            additional_services.append(TransferAdditionalServiceVO(
+                currency=currency,
+                maximum=max_occupancy,
+                price=_safe_float(g.get("surcharge_estimate", 0)),
+                translations={"EN": TransferAdditionalServiceTranslation(name=f"{language}-speaking guide")},
+            ))
+
+        # MANDATORY, unconditional surcharges only (confirmed rule) - see location_notes
+        # handling above for why a location-conditional fee never ends up here.
+        supplements = [
+            TransferSupplementVO(name=s.get("name") or "", amount=_safe_float(s.get("amount", 0)))
+            for s in (extracted_transfer_data.get("mandatory_supplements") or []) if isinstance(s, dict)
+        ]
+
+        transfer_kwargs = dict(
+            active=True,
+            id=existing_transfer_id,
+            name=transfer_name,
+            productType=_map_transfer_product_type(class_hint),
+            serviceType=_map_transfer_service_type(service_name),
+            vehicleType=_map_transfer_vehicle_type(extracted_transfer_data.get("vehicle_hint"), service_name),
+            departure=departure_loc,
+            arrival=arrival_loc,
+            departureLocationId=departure_geo.get("zone_id"),
+            arrivalLocationId=arrival_geo.get("zone_id"),
+            pickupInformation=extracted_transfer_data.get("pickup_information") or None,
+            datasheets={"EN": datasheet_en},
+            images=[],
+            properties=[],
+            # CONFIRMED REAL RULE (product owner decision): write the document's own stated
+            # season validity dates - different transfers/documents can genuinely differ, so
+            # never fall back to a fixed far-future default here.
+            startDate=extracted_transfer_data.get("start_date") or "",
+            endDate=extracted_transfer_data.get("end_date") or "",
+            releaseContract=pre_config.days_available_before_release,
+            currency=currency,
+            basePrice=base_price,
+            maxOccupancy=max_occupancy,
+            minOccupancy=min_occupancy,
+            maxVehicles=max_occupancy,
+            allowMultipleVehicles=True,
+            pricesByOccupancy=prices_by_occupancy,
+            priceByPax=price_by_pax,
+            supplements=supplements,
+            stopSales=[],
+            additionalServices=additional_services,
+        )
+        transfer = ContractTransferVO(**transfer_kwargs)
+        payload = transfer.dict()
+    except ValidationError as e:
+        payload_error = str(e)
+    except (ValueError, TypeError) as e:
+        payload_error = f"Couldn't build the transfer payload - {e}"
+
+    return {
+        "supplier_id": pre_config.supplier_id,
+        "transfer_payload": payload,
+        "transfer_error": payload_error,
+        "transfer_name": extracted_transfer_data.get("service_name") or "",
+        "departure_name": departure_name,
+        "arrival_name": arrival_name,
+        "departure_geolocation_resolved": departure_geo.get("valid", False),
+        "departure_geolocation_source": departure_geo.get("source"),
+        "arrival_geolocation_resolved": arrival_geo.get("valid", False),
+        "arrival_geolocation_source": arrival_geo.get("source"),
+        "is_zone_based": is_zone_based,
+        "existing_transfer_id": existing_transfer_id,
     }
