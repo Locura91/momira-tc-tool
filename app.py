@@ -38,15 +38,16 @@ if hasattr(st, "secrets"):
             pass
 
 from api_client import TravelCompositorAPI
-from schemas import HumanPreConfig, TicketHumanPreConfig
-from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos
+from schemas import HumanPreConfig, TicketHumanPreConfig, TransferHumanPreConfig
+from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
 from document_reader import extract_raw_text, extract_images
-from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message
+from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data
 from web_extractor import get_page_text, get_page_image_bytes
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
 from geocoding_client import geocode_search, geocode
+import transfer_matcher
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -4986,6 +4987,515 @@ def render_ticket_flow(client):
                     st.rerun()
 
 
+# ============================================================================
+# TRANSFER FLOW
+# Confirmed design (extensive back-and-forth with the product owner, working
+# from the real Swagger + 13 real GET examples + 3 real supplier rate
+# sheets): unlike ClosedTour/Ticket, there is no explicit create-vs-update
+# action to pick upfront - Travel Compositor's Transfer schema has no
+# human-assigned code, so "is this a new transfer or an update to an
+# existing one" is answered PER ITEM by transfer_matcher.py's matching step
+# (app-tracked id first, departure/arrival similarity as a human-confirmed
+# fallback), not by a top-level radio button. A rate sheet routinely
+# describes many distinct transfer products at once (per-route, per-class,
+# sometimes per guide-language table) - see detect_transfer_products - so
+# this always runs as a batch/queue review, the same pattern already proven
+# for multi-excursion Ticket documents.
+# ============================================================================
+
+def render_transfer_flow(client):
+    """
+    Transfer wizard entry point: Supplier + Currency + release window, then
+    Input Source, then hands off to render_multi_transfer_flow for
+    detection/review/matching/publish. Uses tf_-prefixed session_state keys
+    throughout to avoid any collision with the ClosedTour/Ticket flows.
+    """
+    if "tf_step1_confirmed" not in st.session_state:
+        st.session_state.tf_step1_confirmed = False
+
+    st.header("Transfer — Step 2: Supplier & defaults")
+
+    if st.session_state.tf_step1_confirmed:
+        st.success(f"✅ Supplier ID: **{st.session_state.tf_cfg_supplier_id}** | "
+                   f"Currency: **{st.session_state.tf_cfg_currency}**")
+        if st.button("🔄 Change supplier / defaults", key="tf_change_action"):
+            st.session_state.tf_step1_confirmed = False
+            st.rerun()
+    else:
+        if st.session_state.suppliers_cache is None:
+            with st.spinner("Loading supplier list from Travel Compositor..."):
+                try:
+                    st.session_state.suppliers_cache = client.get_all_suppliers()
+                except Exception as e:
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.session_state.suppliers_cache = []
+
+        supplier_id_choice = None
+        if st.session_state.suppliers_cache:
+            momira_suppliers = [
+                s for s in st.session_state.suppliers_cache
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+            ]
+            if not momira_suppliers:
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
+            else:
+                supplier_options = {
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                    for s in momira_suppliers
+                }
+                selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tf_supplier_select")
+                supplier_id_choice = str(supplier_options[selected_label])
+            if st.button("🔄 Refresh supplier list", key="tf_refresh_suppliers"):
+                st.session_state.suppliers_cache = None
+                st.rerun()
+        else:
+            st.error("Could not load the supplier list from Travel Compositor.")
+            with st.expander("⚠️ Emergency manual entry"):
+                supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tf_supplier_manual")
+
+        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tf_currency")
+        release_days_in = st.number_input(
+            "Release Contract (days before arrival this transfer becomes bookable)",
+            min_value=0, value=5, key="tf_release_days",
+            help="Confirmed real field name is releaseContract - confirmed real value seen in live data = 5."
+        )
+
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tf_continue1"):
+            st.session_state.tf_cfg_supplier_id = supplier_id_choice
+            st.session_state.tf_cfg_currency = currency_in
+            st.session_state.tf_cfg_release_days = release_days_in
+            st.session_state.tf_step1_confirmed = True
+            st.rerun()
+        return
+
+    supplier_id = st.session_state.tf_cfg_supplier_id
+    currency = st.session_state.tf_cfg_currency
+    release_days = st.session_state.tf_cfg_release_days
+
+    st.header("Transfer — Step 3: Input Source")
+    st.caption("Rate sheets commonly describe MANY distinct transfer products at once (per route, per "
+              "vehicle class, sometimes repeated per guide language) - all of them get detected and "
+              "queued for review below, same as multi-excursion Ticket documents.")
+    tf_url = st.text_input("Product page URL (optional)", key="tf_url")
+    tf_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
+                                accept_multiple_files=True, key="tf_files")
+    tf_hint = st.text_input("Extraction hint (optional)", key="tf_hint")
+
+    render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_url, tf_files, tf_hint)
+
+
+def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_url, tf_files, tf_hint):
+    """
+    Batch/queue flow for Transfers - mirrors render_multi_ticket_flow's
+    proven 3-phase pattern (gather -> select/prepare_queue -> review one at
+    a time), adapted for Transfers' real structural differences: no
+    create-vs-update action to pre-select (matching decides that per item -
+    see transfer_matcher.py), occupancy-tiered pricing instead of simple
+    passenger-type pricing, and a mandatory human-confirmed matching step
+    before any publish.
+    """
+    if "xtf_phase" not in st.session_state:
+        st.session_state.xtf_phase = "gather"
+
+    # ------------------------------------------------------------------
+    # PHASE 1: detect distinct transfer products from the source provided above
+    # ------------------------------------------------------------------
+    if st.session_state.xtf_phase == "gather":
+        if not (tf_url or tf_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Detect Transfer Products", disabled=not (tf_url or tf_files)):
+            with st.spinner("Gathering content and detecting distinct transfer products..."):
+                try:
+                    combined_parts = []
+                    if tf_url:
+                        page_text, page_text_err = _fetch_url_text_safe(tf_url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({tf_url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
+                    for uploaded in (tf_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
+
+                    raw_text = "\n\n".join(combined_parts)
+                    detected = detect_transfer_products(raw_text)
+
+                    candidates = []
+                    for t in detected:
+                        candidates.append({
+                            "label": t.get("label", ""), "service_name": t.get("service_name", ""),
+                            "departure_hint": t.get("departure_hint", ""), "arrival_hint": t.get("arrival_hint", ""),
+                            "selected": True, "is_genuine_multiple": True,
+                        })
+                    if not candidates:
+                        candidates = [{"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
+                                      "selected": True, "is_genuine_multiple": False}]
+
+                    st.session_state.xtf_raw_text = raw_text
+                    st.session_state.xtf_candidates = candidates
+                    st.session_state.xtf_phase = "prepare_queue"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: explicitly SELECT which transfer products to review/publish
+    # ------------------------------------------------------------------
+    if st.session_state.xtf_phase == "prepare_queue":
+        candidates = st.session_state.xtf_candidates
+        single_transfer = len(candidates) == 1
+
+        if single_transfer:
+            st.subheader("Set up this Transfer")
+            st.caption("Only one distinct transfer product was found in this document.")
+        else:
+            st.subheader(f"{len(candidates)} distinct transfer products detected - choose which to review")
+            st.caption("Each ticked row becomes its own separate Transfer, reviewed one at a time next. "
+                      "Guide-language variants are already folded into each row, not listed separately.")
+
+        for i, cand in enumerate(candidates):
+            ccol1, ccol2 = st.columns([1, 5])
+            with ccol1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"xtf_sel_{i}")
+            with ccol2:
+                cand["label"] = st.text_input("Transfer", value=cand["label"], key=f"xtf_label_{i}")
+
+        if st.button("➕ Add another transfer product manually"):
+            candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
+                              "selected": True, "is_genuine_multiple": False})
+            st.rerun()
+
+        new_queue = [
+            {"label": c["label"], "service_name": c["service_name"], "departure_hint": c["departure_hint"],
+             "arrival_hint": c["arrival_hint"], "data": None, "match": None, "publish_status": None}
+            for c in candidates if c["selected"]
+        ]
+
+        st.caption(f"**{len(new_queue)}** transfer(s) ready to review." if new_queue else
+                  "Select at least one transfer product to continue.")
+
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+            st.session_state.xtf_queue = new_queue
+            st.session_state.xtf_queue_index = 0
+            st.session_state.xtf_phase = "reviewing"
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 3: review + match + publish each transfer, one at a time
+    # ------------------------------------------------------------------
+    if st.session_state.xtf_phase == "reviewing":
+        idx = st.session_state.xtf_queue_index
+        queue = st.session_state.xtf_queue
+        current = queue[idx]
+
+        st.subheader(f"Reviewing transfer {idx + 1} of {len(queue)}: {current['label'] or '(unnamed)'}")
+
+        if st.button("🔙 Cancel this batch - return to Transfer setup", key=f"xtf_cancel_{idx}"):
+            for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
+                st.session_state.pop(key, None)
+            _clear_batch_widget_state(["xtf_"] + SHARED_WIDGET_STATE_PREFIXES)
+            st.rerun()
+
+        if current["data"] is None:
+            with st.spinner("Extracting this transfer's details..."):
+                try:
+                    transfer_hint = None
+                    if current.get("service_name") or current.get("departure_hint") or current.get("arrival_hint"):
+                        transfer_hint = (f"{current.get('service_name', '')} - "
+                                         f"{current.get('departure_hint', '')} to {current.get('arrival_hint', '')}")
+                    elif current["label"]:
+                        transfer_hint = current["label"]
+                    current["data"] = extract_transfer_data(st.session_state.xtf_raw_text,
+                                                             transfer_hint=transfer_hint, human_hint=tf_hint)
+                except Exception as e:
+                    st.error(f"Extraction failed for this transfer: {friendly_error_message(e)}")
+                    current["data"] = {}
+
+        data = current["data"]
+        key_suffix = f"_{idx}"
+
+        render_skip_item_button(
+            current["label"] or "(unnamed transfer)", queue, idx, "xtf_queue", "xtf_queue_index",
+            ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"],
+            f"xtf_skip_{idx}", widget_state_prefixes=["xtf_"] + SHARED_WIDGET_STATE_PREFIXES,
+        )
+        # render_skip_item_button reruns immediately on click, so if we got
+        # here the item is still in the queue - safe to keep rendering it.
+
+        st.markdown("#### Route")
+        rcol1, rcol2 = st.columns(2)
+        with rcol1:
+            editable_field("Departure", data, "departure_name", key_suffix=key_suffix)
+        with rcol2:
+            editable_field("Arrival", data, "arrival_name", key_suffix=key_suffix)
+        data["is_zone_based"] = st.checkbox(
+            "This is a named AREA covering multiple localities (zone-based routing), not one specific point",
+            value=bool(data.get("is_zone_based", False)), key=f"xtf_zone_{idx}",
+            help="Resolves against this supplier's Transfer Zones (real TC zone IDs) instead of raw GPS "
+                 "coordinates - use this for area-style routes like 'South Bali (Tuban/Kuta/...)'."
+        )
+
+        st.markdown("#### Service")
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            editable_field("Service name", data, "service_name", key_suffix=key_suffix)
+        with scol2:
+            editable_field("Class / tier", data, "class_or_product_type", key_suffix=key_suffix)
+        with scol3:
+            editable_field("Vehicle hint", data, "vehicle_hint", key_suffix=key_suffix)
+
+        ccol1, ccol2, ccol3, ccol4 = st.columns(4)
+        with ccol1:
+            data["charge_unit"] = st.selectbox(
+                "Charge unit", ["per_pax", "per_service"],
+                index=0 if data.get("charge_unit", "per_pax") != "per_service" else 1,
+                key=f"xtf_chargeunit_{idx}",
+                help="per_pax = priced per person (ChargeUnit-Pax). per_service = one flat price for the "
+                     "whole vehicle regardless of headcount (ChargeUnit-Service)."
+            )
+        with ccol2:
+            data["currency"] = st.selectbox(
+                "Currency", CURRENCY_OPTIONS,
+                index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
+                key=f"xtf_currency_{idx}"
+            )
+        with ccol3:
+            data["min_occupancy"] = st.number_input("Min occupancy", min_value=1, value=int(data.get("min_occupancy") or 1), key=f"xtf_minocc_{idx}")
+        with ccol4:
+            data["max_occupancy"] = st.number_input("Max occupancy", min_value=1, value=int(data.get("max_occupancy") or 4), key=f"xtf_maxocc_{idx}")
+
+        st.markdown("#### Pricing by occupancy")
+        st.caption("Top-level basePrice is the DEFAULT rate; only add a row here for an occupancy whose "
+                  "rate genuinely DIFFERS from the default - unless the document gives a fully explicit "
+                  "rate per bracket (like a 1/2/3-5/6-8/9-14 table), in which case list every tier "
+                  "explicitly. Leave Child/Infant price blank (not 0) when the document doesn't state one.")
+        occ_df = pd.DataFrame(data.get("occupancy_price_tiers") or [{"occupancy": 1, "price": 0.0, "child_price": None, "infant_price": None}])
+        for col in ["occupancy", "price", "child_price", "infant_price"]:
+            if col not in occ_df.columns:
+                occ_df[col] = None
+
+        def _save_occ_tiers(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if pd.isna(row.get("occupancy")) and pd.isna(row.get("price")):
+                    continue
+                rows.append({
+                    "occupancy": _safe_int(row.get("occupancy"), fallback=1),
+                    "price": _safe_float(row.get("price"), fallback=0.0),
+                    "child_price": None if pd.isna(row.get("child_price")) else _safe_float(row.get("child_price"), fallback=0.0),
+                    "infant_price": None if pd.isna(row.get("infant_price")) else _safe_float(row.get("infant_price"), fallback=0.0),
+                })
+            data["occupancy_price_tiers"] = rows
+
+        editable_table("Occupancy price tiers", occ_df, f"xtf_occ_{idx}", on_save=_save_occ_tiers)
+        editable_field("Blanket child/infant rule (if the document states one instead of per-row prices)",
+                       data, "child_infant_rule_text", key_suffix=key_suffix)
+
+        st.markdown("#### Optional extras (additionalServices) — child seats, non-default guide languages, etc.")
+        add_svc_df = pd.DataFrame(data.get("additional_services") or [{"name": "", "price": 0.0, "currency": currency, "max_quantity": 1, "on_request": False}])
+        for col in ["name", "price", "currency", "max_quantity", "on_request"]:
+            if col not in add_svc_df.columns:
+                add_svc_df[col] = None
+
+        def _save_add_svc(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if not (row.get("name") or "").strip():
+                    continue
+                rows.append({
+                    "name": str(row.get("name") or "").strip(),
+                    "price": _safe_float(row.get("price"), fallback=0.0),
+                    "currency": row.get("currency") or currency,
+                    "max_quantity": _safe_int(row.get("max_quantity"), fallback=1),
+                    "on_request": bool(row.get("on_request", False)),
+                })
+            data["additional_services"] = rows
+
+        editable_table("Optional / on-request extras", add_svc_df, f"xtf_addsvc_{idx}", on_save=_save_add_svc)
+
+        st.markdown("#### Guide-language surcharges (driver-only is always the base — no guide by default)")
+        lang_df = pd.DataFrame(data.get("guide_language_surcharges") or [{"language": "", "surcharge_estimate": 0.0}])
+        for col in ["language", "surcharge_estimate"]:
+            if col not in lang_df.columns:
+                lang_df[col] = None
+
+        def _save_lang_surcharges(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if not (row.get("language") or "").strip():
+                    continue
+                rows.append({
+                    "language": str(row.get("language") or "").strip(),
+                    "surcharge_estimate": _safe_float(row.get("surcharge_estimate"), fallback=0.0),
+                })
+            data["guide_language_surcharges"] = rows
+
+        editable_table("Other guide languages (each becomes its own optional extra)", lang_df,
+                       f"xtf_langsurcharge_{idx}", on_save=_save_lang_surcharges)
+
+        st.markdown("#### Mandatory supplements — genuinely unconditional charges only")
+        st.caption("Never put a location-conditional cost here (e.g. a harbor-only pickup fee on a route "
+                  "that also serves airport pickups) - that belongs in the location note below instead, "
+                  "since this schema can't apply a charge conditionally by pickup point.")
+        supp_df = pd.DataFrame(data.get("mandatory_supplements") or [{"name": "", "amount": 0.0, "notes": ""}])
+        for col in ["name", "amount", "notes"]:
+            if col not in supp_df.columns:
+                supp_df[col] = None
+
+        def _save_supplements(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if not (row.get("name") or "").strip():
+                    continue
+                rows.append({
+                    "name": str(row.get("name") or "").strip(),
+                    "amount": _safe_float(row.get("amount"), fallback=0.0),
+                    "notes": str(row.get("notes") or ""),
+                })
+            data["mandatory_supplements"] = rows
+
+        editable_table("Mandatory supplements", supp_df, f"xtf_supp_{idx}", on_save=_save_supplements)
+
+        st.markdown("#### Notes, validity & cancellation")
+        editable_field("Location note (e.g. a harbor-only pickup fee) — goes to Voucher Remarks, never applied to price",
+                       data, "location_notes", key_suffix=key_suffix)
+        editable_field("Description", data, "description", key_suffix=key_suffix)
+        editable_field("Pickup information", data, "pickup_information", key_suffix=key_suffix)
+
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            editable_field("Start date (YYYY-MM-DD)", data, "start_date", key_suffix=key_suffix)
+        with dcol2:
+            editable_field("End date (YYYY-MM-DD)", data, "end_date", key_suffix=key_suffix)
+
+        cancel_df = pd.DataFrame(data.get("cancellation_policy_tiers") or [{"days": 30, "fee_percentage": 0.0}])
+        for col in ["days", "fee_percentage"]:
+            if col not in cancel_df.columns:
+                cancel_df[col] = None
+
+        def _save_cancel_tiers(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if pd.isna(row.get("days")):
+                    continue
+                rows.append({
+                    "days": _safe_int(row.get("days"), fallback=0),
+                    "fee_percentage": _safe_float(row.get("fee_percentage"), fallback=0.0),
+                })
+            data["cancellation_policy_tiers"] = rows
+
+        editable_table("Cancellation fee tiers (leave empty to use the standard 30-day/100%-refund default)",
+                       cancel_df, f"xtf_cancel_{idx}", on_save=_save_cancel_tiers)
+        editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text", key_suffix=key_suffix)
+
+        st.markdown("#### Which existing Transfer does this update, if any?")
+        st.caption("Travel Compositor has no human-assigned code for Transfers, so this app tracks its own "
+                  "id->route mapping locally, falling back to a departure/arrival similarity match against "
+                  "this supplier's full live list - either way, YOU always confirm before anything publishes.")
+        if st.button("🔎 Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
+            with st.spinner("Checking..."):
+                current["match_result"] = transfer_matcher.resolve_transfer_match(
+                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
+                )
+
+        match_result = current.get("match_result")
+        chosen_existing_id = None
+        if match_result:
+            if match_result.get("fetch_error"):
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transfers to check for a match: "
+                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
+                          f"Will create as new unless you already know the id below.")
+            if match_result.get("tracked_id"):
+                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                          f"**{match_result['tracked_id']}**.")
+                use_tracked = st.checkbox("Update that transfer", value=True, key=f"xtf_usetracked_{idx}")
+                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+            elif match_result.get("fallback_candidates"):
+                options = ["Create as a NEW transfer"] + [
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transfer_id']} "
+                    f"(departure: {c['departure_name']!r}, arrival: {c['arrival_name']!r}, match score {c['score']})"
+                    for c in match_result["fallback_candidates"]
+                ]
+                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
+                                  options, key=f"xtf_matchpick_{idx}")
+                if picked != options[0]:
+                    picked_idx = options.index(picked) - 1
+                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transfer_id"]
+            else:
+                st.info("No existing transfers found for this supplier - will create as new.")
+        else:
+            st.info("Click the button above to check, or just publish below to create this as a brand-new transfer.")
+
+        current["confirmed_existing_id"] = chosen_existing_id
+
+        st.markdown("#### Publish")
+        pre_config = TransferHumanPreConfig(supplier_id=supplier_id, currency=currency, days_available_before_release=release_days)
+        build_result = build_transfer_payload(pre_config, data, client, existing_transfer_id=chosen_existing_id)
+        current["build_result"] = build_result
+
+        if build_result.get("transfer_error"):
+            st.error(f"⚠️ This transfer can't be built yet: {build_result['transfer_error']}")
+        else:
+            with st.expander("🔎 Preview payload"):
+                st.json(build_result["transfer_payload"])
+            geoloc_ok = build_result["departure_geolocation_resolved"] and build_result["arrival_geolocation_resolved"]
+            if not geoloc_ok:
+                st.warning("⚠️ Departure and/or arrival location couldn't be resolved to real coordinates/zone - "
+                          "double-check the names above before publishing.")
+
+            publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
+                             else "🚀 Publish — CREATE new transfer")
+            if st.button(publish_label, type="primary", key=f"xtf_publish_{idx}", disabled=bool(build_result.get("transfer_error"))):
+                with st.spinner("Publishing to Travel Compositor..."):
+                    try:
+                        if chosen_existing_id:
+                            result = client.update_transfer(supplier_id, build_result["transfer_payload"])
+                        else:
+                            result = client.create_transfer(supplier_id, build_result["transfer_payload"])
+                        if isinstance(result, dict) and "error" in result:
+                            show_publish_error(f"publish transfer **{current['label'] or '(unnamed)'}**", result)
+                        else:
+                            new_id = result.get("id") if isinstance(result, dict) else None
+                            final_id = chosen_existing_id or new_id
+                            if final_id:
+                                transfer_matcher.remember_transfer_id(
+                                    supplier_id, data.get("departure_name", ""), data.get("arrival_name", ""), final_id
+                                )
+                            st.success(f"✅ Published successfully (id: {final_id or 'unknown'}).")
+                            current["publish_status"] = "success"
+                    except Exception as e:
+                        show_publish_error(f"publish transfer **{current['label'] or '(unnamed)'}**", str(e))
+
+        nav_col1, nav_col2 = st.columns(2)
+        with nav_col1:
+            if idx > 0 and st.button("⬅️ Previous", key=f"xtf_prev_{idx}"):
+                st.session_state.xtf_queue_index -= 1
+                st.rerun()
+        with nav_col2:
+            if idx < len(queue) - 1 and st.button("➡️ Next", key=f"xtf_next_{idx}"):
+                st.session_state.xtf_queue_index += 1
+                st.rerun()
+
+        if all(q.get("publish_status") == "success" for q in queue):
+            st.balloons()
+            st.success(f"🎉 All {len(queue)} transfer(s) in this batch published.")
+            if st.button("🆕 Start a new batch", key="xtf_new_batch"):
+                for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
+                    st.session_state.pop(key, None)
+                _clear_batch_widget_state(["xtf_"] + SHARED_WIDGET_STATE_PREFIXES)
+                st.rerun()
+        return
+
 
 st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
 
@@ -5036,9 +5546,10 @@ if st.session_state.product_type is not None:
 
 if st.session_state.product_type is None:
     st.header("Step 1 — What do you want to work on?")
-    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket"], key="pt_choice_radio")
+    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket", "Transfer"], key="pt_choice_radio")
     st.caption("ClosedTour = multi-day tour (itinerary, room-occupancy pricing). "
-              "Ticket = single-destination excursion/activity, no overnight, passenger-type pricing.")
+              "Ticket = single-destination excursion/activity, no overnight, passenger-type pricing. "
+              "Transfer = point-to-point or zone-to-zone vehicle transfer (e.g. airport-to-hotel).")
     if st.button("➡️ Continue", type="primary"):
         st.session_state.product_type = pt_choice
         st.rerun()
@@ -5046,6 +5557,10 @@ if st.session_state.product_type is None:
 
 if st.session_state.product_type == "Ticket":
     render_ticket_flow(client)
+    st.stop()
+
+if st.session_state.product_type == "Transfer":
+    render_transfer_flow(client)
     st.stop()
 
 
