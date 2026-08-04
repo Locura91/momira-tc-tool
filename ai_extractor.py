@@ -7,6 +7,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 import os
 import re
 import json
+import math
 import datetime
 from dotenv import load_dotenv
 
@@ -228,17 +229,35 @@ Rules:
   both languages being provided at once - the guest must clearly understand they get ONE of the two.
 - policy_remarks: include genuinely relevant NON-MONETARY policy info such as age restrictions/supervision
   requirements, payment/deposit schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include
-  any of the following from the source document, since Momira (as tour operator) applies its own fee
-  structure by law rather than the supplier's commercial terms - including the supplier's numbers here
-  would be legally incorrect and contradict the real configured settings:
-  (1) the source's own cancellation policy/terms (e.g. "25% charged for cancellations 60-31 days before",
-      "no-show = 100% fee", any tiered cancellation percentages/timelines) - cancellation is ALWAYS fixed
-      at 30 days / 100% regardless of what the source says.
-  (2) any child discount PERCENTAGE or fee (e.g. "children under 12 pay 50%", "child rate is 70% of
-      adult price") - it's fine to keep non-monetary child age policy (e.g. "must be accompanied by an
-      adult", "minimum age 12"), just never the supplier's stated discount percentage/fee itself.
+  any child discount PERCENTAGE or fee here (e.g. "children under 12 pay 50%", "child rate is 70% of
+  adult price") - it's fine to keep non-monetary child age policy (e.g. "must be accompanied by an
+  adult", "minimum age 12"), just never the supplier's stated discount percentage/fee itself. Also never
+  put the supplier's cancellation policy here - see cancellation_policy_tiers/cancellation_policy_text
+  below, cancellation gets its own dedicated fields instead of being mixed into policy_remarks.
   If the source's policy section is ONLY about cancellation or child pricing percentages, leave
   policy_remarks empty entirely rather than including any of it.
+- cancellation_policy_tiers: CORRECTED RULE - this used to be wrongly treated as always a flat 30-days/
+  100% default regardless of what the source said; that was wrong. Whenever the source states its OWN
+  specific cancellation-fee policy - usually a tiered schedule like "From 91 days or more before arrival,
+  25% ... From 90 to 61 days before arrival, 50% ... From 60 to 46 days, 75% ... From 45 days to the day
+  of check-in, 100%" - extract EVERY tier as {"days": <the LOWER bound of days-before-arrival for this
+  tier>, "fee_percentage": <the cancellation FEE percentage for this tier, exactly as the source states
+  it - this is a fee/charge percentage, NOT a refund percentage>}. Use the LOWER bound of each day-range
+  as "days" (e.g. "90 to 61 days before arrival" -> days=61, "60 to 46 days" -> days=46, "45 days to the
+  day of check-in" -> days=0, "91 days or more" -> days=91). A separately-mentioned "no-show" fee does NOT
+  need its own entry if it matches the final/most-expensive tier's percentage (it's already covered by
+  the days=0 tier) - only give it a separate entry if it's numerically different from the final tier.
+  If the source states NO specific cancellation policy anywhere, return an EMPTY list - do not invent
+  one and do not assume any particular default; a blank list signals the system to keep its own existing
+  default policy untouched.
+- cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy out as
+  a short, clear, human-readable plain-text summary for staff/customer-facing display - one line per
+  tier, e.g. "Cancellation Policy:\n- 91+ days before arrival: 25% fee\n- 90-61 days before arrival: 50%
+  fee\n- 60-46 days before arrival: 75% fee\n- 45 days to check-in / no-show: 100% fee". If the source
+  also describes a genuinely different rule for last-minute/close-in bookings that doesn't fit the
+  day/percentage tier structure (e.g. "bookings made within 30 days of departure follow a different fee
+  schedule based on the booking date"), add it as one extra trailing sentence. Leave this field empty
+  whenever cancellation_policy_tiers is empty.
 - min_child_age, max_child_age: the age range that counts as "child" (for pricing purposes), AND/OR any
   stated age eligibility restriction (e.g. "children must be at least 12", "not suitable for children
   under 12 years old", "minimum age: 12"). Both kinds of language should populate these fields - use
@@ -301,6 +320,8 @@ Output this exact JSON structure:
   "excluded": "",
   "meeting_point": "",
   "policy_remarks": "",
+  "cancellation_policy_tiers": [],
+  "cancellation_policy_text": "",
   "itinerary_destinations": [],
   "nights": 0,
   "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
@@ -365,6 +386,42 @@ def _fix_days_count_in_tour_name(tour_name: str, nights) -> str:
         return tour_name
     correct_days = int(nights) + 1
     return re.sub(r"\b\d+\s*(Days?)\b", lambda m: f"{correct_days} {m.group(1)}", tour_name, count=1, flags=re.I)
+
+
+def _sanitize_cancellation_tiers(tiers) -> list:
+    """
+    Defensive cleanup of the AI-extracted cancellation_policy_tiers list
+    (see EXTRACTION_SYSTEM_PROMPT/TICKET_EXTRACTION_SYSTEM_PROMPT's
+    cancellation_policy_tiers rule) - drops any entry that isn't a real
+    {"days": int, "fee_percentage": number} dict, guards against the same
+    NaN/Infinity/non-numeric risk documented elsewhere in this project
+    (blank-cell-shaped values slipping through), clamps fee_percentage into
+    a sane 0-100 range, and de-duplicates/sorts descending by days so the
+    builder can rely on a clean, consistently-ordered list. Used at
+    extraction time so a malformed entry never has the chance to reach the
+    review UI or the publish payload looking normal.
+    """
+    if not isinstance(tiers, list):
+        return []
+    seen_days = set()
+    cleaned = []
+    for t in tiers:
+        if not isinstance(t, dict):
+            continue
+        try:
+            days = int(t.get("days"))
+            fee_pct = float(t.get("fee_percentage"))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(fee_pct) or math.isinf(fee_pct) or days < 0:
+            continue
+        fee_pct = max(0.0, min(100.0, fee_pct))
+        if days in seen_days:
+            continue
+        seen_days.add(days)
+        cleaned.append({"days": days, "fee_percentage": fee_pct})
+    cleaned.sort(key=lambda t: t["days"], reverse=True)
+    return cleaned
 
 
 _WEEKDAY_NAME_TO_INDEX = {
@@ -1279,6 +1336,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     defaults = {
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
         "excluded": "", "meeting_point": "", "policy_remarks": "",
+        "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
@@ -1289,6 +1347,8 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     # _fix_days_count_in_tour_name's docstring) - catches the AI copying a
     # wrong day count straight from the source document's own title.
     defaults["tour_name"] = _fix_days_count_in_tour_name(defaults.get("tour_name", ""), defaults.get("nights"))
+
+    defaults["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(defaults.get("cancellation_policy_tiers"))
 
     # Defensive per-supplement defaults (in case the model omits a field despite
     # the prompt's instructions above) - "applies_to" defaults to "ALL" (today's
@@ -1521,6 +1581,24 @@ Extract:
   release deadlines. Convert weeks/months to days (e.g. "6 weeks" -> 42, "2 months" -> 60). If the source
   mentions MORE THAN ONE such deadline, include ALL of them as separate integers - a human will apply the
   safest (longest) one rather than you picking. Empty list if nothing like this is mentioned anywhere.
+- cancellation_policy_tiers: whenever the source states its OWN specific cancellation-fee policy - usually
+  a tiered schedule like "From 91 days or more before arrival, 25% ... From 90 to 61 days before arrival,
+  50% ... From 60 to 46 days, 75% ... From 45 days to the day of check-in, 100%" - extract EVERY tier as
+  {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the cancellation
+  FEE percentage for this tier, exactly as the source states it - this is a fee/charge percentage, NOT a
+  refund percentage>}. Use the LOWER bound of each day-range as "days" (e.g. "90 to 61 days before
+  arrival" -> days=61, "60 to 46 days" -> days=46, "45 days to the day of check-in" -> days=0, "91 days or
+  more" -> days=91). A separately-mentioned "no-show" fee does NOT need its own entry if it matches the
+  final/most-expensive tier's percentage - only give it a separate entry if it's numerically different.
+  If the source states NO specific cancellation policy anywhere, return an EMPTY list - do not invent one.
+- cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy out as a
+  short, clear, human-readable plain-text summary suitable for both internal notes and a customer-facing
+  voucher - one line per tier, e.g. "Cancellation Policy:\n- 91+ days before arrival: 25% fee\n- 90-61
+  days before arrival: 50% fee\n- 60-46 days before arrival: 75% fee\n- 45 days to check-in / no-show:
+  100% fee". If the source also describes a genuinely different rule for last-minute/close-in bookings
+  that doesn't fit the day/percentage tier structure (e.g. "bookings made within 30 days of departure
+  follow a different fee schedule based on the booking date"), add it as one extra trailing sentence.
+  Leave this field empty whenever cancellation_policy_tiers is empty.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -1532,7 +1610,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "",
-  "release_days_mentions": []
+  "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
 }"""
 
 
@@ -1603,10 +1681,21 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
+        "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
+
+    data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
+
+    # CONFIRMED REAL REQUEST (human feedback): the cancellation policy must
+    # also show up on the customer-facing Voucher Remarks field, not just
+    # internally - default it here from the same extracted text (a human can
+    # still edit the two independently afterward in the review UI).
+    if data.get("cancellation_policy_text") and not data.get("voucher_remarks"):
+        data["voucher_remarks"] = data["cancellation_policy_text"]
+
     return data
 
 
