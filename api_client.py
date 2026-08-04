@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import difflib
 import requests
 from typing import Dict, Any, Optional, List
@@ -73,15 +74,70 @@ class TravelCompositorAPI:
             "Accept": "application/json"
         }
 
+    # CONFIRMED REAL ISSUE (internal audit): retrying on ANY status >= 400
+    # meant a genuine validation error (e.g. 400 "modality code cannot
+    # contain '/'", 404 "closed tour not found", 409 "code already taken")
+    # got retried 6 times / ~10-12s with the exact same payload before the
+    # human ever saw it - those are FINAL answers, not transient hiccups,
+    # since retrying an unchanged payload against the same validation rule
+    # can never succeed. Worse, blanket-retrying a CREATE call on any error
+    # risks creating a DUPLICATE resource if the first attempt actually
+    # succeeded server-side but the success response was lost/timed-out
+    # client-side (a real double-booking risk for a POST create, not just a
+    # wasted wait). Only retry on codes that genuinely mean "try again
+    # later, nothing about the request itself was wrong": 408 (request
+    # timeout), 429 (rate limited), and 500/502/503/504 (server-side
+    # transient failure) - the "eventual-consistency lag right after a
+    # related object was just created" scenario this retry was originally
+    # added for shows up as one of these, not as a 400/404/409.
+    # 599 is not a real HTTP status - it's a synthetic marker (see
+    # _network_error_response) meaning "the request never got a real HTTP
+    # response at all" (timeout, DNS failure, connection refused, SSL
+    # error, ...), included here so a raised network exception gets the
+    # exact same transient-retry treatment as a 5xx from the server.
+    _TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504, 599}
+
+    @staticmethod
+    def _network_error_response(exc: Exception) -> requests.Response:
+        """
+        CONFIRMED REAL GAP (internal audit): requests.request() itself was
+        called completely unguarded - a genuine network-level failure
+        (timeout, DNS failure, connection refused, SSL error - anything
+        that means the request never even reached the server, as opposed to
+        the server responding with an error status) raised straight through
+        _request() uncaught, crashing the WHOLE Streamlit page with a raw
+        traceback and losing any in-progress edits, instead of the clean
+        "{'error': ..., 'message': ...}" dict every get_*/create_*/update_*
+        method's caller already expects and handles gracefully.
+
+        Rather than adding a try/except at every one of the ~20 call sites
+        across this file (easy to miss one, as an audit already did), this
+        builds a real requests.Response with a synthetic 599 status code
+        (a conventional-but-non-standard code meaning "network error, no
+        real HTTP response") and a JSON body shaped exactly like a normal
+        API error response - every existing caller's `if res.status_code
+        != 200: return {"error": res.status_code, "message": res.text}`
+        keeps working completely unchanged, and _request's own retry loop
+        (see _TRANSIENT_STATUS_CODES) treats it as transient automatically.
+        """
+        res = requests.Response()
+        res.status_code = 599
+        res._content = json.dumps({
+            "error": "network_error",
+            "message": f"{type(exc).__name__}: {exc}",
+        }).encode("utf-8")
+        return res
+
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
         Wraps requests.request() with:
           1. Automatic re-authentication if the token has expired (401) -
              without this, an expired token mid-session looks like a random
              "connection failure" instead of an auth issue.
-          2. For WRITE calls (POST/PUT) only: automatic retry on failure (up
-             to 6 attempts, 2s apart). This used to be a hand-written loop
-             duplicated in app.py around ONLY create_ticket_option and
+          2. For WRITE calls (POST/PUT) only: automatic retry on a TRANSIENT
+             failure (see _TRANSIENT_STATUS_CODES - up to 6 attempts, 2s
+             apart). This used to be a hand-written loop duplicated in
+             app.py around ONLY create_ticket_option and
              create_closed_tour_option - confirmed decision was to extend
              the same protection to every write call (create_ticket,
              create_closed_tour, update_ticket, update_ticket_option,
@@ -91,10 +147,21 @@ class TravelCompositorAPI:
              lag). Centralizing it here - instead of leaving app.py's old
              loops in place - avoids retrying twice (once in app.py, once
              here) and multiplying the attempt count/wait time.
-          Deliberately NOT applied to GET calls: those are often used as
-          fast "does this exist" checks where a real 404/4xx is an
+          A NON-transient write failure (400/404/409/422/etc - a genuine
+          problem with the request itself) returns immediately on the first
+          attempt instead of being retried - see _TRANSIENT_STATUS_CODES's
+          docstring for why.
+          Retries deliberately NOT applied to GET calls: those are often
+          used as fast "does this exist" checks where a real 404/4xx is an
           expected, final answer, not a transient failure worth retrying
           6 times (~12s) for.
+          3. A raised network-level exception (timeout, DNS failure,
+             connection refused, SSL error - see _network_error_response)
+             is caught and converted into a synthetic error Response rather
+             than propagating uncaught - every caller already handles a
+             non-200 Response gracefully, so this closes off an entire
+             class of "network blip crashes the whole page" failures
+             without needing a try/except at every individual call site.
         """
         kwargs.setdefault("timeout", 15)
         # Callers may pass extra headers (e.g. get_closed_tours'/get_tickets'
@@ -107,21 +174,33 @@ class TravelCompositorAPI:
         last_res = None
 
         for attempt in range(max_attempts):
-            res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+            try:
+                res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+            except requests.exceptions.RequestException as e:
+                res = self._network_error_response(e)
 
             if res.status_code == 401:
                 print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
                 self.authenticate(force=True)
-                res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+                try:
+                    res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+                except requests.exceptions.RequestException as e:
+                    res = self._network_error_response(e)
 
             if res.status_code < 400:
                 return res
 
             last_res = res
-            if is_write and attempt < max_attempts - 1:
-                print(f"⚠️ {method} {url} returned {res.status_code} "
+            is_transient = res.status_code in self._TRANSIENT_STATUS_CODES
+            if is_write and is_transient and attempt < max_attempts - 1:
+                print(f"⚠️ {method} {url} returned {res.status_code} (transient) "
                       f"(attempt {attempt + 1}/{max_attempts}) - retrying in 2s...")
                 time.sleep(2)
+            elif is_write and not is_transient:
+                # Final answer - retrying an unchanged payload against the
+                # same validation error can never succeed, so fail fast
+                # instead of burning ~10-12s the human is waiting on.
+                break
 
         return last_res
 
