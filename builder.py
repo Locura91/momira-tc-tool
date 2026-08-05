@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
-from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO
+from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
 
@@ -907,11 +907,28 @@ def _map_transfer_vehicle_type(vehicle_hint: str, service_name: str) -> str:
     return "CAR"
 
 
+# CONFIRMED REAL SYSTEM LIMIT (product owner): Travel Compositor caps a single Transfer
+# booking at 9 passengers / 4 rooms regardless of what a supplier's rate sheet prices above
+# that - any occupancy tier above this is genuinely unbookable in TC, so it's dropped rather
+# than sent (an occupancy of 10+ would likely be rejected by the API anyway, and there is no
+# reason to carry pricing data TC can never actually use).
+_MAX_TRANSFER_OCCUPANCY = 9
+
+# CONFIRMED REAL RULE (product owner, ~99% of real contracts): almost every transfer is
+# door-to-door regardless of service type/tier - NOT conditional on Private vs Shared as
+# originally guessed. Applied as the default property for every transfer; removable per
+# record in the review UI for the rare exception.
+_DEFAULT_TRANSFER_PROPERTIES = [
+    TransferPropertyVO(propertyType="DOORTODOOR", translations={"EN": TransferPropertyTranslation(description="Door to Door")}),
+]
+
+
 def build_transfer_payload(
     pre_config: TransferHumanPreConfig,
     extracted_transfer_data: Dict[str, Any],
     api_client: TravelCompositorAPI,
     existing_transfer_id: str = None,
+    existing_transfer_snapshot: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Builds one ContractTransferVO payload from AI-extracted rate-sheet data
@@ -921,6 +938,18 @@ def build_transfer_payload(
     payload's own 'id' field when this is an update, and left None for a
     fresh create; api_client.create_transfer/update_transfer decide which
     endpoint to call based on which flow the human is in, not on this value.
+
+    `existing_transfer_snapshot`: the full current GET /transfer/{supplierId}/{id}
+    response, if this is an update (the caller fetches it - see app.py). CONFIRMED
+    REAL RULE (product owner): a live transfer is typically already bookable far
+    into the future (real examples show endDate=2049-12-31) - a seasonal rate-sheet
+    refresh should update PRICING, not narrow that validity window back down to
+    whatever season text happens to be printed on this year's sheet. When a
+    snapshot is given, startDate/endDate/images/properties are preserved from the
+    EXISTING live record rather than overwritten by the newly extracted document -
+    this is the "merge, don't overwrite" behavior promised for updates. For a
+    fresh create (no snapshot), the extracted document's own season dates and
+    default door-to-door property are used instead, as before.
     """
     departure_name = extracted_transfer_data.get("departure_name", "") or ""
     arrival_name = extracted_transfer_data.get("arrival_name", "") or ""
@@ -1013,7 +1042,14 @@ def build_transfer_payload(
         price_by_pax = charge_unit != "per_service"
         currency = extracted_transfer_data.get("currency") or pre_config.currency
 
-        tiers = [t for t in (extracted_transfer_data.get("occupancy_price_tiers") or []) if isinstance(t, dict)]
+        # CONFIRMED REAL SYSTEM LIMIT (product owner): TC caps bookings at 9 passengers - a
+        # supplier rate sheet pricing larger vehicles (e.g. a 9-14 pax coach tier) is pricing
+        # something TC can never actually book, so those tiers are dropped here rather than
+        # sent, and never counted toward max_occupancy below.
+        tiers = [
+            t for t in (extracted_transfer_data.get("occupancy_price_tiers") or [])
+            if isinstance(t, dict) and _safe_int(t.get("occupancy", 1), fallback=1) <= _MAX_TRANSFER_OCCUPANCY
+        ]
         tiers_sorted = sorted(tiers, key=lambda t: _safe_int(t.get("occupancy", 1), fallback=1))
 
         # CONFIRMED SEMANTICS (product owner): basePrice is the DEFAULT per-occupancy rate;
@@ -1026,7 +1062,10 @@ def build_transfer_payload(
         # top-level basePrice (a visible, editable default).
         base_price = _safe_float(tiers_sorted[0].get("price", 0)) if tiers_sorted else 0.0
         min_occupancy = _safe_int(extracted_transfer_data.get("min_occupancy", 1), fallback=1) or 1
-        max_occupancy = _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1
+        max_occupancy = min(
+            _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1,
+            _MAX_TRANSFER_OCCUPANCY,
+        )
 
         def _money(amount):
             return TransferMoneyVO(amount=_safe_float(amount), currency=currency)
@@ -1084,6 +1123,23 @@ def build_transfer_payload(
             for s in (extracted_transfer_data.get("mandatory_supplements") or []) if isinstance(s, dict)
         ]
 
+        # CONFIRMED REAL RULE (product owner decision, refined after real usage): a fresh
+        # CREATE writes the document's own stated season dates (different documents can
+        # genuinely differ). An UPDATE to an already-live transfer instead PRESERVES that
+        # transfer's existing startDate/endDate/images/properties - a live transfer is
+        # typically already bookable far into the future, and a seasonal rate refresh should
+        # update pricing, not narrow that window back down to this year's printed season text.
+        if existing_transfer_snapshot:
+            effective_start_date = existing_transfer_snapshot.get("startDate") or extracted_transfer_data.get("start_date") or ""
+            effective_end_date = existing_transfer_snapshot.get("endDate") or extracted_transfer_data.get("end_date") or ""
+            effective_images = existing_transfer_snapshot.get("images") or []
+            effective_properties = existing_transfer_snapshot.get("properties") or [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
+        else:
+            effective_start_date = extracted_transfer_data.get("start_date") or ""
+            effective_end_date = extracted_transfer_data.get("end_date") or ""
+            effective_images = []
+            effective_properties = [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
+
         transfer_kwargs = dict(
             active=True,
             id=existing_transfer_id,
@@ -1097,19 +1153,20 @@ def build_transfer_payload(
             arrivalLocationId=arrival_geo.get("zone_id"),
             pickupInformation=extracted_transfer_data.get("pickup_information") or None,
             datasheets={"EN": datasheet_en},
-            images=[],
-            properties=[],
-            # CONFIRMED REAL RULE (product owner decision): write the document's own stated
-            # season validity dates - different transfers/documents can genuinely differ, so
-            # never fall back to a fixed far-future default here.
-            startDate=extracted_transfer_data.get("start_date") or "",
-            endDate=extracted_transfer_data.get("end_date") or "",
+            images=effective_images,
+            properties=effective_properties,
+            startDate=effective_start_date,
+            endDate=effective_end_date,
             releaseContract=pre_config.days_available_before_release,
             currency=currency,
             basePrice=base_price,
             maxOccupancy=max_occupancy,
             minOccupancy=min_occupancy,
-            maxVehicles=max_occupancy,
+            # Decoupled from max_occupancy (a prior version conflated "how many passengers"
+            # with "how many separate vehicles" - unrelated concepts that only coincidentally
+            # matched in the one real example seen). 4 matches that confirmed real example;
+            # allowMultipleVehicles is what actually lets larger groups span >1 vehicle.
+            maxVehicles=4,
             allowMultipleVehicles=True,
             pricesByOccupancy=prices_by_occupancy,
             priceByPax=price_by_pax,
