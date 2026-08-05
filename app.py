@@ -5285,9 +5285,20 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 occ_df[col] = None
 
         def _save_occ_tiers(edited_df):
+            # CONFIRMED FIX (real bug found via audit): the old "skip only if BOTH occupancy and
+            # price are blank" check let a row with occupancy filled in but price left blank
+            # survive as NaN -> _safe_float silently coerced it to 0.0 downstream, meaning a
+            # transfer could publish with a genuinely FREE tier and no warning anywhere. Now a
+            # half-filled row (one of the two blank) is dropped and flagged, not silently zeroed.
             rows = []
+            dropped_incomplete = 0
             for _, row in edited_df.iterrows():
-                if pd.isna(row.get("occupancy")) and pd.isna(row.get("price")):
+                occ_blank = pd.isna(row.get("occupancy"))
+                price_blank = pd.isna(row.get("price"))
+                if occ_blank and price_blank:
+                    continue
+                if occ_blank or price_blank:
+                    dropped_incomplete += 1
                     continue
                 rows.append({
                     "occupancy": _safe_int(row.get("occupancy"), fallback=1),
@@ -5296,6 +5307,9 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                     "infant_price": None if pd.isna(row.get("infant_price")) else _safe_float(row.get("infant_price"), fallback=0.0),
                 })
             data["occupancy_price_tiers"] = rows
+            if dropped_incomplete:
+                st.warning(f"⚠️ Dropped {dropped_incomplete} occupancy row(s) that had only an occupancy OR "
+                          f"only a price filled in, not both - fill in both fields to keep a row.")
 
         editable_table("Occupancy price tiers", occ_df, f"xtf_occ_{idx}", on_save=_save_occ_tiers)
         editable_field("Blanket child/infant rule (if the document states one instead of per-row prices)",
@@ -5402,11 +5416,23 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         st.caption("Travel Compositor has no human-assigned code for Transfers, so this app tracks its own "
                   "id->route mapping locally, falling back to a departure/arrival similarity match against "
                   "this supplier's full live list - either way, YOU always confirm before anything publishes.")
+
+        # CONFIRMED FIX (real bug found via audit): a match check used to be cached forever once
+        # clicked, even after Departure/Arrival were edited afterward - a human could end up
+        # confirming a candidate that was matched against now-outdated route text. Fingerprint the
+        # route text the check was run against, and invalidate the cached result the moment it
+        # no longer matches the CURRENT route text, forcing a fresh check.
+        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
+        if current.get("match_route_fingerprint") != current_route_fingerprint:
+            current["match_result"] = None
+            current["match_route_fingerprint"] = current_route_fingerprint
+
         if st.button("🔎 Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
             with st.spinner("Checking..."):
                 current["match_result"] = transfer_matcher.resolve_transfer_match(
                     client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
                 )
+                current["match_route_fingerprint"] = current_route_fingerprint
 
         match_result = current.get("match_result")
         chosen_existing_id = None
@@ -5433,8 +5459,6 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                     chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transfer_id"]
             else:
                 st.info("No existing transfers found for this supplier - will create as new.")
-        else:
-            st.info("Click the button above to check, or just publish below to create this as a brand-new transfer.")
 
         current["confirmed_existing_id"] = chosen_existing_id
 
@@ -5443,19 +5467,35 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         build_result = build_transfer_payload(pre_config, data, client, existing_transfer_id=chosen_existing_id)
         current["build_result"] = build_result
 
+        # CONFIRMED FIX (real bug found via audit): checking for an existing match used to be
+        # entirely optional - hitting Publish without ever clicking "Check" always created a new
+        # transfer, with no safety net against duplicating one that already exists (Transfers have
+        # no human-assigned code, unlike Tour/Ticket's code-availability check). Require at least
+        # one check against the CURRENT route text before Publish is enabled.
+        match_checked = match_result is not None
+        dates_ok = bool((data.get("start_date") or "").strip()) and bool((data.get("end_date") or "").strip())
+        geoloc_ok = bool(build_result.get("departure_geolocation_resolved")) and bool(build_result.get("arrival_geolocation_resolved"))
+
         if build_result.get("transfer_error"):
             st.error(f"⚠️ This transfer can't be built yet: {build_result['transfer_error']}")
         else:
             with st.expander("🔎 Preview payload"):
                 st.json(build_result["transfer_payload"])
-            geoloc_ok = build_result["departure_geolocation_resolved"] and build_result["arrival_geolocation_resolved"]
             if not geoloc_ok:
                 st.warning("⚠️ Departure and/or arrival location couldn't be resolved to real coordinates/zone - "
-                          "double-check the names above before publishing.")
+                          "fix the names above before publishing.")
+            if not dates_ok:
+                st.warning("⚠️ Start date and/or end date is blank - enter the document's real season validity "
+                          "(or your own default) before publishing; Travel Compositor requires both.")
+            if not match_checked:
+                st.warning("⚠️ Click **Check for a matching existing transfer** above before publishing - this "
+                          "is the only safeguard against accidentally creating a duplicate of a transfer that "
+                          "already exists in Travel Compositor.")
 
             publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transfer")
-            if st.button(publish_label, type="primary", key=f"xtf_publish_{idx}", disabled=bool(build_result.get("transfer_error"))):
+            publish_disabled = bool(build_result.get("transfer_error")) or not match_checked or not dates_ok or not geoloc_ok
+            if st.button(publish_label, type="primary", key=f"xtf_publish_{idx}", disabled=publish_disabled):
                 with st.spinner("Publishing to Travel Compositor..."):
                     try:
                         if chosen_existing_id:
