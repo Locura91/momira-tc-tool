@@ -5462,9 +5462,37 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         current["confirmed_existing_id"] = chosen_existing_id
 
+        # CONFIRMED RULE (product owner): "Transfers which are getting updated, have already
+        # allowed bookings until 2049" - an update must be surgical, not a full overwrite. When
+        # updating an existing transfer, fetch its current live record so build_transfer_payload
+        # can merge into it (preserving its existing startDate/endDate/images/properties) rather
+        # than clobbering them with whatever this rate-sheet document happens to say. Cached per
+        # id so re-fetches don't happen on every widget rerun, only when the chosen id changes.
+        existing_transfer_snapshot = None
+        if chosen_existing_id:
+            if current.get("existing_snapshot_id") != chosen_existing_id:
+                with st.spinner(f"Fetching existing transfer {chosen_existing_id} to merge into..."):
+                    snapshot_result = client.get_transfer(supplier_id, chosen_existing_id)
+                if isinstance(snapshot_result, dict) and "error" in snapshot_result:
+                    st.warning(f"⚠️ Couldn't fetch existing transfer {chosen_existing_id} to merge into "
+                              f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
+                              f"document's own dates/images/properties instead of preserving the existing ones.")
+                    current["existing_snapshot"] = None
+                else:
+                    current["existing_snapshot"] = snapshot_result
+                current["existing_snapshot_id"] = chosen_existing_id
+            existing_transfer_snapshot = current.get("existing_snapshot")
+        else:
+            current["existing_snapshot"] = None
+            current["existing_snapshot_id"] = None
+
         st.markdown("#### Publish")
         pre_config = TransferHumanPreConfig(supplier_id=supplier_id, currency=currency, days_available_before_release=release_days)
-        build_result = build_transfer_payload(pre_config, data, client, existing_transfer_id=chosen_existing_id)
+        build_result = build_transfer_payload(
+            pre_config, data, client,
+            existing_transfer_id=chosen_existing_id,
+            existing_transfer_snapshot=existing_transfer_snapshot,
+        )
         current["build_result"] = build_result
 
         # CONFIRMED FIX (real bug found via audit): checking for an existing match used to be
