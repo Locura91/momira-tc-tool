@@ -1,14 +1,64 @@
 import math
+import re
 from typing import Dict, Any, List
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
+from schemas import TransportHumanPreConfig, ContractTransportVO, TransportSegmentVO, TransportDataSheetVO, ContractTransportCancellationRangeVO, ContractTransportOptionVO, ContractTransportOptionPriceVO, ContractTransportOptionInventoryVO, LocalDateRangeVO
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
+import transport_matcher
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
+
+# CONFIRMED REAL SYSTEM LIMIT (product owner): "we have the max of 9 People available, so when
+# a price is seen for 10 or more pax, we can ignore that - for all services." Originally
+# confirmed for Transfer only, now confirmed to apply universally - any occupancy/passenger
+# bracket above this is genuinely unbookable in Travel Compositor regardless of product type,
+# so it's dropped rather than sent. Shared by every product builder that deals in per-occupancy
+# pricing tiers (Transfer today, Transport once built).
+_MAX_OCCUPANCY_PAX = 9
+
+
+def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, max_cap=_MAX_OCCUPANCY_PAX):
+    """
+    CONFIRMED REAL RULE (product owner): "as 7-8 pax will be needed all the time in the
+    Transport, we must check the prices for that transfer too. For example a Transport for 4
+    Pax costs 100 Euro, so 8 People would pay 200 Euro, as in the worst case we must book 2
+    transports." - confirmed this applies generally to Transfer too, not just Transport.
+
+    Only applies to per-SERVICE/per-VEHICLE pricing (price_by_pax=False) - a flat price for the
+    whole vehicle up to its stated capacity. Per-pax pricing doesn't need this: every person
+    already pays the same rate regardless of group size, so the existing basePrice-as-default
+    mechanism already covers any occupancy the source document doesn't explicitly list.
+
+    When the source's largest documented vehicle bracket doesn't reach the 9-pax system cap,
+    synthesizes the missing brackets as booking multiple copies of that same vehicle: price for
+    N pax = ceil(N / largest_documented_capacity) * largest_documented_bracket's price. Ensures
+    every per-vehicle transfer/transport always has full pricing coverage up to 9 pax, even when
+    the supplier's rate sheet only ever describes a single (smaller) vehicle. Child/infant
+    prices are scaled by the same vehicle-count multiplier, only when the source bracket itself
+    priced them (never invents a child/infant price the source never gave).
+    """
+    if price_by_pax or not tiers_sorted:
+        return tiers_sorted
+    largest = tiers_sorted[-1]
+    largest_occ = _safe_int(largest.get("occupancy", 1), fallback=1)
+    largest_price = _safe_float(largest.get("price", 0))
+    if largest_occ <= 0 or largest_occ >= max_cap:
+        return tiers_sorted
+    extended = list(tiers_sorted)
+    for occ in range(largest_occ + 1, max_cap + 1):
+        vehicles_needed = math.ceil(occ / largest_occ)
+        synthesized = {"occupancy": occ, "price": round(vehicles_needed * largest_price, 2)}
+        if largest.get("child_price") is not None:
+            synthesized["child_price"] = round(vehicles_needed * _safe_float(largest.get("child_price")), 2)
+        if largest.get("infant_price") is not None:
+            synthesized["infant_price"] = round(vehicles_needed * _safe_float(largest.get("infant_price")), 2)
+        extended.append(synthesized)
+    return extended
 
 
 def _safe_float(value, fallback=0.0):
@@ -111,6 +161,66 @@ def _cancellation_ranges_from_tiers(tiers):
         return None
     cleaned.sort(key=lambda pair: pair[0], reverse=True)
     return cleaned
+
+
+_DEFAULT_CANCELLATION_VOUCHER_TEXT = (
+    "Free cancellation up to 30 days before arrival. Cancellation fees apply "
+    "within 30 days of arrival or for no-shows."
+)
+
+
+def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, default_text=_DEFAULT_CANCELLATION_VOUCHER_TEXT):
+    """
+    CONFIRMED REAL RULE (product owner): "For all services, we have to check the document
+    or the URL, if the paper on the policy states something different, we have to include
+    that to ALL services in the cancellation and in the Voucher remarks." - whatever
+    cancellation policy actually applies (the source's own stated terms, OR our standing
+    30-day/100%-refund default when the source states nothing) must ALWAYS be visible as
+    plain text on the customer/staff-facing voucher, for every product type - not just
+    reflected in the structured cancellationRanges/cancellation field.
+
+    This used to be inconsistent across products (found while implementing this rule):
+      - ClosedTour: voucherRemarks was hardcoded to "" always - the document's own stated
+        cancellation policy was silently dropped from the voucher entirely, every time.
+      - Ticket: voucherRemarks fell back to "" whenever nothing was extracted - the
+        structured field correctly got the 30-day/100% default, but the voucher itself
+        stayed blank about it, showing no cancellation info at all in the default case.
+      - Transfer: went blank whenever the source HAD stated real tiers but the AI hadn't
+        also produced a separate natural-language summary alongside them - so a genuinely
+        different, document-stated policy could still silently vanish from the voucher.
+    Single shared helper now used by every product builder (ClosedTour/Ticket/Transfer,
+    and Transport once built) so this can't drift out of sync again.
+
+    Priority: (1) the source's own natural-language summary, verbatim, if the AI extracted
+    one - its own wording is more trustworthy than a synthesized rewrite; (2) if the source
+    gave structured tiers but no separate summary text, synthesize one from the tiers so a
+    real, document-stated policy is never silently dropped; (3) otherwise, the standing
+    30-day/100%-refund default text, so the voucher is never blank about cancellation.
+    """
+    if cancellation_policy_text:
+        return cancellation_policy_text
+    if cancellation_tiers:
+        lines = ["Cancellation Policy:"]
+        for days, refund_pct in cancellation_tiers:
+            fee_pct = round(100.0 - refund_pct, 2)
+            if fee_pct <= 0:
+                lines.append(f"- Free cancellation if cancelled at least {days} days before arrival.")
+            elif days == 0:
+                # The days=0 tier is the extraction convention for "day of check-in / no-show"
+                # (see ai_extractor's cancellation_policy_tiers rule) - phrase it as such rather
+                # than the slightly odd-sounding "within 0 days of arrival".
+                if refund_pct <= 0:
+                    lines.append("- No refund for cancellations on the day of arrival or no-shows.")
+                else:
+                    lines.append(f"- {fee_pct:g}% cancellation fee on the day of arrival or for no-shows "
+                                  f"({refund_pct:g}% refund).")
+            elif refund_pct <= 0:
+                lines.append(f"- No refund if cancelled within {days} days of arrival.")
+            else:
+                lines.append(f"- {fee_pct:g}% cancellation fee if cancelled within {days} days of arrival "
+                              f"({refund_pct:g}% refund).")
+        return "\n".join(lines)
+    return default_text
 
 
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
@@ -439,18 +549,6 @@ def build_closed_tour_payloads(
         # docstring/BASIS RULE reference for the math).
         supplements_list = build_supplement_vos(extracted_dmc_data.get("supplements", []))
 
-        datasheet_en = DatasheetEN(
-            name=extracted_dmc_data.get("tour_name") or "",
-            description=extracted_dmc_data.get("description") or "",
-            hotels=extracted_dmc_data.get("hotels_text") or "",
-            voucherRemarks="",
-            included=extracted_dmc_data.get("included") or "",
-            excluded=extracted_dmc_data.get("excluded") or "",
-            meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
-            remarksTitle="Policy",
-            remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
-        )
-
         # CONFIRMED REAL RULE (human feedback): cancellation used to be
         # hardcoded to a flat 30-days/100%-refund default for every tour
         # regardless of what the supplier's own contract actually said -
@@ -463,6 +561,22 @@ def build_closed_tour_payloads(
         cancellation_ranges = (
             [CancellationRange(days=d, percentage=p) for d, p in cancellation_tiers]
             if cancellation_tiers else [CancellationRange()]
+        )
+
+        # CONFIRMED REAL RULE (product owner): voucherRemarks used to be hardcoded blank
+        # here always, silently dropping the document's own stated cancellation policy from
+        # the voucher entirely - see _cancellation_voucher_text()'s docstring for the full
+        # rule and the cross-product inconsistency this fixes.
+        datasheet_en = DatasheetEN(
+            name=extracted_dmc_data.get("tour_name") or "",
+            description=extracted_dmc_data.get("description") or "",
+            hotels=extracted_dmc_data.get("hotels_text") or "",
+            voucherRemarks=_cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+            included=extracted_dmc_data.get("included") or "",
+            excluded=extracted_dmc_data.get("excluded") or "",
+            meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
+            remarksTitle="Policy",
+            remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
         )
 
         main_tour = ContractClosedTourVO(
@@ -673,17 +787,6 @@ def build_ticket_payloads(
                 translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
             ))
 
-        datasheet_en = TicketDatasheetEN(
-            name=extracted_ticket_data.get("ticket_name") or "",
-            description=extracted_ticket_data.get("description") or "",
-            meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
-            departureTime=time_tables_list[0] if time_tables_list else "",
-            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or extracted_ticket_data.get("cancellation_policy_text") or "",
-            includes=extracted_ticket_data.get("includes") or [],
-            excludes=extracted_ticket_data.get("excludes") or [],
-            activityType=extracted_ticket_data.get("activity_type"),
-        )
-
         # CONFIRMED REAL RULE (human feedback): cancellation used to be
         # hardcoded to a flat 30-days/100%-refund default for every ticket
         # regardless of what the supplier's own contract actually said -
@@ -695,6 +798,24 @@ def build_ticket_payloads(
         ticket_cancellation_ranges = (
             [TicketCancellationRange(cancellationDays=d, cancellationPercentage=p) for d, p in ticket_cancellation_tiers]
             if ticket_cancellation_tiers else [TicketCancellationRange()]
+        )
+        # CONFIRMED REAL RULE (product owner): the cancellation policy that actually applies
+        # (document-stated, or our standing default) must always reach the voucher - see
+        # _cancellation_voucher_text()'s docstring. `voucher_remarks` (a broader, human-
+        # editable field, not cancellation-specific) still wins if a human explicitly set it.
+        ticket_cancellation_voucher_text = _cancellation_voucher_text(
+            extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
+        )
+
+        datasheet_en = TicketDatasheetEN(
+            name=extracted_ticket_data.get("ticket_name") or "",
+            description=extracted_ticket_data.get("description") or "",
+            meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
+            departureTime=time_tables_list[0] if time_tables_list else "",
+            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or ticket_cancellation_voucher_text,
+            includes=extracted_ticket_data.get("includes") or [],
+            excludes=extracted_ticket_data.get("excludes") or [],
+            activityType=extracted_ticket_data.get("activity_type"),
         )
 
         main_ticket_kwargs = dict(
@@ -781,9 +902,11 @@ def build_ticket_payloads(
             operationalDays=extracted_ticket_data.get("operational_days", WEEKDAY_NAMES.copy()),
             # CONFIRMED REAL REQUEST (human feedback): the "Condition" field
             # (Travel Compositor's per-modality remarks) used to always be
-            # blank - now carries the same extracted cancellation policy text
-            # shown on the Voucher Remarks field above, so staff see it too.
-            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=extracted_ticket_data.get("cancellation_policy_text") or None)},
+            # blank - now always carries the SAME cancellation text shown on
+            # the Voucher Remarks field above (via _cancellation_voucher_text -
+            # document-stated policy, or the standing default when nothing was
+            # stated), so staff see it too and the two fields can't drift apart.
+            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=ticket_cancellation_voucher_text)},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
@@ -907,13 +1030,6 @@ def _map_transfer_vehicle_type(vehicle_hint: str, service_name: str) -> str:
     return "CAR"
 
 
-# CONFIRMED REAL SYSTEM LIMIT (product owner): Travel Compositor caps a single Transfer
-# booking at 9 passengers / 4 rooms regardless of what a supplier's rate sheet prices above
-# that - any occupancy tier above this is genuinely unbookable in TC, so it's dropped rather
-# than sent (an occupancy of 10+ would likely be rejected by the API anyway, and there is no
-# reason to carry pricing data TC can never actually use).
-_MAX_TRANSFER_OCCUPANCY = 9
-
 # CONFIRMED REAL RULE (product owner, ~99% of real contracts): almost every transfer is
 # door-to-door regardless of service type/tier - NOT conditional on Private vs Shared as
 # originally guessed. Applied as the default property for every transfer; removable per
@@ -1016,13 +1132,13 @@ def build_transfer_payload(
         # CONFIRMED FALLBACK RULE (product owner decision): when the document states no
         # specific cancellation terms, fall back to the same 30-day/100%-refund default
         # used everywhere else in this app - expressed as text here since Transfer has no
-        # structured cancellation field, unlike ClosedTour/Ticket.
+        # structured cancellation field, unlike ClosedTour/Ticket. See
+        # _cancellation_voucher_text()'s docstring: this used to go BLANK whenever the
+        # source had real tiers but no separate summary sentence - a genuinely
+        # document-stated policy could silently vanish from the voucher. Now synthesizes
+        # text from the tiers themselves in that case, instead of dropping it.
         cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transfer_data.get("cancellation_policy_tiers"))
-        if cancellation_tiers:
-            voucher_text = extracted_transfer_data.get("cancellation_policy_text") or ""
-        else:
-            voucher_text = ("Free cancellation up to 30 days before arrival. Cancellation fees apply "
-                             "within 30 days of arrival or for no-shows.")
+        voucher_text = _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers)
         # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
         # auto-applied to price (e.g. a harbor-only pickup fee on a route that also serves
         # airport pickups) becomes an informational voucher note instead - never a mandatory
@@ -1048,7 +1164,7 @@ def build_transfer_payload(
         # sent, and never counted toward max_occupancy below.
         tiers = [
             t for t in (extracted_transfer_data.get("occupancy_price_tiers") or [])
-            if isinstance(t, dict) and _safe_int(t.get("occupancy", 1), fallback=1) <= _MAX_TRANSFER_OCCUPANCY
+            if isinstance(t, dict) and _safe_int(t.get("occupancy", 1), fallback=1) <= _MAX_OCCUPANCY_PAX
         ]
         tiers_sorted = sorted(tiers, key=lambda t: _safe_int(t.get("occupancy", 1), fallback=1))
 
@@ -1062,10 +1178,23 @@ def build_transfer_payload(
         # top-level basePrice (a visible, editable default).
         base_price = _safe_float(tiers_sorted[0].get("price", 0)) if tiers_sorted else 0.0
         min_occupancy = _safe_int(extracted_transfer_data.get("min_occupancy", 1), fallback=1) or 1
+
+        # CONFIRMED REAL RULE (product owner): a per-vehicle rate sheet that only describes a
+        # single (smaller) vehicle must still price every occupancy up to the 9-pax system cap -
+        # see _extend_tiers_for_multi_vehicle_pricing()'s docstring. Extends tiers_sorted BEFORE
+        # max_occupancy is capped below, since this genuinely extends real bookable coverage up
+        # to 9 pax (via multiple vehicles), not just a display default.
+        tiers_sorted = _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax)
+
         max_occupancy = min(
             _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1,
-            _MAX_TRANSFER_OCCUPANCY,
+            _MAX_OCCUPANCY_PAX,
         )
+        if not price_by_pax and tiers_sorted:
+            # Multi-vehicle synthesis means this route is now genuinely bookable up to the full
+            # system cap, even though the source document's own stated max_occupancy was for a
+            # single vehicle only.
+            max_occupancy = max(max_occupancy, _safe_int(tiers_sorted[-1].get("occupancy", 1), fallback=1))
 
         def _money(amount):
             return TransferMoneyVO(amount=_safe_float(amount), currency=currency)
@@ -1194,4 +1323,370 @@ def build_transfer_payload(
         "arrival_geolocation_source": arrival_geo.get("source"),
         "is_zone_based": is_zone_based,
         "existing_transfer_id": existing_transfer_id,
+    }
+
+
+# ==========================================
+# TRANSPORT
+# Confirmed field-by-field against the real Transport Swagger + real GET
+# examples across 2 suppliers/routes (Aswan-Hurghada CAR, Praslin-La Digue
+# COMBINED car+ferry+car). See schemas.py's ContractTransportVO/
+# ContractTransportOptionVO docstrings for the confirmed shape, and
+# transport_matcher.py for how an existing transport/option is recognized
+# for an update.
+# ==========================================
+
+_TRANSPORT_TYPE_KEYWORDS = [
+    ("PLANE", ["flight", "plane", "airline", "airplane", "aircraft"]),
+    ("COMBINED", ["combined", "car and ferry", "car + ferry", "multi-leg", "multi leg", "and ferry"]),
+    ("TRAIN", ["train", "rail"]),
+    ("BUS", ["bus", "coach"]),
+    ("FERRY", ["ferry", "boat"]),
+    ("CAR", ["car", "sedan", "private car", "van", "minivan"]),
+]
+
+
+def _map_transport_type(type_hint: str, service_name: str) -> str:
+    """Best-effort mapping - only CAR, COMBINED (both real live examples), and PLANE (the
+    Swagger's own placeholder example value) are confirmed; the rest of the Swagger's stated
+    8-value transportType enum is unconfirmed. Reviewable/editable per record, same convention
+    as Transfer's vehicleType mapping (_map_transfer_vehicle_type)."""
+    text = f"{type_hint or ''} {service_name or ''}".lower()
+    for enum_val, keywords in _TRANSPORT_TYPE_KEYWORDS:
+        if any(k in text for k in keywords):
+            return enum_val
+    return "CAR"
+
+
+def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax, max_cap=_MAX_OCCUPANCY_PAX):
+    """
+    Transport-specific counterpart to _extend_tiers_for_multi_vehicle_pricing (see that
+    function's docstring for the full confirmed rule, product owner: "as 7-8 pax will be needed
+    all the time... we must check the prices for that transfer too... in the worst case we must
+    book 2 transports" - confirmed to apply generally, Transport included). Operates on RANGE
+    brackets (min_occupancy/max_occupancy), not single-occupancy tiers, since Transport's
+    per-occupancy pricing is modelled as separate Option sub-resources. Synthesized coverage is
+    grouped into contiguous multi-vehicle brackets (e.g. capacity=4 pax -> one bracket covering
+    5-8 pax at 2x the price, not four separate single-pax brackets), matching how real
+    per-vehicle-style options are actually structured (every real bracket example seen spans a
+    range, never a single pax count).
+    """
+    if price_per_pax or not brackets_sorted:
+        return brackets_sorted
+    largest = brackets_sorted[-1]
+    capacity = _safe_int(largest.get("max_occupancy", 0), fallback=0)
+    price = _safe_float(largest.get("price", 0))
+    if capacity <= 0 or capacity >= max_cap:
+        return brackets_sorted
+    extended = list(brackets_sorted)
+    occ = capacity + 1
+    while occ <= max_cap:
+        vehicles_needed = math.ceil(occ / capacity)
+        bracket_max = min(max_cap, vehicles_needed * capacity)
+        extended.append({
+            "min_occupancy": occ,
+            "max_occupancy": bracket_max,
+            "price": round(vehicles_needed * price, 2),
+            "child_price": None,
+            "infant_price": None,
+        })
+        occ = bracket_max + 1
+    return extended
+
+
+def _generate_transport_option_code(departure_name: str, arrival_name: str, min_occ: int, max_occ: int) -> str:
+    """
+    Generates a code for a freshly-created bracket/option. CONFIRMED (via 4 real option
+    examples on the same transport): real option codes are NOT predictable or derivable from the
+    route or bracket - seen as short abbreviations ("ASWHRG"), route-name-plus-bracket
+    concatenations ("PraslinLaDigue12"), and even the transport's own full name repeated
+    verbatim - there is no "correct" convention to replicate. This generates its own readable,
+    deterministic code (route initials + bracket range) purely for our own future
+    re-identification convenience - see transport_matcher.match_bracket_to_existing_option() for
+    why matching on UPDATE never actually relies on this code being predictable or stable.
+    """
+    def _slug(name):
+        return re.sub(r"[^A-Za-z0-9]", "", (name or "")).upper()[:10]
+    route_slug = f"{_slug(departure_name)}{_slug(arrival_name)}" or "TRANSPORT"
+    bracket_slug = f"{min_occ}" if min_occ == max_occ else f"{min_occ}-{max_occ}"
+    return f"{route_slug}-{bracket_slug}"
+
+
+def build_transport_payloads(
+    pre_config: TransportHumanPreConfig,
+    extracted_transport_data: Dict[str, Any],
+    api_client: TravelCompositorAPI,
+    existing_transport_id: str = None,
+    existing_transport_snapshot: Dict[str, Any] = None,
+    existing_options_snapshot: List[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Builds BOTH the main ContractTransportVO payload and one ContractTransportOptionVO payload
+    per occupancy bracket, given human pre-config + AI-extracted document data + Travel
+    Compositor's Transport Base location lookup (api_client.resolve_transport_base). Mirrors
+    build_transfer_payload's structure/error-handling conventions, adapted for Transport's
+    two-level (parent + options) shape.
+
+    UNLIKE Transfer, Transport has genuinely separate Option sub-resources for pricing - so this
+    returns a LIST of option actions (create new / update existing / deactivate orphaned), not a
+    single combined payload. The caller (app.py) calls create_transport/update_transport for the
+    parent FIRST, then create_transport_option/update_transport_option/deactivate for each option
+    action (a fresh create needs the parent's real 'id', only known after the parent step).
+
+    NOTE: ContractTransportVO has NO supplements/additionalServices field at all in the confirmed
+    Swagger - unlike Transfer, there's nothing equivalent to build here for optional/mandatory
+    surcharges; Transport's schema simply doesn't have anywhere to put them.
+
+    UNCONFIRMED ASSUMPTION (no real per-vehicle Transport example exists to verify against -
+    every real example seen has pricePerPax=true): ContractTransportOptionPriceVO only has
+    adult/children/infant supplement fields, no generic "vehicle" field, so a per-vehicle
+    bracket's delta is written into adultPriceSupplement the same way a per-pax bracket's is -
+    it's the only numeric delta field the schema offers. Flag this if a real per-vehicle
+    Transport publish ever gets rejected or behaves unexpectedly.
+
+    CONFIRMED MERGE-ON-UPDATE (product owner, same rule as Transfer): pass
+    existing_transport_snapshot (the current live GET /transport/{supplierId}/{transportId})
+    when updating, so this preserves the existing startDate/endDate/images instead of
+    overwriting them with this rate sheet's own season-specific values. Pass
+    existing_options_snapshot (every existing option, fetched via get_transport_option for each
+    of the parent's optionCodes) so each bracket can be matched to its corresponding existing
+    option (by minPassengers/maxPassengers overlap - see transport_matcher.
+    match_bracket_to_existing_option, since real option codes are never predictable) rather than
+    creating a duplicate; any existing option no longer covered by this rate sheet is returned in
+    options_to_deactivate (CONFIRMED product owner rule: "we cannot sell something, that we have
+    no prices" - set active: false rather than leaving a stale price live or deleting it, since
+    there is no DELETE endpoint).
+    """
+    departure_name = (extracted_transport_data.get("departure_name") or "").strip()
+    arrival_name = (extracted_transport_data.get("arrival_name") or "").strip()
+
+    departure_base = api_client.resolve_transport_base(departure_name) if departure_name else \
+        {"code": None, "name": departure_name, "valid": False, "match_type": "empty_query"}
+    arrival_base = api_client.resolve_transport_base(arrival_name) if arrival_name else \
+        {"code": None, "name": arrival_name, "valid": False, "match_type": "empty_query"}
+
+    currency = extracted_transport_data.get("currency") or pre_config.currency
+    charge_unit = (extracted_transport_data.get("charge_unit") or "per_pax").lower()
+    price_per_pax = charge_unit != "per_service"
+
+    # Cancellation: Transport has a genuine structured field (unlike Transfer) - still reuses
+    # the shared cross-product voucher-text rule (_cancellation_voucher_text) since the AI's
+    # source-stated text/tiers are exactly the same shape either way.
+    cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transport_data.get("cancellation_policy_tiers"))
+    cancellation_ranges = (
+        [ContractTransportCancellationRangeVO(days=d, percentage=p) for d, p in cancellation_tiers]
+        if cancellation_tiers else [ContractTransportCancellationRangeVO()]
+    )
+    voucher_text = _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers)
+
+    # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
+    # owner rule, applies "for all services"), then apply the multi-vehicle synthesis rule.
+    raw_brackets = [
+        b for b in (extracted_transport_data.get("occupancy_brackets") or [])
+        if isinstance(b, dict) and _safe_int(b.get("min_occupancy", 1), fallback=1) <= _MAX_OCCUPANCY_PAX
+    ]
+    brackets = []
+    for b in raw_brackets:
+        b = dict(b)
+        b["min_occupancy"] = _safe_int(b.get("min_occupancy", 1), fallback=1)
+        b["max_occupancy"] = min(
+            _safe_int(b.get("max_occupancy", b["min_occupancy"]), fallback=b["min_occupancy"]),
+            _MAX_OCCUPANCY_PAX,
+        )
+        brackets.append(b)
+    brackets_sorted = sorted(brackets, key=lambda x: x["min_occupancy"])
+    brackets_sorted = _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax)
+
+    # CONFIRMED (via real data): unlike Transfer (which always writes every tier explicitly, so
+    # "which one is base" barely matters), Transport's base price only ever shows up combined
+    # with a bracket's own supplement - the customer never sees it standalone - and empty
+    # `prices` (no supplement at all) is reserved for whichever bracket the source's numbers
+    # happen to equal exactly. Picking the WIDEST occupancy bracket as base_price (rather than
+    # simply the smallest occupancy) matches this: the real Aswan-Hurghada example had a narrow
+    # 1-pax outlier bracket (width 0) and a wide 2-9 pax bracket (width 7) that shared the exact
+    # value later used as baseAdultPrice - selecting by width reproduces that exactly (base=90,
+    # not the 1-pax bracket's 180), so the common/majority-width bracket ends up with an empty
+    # prices array and only the genuine outlier(s) carry an explicit supplement. Ties (e.g. every
+    # bracket the same width, as in the real Praslin-La Digue 4-bracket example) break toward the
+    # smallest occupancy, deterministically - any tied choice is mathematically equivalent since
+    # every bracket's final price is always base+supplement regardless of which one is "base".
+    base_bracket = (
+        max(brackets_sorted, key=lambda b: (b["max_occupancy"] - b["min_occupancy"], -b["min_occupancy"]))
+        if brackets_sorted else None
+    )
+    base_price = _safe_float(base_bracket.get("price", 0)) if base_bracket else 0.0
+    base_child_price = _safe_float(base_bracket.get("child_price")) if base_bracket and base_bracket.get("child_price") is not None else 0.0
+    base_infant_price = _safe_float(base_bracket.get("infant_price")) if base_bracket and base_bracket.get("infant_price") is not None else 0.0
+
+    transport_name = extracted_transport_data.get("service_name") or f"{departure_name} - {arrival_name}".strip(" -")
+
+    # CONFIRMED (via real Swagger): ContractTransportDataSheetVO only has name/description - no
+    # dedicated voucherRemarks-style field the way ClosedTour/Ticket/Transfer have. The
+    # cancellation text still needs to reach customer-facing text somewhere (same universal rule
+    # - see _cancellation_voucher_text's docstring), so it's appended to description instead.
+    description_text = extracted_transport_data.get("description") or ""
+    full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
+    datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
+
+    segment = TransportSegmentVO(
+        departureLocationCode=departure_base.get("code") or "",
+        arrivalLocationCode=arrival_base.get("code") or "",
+        departureTime=normalize_time_hhmmss(extracted_transport_data.get("departure_time") or "09:00:00"),
+        arrivalTime=normalize_time_hhmmss(extracted_transport_data.get("arrival_time") or "09:00:00"),
+        plusDays=_safe_int(extracted_transport_data.get("plus_days", 0), fallback=0),
+        durationTime=(normalize_time_hhmmss(extracted_transport_data["duration_time"])
+                      if extracted_transport_data.get("duration_time") else None),
+        model=extracted_transport_data.get("vehicle_model") or None,
+        numService=extracted_transport_data.get("service_number") or None,
+    )
+
+    # CONFIRMED MERGE-ON-UPDATE (product owner, same rule as Transfer's build_transfer_payload):
+    # preserve the existing live record's dates/images on an update rather than overwriting them
+    # with this rate sheet's own season-specific values.
+    if existing_transport_snapshot:
+        effective_start_date = existing_transport_snapshot.get("startDate") or extracted_transport_data.get("start_date") or ""
+        effective_end_date = existing_transport_snapshot.get("endDate") or extracted_transport_data.get("end_date") or ""
+        effective_images = existing_transport_snapshot.get("images") or []
+    else:
+        effective_start_date = extracted_transport_data.get("start_date") or ""
+        effective_end_date = extracted_transport_data.get("end_date") or ""
+        effective_images = []
+
+    transport_payload = None
+    transport_error = None
+    try:
+        transport_kwargs = dict(
+            id=existing_transport_id,
+            name=transport_name,
+            segments=[segment],
+            transportType=_map_transport_type(extracted_transport_data.get("transport_type_hint"), transport_name),
+            datasheets={"EN": datasheet_en},
+            images=effective_images,
+            pricePerPax=price_per_pax,
+            currency=currency,
+            vehiclePrice=0.0 if price_per_pax else base_price,
+            baseAdultPrice=base_price if price_per_pax else 0.0,
+            baseChildrenPrice=(base_child_price if price_per_pax else 0.0),
+            baseInfantPrice=(base_infant_price if price_per_pax else 0.0),
+            startDate=effective_start_date,
+            endDate=effective_end_date,
+            releaseContract=pre_config.days_available_before_release,
+            optionCodes=[],  # populated below once bracket codes are known
+            allowOWPrice=True,
+            allowRTPrice=False,  # RT deprioritized (product owner) - no real example has RT enabled
+            companyName=extracted_transport_data.get("company_name") or "",
+            cancellationRanges=cancellation_ranges,
+        )
+        transport = ContractTransportVO(**transport_kwargs)
+        transport_payload = transport.dict()
+    except ValidationError as e:
+        transport_error = str(e)
+    except (ValueError, TypeError) as e:
+        transport_error = f"Couldn't build the transport payload - {e}"
+
+    # --- Options: one per occupancy bracket, matched against existing options (if updating) so
+    # a price refresh updates in place instead of creating duplicates - see
+    # transport_matcher.match_bracket_to_existing_option's docstring for why this matches by
+    # minPassengers/maxPassengers overlap rather than by code.
+    option_actions = []
+    options_to_deactivate = []
+    matched_existing_codes = set()
+    option_codes = []
+
+    for b in brackets_sorted:
+        min_occ, max_occ = b["min_occupancy"], b["max_occupancy"]
+        bracket_price = _safe_float(b.get("price", 0))
+        adult_delta = round(bracket_price - base_price, 2)
+        children_delta = 0.0
+        if b.get("child_price") is not None:
+            children_delta = round(_safe_float(b.get("child_price")) - base_child_price, 2)
+        infant_delta = 0.0
+        if b.get("infant_price") is not None:
+            infant_delta = round(_safe_float(b.get("infant_price")) - base_infant_price, 2)
+
+        # CONFIRMED SEMANTICS (product owner, corrected from an initial wrong guess): a bracket
+        # that costs exactly the base rate gets NO price entries at all (matches the real
+        # ASWHRG 2-9 pax example, prices=[]) rather than a redundant zero-supplement entry.
+        prices = []
+        if adult_delta != 0 or children_delta != 0 or infant_delta != 0:
+            prices = [ContractTransportOptionPriceVO(
+                startDate=effective_start_date or extracted_transport_data.get("start_date") or "",
+                adultPriceSupplement=adult_delta,
+                childrenPriceSupplement=children_delta,
+                infantPriceSupplement=infant_delta,
+            )]
+
+        matched_existing = None
+        if existing_options_snapshot:
+            matched_existing = transport_matcher.match_bracket_to_existing_option(
+                min_occ, max_occ, existing_options_snapshot
+            )
+        if matched_existing:
+            code = matched_existing.get("code") or _generate_transport_option_code(departure_name, arrival_name, min_occ, max_occ)
+            matched_existing_codes.add(matched_existing.get("code"))
+            action = "update"
+        else:
+            code = _generate_transport_option_code(departure_name, arrival_name, min_occ, max_occ)
+            action = "create"
+
+        bracket_label = f"{min_occ} Pax" if min_occ == max_occ else f"{min_occ} to {max_occ} Pax"
+        option_name = f"{transport_name} - {bracket_label}"
+
+        option_error = None
+        option_payload = None
+        try:
+            option = ContractTransportOptionVO(
+                code=code,
+                minPassengers=min_occ,
+                maxPassengers=max_occ,
+                prices=prices,
+                inventories=[ContractTransportOptionInventoryVO(
+                    inventoryDate=LocalDateRangeVO(start=effective_start_date or extracted_transport_data.get("start_date") or "")
+                )],
+                translations={"EN": TransportDataSheetVO(name=option_name)},
+            )
+            option_payload = option.dict()
+        except ValidationError as e:
+            option_error = str(e)
+        except (ValueError, TypeError) as e:
+            option_error = f"Couldn't build option for bracket {min_occ}-{max_occ} - {e}"
+
+        option_codes.append(code)
+        option_actions.append({
+            "action": action,
+            "code": code,
+            "min_occupancy": min_occ,
+            "max_occupancy": max_occ,
+            "option_payload": option_payload,
+            "option_error": option_error,
+        })
+
+    if transport_payload is not None:
+        transport_payload["optionCodes"] = option_codes
+
+    # Any existing option whose bracket is no longer covered by this rate sheet gets deactivated
+    # rather than left stale or deleted (no DELETE endpoint exists) - CONFIRMED product owner
+    # rule: "we cannot sell something, that we have no prices."
+    for existing_opt in (existing_options_snapshot or []):
+        if not isinstance(existing_opt, dict):
+            continue
+        if existing_opt.get("code") not in matched_existing_codes:
+            deactivated = dict(existing_opt)
+            deactivated["active"] = False
+            options_to_deactivate.append(deactivated)
+
+    return {
+        "supplier_id": pre_config.supplier_id,
+        "transport_payload": transport_payload,
+        "transport_error": transport_error,
+        "transport_name": transport_name,
+        "departure_name": departure_name,
+        "arrival_name": arrival_name,
+        "departure_base_resolved": departure_base.get("valid", False),
+        "departure_base_match_type": departure_base.get("match_type"),
+        "arrival_base_resolved": arrival_base.get("valid", False),
+        "arrival_base_match_type": arrival_base.get("match_type"),
+        "existing_transport_id": existing_transport_id,
+        "option_actions": option_actions,
+        "options_to_deactivate": options_to_deactivate,
     }

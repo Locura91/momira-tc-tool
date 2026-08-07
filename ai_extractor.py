@@ -1957,3 +1957,184 @@ def extract_transfer_data(raw_text: str, model: str = "claude-sonnet-5", transfe
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
     return data
+
+
+TRANSPORT_PRODUCT_DETECTION_PROMPT = """You are scanning a DMC supplier TRANSPORT rate sheet/tariff document to
+identify every DISTINCT transport product it describes, so each can be reviewed and uploaded to Travel
+Compositor as its own record.
+
+TRANSPORT here means a connection between two named Travel Compositor destinations/locations (e.g. a private
+car route between two towns, a car+ferry combined journey, a scheduled flight or train leg) - NOT a local
+airport/hotel transfer (that's a different product type, already handled elsewhere). These documents are
+typically the same style/layout as Transfer rate sheets, just for longer inter-destination routes.
+
+A DISTINCT transport product is one specific ROUTE (a departure location to an arrival location) at one
+specific SERVICE/CLASS/TIER (e.g. "Private Car", "Car + Ferry Combined", "Economy").
+
+CRITICAL - GUIDE LANGUAGE / OPTIONAL EXTRAS ARE NEVER SEPARATE PRODUCTS: exactly as with Transfers, a
+document may repeat the same routes once per guide language or per optional extra - this is NOT multiple
+products. List each route+class combination only ONCE.
+
+CRITICAL - DIRECTIONAL PAIRING: "A to B" and "B to A" are normally the SAME route sold in both directions at
+the same price - list it once, unless the document genuinely states different prices/conditions per
+direction.
+
+For each distinct route+class product found, output a candidate with:
+- label: short human-readable summary, e.g. "Private Car: Praslin <-> La Digue"
+- service_name: exactly as the document names this service/tier
+- departure_hint: the departure location name(s) as stated in the document
+- arrival_hint: the arrival location name(s) as stated in the document
+
+Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
+{
+  "multiple_transports": true or false,
+  "transports": [
+    {"label": "...", "service_name": "...", "departure_hint": "...", "arrival_hint": "..."}
+  ]
+}
+If there is genuinely only one distinct transport product in the whole document, set "multiple_transports": false
+and "transports": [] ."""
+
+
+def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """
+    Checks whether the source describes MULTIPLE distinct transport products (route + service/
+    class combinations) as opposed to a single one. Mirrors detect_transfer_products' contract
+    for the existing batch/queue review UI pattern. Returns an empty list if only one is found,
+    or a list of {"label", "service_name", "departure_hint", "arrival_hint"} dicts.
+    """
+    print("🔎 Checking for multiple distinct transport products (routes/classes) in this document...")
+    result = _call_claude(TRANSPORT_PRODUCT_DETECTION_PROMPT, raw_text, model, max_tokens=2048)
+    transports = result.get("transports", []) if result.get("multiple_transports") else []
+    if transports:
+        print(f"⚠️ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
+    else:
+        print("✅ Only one distinct transport product detected.")
+    return transports
+
+
+TRANSPORT_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSPORT
+(a connection between two named destinations/locations - e.g. a private car route, a car+ferry combined
+journey, a scheduled flight or train leg between two towns/cities/islands - NOT a local airport/hotel
+transfer) from a DMC supplier rate sheet. Translate ALL content to English regardless of source language.
+
+CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+directly. Momira Travel is the tour operator the client actually deals with - the client must NEVER be told
+to contact the DMC/supplier directly. Silently drop/omit any such text wherever it could appear.
+
+If a human hint above names a specific route/service, extract ONLY that one product and ignore every other
+route/service described elsewhere in the document.
+
+Extract:
+- service_name: the service/tier name exactly as the document states it, e.g. "Private Car", "Car + Ferry Combined".
+- departure_name, arrival_name: the departure and arrival location names, exactly as stated (e.g. "Praslin", "La Digue").
+- transport_type_hint: any transport mode mentioned, e.g. "Car", "Car and Public Ferry", "Flight", "Train", "Coach". Empty if not stated.
+- vehicle_model: a specific vehicle/aircraft/train model if genuinely stated (e.g. "Mercedes Vito", "Toyota Avanza"). Empty if not stated - do NOT invent one.
+- service_number: a specific flight/train/service number if genuinely stated (e.g. "LH123"). Empty if not stated.
+- charge_unit: "per_pax" if the document charges per person (look for wording like "per person", "net per
+  person", "ChargeUnit-Pax"), or "per_service" if it's a flat price for the whole vehicle/group regardless of
+  headcount within the stated range (look for wording like "per vehicle", "flat rate", "ChargeUnit-Service").
+- currency: the 3-letter currency code stated for this document/table.
+- departure_time, arrival_time: the scheduled departure/arrival clock times if stated ("HH:MM:SS" 24-hour,
+  e.g. "09:00:00"). If genuinely not stated, use "09:00:00" for both as a harmless placeholder (a human
+  reviews this before publish).
+- plus_days: 0 unless the document explicitly states the arrival is a later calendar day than departure
+  (e.g. an overnight ferry/train) - then the number of days later.
+- duration_time: the stated total ACTIVE travel duration if given (e.g. a ferry crossing time) - "HH:MM:SS".
+  IMPORTANT: this is NOT necessarily the same as arrival_time minus departure_time (a multi-leg journey can
+  have significant waiting time between legs that duration_time does not include) - only fill this from an
+  explicitly stated duration, never compute it from the two clock times. Leave empty if not stated.
+- occupancy_brackets: a list of {"min_occupancy": <integer>, "max_occupancy": <integer>, "price": <number>,
+  "child_price": <number or null>, "infant_price": <number or null>}. Each entry is the ACTUAL FINAL price
+  a party of that size pays - as literally stated by the document (e.g. "1-2 Pax: EUR 102 per person" ->
+  {"min_occupancy": 1, "max_occupancy": 2, "price": 102}). DRIVER-ONLY BASE RULE (same as Transfer): use the
+  driver-only rate (no guide) - if the document ONLY gives guide-inclusive pricing, use the cheapest/default
+  guide-language table's prices and note the approximation in additional_notes. If the document gives one
+  bracket per group-size range, create one entry per bracket exactly as ranged (e.g. "3-4 Pax", "5-6 Pax") -
+  do NOT invent brackets the document doesn't state, and do NOT assume any mathematical relationship between
+  different brackets' prices (real data has shown non-monotonic/alternating patterns - always use the
+  document's own literal number for each bracket, never interpolate or derive one from another). If the
+  document instead only describes ONE vehicle with a flat price up to some capacity (e.g. "Private car, max
+  4 pax: EUR 100"), use ONE entry: {"min_occupancy": 1, "max_occupancy": 4, "price": 100} - larger groups are
+  handled automatically downstream as needing multiple vehicles, do not try to compute that yourself. For
+  child_price/infant_price: use an explicit number only if the document states one for that row ("Free" = 0);
+  leave null if the column is "-"/"N/A"/not applicable to that pricing style - do NOT invent a number.
+- child_infant_rule_text: if the document instead states a BLANKET child/infant rule rather than per-row
+  numbers, write that rule here in plain English. Leave empty if already fully captured in occupancy_brackets.
+- additional_notes: informational text for anything the document mentions that doesn't fit a structured field
+  above - e.g. a guide-language surcharge, a child-seat fee, a location-conditional cost - since Transport
+  (unlike Transfer/ClosedTour/Ticket) has NO additionalServices/supplements field at all to hold priced
+  extras. Summarize plainly (e.g. "German-speaking guide available for an additional EUR 15" or "Harbor
+  pickup incurs an extra permit fee, not included above") - NEVER silently invent a price adjustment for
+  these into occupancy_brackets. Empty string if nothing applies.
+- description: 1-2 short plain-English sentences describing the transport/route, covering every leg if it's
+  a multi-leg/combined journey (e.g. car to harbor, ferry, car to hotel) even though only one overall segment
+  gets recorded structurally. Factual only, no invented details.
+- company_name: the descriptive service name as the document states it, if different/more detailed than
+  service_name (e.g. "Car with Driver (Hotel to Hotel)", "Hotel-to-Hotel Land & Ferry Transfer"). Empty if
+  service_name already covers it.
+- start_date, end_date: the REAL validity/season date range this document states for this rate (YYYY-MM-DD).
+  Always use what THIS document actually states, never a fixed/hardcoded default. Leave both empty if the
+  document gives no date range at all.
+- cancellation_policy_tiers: whenever the document states its OWN specific cancellation-fee schedule, extract
+  EVERY tier as {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the
+  cancellation FEE percentage, exactly as stated - a fee/charge percentage, NOT a refund percentage>}. Use
+  the LOWER bound of each range as "days" (e.g. "6 to 5 days" -> days=5, "2 to 0 days" -> days=0). A
+  separately-stated "No Show" fee does not need its own entry if it matches the final/most-expensive tier. If
+  the document states NO specific cancellation terms, return an EMPTY list - do not invent one.
+- cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy as a short,
+  clear, human-readable plain-text summary, one line per tier. Leave empty whenever cancellation_policy_tiers
+  is empty.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
+  "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "",
+  "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
+  "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
+  "description": "", "company_name": "", "start_date": "", "end_date": "",
+  "cancellation_policy_tiers": [], "cancellation_policy_text": ""
+}"""
+
+
+def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transport_hint: str = None,
+                            human_hint: str = None) -> dict:
+    """Full extraction for one Transport product (a single route+class combination)."""
+    user_content = raw_text
+    prefix_parts = []
+    if transport_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE distinct transport products. "
+            f"Extract ONLY the following one, pulling in every bracket/price detail that belongs to it "
+            f"specifically, and completely ignore every other route/service described elsewhere in the "
+            f"text: {transport_hint}"
+        )
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(TRANSPORT_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+
+    defaults = {
+        "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
+        "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "EUR",
+        "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
+        "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
+        "description": "", "company_name": "", "start_date": "", "end_date": "",
+        "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+
+    data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
+
+    # Fold additional_notes (guide-language surcharges, location-conditional costs, etc - there
+    # is no structured field on Transport to hold these, unlike Transfer/ClosedTour/Ticket) into
+    # the description, same "must always reach customer/staff-facing text somewhere" principle
+    # already applied to cancellation text (see builder.py's build_transport_payloads).
+    if data.get("additional_notes"):
+        data["description"] = f"{data['description']}\n\n{data['additional_notes']}".strip() if data.get("description") else data["additional_notes"]
+
+    return data

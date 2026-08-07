@@ -27,6 +27,7 @@ class TravelCompositorAPI:
         self.auth_token: Optional[str] = None
         self._destination_cache: Optional[List[Dict[str, Any]]] = None
         self._transfer_zone_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._transport_base_cache: Optional[List[Dict[str, Any]]] = None
 
     # ------------------------------------------------------------------
     # AUTH
@@ -877,6 +878,221 @@ class TravelCompositorAPI:
         via Swagger), pointing at the transfer being updated.
         """
         url = f"{self.api_base_url}/transfer/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    # ------------------------------------------------------------------
+    # TRANSPORT BASES  (the location master list Transport's segments
+    # reference via departureLocationCode/arrivalLocationCode, e.g.
+    # "meet_aswan" - confirmed a SEPARATE master list from the general
+    # Destination endpoint used by ClosedTour/Ticket, and from Transfer's
+    # own Zones endpoint. Global to the account - no supplier/microsite
+    # scoping in the Swagger, just pagination.)
+    # ------------------------------------------------------------------
+    def _get_all_transport_bases(self, lang: str = "EN") -> List[Dict[str, Any]]:
+        """
+        Fetches and caches the FULL active transport-base list via paginated
+        GET /transportbases (first/limit required, no supplier/microsite
+        scoping - confirmed via Swagger this is a global, account-wide
+        list). Pages through using the response's own 'pagination' block
+        (firstResult/pageResults/totalResults) until exhausted, same
+        cache-once-per-session approach as _get_all_destinations().
+        """
+        if self._transport_base_cache is not None:
+            return self._transport_base_cache
+
+        bases: List[Dict[str, Any]] = []
+        page_size = 100
+        first = 0
+        try:
+            while True:
+                url = f"{self.api_base_url}/transportbases"
+                res = self._request("GET", url, params={"first": first, "limit": page_size, "lang": lang})
+                if res.status_code != 200:
+                    print(f"⚠️ Could not fetch transport bases (page starting {first}): {res.status_code} {res.text}")
+                    break
+                data = res.json()
+                page = data.get("transportbase", []) if isinstance(data, dict) else (data or [])
+                bases.extend(page)
+                pagination = data.get("pagination") or {} if isinstance(data, dict) else {}
+                total = pagination.get("totalResults")
+                if not page or total is None or len(bases) >= total:
+                    break
+                first += page_size
+        except requests.RequestException as e:
+            print(f"⚠️ Could not fetch transport bases: {e}")
+
+        self._transport_base_cache = bases or []
+        print(f"📥 Cached {len(self._transport_base_cache)} transport base(s).")
+        return self._transport_base_cache
+
+    def resolve_transport_base(self, query_term: str) -> Dict[str, Any]:
+        """
+        Resolves a place name or a real transport-base code to a Transport
+        Base record. Mirrors resolve_destination()'s two-step approach:
+          1. Direct code lookup via GET /transportbases/{code} (in case the
+             human/document already gives a real code, e.g. "meet_aswan").
+          2. Name matching (exact -> substring) against the cached full list
+             fetched by _get_all_transport_bases().
+
+        Returns: {"code": str|None, "name": str, "type": str|None,
+                   "latitude": float|None, "longitude": float|None,
+                   "valid": bool, "match_type": str}
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return {"code": None, "name": None, "type": None, "latitude": None, "longitude": None,
+                    "valid": False, "match_type": "empty_query"}
+
+        # 1. Direct code lookup
+        try:
+            url_direct = f"{self.api_base_url}/transportbases/{clean_query}"
+            res = self._request("GET", url_direct, params={"lang": "EN"})
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict) and data.get("code"):
+                    geo = data.get("geolocation") or {}
+                    print(f"✅ RESOLVED (by code): '{clean_query}' -> {data['code']} ({data.get('name')})")
+                    return {
+                        "code": data["code"], "name": data.get("name", data["code"]), "type": data.get("type"),
+                        "latitude": geo.get("latitude"), "longitude": geo.get("longitude"),
+                        "valid": True, "match_type": "code",
+                    }
+        except requests.RequestException as e:
+            print(f"⚠️ Direct transport-base code lookup failed for '{clean_query}': {e}")
+
+        # 2. Name matching against the cached full list
+        try:
+            bases = self._get_all_transport_bases()
+        except requests.RequestException as e:
+            print(f"⚠️ Could not fetch transport base list: {e}")
+            bases = []
+
+        query_lower = clean_query.lower()
+
+        def _to_result(base: dict, match_type: str) -> Dict[str, Any]:
+            geo = base.get("geolocation") or {}
+            return {
+                "code": base.get("code"), "name": base.get("name", clean_query), "type": base.get("type"),
+                "latitude": geo.get("latitude"), "longitude": geo.get("longitude"),
+                "valid": base.get("code") is not None, "match_type": match_type,
+            }
+
+        for base in bases:
+            if (base.get("name") or "").strip().lower() == query_lower:
+                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {base.get('code')} ({base.get('name')})")
+                return _to_result(base, "exact_name")
+
+        substring_matches = [b for b in bases if query_lower in (b.get("name") or "").lower()]
+        if substring_matches:
+            best = substring_matches[0]
+            print(f"✅ RESOLVED (substring name): '{clean_query}' -> {best.get('code')} ({best.get('name')})")
+            return _to_result(best, "substring_name")
+
+        print(f"⚠️ Transport base '{clean_query}' not found anywhere. Flagging as invalid.")
+        return {"code": None, "name": clean_query, "type": None, "latitude": None, "longitude": None,
+                "valid": False, "match_type": "not_found"}
+
+    # ------------------------------------------------------------------
+    # TRANSPORT UPLOADS
+    # Confirmed against the real Swagger + real GET examples across 2 real
+    # suppliers/routes. See transport_matcher.py for how an existing
+    # transport is identified for an update - like Transfer, there is no
+    # human-assigned code, only a TC-generated id like "TRANSPORT-412579".
+    # Two-level structure: the main transport (this section) plus separate
+    # Option sub-resources, one per occupancy/passenger bracket (see the
+    # TRANSPORT OPTIONS section further below).
+    # ------------------------------------------------------------------
+    def get_transports(self, supplier_id: str) -> Dict[str, Any]:
+        """Executes GET /transport/{supplierId} — returns ALL transports for this supplier.
+        Used as the candidate pool for the departure/arrival matching fallback - see
+        transport_matcher.suggest_existing_transport_matches."""
+        url = f"{self.api_base_url}/transport/{supplier_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_transport(self, supplier_id: str, transport_id: str) -> Dict[str, Any]:
+        """Executes GET /transport/{supplierId}/{transportId} — returns one specific transport
+        (the parent record only - NOT its options, see get_transport_option)."""
+        url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /transport/{supplierId} — creates a new transport (the parent record
+        only). Travel Compositor assigns and returns the new 'id' in the response - remember it
+        via transport_matcher.remember_transport_id, then create one Option per occupancy
+        bracket via create_transport_option()."""
+        url = f"{self.api_base_url}/transport/{supplier_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """
+        Executes PUT /transport/{supplierId} — updates an EXISTING transport's parent record.
+        Like Transfer, the id is NOT in the URL path - it must be set on the payload's own 'id'
+        field. Does NOT touch options - see update_transport_option()/create_transport_option().
+        """
+        url = f"{self.api_base_url}/transport/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    # ------------------------------------------------------------------
+    # TRANSPORT OPTIONS  (one per occupancy/passenger bracket - see
+    # ContractTransportOptionVO's docstring in schemas.py for the confirmed
+    # additive-supplement pricing model)
+    # ------------------------------------------------------------------
+    def get_transport_option(self, supplier_id: str, transport_id: str, option_code: str) -> Dict[str, Any]:
+        """Executes GET /transport/{supplierId}/{transportId}/{optionCode} — returns one specific
+        occupancy-bracket option. Real option codes are NOT predictable from the route/bracket
+        (confirmed: "ASWHRG", "PraslinLaDigue12", and ones equal to the transport's own name all
+        seen in real data) - always iterate the parent's own optionCodes list rather than
+        guessing a code."""
+        url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}/{option_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /transport/{supplierId}/{transportId} — creates a new occupancy-bracket
+        option under an existing transport."""
+        url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes PUT /transport/{supplierId}/{transportId} — updates an EXISTING occupancy-
+        bracket option. Confirmed via Swagger: the option's own 'code' field in the payload body
+        identifies WHICH option gets updated (transportId in the URL just scopes to the parent
+        transport) - there is no optionCode in the PUT URL, unlike GET."""
+        url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):

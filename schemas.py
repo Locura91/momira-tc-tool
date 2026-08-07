@@ -561,3 +561,210 @@ class ContractTransferVO(BaseModel):
     supplements: List[TransferSupplementVO] = []  # MANDATORY charges only - see TransferSupplementVO's docstring
     stopSales: List[StopSale] = []
     additionalServices: List[TransferAdditionalServiceVO] = []  # OPTIONAL/on-request extras only
+
+
+# ==========================================
+# 7. TRANSPORT SCHEMAS
+# Confirmed field-by-field against the real Transport Swagger (Contract -
+# Transport: GET/POST/PUT /transport/{supplierId}, GET/POST/PUT
+# /transport/{supplierId}/{transportId}[/{optionCode}]) plus real GET
+# responses across 2 real suppliers/routes (Aswan-Hurghada CAR point-to-
+# point with 2 occupancy brackets, Praslin-La Digue COMBINED car+ferry+car
+# route with 4 occupancy brackets) confirmed 2026-08. See builder.py for
+# how DMC rate-sheet conventions (per-vehicle/per-passenger/per-occupancy
+# pricing, occupancy brackets as separate Option sub-resources) map onto
+# this shape.
+# ==========================================
+
+class TransportHumanPreConfig(BaseModel):
+    """Mirrors TransferHumanPreConfig - human-supplied config a Transport needs that isn't
+    extractable from the supplier document itself."""
+    supplier_id: str = Field(..., example="50696")
+    currency: str = Field(..., example="EUR")
+    days_available_before_release: int = Field(
+        5, description="Confirmed real field name is releaseContract; real values seen in live data range 5-14."
+    )
+
+
+class TransportSegmentVO(BaseModel):
+    """Confirmed real shape via ContractTransportSegmentVO. IMPORTANT: segments do NOT map
+    one-to-one to each physical leg of a multi-modal journey - a real COMBINED (car+public
+    ferry+car) route was still represented as a SINGLE segment covering the whole departure-to-
+    arrival span, with the individual legs only described in free text (datasheets.description),
+    not as structured per-leg data. durationTime is also NOT simply arrivalTime-minus-
+    departureTime - a real example showed a 6.5 hour departure-to-arrival window but a 1.5 hour
+    durationTime, suggesting durationTime tracks active travel time (e.g. just the ferry
+    crossing) while the full window includes waiting time between legs; never derive one from
+    the other. model/numService (vehicle/aircraft/train model, and service/flight number) were
+    blank in every CAR example but should be populated when a document states them (e.g. a real
+    flight/train number)."""
+    departureLocationCode: str  # a Transport Base code - see api_client.resolve_transport_base()
+    arrivalLocationCode: str
+    departureTime: str  # "HH:MM:SS"
+    arrivalTime: str  # "HH:MM:SS"
+    plusDays: int = 0
+    durationTime: Optional[str] = None
+    model: Optional[str] = None
+    numService: Optional[str] = None
+
+
+class TransportDataSheetVO(BaseModel):
+    """Shared shape for BOTH the main transport's per-language datasheets AND an option's per-
+    language translations (confirmed identical ContractTransportDataSheetVO type in the Swagger
+    for both). Only EN populated by this tool - Travel Compositor's own translation tooling
+    fills in the ~30 other languages afterward (confirmed via real examples). NOTE: real option
+    translations only ever populate `name`, never `description` - description is optional here
+    specifically to support that case without sending a meaningless empty string."""
+    name: str
+    description: Optional[str] = None
+
+
+class ContractTransportCancellationRangeVO(BaseModel):
+    """Confirmed real shape - unlike Transfer, Transport has a genuine structured cancellation
+    field (no text-only fallback needed here)."""
+    days: int = 30
+    percentage: float = 100.0  # REFUND %, same convention as CancellationRange/TicketCancellationRange
+    isBeforeStart: bool = True
+
+
+class LocalDateRangeVO(BaseModel):
+    """Confirmed real shape for an option's inventoryDate. CONFIRMED RULE (product owner):
+    "most of the inventory from Transfer and Transports will be automatically set to 2049, as
+    we want to make the products available at all time" - end defaults to the standing far-
+    future convention rather than being derived from the document."""
+    start: str
+    end: str = "2049-12-31"
+
+
+class ContractTransportOptionInventoryVO(BaseModel):
+    """Confirmed real shape. `quantity` has shown 0 in every real example seen so far - product
+    owner confirmed the inventory DATE range is what actually matters (the 2049 "always
+    available" convention); quantity's precise operational meaning is unconfirmed but
+    consistently 0, so that's used as the safe default rather than guessing at something else."""
+    inventoryDate: LocalDateRangeVO
+    quantity: int = 0
+
+
+class ContractTransportOptionPriceVO(BaseModel):
+    """Confirmed real shape AND semantics (product owner, corrected from an initial wrong guess):
+    these are ADDITIVE SURCHARGES on top of the parent ContractTransportVO's base price fields,
+    NOT alternate/override rates - final price for this bracket = parent's baseAdultPrice (etc)
+    + this entry's adultPriceSupplement (etc). A bracket that costs exactly the base rate simply
+    has NO price entries at all (confirmed via a real 2-9 pax bracket with prices=[]), rather
+    than a redundant entry equal to the base. CONFIRMED: no reliable formula/curve exists between
+    different brackets' supplements (a real 4-bracket example showed 64/43/64/43, non-monotonic)
+    - never interpolate or derive one bracket's supplement from another; always take the
+    document's own stated number for that specific bracket."""
+    name: Optional[str] = None
+    startDate: str
+    endDate: str = "2049-12-31"
+    adultPriceSupplement: float = 0.0
+    childrenPriceSupplement: float = 0.0
+    infantPriceSupplement: float = 0.0
+    adultRTPriceSupplement: float = 0.0
+    childrenRTPriceSupplement: float = 0.0
+    infantRTPriceSupplement: float = 0.0
+
+
+class ContractTransportOptionVO(BaseModel):
+    """Main Option payload (a single occupancy/passenger bracket) - confirmed field-by-field
+    against real Swagger + 4 real GET /transport/{supplierId}/{transportId}/{optionCode}
+    examples across 2 transports. CONFIRMED STRUCTURE (product owner): per-occupancy pricing for
+    Transport is modelled as SEPARATE OPTION SUB-RESOURCES, one per bracket, each with its own
+    minPassengers/maxPassengers range and price supplement(s) - NOT an array field on the parent
+    the way Transfer's pricesByOccupancy works. Real option codes are NOT predictable/derivable
+    from the route name (confirmed real examples: "ASWHRG", "PraslinLaDigue12" alongside ones
+    that literally equal the transport's own name) - this tool generates its own codes on create.
+    cabinClassType defaults to ECONOMY even for non-flight transports (confirmed real CAR
+    example) - it's a generic service-tier field, not literally about airline cabins.
+    baggageAllowance/baggageAllowanceType and agencyId have never been populated in any real
+    example seen - left as optional pass-through fields rather than guessed at."""
+    code: str
+    active: bool = True
+    cabinClassType: str = "ECONOMY"  # BUSINESS/FIRST/PREMIUM_ECONOMY/ECONOMY/PREFERRED/TOURIST_PLUS/TOURIST
+    baggageAllowance: Optional[str] = None
+    baggageAllowanceType: Optional[str] = None  # KG/PC
+    minPassengers: int = 1
+    maxPassengers: int = 1
+    onRequest: bool = False
+    agencyId: Optional[str] = None
+    prices: List[ContractTransportOptionPriceVO] = []
+    inventories: List[ContractTransportOptionInventoryVO] = []
+    translations: Dict[str, TransportDataSheetVO] = {}
+
+
+# CONFIRMED REAL DEFAULT (product owner): same pattern already established for Ticket's
+# product_types ("Engines") field - a curated fixed list, never AI-extracted from the source
+# document. Strong evidence this specific list is the platform default rather than something
+# that varies per-transport: two completely different real transports (different suppliers,
+# different routes, different transportType - CAR vs COMBINED) both showed this EXACT same list.
+_TRANSPORT_DEFAULT_PRODUCT_TYPES = [
+    "ONLY_FLIGHT", "ONLY_TRAIN", "FLIGHT_HOTEL", "FLIGHT_HOUSE", "MULTI",
+    "GOLF", "MAGIC_BOX", "ROUTING", "CRUISES", "TRIP_PLANNER",
+]
+
+
+class ContractTransportVO(BaseModel):
+    """Main Transport payload - confirmed field-by-field against real Swagger + real
+    GET /transport/{supplierId}[/{transportId}] examples across 2 suppliers/routes.
+
+    KEY DIFFERENCE from ClosedTour/Ticket: like Transfer, Travel Compositor assigns 'id' itself
+    (format "TRANSPORT-412579") - there is no human-assigned code, so recognizing which existing
+    transport to update on a rate refresh needs the same app-tracked-id + route-similarity
+    matching strategy as transfer_matcher.py - see transport_matcher.py.
+
+    ALSO KEY DIFFERENCE: PUT /transport/{supplierId} does NOT take the id in the URL path (same
+    as Transfer) - the id must be set on this payload's own 'id' field for an update.
+
+    airlineCode is marked REQUIRED in the Swagger (even for non-flight transportTypes like CAR/
+    COMBINED) but was ABSENT from every real GET example seen, including CAR/COMBINED ones -
+    defaulted to "" here since no real example clarifies what a non-flight transport should send;
+    flag this if a real create/update is ever rejected specifically for this field.
+
+    minChildAge/maxChildAge/minInfantAge/maxInfantAge default to 2/11/0/2 here (NOT the 2/12
+    convention used elsewhere in this app for ClosedTour/Ticket) - confirmed real value in both
+    real Transport examples seen.
+    """
+    active: bool = True
+    id: Optional[str] = None
+    name: str
+    airlineCode: str = ""
+    segments: List[TransportSegmentVO]
+    transportType: str = "CAR"  # CAR/PLANE/COMBINED confirmed real+placeholder values; full enum (8 values) unconfirmed
+    datasheets: Dict[str, TransportDataSheetVO]
+    images: List[str] = []
+    productTypes: List[str] = _TRANSPORT_DEFAULT_PRODUCT_TYPES.copy()
+    pricePerPax: bool = True
+    currency: str = "EUR"
+    vehiclePrice: float = 0.0
+    baseAdultPrice: float = 0.0
+    baseChildrenPrice: float = 0.0
+    baseInfantPrice: float = 0.0
+    baseAdultRTPrice: float = 0.0
+    baseChildrenRTPrice: float = 0.0
+    baseInfantRTPrice: float = 0.0
+    adultTaxesAmount: float = 0.0
+    childrenTaxesAmount: float = 0.0
+    infantTaxesAmount: float = 0.0
+    adultRTTaxesAmount: float = 0.0
+    childrenRTTaxesAmount: float = 0.0
+    infantRTTaxesAmount: float = 0.0
+    startDate: str
+    endDate: str
+    releaseContract: int = 5
+    operationalDays: List[str] = WEEKDAY_NAMES.copy()
+    optionCodes: List[str] = []
+    onlyHolidayPackage: bool = False
+    showInTransportQuotasLanding: bool = False
+    minChildAge: int = 2
+    maxChildAge: int = 11
+    minInfantAge: int = 0
+    maxInfantAge: int = 2
+    allowOWPrice: bool = True
+    allowRTPrice: bool = False  # RT deprioritized (product owner) - no real example has RT enabled
+    minStayNights: int = 0
+    maxStayNights: int = 0
+    combinableAsInboundRTPrice: bool = False
+    companyName: str = ""
+    cancellationRanges: List[ContractTransportCancellationRangeVO] = [ContractTransportCancellationRangeVO()]
+    combinableRtContracts: List[str] = []
