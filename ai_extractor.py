@@ -2138,3 +2138,226 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
         data["description"] = f"{data['description']}\n\n{data['additional_notes']}".strip() if data.get("description") else data["additional_notes"]
 
     return data
+
+
+# ==========================================
+# HOTEL EXTRACTION
+# Confirmed against the real Contract Hotel Swagger + 2 real GET pulls for a
+# live hotel (CAI-H1, Four Seasons Hotel Cairo at Nile Plaza, supplier
+# 48940) - see schemas.py's HOTEL SCHEMAS section and builder.py's HOTEL
+# BUILDER section for every confirmed business rule and flagged assumption
+# this prompt is written to satisfy.
+# ==========================================
+
+HOTEL_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor HOTEL contract
+from a DMC supplier rate sheet/tariff document. Translate ALL content to English regardless of source language.
+
+CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+directly. Momira Travel is the tour operator the client actually deals with - the client must NEVER be told
+to contact the DMC/supplier directly. Silently drop/omit any such text wherever it could appear.
+
+A hotel contract document typically describes: the property itself, one or more ROOM TYPES (each with which
+adult+children occupancy combinations are allowed), MEAL PLANS (room-only, breakfast, half board, etc, each
+usually a per-night add-on cost), optional OFFERS (discounts) and SUPPLEMENTS (extra charges), and one or more
+RATE groups, each containing SEASONS (date ranges) with per-room-type pricing for that season, plus any
+STOP SALES (blackout dates for a specific room).
+
+=== HOTEL-LEVEL FIELDS ===
+- hotelname: the property's name exactly as stated.
+- category: star rating or category exactly as stated (e.g. "5 STARS", "4*"). Empty if not stated.
+- chain: the hotel chain/brand name if stated (e.g. "Four Seasons"). Empty if not stated.
+- address: {"address": street address, "location_name": city/area, "postal_code": "", "country": "" (2-letter
+  ISO code if determinable, else the country name as stated), "phone": "", "fax": "", "email": ""}. Leave any
+  sub-field empty if not stated - do not invent contact details.
+- latitude, longitude: only if the document genuinely states coordinates. null otherwise - do NOT estimate.
+- description: 2-4 factual plain-English sentences describing the property, drawn only from what the document
+  actually says.
+- images: list of any image URLs the document/source explicitly provides. Empty list if none.
+- infants_allowed: the maximum number of infants allowed per booking/room, if the document states a capacity
+  number. If not stated, use 2 as a reasonable default (a human reviews this before publish).
+- min_children_age, max_children_age: CONFIRMED this API only supports ONE combined age range covering both
+  infants and children together (not two separate bands). If the document gives a single explicit children age
+  range, use it. If it gives no explicit range, default to 0 and 12.
+- minimum_stay, maximum_stay, release_days: hotel-level defaults for these, only if the document states hotel-
+  wide values distinct from what's stated per-season below (per-season values take precedence there). Leave
+  null if not stated at this level.
+- cancellation_policy_tiers: whenever the document states its OWN specific cancellation-fee schedule, extract
+  EVERY tier as {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the
+  cancellation FEE percentage, exactly as stated - a fee/charge percentage, NOT a refund percentage>}. If the
+  document states NO specific cancellation terms, return an EMPTY list - do not invent one.
+- cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy as a short,
+  clear, human-readable plain-text summary. Leave empty whenever cancellation_policy_tiers is empty. NOTE:
+  Hotel has NO separate structured cancellation field on the record itself - this text is what customer/staff
+  ultimately see, so capture the real policy carefully.
+
+=== ROOMS ===
+"rooms": one entry per distinct room type (e.g. "Superior Room", "Premium Superior Room", "Deluxe Sea View"):
+  {"name": "", "type_id": null, "distributions": [{"adults": <int>=1, "children": <int>=0}, ...]}
+distributions = every ALLOWED adult+children occupancy combination for that room, exactly as the document's own
+occupancy table/grid states (e.g. a table with columns "1 Adult", "2 Adults", "2 Adults + 1 Child" becomes
+three distribution entries: {"adults":1,"children":0}, {"adults":2,"children":0}, {"adults":2,"children":1}).
+Do NOT invent combinations the document doesn't show pricing/availability for. type_id: always null - there is
+no known master-list reference for this field, never invent one.
+
+=== MEAL PLANS ===
+"meal_plans": one entry per DISTINCT meal plan the document prices as an add-on (do NOT create a "Room Only"
+entry yourself - that is always added automatically downstream at 0 cost):
+  {"meal_plan_hint": "" (the plan name as the document states it, e.g. "Breakfast", "Half Board", "All
+   Inclusive" - will be mapped onto Travel Compositor's fixed 5-value list downstream),
+   "base_price": <the cost for the 1st adult>,
+   "adult_prices": [<cost for each ADDITIONAL adult beyond the first, in order - 2nd adult, 3rd adult, ...>],
+   "child_prices": [<cost for each child, in order - 1st child, 2nd child, ...>]}
+Only extract a meal plan the document actually prices as an addition to the room rate - if the document's room
+rates already include a meal plan (e.g. "rate is All Inclusive"), still create one entry for it but with
+base_price/adult_prices/child_prices all 0 (already included, no extra add-on cost), and note this in the
+top-level description so a human reviewer understands the room rate already includes it.
+
+=== OFFERS (discounts) and SUPPLEMENTS (extra charges) ===
+Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - those are offer-only):
+  {"name": "" (short human label, e.g. "10% Discount when staying 3+ nights", "Resort Fee"),
+   "type": "PERCENT" | "ABSOLUTE" | "STAY_TO_PAY" (offers only),
+   "apply": one of "LODGING" | "MEAL" | "LODGING_AND_MEAL" | "PER_NIGHT" | "PER_NIGHT_PERSON" | "PER_STAY" |
+     "PER_STAY_PERSON" - pick whichever single value best matches how the document phrases it (e.g. a flat
+     per-night-per-person resort fee -> "PER_NIGHT_PERSON"; a straightforward room-rate percentage discount ->
+     "LODGING"),
+   "value": <percentage or absolute amount, matching "type">, "child_value": <same, for children, if stated>,
+   "stay": <int, only for STAY_TO_PAY, e.g. 7 for "stay 7">, "pay": <int, only for STAY_TO_PAY, e.g. 6 for "pay 6">,
+   "release_days": null, "minimum_stay": null, "maximum_stay": null,
+   "minimum_adults": null, "maximum_adults": null, "minimum_childrens": null, "maximum_childrens": null,
+   "travel_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the stay-date window this applies to),
+   "booking_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the window during which this must be BOOKED, if the document states a booking deadline separate from the stay window),
+   "room_names": [] (which room type name(s), from the "rooms" list above, this applies to - empty if it applies to all rooms),
+   "meal_plans": [], "operational_days": []}
+Only fill numeric constraint fields (minimum_stay, minimum_adults, etc) when the document genuinely states that
+constraint for this specific offer/supplement - leave null otherwise, never invent a constraint.
+IMPORTANT - COMBINABLE OFFERS: if a document describes an offer combining MULTIPLE conditions (e.g. "stay 3
+pay 2, valid for stays Oct 1-19, must book within 2 weeks of stay"), extract that as ONE offer entry using
+type="STAY_TO_PAY", stay=3, pay=2, travel_windows=[{Oct 1-19 dates}], booking_windows=[the 2-week booking
+deadline, computed relative to the travel window if the document gives it as a relative rule].
+
+=== RATES, SEASONS, and ROOM PRICES ===
+"rates": Travel Compositor groups pricing under named "rate" containers (e.g. "Standard Rates", "Peak Season
+Contract") - if the document doesn't explicitly name separate rate groups, use ONE rate entry named after the
+hotel/contract itself:
+  {"name": "", "minimum_stay": 1, "maximum_stay": null, "release_days": null,
+   "booking_windows": [], "offer_names": [] (names from "offers" above that apply to this rate),
+   "supplement_names": [] (names from "supplements" above that apply to this rate),
+   "seasons": [...], "stop_sales": [...]}
+
+"seasons" (within a rate): one entry per date-range/pricing period the document defines:
+  {"name": "" (the document's own season label, e.g. "Summer 2026", "Low Season" - invent a short descriptive
+   name like "Season 1" only if the document genuinely gives none),
+   "date_ranges": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (can be multiple non-contiguous ranges if the
+   document groups them under one price table),
+   "price_type": "DISTRIBUTION" (the normal case - one flat price per adult+children occupancy combination, as
+   in a typical rate grid) or "PAX" (only if the document genuinely prices per-person with a base rate plus
+   incremental extra-person charges, not a full occupancy grid),
+   "minimum_stay": 1, "maximum_stay": null, "release_days": null,
+   "meal_plans": [] (only if THIS season's meal-plan prices differ from the hotel-level ones above - same
+   shape as top-level meal_plans; leave empty to just use the hotel-level ones),
+   "room_prices": [...]}
+
+"room_prices" (within a season): one entry per room type priced in this season:
+  {"room_name": "" (must match a name from "rooms" above),
+   "units_quota": <int> (how many rooms are allotted - if the document doesn't state a number, use 20),
+   "units_on_request": <int> (how many additional rooms are available on-request only - if not stated, use 0),
+   "distribution_prices": [{"adults": <int>, "children": <int>, "amount": <the ACTUAL FINAL price for exactly
+     this adults+children combination, exactly as the document states it>}, ...],
+   "base_price": 0.0, "adult_prices": [], "child_prices": []}
+CRITICAL: extract distribution_prices LITERALLY, one entry per adults+children combination the document
+actually prices - NEVER assume a formula or fixed increment between different occupancy combinations (real
+contracts have shown non-monotonic, irregular differences between brackets). Only use base_price/adult_prices/
+child_prices instead of distribution_prices when price_type is genuinely "PAX" for that season.
+
+=== STOP SALES ===
+"stop_sales" (within a rate): blackout date ranges for a specific room, if the document mentions any:
+  {"room_name": "" (must match a name from "rooms" above), "date_ranges": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}]}
+Leave this list empty if the document states no blackout/stop-sale dates - do not invent any.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "hotelname": "", "category": "", "chain": "",
+  "address": {"address": "", "location_name": "", "postal_code": "", "country": "", "phone": "", "fax": "", "email": ""},
+  "latitude": null, "longitude": null, "description": "", "images": [],
+  "infants_allowed": 2, "min_children_age": 0, "max_children_age": 12,
+  "minimum_stay": null, "maximum_stay": null, "release_days": null,
+  "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+  "rooms": [{"name": "", "type_id": null, "distributions": []}],
+  "meal_plans": [{"meal_plan_hint": "", "base_price": 0.0, "adult_prices": [], "child_prices": []}],
+  "offers": [],
+  "supplements": [],
+  "rates": [{"name": "", "minimum_stay": 1, "maximum_stay": null, "release_days": null,
+             "booking_windows": [], "offer_names": [], "supplement_names": [],
+             "seasons": [{"name": "", "date_ranges": [], "price_type": "DISTRIBUTION",
+                          "minimum_stay": 1, "maximum_stay": null, "release_days": null, "meal_plans": [],
+                          "room_prices": [{"room_name": "", "units_quota": 20, "units_on_request": 0,
+                                           "distribution_prices": [], "base_price": 0.0, "adult_prices": [], "child_prices": []}]}],
+             "stop_sales": []}]
+}"""
+
+
+def detect_hotel_products(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """
+    Checks whether the source describes MULTIPLE distinct hotel properties (rather than the far
+    more common case of one document = one hotel) - e.g. a DMC's combined rate sheet covering
+    several properties. Mirrors detect_transport_products'/detect_transfer_products' contract for
+    the existing batch/queue review UI pattern. Returns an empty list if only one hotel is found,
+    or a list of {"label", "hotelname_hint"} dicts.
+    """
+    prompt = """You are scanning a DMC supplier document to identify whether it describes MULTIPLE DISTINCT
+HOTEL PROPERTIES (not multiple room types or rate seasons within ONE hotel - those all belong to the same
+hotel record) - e.g. a combined rate sheet covering several different hotels.
+
+Output ONLY valid JSON, no markdown fences, no explanation:
+{"multiple_hotels": true or false, "hotels": [{"label": "...", "hotelname_hint": "..."}]}
+If there is genuinely only one hotel property described in the whole document (the overwhelmingly common
+case - most documents describe just one property's rooms/rates/offers), set "multiple_hotels": false and
+"hotels": [] ."""
+    print("🔎 Checking for multiple distinct hotel properties in this document...")
+    result = _call_claude(prompt, raw_text, model, max_tokens=1024)
+    hotels = result.get("hotels", []) if result.get("multiple_hotels") else []
+    if hotels:
+        print(f"⚠️ Detected {len(hotels)} distinct hotel propert(ies): {[h.get('label') for h in hotels]}")
+    else:
+        print("✅ Only one hotel property detected.")
+    return hotels
+
+
+def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint: str = None,
+                        human_hint: str = None) -> dict:
+    """Full extraction for one Hotel contract - hotel fields, rooms, meal plans, offers,
+    supplements, and rates (with nested seasons/room_prices/stop_sales). See
+    HOTEL_EXTRACTION_SYSTEM_PROMPT for the full field-by-field extraction contract, and
+    builder.py's build_hotel_contract_payload/build_hotel_offer_payloads/
+    build_hotel_supplement_payloads/build_hotel_rate_payloads for how this shape is consumed."""
+    user_content = raw_text
+    prefix_parts = []
+    if hotel_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE distinct hotel properties. "
+            f"Extract ONLY the following one, pulling in every room/rate/offer/supplement detail that belongs "
+            f"to it specifically, and completely ignore every other property described elsewhere in the "
+            f"text: {hotel_hint}"
+        )
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(HOTEL_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+
+    defaults = {
+        "hotelname": "", "category": "", "chain": "",
+        "address": {}, "latitude": None, "longitude": None, "description": "", "images": [],
+        "infants_allowed": 2, "min_children_age": 0, "max_children_age": 12,
+        "minimum_stay": None, "maximum_stay": None, "release_days": None,
+        "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+        "rooms": [], "meal_plans": [], "offers": [], "supplements": [], "rates": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+
+    data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
+
+    return data

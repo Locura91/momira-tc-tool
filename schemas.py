@@ -768,3 +768,319 @@ class ContractTransportVO(BaseModel):
     companyName: str = ""
     cancellationRanges: List[ContractTransportCancellationRangeVO] = [ContractTransportCancellationRangeVO()]
     combinableRtContracts: List[str] = []
+
+
+# ==========================================
+# 8. HOTEL SCHEMAS
+# Confirmed field-by-field against the real Hotel Swagger (Contract - Hotel:
+# GET/POST /hotel/{supplierId}, GET /hotel/{supplierId}/{providerCode}, PUT
+# /hotel/{supplierId}, POST /hotel/mealplan|offer|rates|room|supplement/
+# {supplierId}/{providerCode}, PUT /hotel/rates/{supplierId}/{providerCode})
+# plus a real GET response for a live hotel (CAI-H1 / Four Seasons Hotel
+# Cairo at Nile Plaza, supplier 48940) pulled twice.
+#
+# STRUCTURE, unlike every other product type built so far: ONE parent hotel
+# record (created via POST/PUT /hotel/{supplierId}, carrying its rooms[] and
+# mealPlans[] inline) plus THREE separate sibling sub-resource families -
+# Offers and Supplements (both CREATE-ONLY, no PUT endpoint confirmed to
+# exist - see their docstrings below) and Rates (which DOES have both POST
+# and PUT, and itself nests Seasons, which nest per-room Distribution
+# pricing AND per-room Stop Sales).
+# ==========================================
+class HotelHumanPreConfig(BaseModel):
+    """Mirrors TransportHumanPreConfig/TransferHumanPreConfig - human-supplied config a Hotel
+    needs that isn't extractable from the supplier document itself. Unlike Transport, a HOTEL's
+    providerCode is human-assigned (confirmed real example: "CAI-H1"), not Travel Compositor-
+    generated - so it's supplied here up front rather than coming back from a create call."""
+    supplier_id: str = Field(..., example="48940")
+    provider_code: str = Field(..., example="CAI-H1", description="Human-assigned hotel code (confirmed real format like 'CAI-H1'). Required for every call - GET/POST/PUT all key off this.")
+    currency: str = Field(..., example="USD")
+    days_available_before_release: int = Field(7, description="Confirmed real field name is releaseDays; real value seen in live data was 7.")
+
+
+class HotelAddressVO(BaseModel):
+    """Confirmed real shape via HotelAddressVO."""
+    address: Optional[str] = None
+    locationName: Optional[str] = None
+    postalCode: Optional[str] = None
+    country: Optional[str] = None
+    phone: Optional[str] = None
+    fax: Optional[str] = None
+    email: Optional[str] = None
+
+
+class TranslationVO(BaseModel):
+    """Confirmed real shape - {language, description} pairs, used for the Hotel's own
+    descriptions/voucherRemarks AND for Offer/Supplement 'names'. Only EN populated by this
+    tool, same convention as every other product type - Travel Compositor's own translation
+    tooling fills in the ~40 other languages afterward."""
+    language: str = "EN"  # confirmed 40-value enum (EN, EN_IE, EN_US, ES, IT, FR, PT, PT_BR, AR, RO, EL, FI, DE, NL, SV, ZH, ZH_TW, RU, HU, FA, PL, CA, BG, JA, MS, NO, TR, SK, SL, CS, HR, AZ, HE, DA, TH, SQ, KA, SR, UZ, EU) - loose string, not strictly validated, same convention as Currency/DayOfWeek elsewhere in this app
+    description: str = ""
+
+
+class ContractRoomDistributionVO(BaseModel):
+    """Confirmed real shape - an ALLOWED occupancy combination for a room (no price attached -
+    see ContractRoomDistributionPriceVO for the priced version used in seasonRoomPrices). Matches
+    the on/off grid in Travel Compositor's own 'Distribution allowed' room UI."""
+    adults: int = Field(..., ge=1)
+    children: int = Field(0, ge=0)
+
+
+class ContractRoomVO(BaseModel):
+    """Confirmed real shape via ContractRoomVO (both the POST /hotel/room body and the nested
+    rooms[] entries on the hotel itself). Only 'distributions' is actually required in the
+    Swagger (marked with *) - name/typeId/providerCode are all optional, and a real live example
+    (Four Seasons Hotel Cairo) had typeId completely unset on both its real rooms, confirming
+    it's safe to omit rather than guess at a value.
+
+    providerCode: CONFIRMED (product owner) - unlike the HOTEL's own providerCode (human-
+    assigned), a ROOM's providerCode is system-generated (real examples: "AUTO_jr9fFXzBSX1YlVmT
+    LVOw8PuP") - "I don't set any other AUTO code to it." Leave unset on create and capture
+    whatever Travel Compositor assigns back for our own tracking (see hotel_matcher.py) - never
+    invent one ourselves.
+
+    typeId: optional passthrough (string) - no confirmed master-list reference found in either
+    Swagger group explored (Contract Hotel or Web Content Accommodations); left None unless a
+    document/human gives us something concrete to put there."""
+    name: Optional[str] = None
+    typeId: Optional[str] = None
+    providerCode: Optional[str] = None
+    distributions: List[ContractRoomDistributionVO]
+
+
+class ContractMealPlanVO(BaseModel):
+    """Confirmed real shape. mealPlan is a fixed 5-value enum (ROOM_ONLY, BED_AND_BREAKFAST,
+    HALF_BOARD, FULL_BOARD, ALL_INCLUSIVE) - document meal-plan wording gets mapped onto these
+    rather than passed through as free text.
+
+    CONFIRMED REAL RULE (product owner): "If no other stated, the Room only is always taken as 0
+    money, many hotel say breakfast optional and then we must add the breakfast per night to the
+    meal plan on the top of the 0 money." -> ROOM_ONLY always basePrice=0/adultPrices=[]/
+    childPrices=[]; any other plan is a genuine per-night add-on cost.
+
+    ASSUMPTION, NOT independently confirmed against a real populated example (flagged, same as
+    Transport's airlineCode): basePrice = the cost for the 1st adult, and adultPrices[i]/
+    childPrices[i] = the incremental cost for each ADDITIONAL adult/child beyond the first (index
+    0 = 2nd adult, index 1 = 3rd adult, etc; childPrices index 0 = 1st child, index 1 = 2nd
+    child). Verify against a real populated meal-plan example before relying on this for a live
+    upload with non-zero add-on prices."""
+    mealPlan: str  # ROOM_ONLY / BED_AND_BREAKFAST / HALF_BOARD / FULL_BOARD / ALL_INCLUSIVE
+    basePrice: float = 0.0
+    adultPrices: List[float] = []
+    childPrices: List[float] = []
+
+
+class ContractRoomDistributionPriceVO(BaseModel):
+    """Confirmed real shape - the PRICED counterpart to ContractRoomDistributionVO, used inside
+    seasonRoomPrices.distributionPrices for the DISTRIBUTION pricing model. CONFIRMED (product
+    owner): the suspiciously perfect arithmetic seen between brackets in the one real example
+    pulled (+200/adult, +100/child) is DEMO DATA ONLY, not a real pricing formula - "distribution
+    Price is just for Demo." Same discipline as Transport's occupancy brackets: every amount must
+    be extracted literally from the real document, never interpolated from a pattern."""
+    amount: float
+    adults: int
+    children: int = 0
+
+
+class ContractHotelSeasonPricesVO(BaseModel):
+    """Confirmed real shape - one entry per ROOM within a season (providerRoomCode links back to
+    a ContractRoomVO). CONFIRMED REAL DEFAULTS (product owner): "Quota means how many rooms we
+    are having allotments (if nothing mentioned please make 20 Quota and if no request set,
+    please leave on request 0)."
+
+    basePrice/adultPrices/childPrices here are for the PAX pricing model (priceType=PAX on the
+    parent season) - UNCONFIRMED against a real populated example (every real season pulled used
+    DISTRIBUTION pricing) - same nth-additional-occupant indexing assumption as ContractMealPlanVO
+    applies here if PAX pricing is ever used; flag and verify before relying on it."""
+    unitsQuota: int = 20
+    unitsOnRequest: int = 0
+    providerRoomCode: str
+    distributionPrices: List[ContractRoomDistributionPriceVO] = []
+    basePrice: float = 0.0
+    adultPrices: List[float] = []
+    childPrices: List[float] = []
+
+
+class ContractHotelSeasonVO(BaseModel):
+    """Confirmed real shape. dateRanges supports multiple non-contiguous ranges under one season
+    (confirmed real example: a single season covering both Oct 1-8 AND Oct 15-Jan 31). CONFIRMED
+    BY OMISSION: there is no operationalDays/checkInDays/checkOutDays field anywhere on this VO
+    (only Offer/Supplement carry operationalDays) - any day-of-week restriction mentioned in a
+    document has nowhere structured to go here and should be folded into descriptive text
+    instead, same treatment as Transport's unstructured surcharge notes."""
+    id: Optional[int] = None  # server-assigned - omit on create, supply the existing value to update in place
+    name: str
+    dateRanges: List[LocalDateRangeVO]
+    mealPlans: List[ContractMealPlanVO] = []
+    seasonRoomPrices: List[ContractHotelSeasonPricesVO] = []
+    releaseDays: Optional[int] = None
+    minimumStay: int = 1
+    maximumStay: Optional[int] = None
+    priceType: str = "DISTRIBUTION"  # PAX / DISTRIBUTION - confirmed 2-value enum
+
+
+class ContractHotelRoomStopSalesVO(BaseModel):
+    """Confirmed real shape via a real populated example (stop sales for 'Superior Room' and
+    'Premium Superior Room', each with their own blackout date ranges). IMPORTANT UNRESOLVED GAP
+    (jointly flagged with the product owner): roomId is a numeric id that is NEVER returned
+    anywhere by the Contract Hotel API - not in the room creation response, not in the room's own
+    representation nested inside the full hotel GET - it only ever appears inside an ALREADY-
+    EXISTING stopSales entry. Neither roomId nor roomName is marked required in the Swagger
+    (unlike distributions* on the room itself), which is the basis for this tool's working
+    assumption: submit stop-sales using roomName ONLY (which this tool always has, since it's the
+    name chosen at room-creation time) and leave roomId unset, trusting Travel Compositor resolves
+    the match server-side. THIS IS UNCONFIRMED AND NEEDS A LIVE VALIDATION TEST before being
+    relied on for a real upload - if rejected, stop-sales needs a different resolution path."""
+    roomId: Optional[int] = None
+    roomName: Optional[str] = None
+    stopSales: List[LocalDateRangeVO] = []
+
+
+class ContractHotelRateVO(BaseModel):
+    """Confirmed real shape via real Swagger + a real populated GET example. CONFIRMED REAL RULE
+    (product owner): "No deleting needed for rates, if the time window is closed, it is done then
+    and it cant be sold anymore, so no harm if not deleted." - same date-bounded self-expiry
+    reasoning already established for Transfer/Transport being exempt from the active:false
+    staleness rule, just via a different mechanism (date-bounded here, vs flexible vehicle
+    booking there) - no deactivation logic needed for rates/seasons.
+
+    id: server-assigned integer - omit on create (POST /hotel/rates), supply the existing value
+    to update in place (PUT /hotel/rates).
+
+    offers/supplements here are just PROVIDER CODE STRINGS (confirmed real example: "AUTO_ziuMTf
+    6PqnyO1w1DspPPxkaQ") referencing Offers/Supplements already registered at the HOTEL level
+    (see ContractHotelOffersVO/ContractHotelSupplementVO) - a rate does not define its own
+    offer/supplement content, it only links to ones that already exist."""
+    id: Optional[int] = None
+    name: str
+    bookingWindows: List[LocalDateRangeVO] = []
+    seasons: List[ContractHotelSeasonVO] = []
+    offers: List[str] = []
+    supplements: List[str] = []
+    stopSales: List[ContractHotelRoomStopSalesVO] = []
+    releaseDays: Optional[int] = None
+    minimumStay: int = 1
+    maximumStay: Optional[int] = None
+
+
+class ContractHotelOffersVO(BaseModel):
+    """Confirmed real shape via real Swagger + a real populated example ("10% Discount when stay
+    3 or more days"). CONFIRMED NO PUT ENDPOINT EXISTS (only POST /hotel/offer/{supplierId}/
+    {providerCode}) - offers are create-only. Since every offer is itself date-bounded
+    (travelWindows/bookingWindows), the same self-expiry reasoning as Rates applies: a fresh
+    document's offers are always created anew rather than update-matched against existing ones;
+    this tool does light dedup (by names[0].description) purely to avoid re-creating an
+    identical-looking offer within the same run, not a true update path.
+
+    type: PERCENT / ABSOLUTE / STAY_TO_PAY (confirmed 3-value enum) - stay/pay only populated for
+    STAY_TO_PAY, value/childValue only for PERCENT/ABSOLUTE.
+
+    apply: confirmed 7-value enum (LODGING, MEAL, LODGING_AND_MEAL, PER_NIGHT, PER_NIGHT_PERSON,
+    PER_STAY, PER_STAY_PERSON) mixing TWO dimensions (what it applies to vs how it's calculated)
+    into one flat field - which of the 7 is correct depends entirely on how the specific document
+    phrases the offer, not something derivable from a formula.
+
+    providerCode: system-generated (AUTO_... - same convention as ContractRoomVO), never set by
+    this tool on create."""
+    providerCode: Optional[str] = None
+    type: str  # PERCENT / ABSOLUTE / STAY_TO_PAY
+    apply: str  # LODGING / MEAL / LODGING_AND_MEAL / PER_NIGHT / PER_NIGHT_PERSON / PER_STAY / PER_STAY_PERSON
+    releaseDays: Optional[int] = None
+    minimumStay: Optional[int] = None
+    maximumStay: Optional[int] = None
+    minimumAdults: Optional[int] = None
+    maximumAdults: Optional[int] = None
+    minimumChildrens: Optional[int] = None
+    maximumChildrens: Optional[int] = None
+    stay: Optional[int] = None
+    pay: Optional[int] = None
+    value: float = 0.0
+    childValue: float = 0.0
+    names: List[TranslationVO] = []
+    travelWindows: List[LocalDateRangeVO] = []
+    bookingWindows: List[LocalDateRangeVO] = []
+    providerRoomCodes: List[str] = []
+    mealPlans: List[str] = []
+    operationalDays: List[str] = WEEKDAY_NAMES.copy()
+
+
+class ContractHotelSupplementVO(BaseModel):
+    """Confirmed real shape via real Swagger + a real populated example ("Special Event Charge").
+    Same create-only / no-PUT-endpoint situation as Offers - see ContractHotelOffersVO's
+    docstring, identical reasoning applies here.
+
+    type: PERCENT / ABSOLUTE (confirmed 2-value enum - no STAY_TO_PAY option for supplements,
+    unlike offers, since a supplement is always a straightforward extra charge).
+    apply: same confirmed 7-value enum as Offers."""
+    providerCode: Optional[str] = None
+    type: str  # PERCENT / ABSOLUTE
+    apply: str  # LODGING / MEAL / LODGING_AND_MEAL / PER_NIGHT / PER_NIGHT_PERSON / PER_STAY / PER_STAY_PERSON
+    releaseDays: Optional[int] = None
+    minimumStay: Optional[int] = None
+    maximumStay: Optional[int] = None
+    minimumAdults: Optional[int] = None
+    maximumAdults: Optional[int] = None
+    minimumChildrens: Optional[int] = None
+    maximumChildrens: Optional[int] = None
+    value: float = 0.0
+    childValue: float = 0.0
+    names: List[TranslationVO] = []
+    travelWindows: List[LocalDateRangeVO] = []
+    bookingWindows: List[LocalDateRangeVO] = []
+    providerRoomCodes: List[str] = []
+    mealPlans: List[str] = []
+    operationalDays: List[str] = WEEKDAY_NAMES.copy()
+
+
+class ContractHotelVO(BaseModel):
+    """Main Hotel payload - confirmed field-by-field against the real Swagger (ContractHotel
+    DetailedVO for POST/PUT /hotel/{supplierId}) + 2 real GET pulls for a live hotel (CAI-H1,
+    Four Seasons Hotel Cairo at Nile Plaza, supplier 48940).
+
+    KEY DIFFERENCE from every other product type: providerCode is HUMAN-ASSIGNED (confirmed:
+    "CAI-H1"), not Travel Compositor-generated. So unlike Transfer/Transport, there's no id-in-
+    body update quirk and no route-similarity matching needed to recognize an existing hotel -
+    providerCode itself, supplied up front via HotelHumanPreConfig, is the stable identifier for
+    both create and update.
+
+    rooms/mealPlans are INLINE on this record (confirmed required, min 1 item each in the
+    Swagger) - unlike Offers/Supplements/Rates, which are separate sub-resource endpoints. PUT
+    replaces the whole record including the full rooms/mealPlans arrays (same "full replace"
+    semantics as Transfer/Transport's PUT) - see build_hotel_payloads()'s merge-on-update logic
+    for how existing rooms/mealPlans not mentioned in a fresh document are preserved rather than
+    silently dropped.
+
+    minimumChildrenAge/maximumChildrenAge: CONFIRMED (product owner) this API only supports ONE
+    age range, unlike the Travel Compositor admin UI's own up-to-4-range widget - "if you can not
+    divide it then we must make child from 0 to 12" - defaults to a single combined 0-12 band
+    covering both infant and child ages together, unless a document states a narrower range
+    explicitly.
+
+    infantsAllowed: CONFIRMED an integer CAPACITY (max infants per booking), not an age boundary -
+    genuinely decoupled from minimumChildrenAge/maximumChildrenAge. The real live example used 2;
+    defaulted to the same value here as a reasonable starting point, flagged as an assumption for
+    any hotel that doesn't state its own infant capacity.
+
+    NO STRUCTURED CANCELLATION FIELD EXISTS anywhere on this VO (confirmed - no cancellationRanges
+    or equivalent, unlike ClosedTour/Ticket/Transport) - cancellation policy text goes into
+    voucherRemarks only, via the shared _cancellation_voucher_text() helper, same as Transfer's
+    text-only fallback."""
+    providerCode: str
+    hotelname: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: HotelAddressVO = HotelAddressVO()
+    category: str = ""
+    chain: Optional[str] = None
+    currency: str = "EUR"
+    releaseDays: int = 7
+    minimumStay: int = 1
+    maximumStay: Optional[int] = None
+    infantsAllowed: int = 2
+    minimumChildrenAge: int = 0
+    maximumChildrenAge: int = 12
+    rooms: List[ContractRoomVO]
+    mealPlans: List[ContractMealPlanVO]
+    descriptions: List[TranslationVO] = []
+    voucherRemarks: List[TranslationVO] = []
+    images: List[str] = []

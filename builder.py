@@ -6,9 +6,11 @@ from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, Data
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
 from schemas import TransportHumanPreConfig, ContractTransportVO, TransportSegmentVO, TransportDataSheetVO, ContractTransportCancellationRangeVO, ContractTransportOptionVO, ContractTransportOptionPriceVO, ContractTransportOptionInventoryVO, LocalDateRangeVO
+from schemas import HotelAddressVO, TranslationVO, ContractRoomDistributionVO, ContractRoomVO, ContractMealPlanVO, ContractRoomDistributionPriceVO, ContractHotelSeasonPricesVO, ContractHotelSeasonVO, ContractHotelRoomStopSalesVO, ContractHotelRateVO, ContractHotelOffersVO, ContractHotelSupplementVO, ContractHotelVO
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
 import transport_matcher
+import hotel_matcher
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
@@ -1690,3 +1692,559 @@ def build_transport_payloads(
         "option_actions": option_actions,
         "options_to_deactivate": options_to_deactivate,
     }
+
+
+# ==========================================
+# HOTEL BUILDER
+# Confirmed against the real Contract Hotel Swagger + 2 real GET pulls for a
+# live hotel (CAI-H1, Four Seasons Hotel Cairo at Nile Plaza, supplier
+# 48940). See schemas.py's HOTEL SCHEMAS section for the full field-by-field
+# confirmation notes and every flagged assumption.
+#
+# TWO-PHASE BUILD, unlike every other product type built so far - a real
+# sequencing constraint, not a design choice: a NEW room's providerCode is
+# system-generated (AUTO_...) and only comes back in the hotel create/update
+# RESPONSE, so rate payloads (which reference rooms by providerCode in
+# seasonRoomPrices) cannot be built until AFTER the hotel contract call has
+# actually been submitted and its response inspected. Mirrors the same
+# create-parent-then-create-children sequencing already used for Transport
+# (transport id -> option payloads), just one level further removed:
+#   Phase 1: build_hotel_contract_payload()  -> submit via
+#            api_client.create_hotel()/update_hotel() -> inspect the
+#            response's rooms[] to resolve {room_name: providerCode}
+#   Phase 2: build_hotel_offer_payloads() / build_hotel_supplement_payloads()
+#            (submit each via create_hotel_offer()/create_hotel_supplement())
+#            then build_hotel_rate_payloads() (needs the offer/supplement
+#            provider codes just created, plus the Phase-1 room codes) ->
+#            submit via create_hotel_rates()/update_hotel_rates().
+# ==========================================
+
+_MEAL_PLAN_TYPES = ["ROOM_ONLY", "BED_AND_BREAKFAST", "HALF_BOARD", "FULL_BOARD", "ALL_INCLUSIVE"]
+
+_MEAL_PLAN_KEYWORDS = {
+    "ROOM_ONLY": ["room only", "no meals", "self catering", "self-catering", "european plan", " ep "],
+    "BED_AND_BREAKFAST": ["breakfast", "bed and breakfast", "b&b", "bb", "continental breakfast"],
+    "HALF_BOARD": ["half board", "half-board", "modified american", "dinner, bed and breakfast", "dbb", " hb", "hb "],
+    "FULL_BOARD": ["full board", "full-board", "american plan", "three meals", " fb", "fb "],
+    "ALL_INCLUSIVE": ["all inclusive", "all-inclusive", " ai", "ai "],
+}
+
+
+def _map_meal_plan_type(hint):
+    """Maps free-text meal-plan wording (e.g. 'Half Board', 'Breakfast included') onto the
+    confirmed 5-value MealPlanType enum. Defaults to ROOM_ONLY when nothing matches, since that's
+    the confirmed baseline every hotel starts from (product owner: 'if no other stated, the Room
+    only is always taken as 0 money')."""
+    text = f" {(hint or '').strip().lower()} "
+    if text.strip().upper() in _MEAL_PLAN_TYPES:
+        return text.strip().upper()
+    for plan_type, keywords in _MEAL_PLAN_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return plan_type
+    return "ROOM_ONLY"
+
+
+_APPLY_TYPE_VALUES = ["LODGING", "MEAL", "LODGING_AND_MEAL", "PER_NIGHT", "PER_NIGHT_PERSON", "PER_STAY", "PER_STAY_PERSON"]
+
+
+def _map_apply_type(hint):
+    """Validates/normalizes an Offer/Supplement 'apply' value against the confirmed 7-value enum
+    (mixing what-it-applies-to and how-it's-calculated into one flat field - see
+    ContractHotelOffersVO's docstring), defaulting to LODGING (the most common case - a
+    straightforward room-rate discount/charge) when extraction doesn't cleanly match one of the
+    7 values."""
+    text = (hint or "").strip().upper().replace(" ", "_").replace("-", "_")
+    return text if text in _APPLY_TYPE_VALUES else "LODGING"
+
+
+def _map_offer_type(hint):
+    """Validates/normalizes against the confirmed 3-value OfferType enum, defaulting to PERCENT."""
+    text = (hint or "").strip().upper().replace(" ", "_")
+    return text if text in ("PERCENT", "ABSOLUTE", "STAY_TO_PAY") else "PERCENT"
+
+
+def _map_supplement_type(hint):
+    """Validates/normalizes against the confirmed 2-value SupplementType enum (no STAY_TO_PAY -
+    that's offer-only), defaulting to ABSOLUTE."""
+    text = (hint or "").strip().upper().replace(" ", "_")
+    return text if text in ("PERCENT", "ABSOLUTE") else "ABSOLUTE"
+
+
+def _map_price_type(hint):
+    """Validates/normalizes a season's pricing model against the confirmed 2-value enum,
+    defaulting to DISTRIBUTION - the model used in every real example seen (product owner
+    confirmed the perfectly-arithmetic real example was demo data, but DISTRIBUTION itself, i.e.
+    one flat amount per adult+children combo, is the real, live pricing model)."""
+    text = (hint or "").strip().upper()
+    return text if text in ("PAX", "DISTRIBUTION") else "DISTRIBUTION"
+
+
+def _translation_list(text, language="EN"):
+    """Wraps a single text string into Hotel's [TranslationVO] shape ({language, description}
+    pairs) - used for descriptions/voucherRemarks/offer&supplement names. Returns [] for blank
+    text so an empty field isn't sent as a meaningless single empty-string entry."""
+    clean = (text or "").strip()
+    if not clean:
+        return []
+    return [TranslationVO(language=language, description=clean)]
+
+
+def _translation_list_or_existing(new_text, existing_translations):
+    """Prefers a fresh document's own text; falls back to preserving whatever existing
+    descriptions/voucherRemarks were already on the live record, rather than blanking them out
+    just because the new document doesn't happen to restate them (same merge-on-update
+    philosophy as Transfer/Transport preserving startDate/endDate/images)."""
+    fresh = _translation_list(new_text)
+    if fresh:
+        return fresh
+    return [TranslationVO(**t) for t in (existing_translations or []) if isinstance(t, dict)]
+
+
+def _clip_distributions_to_pax_cap(distributions, max_cap=_MAX_OCCUPANCY_PAX):
+    """CONFIRMED REAL RULE (product owner, applies 'for all services'): drops any distribution
+    whose total occupancy (adults+children) exceeds the 9-pax system cap - Travel Compositor
+    genuinely can't sell it. `distributions` is a list of {"adults": int, "children": int}."""
+    kept = []
+    for d in distributions or []:
+        if not isinstance(d, dict):
+            continue
+        adults = _safe_int(d.get("adults", 0))
+        children = _safe_int(d.get("children", 0))
+        if adults < 1 or adults + children > max_cap:
+            continue
+        kept.append({"adults": adults, "children": children})
+    return kept
+
+
+def _clip_distributions_to_pax_cap_priced(distribution_prices, max_cap=_MAX_OCCUPANCY_PAX):
+    """Same 9-pax cap rule as _clip_distributions_to_pax_cap, but for PRICED distribution entries
+    (adults/children/amount) used in seasonRoomPrices.distributionPrices."""
+    kept = []
+    for p in distribution_prices or []:
+        if not isinstance(p, dict):
+            continue
+        adults = _safe_int(p.get("adults", 0))
+        children = _safe_int(p.get("children", 0))
+        if adults < 1 or adults + children > max_cap:
+            continue
+        kept.append(p)
+    return kept
+
+
+def _ensure_room_only_meal_plan(meal_plans_data):
+    """CONFIRMED REAL RULE (product owner): 'the Room only is always taken as 0 money' - ensures
+    a ROOM_ONLY entry is always present at 0 cost, even if the source document never explicitly
+    mentions a room-only/no-meals option (most documents only describe the paid add-on plans)."""
+    result = list(meal_plans_data or [])
+    has_room_only = any(_map_meal_plan_type((mp or {}).get("meal_plan_hint")) == "ROOM_ONLY" for mp in result)
+    if not has_room_only:
+        result.insert(0, {"meal_plan_hint": "ROOM_ONLY", "base_price": 0.0, "adult_prices": [], "child_prices": []})
+    return result
+
+
+def _build_meal_plan_payload(mp_data):
+    plan_type = _map_meal_plan_type((mp_data or {}).get("meal_plan_hint"))
+    if plan_type == "ROOM_ONLY":
+        # CONFIRMED REAL RULE: always 0-cost, regardless of anything else extracted for it.
+        return ContractMealPlanVO(mealPlan="ROOM_ONLY", basePrice=0.0, adultPrices=[], childPrices=[])
+    return ContractMealPlanVO(
+        mealPlan=plan_type,
+        basePrice=_safe_float((mp_data or {}).get("base_price", 0)),
+        adultPrices=[_safe_float(p) for p in (mp_data or {}).get("adult_prices") or []],
+        childPrices=[_safe_float(p) for p in (mp_data or {}).get("child_prices") or []],
+    )
+
+
+def _build_room_payload(room_data, existing_room=None):
+    """Builds a ContractRoomVO. If `existing_room` (a matched real room dict from
+    hotel_matcher.match_room_by_name) is given, reuses its providerCode so Travel Compositor
+    recognizes this as the SAME room rather than creating a duplicate - CONFIRMED (product
+    owner): a room's providerCode is system-generated (AUTO_...) and never set by this tool."""
+    distributions = _clip_distributions_to_pax_cap((room_data or {}).get("distributions") or [])
+    return ContractRoomVO(
+        name=(room_data or {}).get("name"),
+        typeId=(room_data or {}).get("type_id"),
+        providerCode=(existing_room or {}).get("providerCode") if existing_room else None,
+        distributions=[ContractRoomDistributionVO(adults=d["adults"], children=d["children"]) for d in distributions],
+    )
+
+
+def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None):
+    """
+    PHASE 1 of the two-phase Hotel build - see the section docstring above. Builds the hotel-
+    level ContractHotelVO payload (hotel fields + rooms[] + mealPlans[] + descriptions +
+    voucherRemarks + images), ready for api_client.create_hotel() (existing_hotel_snapshot=None)
+    or api_client.update_hotel() (existing_hotel_snapshot = a real GET /hotel/{supplierId}/
+    {providerCode} response dict).
+
+    MERGE-ON-UPDATE (same philosophy as Transfer/Transport): PUT replaces the ENTIRE rooms[]/
+    mealPlans[] arrays, so any existing room/meal-plan not mentioned in the fresh document would
+    otherwise be silently dropped. Existing rooms are matched by name (hotel_matcher.
+    match_room_by_name) and merged in - a document's room with a matching name UPDATES that
+    room's distributions in place (reusing its existing providerCode); a document's room with no
+    match is a brand-new room; any EXISTING room the fresh document doesn't mention at all is
+    still carried forward unchanged, never dropped.
+
+    Returns {"hotel_payload": dict|None, "hotel_error": str|None, "is_update": bool,
+             "room_name_matches": {room_name: existing_providerCode_or_None}}.
+    """
+    extracted = extracted_hotel_data or {}
+    is_update = existing_hotel_snapshot is not None
+    existing_rooms = (existing_hotel_snapshot or {}).get("rooms") or []
+    existing_meal_plans = (existing_hotel_snapshot or {}).get("mealPlans") or []
+
+    # ---- Rooms: merge new/updated rooms with any existing rooms the fresh document doesn't mention ----
+    document_rooms = extracted.get("rooms") or []
+    seen_room_names = set()
+    room_payloads = []
+    room_name_matches = {}
+    for room_data in document_rooms:
+        room_name = (room_data or {}).get("name")
+        existing_room = hotel_matcher.match_room_by_name(room_name, existing_rooms)
+        room_payloads.append(_build_room_payload(room_data, existing_room=existing_room))
+        room_name_matches[room_name] = (existing_room or {}).get("providerCode")
+        if room_name:
+            seen_room_names.add((room_name or "").strip().lower())
+
+    for existing_room in existing_rooms:
+        if not isinstance(existing_room, dict):
+            continue
+        if (existing_room.get("name") or "").strip().lower() not in seen_room_names:
+            # Carried forward unchanged - not mentioned in this document, but never silently dropped.
+            room_payloads.append(ContractRoomVO(
+                name=existing_room.get("name"),
+                typeId=existing_room.get("typeId"),
+                providerCode=existing_room.get("providerCode"),
+                distributions=[ContractRoomDistributionVO(adults=d.get("adults", 1), children=d.get("children", 0))
+                               for d in existing_room.get("distributions") or []],
+            ))
+
+    # ---- Meal plans: same carry-forward merge, keyed by mealPlan type (only one entry per type) ----
+    document_meal_plans = _ensure_room_only_meal_plan(extracted.get("meal_plans") or [])
+    meal_plan_payloads = []
+    seen_plan_types = set()
+    for mp_data in document_meal_plans:
+        payload = _build_meal_plan_payload(mp_data)
+        meal_plan_payloads.append(payload)
+        seen_plan_types.add(payload.mealPlan)
+
+    for existing_mp in existing_meal_plans:
+        if not isinstance(existing_mp, dict):
+            continue
+        if existing_mp.get("mealPlan") not in seen_plan_types:
+            meal_plan_payloads.append(ContractMealPlanVO(
+                mealPlan=existing_mp.get("mealPlan", "ROOM_ONLY"),
+                basePrice=_safe_float(existing_mp.get("basePrice", 0)),
+                adultPrices=[_safe_float(p) for p in existing_mp.get("adultPrices") or []],
+                childPrices=[_safe_float(p) for p in existing_mp.get("childPrices") or []],
+            ))
+
+    # ---- Cancellation text -> voucherRemarks only (CONFIRMED: no structured cancellation field exists on Hotel) ----
+    voucher_text = _cancellation_voucher_text(
+        extracted.get("cancellation_policy_text"),
+        extracted.get("cancellation_policy_tiers"),
+    )
+
+    address_data = extracted.get("address") or {}
+    existing_address = (existing_hotel_snapshot or {}).get("address") or {}
+
+    hotel_kwargs = dict(
+        providerCode=pre_config.provider_code,
+        hotelname=extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or "",
+        latitude=extracted.get("latitude", (existing_hotel_snapshot or {}).get("latitude")),
+        longitude=extracted.get("longitude", (existing_hotel_snapshot or {}).get("longitude")),
+        address=HotelAddressVO(
+            address=address_data.get("address") or existing_address.get("address"),
+            locationName=address_data.get("location_name") or existing_address.get("locationName"),
+            postalCode=address_data.get("postal_code") or existing_address.get("postalCode"),
+            country=address_data.get("country") or existing_address.get("country"),
+            phone=address_data.get("phone") or existing_address.get("phone"),
+            fax=address_data.get("fax") or existing_address.get("fax"),
+            email=address_data.get("email") or existing_address.get("email"),
+        ),
+        category=extracted.get("category") or (existing_hotel_snapshot or {}).get("category") or "",
+        chain=extracted.get("chain") or (existing_hotel_snapshot or {}).get("chain"),
+        currency=pre_config.currency,
+        releaseDays=_safe_int(extracted.get("release_days", pre_config.days_available_before_release), fallback=pre_config.days_available_before_release),
+        minimumStay=_safe_int(extracted.get("minimum_stay", 1), fallback=1),
+        maximumStay=extracted.get("maximum_stay"),
+        infantsAllowed=_safe_int(extracted.get("infants_allowed", 2), fallback=2),
+        minimumChildrenAge=_safe_int(extracted.get("min_children_age", 0), fallback=0),
+        maximumChildrenAge=_safe_int(extracted.get("max_children_age", 12), fallback=12),
+        rooms=room_payloads,
+        mealPlans=meal_plan_payloads,
+        descriptions=_translation_list_or_existing(extracted.get("description"), (existing_hotel_snapshot or {}).get("descriptions")),
+        voucherRemarks=_translation_list_or_existing(voucher_text, (existing_hotel_snapshot or {}).get("voucherRemarks")),
+        images=extracted.get("images") or (existing_hotel_snapshot or {}).get("images") or [],
+    )
+
+    hotel_error = None
+    hotel_payload = None
+    try:
+        hotel = ContractHotelVO(**hotel_kwargs)
+        hotel_payload = hotel.dict()
+    except ValidationError as e:
+        hotel_error = str(e)
+    except (ValueError, TypeError) as e:
+        hotel_error = f"Couldn't build hotel contract payload - {e}"
+
+    return {
+        "hotel_payload": hotel_payload,
+        "hotel_error": hotel_error,
+        "is_update": is_update,
+        "room_name_matches": room_name_matches,
+    }
+
+
+def resolve_room_provider_codes(hotel_response_rooms):
+    """Call after Phase 1's create_hotel()/update_hotel() response is in hand - builds the
+    {room_name: providerCode} map Phase 2 needs (offers/supplements/rates all reference rooms by
+    name in the extracted data, but the real API needs the resolved providerCode, which for a
+    brand-new room only exists once Travel Compositor has assigned it in this response)."""
+    result = {}
+    for room in hotel_response_rooms or []:
+        if isinstance(room, dict) and room.get("name"):
+            result[room["name"]] = room.get("providerCode")
+    return result
+
+
+def _build_offer_or_supplement_common_kwargs(item_data):
+    """Shared field-building for Offers and Supplements - they're structurally identical except
+    Offers have an extra type value (STAY_TO_PAY) plus stay/pay fields, added by the caller."""
+    windows_travel = [w for w in (item_data or {}).get("travel_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
+    windows_booking = [w for w in (item_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
+    return dict(
+        apply=_map_apply_type((item_data or {}).get("apply")),
+        releaseDays=(item_data or {}).get("release_days"),
+        minimumStay=(item_data or {}).get("minimum_stay"),
+        maximumStay=(item_data or {}).get("maximum_stay"),
+        minimumAdults=(item_data or {}).get("minimum_adults"),
+        maximumAdults=(item_data or {}).get("maximum_adults"),
+        minimumChildrens=(item_data or {}).get("minimum_childrens"),
+        maximumChildrens=(item_data or {}).get("maximum_childrens"),
+        value=_safe_float((item_data or {}).get("value", 0)),
+        childValue=_safe_float((item_data or {}).get("child_value", 0)),
+        names=_translation_list((item_data or {}).get("name")),
+        travelWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_travel],
+        bookingWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_booking],
+        providerRoomCodes=[c for c in ((item_data or {}).get("room_provider_codes") or []) if c],
+        mealPlans=(item_data or {}).get("meal_plans") or [],
+        operationalDays=(item_data or {}).get("operational_days") or WEEKDAY_NAMES.copy(),
+    )
+
+
+def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None):
+    """
+    PHASE 2 (offers). Builds one ContractHotelOffersVO payload per extracted offer, ready for
+    api_client.create_hotel_offer() (CONFIRMED create-only, no update path - see
+    ContractHotelOffersVO's docstring in schemas.py). Light dedup against existing offers by
+    name (hotel_matcher.match_offer_or_supplement_by_name) to avoid re-creating an identical-
+    looking offer already on the live record within the same run.
+
+    `room_name_to_provider_code`: {room_name: providerCode}, from resolve_room_provider_codes()
+    against Phase 1's create/update RESPONSE - used to translate a document's room-name
+    references into the real providerRoomCodes this offer applies to.
+
+    Returns a list of {"offer_payload": dict|None, "offer_error": str|None,
+                        "action": "create"|"skip_duplicate", "matched_provider_code": str|None}.
+    """
+    existing_offers = (existing_hotel_snapshot or {}).get("offers") or []
+    results = []
+    for offer_data in extracted_offers or []:
+        offer_name = (offer_data or {}).get("name")
+        existing_match = hotel_matcher.match_offer_or_supplement_by_name(offer_name, existing_offers)
+        if existing_match:
+            results.append({"offer_payload": None, "offer_error": None, "action": "skip_duplicate",
+                             "matched_provider_code": existing_match.get("providerCode")})
+            continue
+
+        room_codes = [room_name_to_provider_code.get(rn) for rn in (offer_data or {}).get("room_names") or []]
+        kwargs = _build_offer_or_supplement_common_kwargs({**(offer_data or {}), "room_provider_codes": room_codes})
+        kwargs["type"] = _map_offer_type((offer_data or {}).get("type"))
+        kwargs["stay"] = (offer_data or {}).get("stay")
+        kwargs["pay"] = (offer_data or {}).get("pay")
+
+        offer_error = None
+        offer_payload = None
+        try:
+            offer = ContractHotelOffersVO(**kwargs)
+            offer_payload = offer.dict()
+        except ValidationError as e:
+            offer_error = str(e)
+        except (ValueError, TypeError) as e:
+            offer_error = f"Couldn't build offer '{offer_name}' - {e}"
+
+        results.append({"offer_payload": offer_payload, "offer_error": offer_error, "action": "create",
+                         "matched_provider_code": None})
+    return results
+
+
+def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider_code, existing_hotel_snapshot=None):
+    """Same as build_hotel_offer_payloads but for Supplements - see that function's docstring;
+    identical mechanics, minus the type=STAY_TO_PAY/stay/pay option since supplements only have
+    PERCENT/ABSOLUTE."""
+    existing_supplements = (existing_hotel_snapshot or {}).get("supplements") or []
+    results = []
+    for supp_data in extracted_supplements or []:
+        supp_name = (supp_data or {}).get("name")
+        existing_match = hotel_matcher.match_offer_or_supplement_by_name(supp_name, existing_supplements)
+        if existing_match:
+            results.append({"supplement_payload": None, "supplement_error": None, "action": "skip_duplicate",
+                             "matched_provider_code": existing_match.get("providerCode")})
+            continue
+
+        room_codes = [room_name_to_provider_code.get(rn) for rn in (supp_data or {}).get("room_names") or []]
+        kwargs = _build_offer_or_supplement_common_kwargs({**(supp_data or {}), "room_provider_codes": room_codes})
+        kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
+
+        supp_error = None
+        supp_payload = None
+        try:
+            supplement = ContractHotelSupplementVO(**kwargs)
+            supp_payload = supplement.dict()
+        except ValidationError as e:
+            supp_error = str(e)
+        except (ValueError, TypeError) as e:
+            supp_error = f"Couldn't build supplement '{supp_name}' - {e}"
+
+        results.append({"supplement_payload": supp_payload, "supplement_error": supp_error, "action": "create",
+                         "matched_provider_code": None})
+    return results
+
+
+def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer_name_to_provider_code,
+                               supplement_name_to_provider_code, existing_hotel_snapshot=None):
+    """
+    PHASE 2 (rates) - the last step. Builds one ContractHotelRateVO payload per extracted rate-
+    group (each with its nested seasons/seasonRoomPrices/stopSales), ready for
+    api_client.create_hotel_rates() (new rate) or update_hotel_rates() (existing rate, matched by
+    name via hotel_matcher.match_rate_by_name - reuses the existing rate's id, and each matched
+    season's existing id via hotel_matcher.match_season_to_existing, so Travel Compositor updates
+    in place rather than duplicating).
+
+    `room_name_to_provider_code` / `offer_name_to_provider_code` / `supplement_name_to_provider_
+    code`: {name: providerCode} maps - rooms from resolve_room_provider_codes() against Phase 1's
+    response, offers/supplements from this run's own build_hotel_offer_payloads()/
+    build_hotel_supplement_payloads() results (or matched_provider_code for a skipped duplicate).
+    Used to translate the document's own name references into the real provider codes
+    seasonRoomPrices/rate.offers/rate.supplements need.
+
+    CONFIRMED REAL RULE (product owner): no deactivation/deletion logic needed for stale
+    seasons/rates - "no deleting needed for rates, if the time window is closed, it is done then
+    and it cant be sold anymore, so no harm if not deleted."
+
+    STOP SALES: built using roomName ONLY (roomId omitted) - see ContractHotelRoomStopSalesVO's
+    docstring in schemas.py for why, and that this is UNCONFIRMED, needing a live validation test
+    before being relied on for a real upload.
+
+    A season's room-price entry for a room with no resolvable providerCode is skipped (not sent)
+    rather than submitting a rate that references a room Travel Compositor won't recognize.
+
+    Returns a list of {"rate_payload": dict|None, "rate_error": str|None,
+                        "action": "create"|"update", "matched_rate_id": int|None,
+                        "season_actions": [{"season_name", "action", "matched_season_id"}]}.
+    """
+    existing_rates = (existing_hotel_snapshot or {}).get("rates") or []
+    results = []
+
+    for rate_data in extracted_rates or []:
+        rate_name = (rate_data or {}).get("name") or "Rate"
+        existing_rate = hotel_matcher.match_rate_by_name(rate_name, existing_rates)
+        existing_seasons = (existing_rate or {}).get("seasons") or []
+
+        season_payloads = []
+        season_actions = []
+        for season_data in (rate_data or {}).get("seasons") or []:
+            season_name = (season_data or {}).get("name") or "Season"
+            date_ranges_data = [w for w in (season_data or {}).get("date_ranges") or []
+                                 if isinstance(w, dict) and w.get("start") and w.get("end")]
+            existing_season = hotel_matcher.match_season_to_existing(season_name, date_ranges_data, existing_seasons)
+
+            room_prices = []
+            for rp_data in (season_data or {}).get("room_prices") or []:
+                room_name = (rp_data or {}).get("room_name")
+                provider_room_code = room_name_to_provider_code.get(room_name)
+                if not provider_room_code:
+                    continue
+                distribution_prices_data = _clip_distributions_to_pax_cap_priced((rp_data or {}).get("distribution_prices") or [])
+                room_prices.append(ContractHotelSeasonPricesVO(
+                    unitsQuota=_safe_int((rp_data or {}).get("units_quota", 20), fallback=20),
+                    unitsOnRequest=_safe_int((rp_data or {}).get("units_on_request", 0), fallback=0),
+                    providerRoomCode=provider_room_code,
+                    distributionPrices=[ContractRoomDistributionPriceVO(
+                        amount=_safe_float(p.get("amount", 0)),
+                        adults=_safe_int(p.get("adults", 1), fallback=1),
+                        children=_safe_int(p.get("children", 0)),
+                    ) for p in distribution_prices_data],
+                    basePrice=_safe_float((rp_data or {}).get("base_price", 0)),
+                    adultPrices=[_safe_float(p) for p in (rp_data or {}).get("adult_prices") or []],
+                    childPrices=[_safe_float(p) for p in (rp_data or {}).get("child_prices") or []],
+                ))
+
+            season_meal_plans = [_build_meal_plan_payload(mp) for mp in (season_data or {}).get("meal_plans") or []]
+
+            season_payloads.append(ContractHotelSeasonVO(
+                id=(existing_season or {}).get("id"),
+                name=season_name,
+                dateRanges=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in date_ranges_data],
+                mealPlans=season_meal_plans,
+                seasonRoomPrices=room_prices,
+                releaseDays=(season_data or {}).get("release_days"),
+                minimumStay=_safe_int((season_data or {}).get("minimum_stay", 1), fallback=1),
+                maximumStay=(season_data or {}).get("maximum_stay"),
+                priceType=_map_price_type((season_data or {}).get("price_type")),
+            ))
+            season_actions.append({
+                "season_name": season_name,
+                "action": "update" if existing_season else "create",
+                "matched_season_id": (existing_season or {}).get("id"),
+            })
+
+        offer_codes = [c for c in (offer_name_to_provider_code.get(n) for n in (rate_data or {}).get("offer_names") or []) if c]
+        supplement_codes = [c for c in (supplement_name_to_provider_code.get(n) for n in (rate_data or {}).get("supplement_names") or []) if c]
+
+        stop_sales_payloads = []
+        for ss_data in (rate_data or {}).get("stop_sales") or []:
+            room_name = (ss_data or {}).get("room_name")
+            ss_ranges = [w for w in (ss_data or {}).get("date_ranges") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
+            if not room_name or not ss_ranges:
+                continue
+            stop_sales_payloads.append(ContractHotelRoomStopSalesVO(
+                roomName=room_name,
+                stopSales=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in ss_ranges],
+            ))
+
+        booking_windows_data = [w for w in (rate_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
+
+        rate_kwargs = dict(
+            id=(existing_rate or {}).get("id"),
+            name=rate_name,
+            bookingWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in booking_windows_data],
+            seasons=season_payloads,
+            offers=offer_codes,
+            supplements=supplement_codes,
+            stopSales=stop_sales_payloads,
+            releaseDays=(rate_data or {}).get("release_days"),
+            minimumStay=_safe_int((rate_data or {}).get("minimum_stay", 1), fallback=1),
+            maximumStay=(rate_data or {}).get("maximum_stay"),
+        )
+
+        rate_error = None
+        rate_payload = None
+        try:
+            rate = ContractHotelRateVO(**rate_kwargs)
+            rate_payload = rate.dict()
+        except ValidationError as e:
+            rate_error = str(e)
+        except (ValueError, TypeError) as e:
+            rate_error = f"Couldn't build rate '{rate_name}' - {e}"
+
+        results.append({
+            "rate_payload": rate_payload,
+            "rate_error": rate_error,
+            "action": "update" if existing_rate else "create",
+            "matched_rate_id": (existing_rate or {}).get("id"),
+            "season_actions": season_actions,
+        })
+
+    return results

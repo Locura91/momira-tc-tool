@@ -1099,3 +1099,146 @@ class TravelCompositorAPI:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return res.json()
+
+    # ------------------------------------------------------------------
+    # HOTEL UPLOADS
+    # Confirmed against the real Swagger (Contract - Hotel) + 2 real GET
+    # pulls for a live hotel (CAI-H1, supplier 48940). UNLIKE every other
+    # product type, a hotel's providerCode is HUMAN-ASSIGNED (e.g. "CAI-H1"),
+    # not Travel Compositor-generated - so there's no route-similarity
+    # matching needed to recognize an existing hotel, see hotel_matcher.py.
+    # Structure: one parent hotel record (rooms/mealPlans inline) plus three
+    # separate sibling sub-resource families - Offers/Supplements (create-
+    # only, no PUT endpoint exists) and Rates (has both POST and PUT, nests
+    # Seasons/seasonRoomPrices/stopSales).
+    # ------------------------------------------------------------------
+    def get_hotels(self, supplier_id: str) -> Dict[str, Any]:
+        """Executes GET /hotel/{supplierId} — returns a LIGHTWEIGHT list of all hotels for this
+        supplier (confirmed real Swagger: rooms/mealPlans come back as flat string arrays here,
+        not full nested objects - use get_hotel() for the full detail of one specific hotel)."""
+        url = f"{self.api_base_url}/hotel/{supplier_id}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_hotel(self, supplier_id: str, provider_code: str) -> Dict[str, Any]:
+        """Executes GET /hotel/{supplierId}/{providerCode} — returns the FULL nested hotel record
+        (rooms, mealPlans, descriptions, voucherRemarks, images, facilities, offers, supplements,
+        rates with their seasons/seasonRoomPrices/stopSales - everything). This is the only call
+        that returns offers/supplements/rates at all - there's no dedicated GET for any of those
+        sub-resources individually."""
+        url = f"{self.api_base_url}/hotel/{supplier_id}/{provider_code}"
+        res = self._request("GET", url)
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/{supplierId} — creates a new hotel contract. Payload includes the
+        hotel's own fields plus its rooms[] and mealPlans[] inline (both required, min 1 item) -
+        NOT offers/supplements/rates, which are separate calls made afterward once the hotel
+        exists (see create_hotel_offer/create_hotel_supplement/create_hotel_rates)."""
+        url = f"{self.api_base_url}/hotel/{supplier_id}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
+        """Executes PUT /hotel/{supplierId} — updates an EXISTING hotel contract. Unlike Transfer/
+        Transport's PUT, providerCode (the identifier) is a normal required field already on this
+        payload - there's no separate id-in-body quirk. This is a FULL REPLACE of the hotel-level
+        record including the whole rooms[]/mealPlans[] arrays - see build_hotel_payloads()'s
+        merge-on-update logic for how existing rooms/mealPlans not mentioned in a fresh document
+        are preserved rather than silently dropped."""
+        url = f"{self.api_base_url}/hotel/{supplier_id}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel_room(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/room/{supplierId}/{providerCode} — adds a single room to an
+        EXISTING hotel contract. This tool's builder drives room creation/updates through the
+        main create_hotel()/update_hotel() calls instead (which carry the full rooms[] array
+        anyway, per PUT's full-replace semantics) - this method is provided for completeness /
+        direct use if a narrower single-room addition is ever needed."""
+        url = f"{self.api_base_url}/hotel/room/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel_mealplan(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/mealplan/{supplierId}/{providerCode} — adds a single meal plan to
+        an EXISTING hotel contract. Same note as create_hotel_room() - this tool's builder drives
+        meal plans through the main create_hotel()/update_hotel() calls; provided for
+        completeness / direct use if needed."""
+        url = f"{self.api_base_url}/hotel/mealplan/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel_offer(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/offer/{supplierId}/{providerCode} — adds an offer to an existing
+        hotel contract. CONFIRMED CREATE-ONLY - no PUT variant exists for offers (see
+        ContractHotelOffersVO's docstring in schemas.py for why that's fine: offers are inherently
+        date-bounded and self-expire)."""
+        url = f"{self.api_base_url}/hotel/offer/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel_supplement(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/supplement/{supplierId}/{providerCode} — adds a supplement to an
+        existing hotel contract. CONFIRMED CREATE-ONLY, same as offers - no PUT variant exists."""
+        url = f"{self.api_base_url}/hotel/supplement/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def create_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/rates/{supplierId}/{providerCode} — adds a new rate (with its
+        nested seasons/seasonRoomPrices/stopSales) to an existing hotel contract. Travel
+        Compositor assigns and returns 'id' (and each season's own 'id') in the response -
+        remember them for update_hotel_rates() on the next refresh, see hotel_matcher.py."""
+        url = f"{self.api_base_url}/hotel/rates/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def update_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes PUT /hotel/rates/{supplierId}/{providerCode} — updates an EXISTING rate.
+        The rate's own 'id' field in the payload body identifies WHICH rate gets updated
+        (providerCode in the URL just scopes to the parent hotel) - same id-in-body pattern as
+        Transport's option PUT."""
+        url = f"{self.api_base_url}/hotel/rates/{supplier_id}/{provider_code}"
+        res = self._request("PUT", url, json=payload)
+
+        if res.status_code not in (200, 201):
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
