@@ -9,3 +9,4 @@ pdfplumber
 pymupdf
 python-docx
 openpyxl
+google-genai

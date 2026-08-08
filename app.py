@@ -33,10 +33,18 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY", "PIXABAY_API_KEY"]:
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY", "PIXABAY_API_KEY",
+                 # Translation Sync tool (merged in from momira-translation-sync). Loaded here,
+                 # before translation_tool is imported, so its engines see the env they expect.
+                 # TRANSLATION_PROVIDER picks gemini (default, cheapest) or claude.
+                 "TRANSLATION_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_MODEL",
+                 "TC_TARGET_LANGUAGES", "TRAVELC_SUPPLIER_ID"]:
         try:
             if _key in st.secrets and _key not in os.environ:
-                os.environ[_key] = st.secrets[_key]
+                # str() because os.environ rejects non-string values - a secret typed as a
+                # number or list (easy to do for TC_TARGET_LANGUAGES) would otherwise raise
+                # here and be swallowed by the except, leaving the key silently unset.
+                os.environ[_key] = str(st.secrets[_key])
         except Exception:
             pass
 
@@ -56,6 +64,11 @@ from freeimage_client import upload_images as upload_images_freeimage
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
+# The Translation Sync tool, merged in from the standalone momira-translation-sync
+# app. Its own sync engines and API client live in separate modules (translator.py,
+# state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
+# translation_tool.py's docstring for what changed at the UI layer and why.
+from translation_tool import render_translation_tool
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -6868,26 +6881,101 @@ st.caption("Build version: 2026-08-08-transport-and-hotel-ui — bump this strin
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
-# ----------------------------------------------------------------------
-# STEP 0: Product Type - Ticket or ClosedTour?
-# ----------------------------------------------------------------------
+# ======================================================================
+# STEP 0: WHICH TOOL?
+# The platform's top-level split. Everything below hangs off this one
+# choice, and it's deliberately the very first thing a human sees, because
+# the two halves do opposite things and confusing them wastes real work:
+#
+#   UPLOAD & UPDATE  - source of truth is a SUPPLIER CONTRACT (a document
+#                      or web page). Reads it, extracts the product, and
+#                      writes a NEW or REFRESHED product into Travel
+#                      Compositor. This is where product data is born.
+#
+#   TRANSLATE        - source of truth is TRAVEL COMPOSITOR ITSELF. Reads
+#                      products that already exist there and fills in their
+#                      other-language content. Never invents or changes
+#                      product data, never touches prices.
+#
+# A third clue that they're different: their entity lists don't match.
+# Holiday Packages can be translated but never uploaded (they're assembled
+# inside Travel Compositor from products we upload), which is why that
+# entity appears on one side only.
+# ======================================================================
+TOOL_UPLOAD = "📤 Upload & Update Products"
+TOOL_TRANSLATE = "🌐 Translate Products"
+
+if "active_tool" not in st.session_state:
+    st.session_state.active_tool = None
 if "product_type" not in st.session_state:
     st.session_state.product_type = None
 
-if st.session_state.product_type is not None:
-    ptcol1, ptcol2 = st.columns([5, 1])
-    with ptcol1:
-        st.success(f"✅ Working on: **{st.session_state.product_type}**")
-    with ptcol2:
-        if st.button("🔄 Switch"):
-            for key in list(st.session_state.keys()):
-                if key not in ("client", "suppliers_cache"):
-                    del st.session_state[key]
-            st.session_state.product_type = None
+
+def _reset_to_tool_chooser():
+    """Full reset back to Step 0. Keeps only the cached API client and supplier list, so
+    switching tools doesn't force a re-login or re-fetch, but no half-finished state from one
+    tool can leak into the other."""
+    for key in list(st.session_state.keys()):
+        if key not in ("client", "suppliers_cache"):
+            del st.session_state[key]
+    st.session_state.active_tool = None
+    st.session_state.product_type = None
+
+
+# ---- Breadcrumb + switch, shown once a tool is chosen ----
+if st.session_state.active_tool is not None:
+    crumb = st.session_state.active_tool
+    if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type:
+        crumb = f"{crumb}  ›  **{st.session_state.product_type}**"
+    bcol1, bcol2 = st.columns([5, 1])
+    with bcol1:
+        st.success(f"You are in: {crumb}")
+    with bcol2:
+        if st.button("🔄 Switch tool"):
+            _reset_to_tool_chooser()
             st.rerun()
 
+# ---- Step 0: the tool chooser itself ----
+if st.session_state.active_tool is None:
+    st.header("Step 1 — What do you want to do?")
+
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        st.markdown(f"### {TOOL_UPLOAD}")
+        st.markdown(
+            "Turn a **supplier contract** into a live Travel Compositor product — or refresh an "
+            "existing one when new rates arrive.\n\n"
+            "You give it a document or a URL; it extracts the details, you review and correct them, "
+            "then it publishes.\n\n"
+            "*Closed Tours · Tickets · Transfers · Transports · Hotels*"
+        )
+    with tcol2:
+        st.markdown(f"### {TOOL_TRANSLATE}")
+        st.markdown(
+            "Take products **already live in Travel Compositor** and fill in their other-language "
+            "content automatically.\n\n"
+            "It reads the English content, translates it, and writes it back. It never changes "
+            "prices or product data.\n\n"
+            "*Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours*"
+        )
+
+    st.divider()
+    tool_choice = st.radio("Choose one:", [TOOL_UPLOAD, TOOL_TRANSLATE], key="tool_choice_radio")
+    if st.button("➡️ Continue", type="primary", key="tool_continue"):
+        st.session_state.active_tool = tool_choice
+        st.rerun()
+    st.stop()
+
+# ---- Translate tool: hand straight off, it has no product-type step ----
+if st.session_state.active_tool == TOOL_TRANSLATE:
+    render_translation_tool()
+    st.stop()
+
+# ======================================================================
+# UPLOAD & UPDATE - Step 1: which product type?
+# ======================================================================
 if st.session_state.product_type is None:
-    st.header("Step 1 — What do you want to work on?")
+    st.header("Step 1 — Which product are you uploading or updating?")
     pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel"],
                           key="pt_choice_radio")
     st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
