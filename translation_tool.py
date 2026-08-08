@@ -73,7 +73,6 @@ DEFAULT_TARGET_LANGUAGES = [
     "RU", "NO", "SV", "RO", "CS", "EL", "FI",
     "PT", "DA", "IT",
 ]
-TEST_LANGUAGES = ["FR", "DE"]
 
 # Entity types this tool can translate. Note these are the things ALREADY
 # LIVE in Travel Compositor - which is why the list differs from the Upload
@@ -120,9 +119,14 @@ def _supplier_picker(key_prefix):
     return supplier_id
 
 
-def _scope_picker(entity_label, specific_label, specific_help, key_prefix):
+def _scope_picker(entity_label, specific_label, example, key_prefix):
     """Shared 'all of them vs one specific one' chooser + optional limit.
-    Returns (scope_is_all, specific_value, limit)."""
+    Returns (scope_is_all, specific_value, limit).
+
+    `example` is shown as the field's PLACEHOLDER (greyed text inside the empty box) rather
+    than as a help tooltip: Streamlit renders help= as a small "?" icon that has to be hovered
+    to reveal, so the one piece of information a human actually needs here - what the code is
+    supposed to look like - was hidden behind an extra interaction."""
     scope = st.radio(f"Which {entity_label}?", [f"All {entity_label}", specific_label], key=f"{key_prefix}_scope")
     is_all = scope.startswith("All")
     specific_value = None
@@ -132,7 +136,7 @@ def _scope_picker(entity_label, specific_label, specific_help, key_prefix):
                                        key=f"{key_prefix}_limit")
         limit = limit_input or None
     else:
-        specific_value = st.text_input(specific_label, help=specific_help, key=f"{key_prefix}_specific")
+        specific_value = st.text_input(specific_label, placeholder=example, key=f"{key_prefix}_specific")
     return is_all, specific_value, limit
 
 
@@ -172,7 +176,7 @@ def render_translation_tool():
         microsite_id = st.text_input("Microsite ID", value=os.getenv("TRAVELC_MICROSITE_ID", "momiratravel"),
                                       key="tr_microsite")
         is_all, package_id, limit = _scope_picker("packages", "One specific package ID",
-                                                   "The Holiday Package ID as shown in Travel Compositor.", "tr_hp")
+                                                   "e.g. 59984696", "tr_hp")
 
     elif entity_type == "Tickets":
         supplier_id = _supplier_picker("tr_tk")
@@ -196,28 +200,24 @@ def render_translation_tool():
 
     else:  # Closed Tours
         supplier_id = _supplier_picker("tr_ct")
-        closed_tour_code = st.text_input("Closed Tour Code", help="e.g. TNR-03", key="tr_ct_code")
+        closed_tour_code = st.text_input("Closed Tour Code", placeholder="e.g. TNR-03", key="tr_ct_code")
         st.caption("Travel Compositor has no bulk listing endpoint for Closed Tours, so these are done one "
                   "code at a time. A wrong code gives a clear 'not found' message rather than a raw API error.")
 
     st.header("Translate — Step 4: Languages & run")
 
-    lcol1, lcol2 = st.columns([2, 1])
-    with lcol1:
-        lang_mode = st.radio(
-            "Languages",
-            [f"Test set ({', '.join(TEST_LANGUAGES)})", f"All {len(DEFAULT_TARGET_LANGUAGES)} target languages"],
-            key="tr_lang_mode",
-            help="Start with the test set to sanity-check output quality cheaply, then run the full set."
-        )
-    with lcol2:
-        force = st.checkbox("Force re-translate", value=False, key="tr_force",
-                             help="Ignores the tracker and re-translates everything, even content already "
-                                  "done. Normally leave this off - the tracker is what makes re-running "
-                                  "cheap and safe.")
+    # The old "Test set (FR, DE) vs all languages" chooser was removed at the product
+    # owner's request - the full language set is always what's wanted now, and offering a
+    # two-language mode mainly created a way to think a product was done when 17 languages
+    # were still missing. TEST_LANGUAGES no longer exists here; the standalone run_sync_*
+    # CLI scripts keep their own copies for ad-hoc runs.
+    target_languages = DEFAULT_TARGET_LANGUAGES
+    force = st.checkbox("Force re-translate", value=False, key="tr_force",
+                         help="Ignores the tracker and re-translates everything, even content already "
+                              "done. Normally leave this off - the tracker is what makes re-running "
+                              "cheap and safe.")
 
-    target_languages = TEST_LANGUAGES if lang_mode.startswith("Test") else DEFAULT_TARGET_LANGUAGES
-    st.write(f"**Target languages:** {', '.join(target_languages)}")
+    st.write(f"**Target languages ({len(target_languages)}):** {', '.join(target_languages)}")
     st.warning("⚠️ Live mode — translations are written straight into Travel Compositor.")
     if force:
         st.warning("🔁 Force re-translate is ON — the tracker is ignored, so everything is translated again.")
