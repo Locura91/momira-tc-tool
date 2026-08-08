@@ -38,7 +38,19 @@ if hasattr(st, "secrets"):
                  # before translation_tool is imported, so its engines see the env they expect.
                  # TRANSLATION_PROVIDER picks gemini (default, cheapest) or claude.
                  "TRANSLATION_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_MODEL",
-                 "TC_TARGET_LANGUAGES", "TRAVELC_SUPPLIER_ID"]:
+                 "TC_TARGET_LANGUAGES", "TRAVELC_SUPPLIER_ID",
+                 # Supplier Discovery & Outreach tool (merged in from momira-suppliersearch-mail).
+                 # IMPORTANT: this list is a WHITELIST - a secret not named here is never copied
+                 # into os.environ, and outreach_discovery/outreach_email read os.getenv() only.
+                 # Omitting a key here means the operator sets it in Streamlit secrets and the
+                 # tool silently behaves as if it were never configured (mock search / demo
+                 # email), with no error to explain why. Any new outreach setting must be added
+                 # to this list too.
+                 "TAVILY_API_KEY", "SERPAPI_API_KEY",
+                 "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER",
+                 "SMTP_PASS", "SMTP_FROM", "SMTP_REPLY_TO", "EMAIL_FROM", "SENDER_NAME",
+                 "TEST_MODE_RECIPIENTS", "EMAIL_THROTTLE_MS", "PDF_ATTACHMENT_PATH",
+                 "MIN_SUPPLIER_RATING", "MAX_SUPPLIER_RESULTS", "MAX_SUPPLIER_CANDIDATES"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 # str() because os.environ rejects non-string values - a secret typed as a
@@ -69,6 +81,11 @@ import transport_matcher
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
 # translation_tool.py's docstring for what changed at the UI layer and why.
 from translation_tool import render_translation_tool
+# The Supplier Discovery & Outreach tool, merged in from the standalone
+# momira-suppliersearch-mail app (originally React + Express). Its discovery/vetting
+# and email engines were ported to Python in outreach_discovery.py and
+# outreach_email.py, both differential-tested against the original JavaScript.
+from outreach_tool import render_outreach_tool
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -6897,13 +6914,19 @@ st.caption("Every publish respects the confirmed active/inactive workflow. Human
 #                      other-language content. Never invents or changes
 #                      product data, never touches prices.
 #
-# A third clue that they're different: their entity lists don't match.
+#   FIND SUPPLIERS   - doesn't touch Travel Compositor at all. Searches the
+#                      open web for local operators worth working with, and
+#                      emails the ones a human approves. This is what happens
+#                      BEFORE a supplier ever has a contract to upload.
+#
+# A further clue that the first two differ: their entity lists don't match.
 # Holiday Packages can be translated but never uploaded (they're assembled
 # inside Travel Compositor from products we upload), which is why that
 # entity appears on one side only.
 # ======================================================================
 TOOL_UPLOAD = "📤 Upload & Update Products"
 TOOL_TRANSLATE = "🌐 Translate Products"
+TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -6939,8 +6962,20 @@ if st.session_state.active_tool is not None:
 if st.session_state.active_tool is None:
     st.header("Step 1 — What do you want to do?")
 
-    tcol1, tcol2 = st.columns(2)
+    st.caption("The three tools sit at different points in the same lifecycle: find a supplier, "
+              "load their contract, then translate what you loaded.")
+
+    tcol1, tcol2, tcol3 = st.columns(3)
     with tcol1:
+        st.markdown(f"### {TOOL_OUTREACH}")
+        st.markdown(
+            "Find local operators worth working with, and contact them.\n\n"
+            "Searches the web for well-reviewed suppliers, filters out articles and booking "
+            "marketplaces, finds a direct email where it can, and sends an intro after you approve "
+            "the list.\n\n"
+            "*Doesn't touch Travel Compositor.*"
+        )
+    with tcol2:
         st.markdown(f"### {TOOL_UPLOAD}")
         st.markdown(
             "Turn a **supplier contract** into a live Travel Compositor product — or refresh an "
@@ -6949,7 +6984,7 @@ if st.session_state.active_tool is None:
             "then it publishes.\n\n"
             "*Closed Tours · Tickets · Transfers · Transports · Hotels*"
         )
-    with tcol2:
+    with tcol3:
         st.markdown(f"### {TOOL_TRANSLATE}")
         st.markdown(
             "Take products **already live in Travel Compositor** and fill in their other-language "
@@ -6960,10 +6995,16 @@ if st.session_state.active_tool is None:
         )
 
     st.divider()
-    tool_choice = st.radio("Choose one:", [TOOL_UPLOAD, TOOL_TRANSLATE], key="tool_choice_radio")
+    tool_choice = st.radio("Choose one:", [TOOL_OUTREACH, TOOL_UPLOAD, TOOL_TRANSLATE],
+                            key="tool_choice_radio")
     if st.button("➡️ Continue", type="primary", key="tool_continue"):
         st.session_state.active_tool = tool_choice
         st.rerun()
+    st.stop()
+
+# ---- Outreach tool: hand straight off, it has no product-type step ----
+if st.session_state.active_tool == TOOL_OUTREACH:
+    render_outreach_tool()
     st.stop()
 
 # ---- Translate tool: hand straight off, it has no product-type step ----
