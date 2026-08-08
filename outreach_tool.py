@@ -77,8 +77,13 @@ def _provider_banner():
     if pdf["attached"]:
         st.caption(f"📎 Company profile PDF will be attached ({pdf['sizeKb']} KB).")
     else:
-        st.caption(f"📎 No company profile PDF found — emails will send without an attachment. "
-                   f"Place one at `{pdf['path']}` or set `PDF_ATTACHMENT_PATH`.")
+        # Deliberately a warning rather than a caption: a missing attachment changes what
+        # the supplier actually receives, but nothing about the send fails or looks wrong,
+        # so it's the kind of thing that's only noticed after a batch has already gone out.
+        # (Real case: the first live send went without the profile because the PDF hadn't
+        # been copied into the deployment, and a quiet caption didn't catch anyone's eye.)
+        st.warning(f"📎 **No company profile PDF found — emails will send without an attachment.** "
+                   f"Place the file at `{pdf['path']}`, or point `PDF_ATTACHMENT_PATH` at it.")
     return status
 
 
