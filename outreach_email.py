@@ -117,8 +117,18 @@ def get_email_provider() -> str:
 
 
 def get_from_address() -> str:
+    """The address mail is sent FROM, for whichever provider is active.
+
+    DELIBERATE DEVIATION FROM THE ORIGINAL: the JS fell back to
+    "outreach@momiratravel.com", an address on a domain Momira has NOT verified with
+    its email provider. Providers reject (or silently drop) mail From an unverified
+    domain, so that fallback couldn't ever deliver - it was the cause of a real failing
+    send test. The verified sending identity is info@momira.de, so that's the fallback
+    now. EMAIL_FROM still overrides it, and should be set explicitly rather than relied
+    on implicitly; this default exists so a forgotten setting degrades to something that
+    actually works instead of something that silently can't."""
     return (os.getenv("EMAIL_FROM") or os.getenv("SMTP_FROM") or os.getenv("SMTP_USER")
-            or "outreach@momiratravel.com")
+            or "info@momira.de")
 
 
 def verify_transport() -> Dict[str, Any]:
