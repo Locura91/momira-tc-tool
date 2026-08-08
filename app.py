@@ -6959,47 +6959,47 @@ if st.session_state.active_tool is not None:
             st.rerun()
 
 # ---- Step 0: the tool chooser itself ----
+# Each tool is a self-contained card: heading, what it does, and its OWN button
+# directly underneath. Previously the three descriptions sat above a single shared
+# radio + Continue, which put the actual control a long way from the text explaining
+# it and made choosing a two-step job. One click per tool now, and the button sits
+# where the eye already is after reading that column. Type is deliberately small -
+# this screen is read once to orient, not studied.
 if st.session_state.active_tool is None:
-    st.header("Step 1 — What do you want to do?")
-
+    st.subheader("What do you want to do?")
     st.caption("The three tools sit at different points in the same lifecycle: find a supplier, "
               "load their contract, then translate what you loaded.")
+    st.write("")
 
-    tcol1, tcol2, tcol3 = st.columns(3)
-    with tcol1:
-        st.markdown(f"### {TOOL_OUTREACH}")
-        st.markdown(
-            "Find local operators worth working with, and contact them.\n\n"
-            "Searches the web for well-reviewed suppliers, filters out articles and booking "
-            "marketplaces, finds a direct email where it can, and sends an intro after you approve "
-            "the list.\n\n"
-            "*Doesn't touch Travel Compositor.*"
-        )
-    with tcol2:
-        st.markdown(f"### {TOOL_UPLOAD}")
-        st.markdown(
-            "Turn a **supplier contract** into a live Travel Compositor product — or refresh an "
-            "existing one when new rates arrive.\n\n"
-            "You give it a document or a URL; it extracts the details, you review and correct them, "
-            "then it publishes.\n\n"
-            "*Closed Tours · Tickets · Transfers · Transports · Hotels*"
-        )
-    with tcol3:
-        st.markdown(f"### {TOOL_TRANSLATE}")
-        st.markdown(
-            "Take products **already live in Travel Compositor** and fill in their other-language "
-            "content automatically.\n\n"
-            "It reads the English content, translates it, and writes it back. It never changes "
-            "prices or product data.\n\n"
-            "*Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours*"
-        )
+    _TOOL_CARDS = [
+        (TOOL_OUTREACH, "tool_btn_outreach",
+         "Find local operators worth working with, and contact them.",
+         "Searches the web for well-reviewed suppliers, filters out articles and booking "
+         "marketplaces, finds a direct email where it can, and sends an intro after you "
+         "approve the list.",
+         "Doesn't touch Travel Compositor."),
+        (TOOL_UPLOAD, "tool_btn_upload",
+         "Turn a supplier contract into a live Travel Compositor product.",
+         "You give it a document or a URL; it extracts the details, you review and correct "
+         "them, then it publishes — for a new product or to refresh one when new rates arrive.",
+         "Closed Tours · Tickets · Transfers · Transports · Hotels"),
+        (TOOL_TRANSLATE, "tool_btn_translate",
+         "Fill in other-language content for products already live in Travel Compositor.",
+         "It reads the English content, translates it into 19 languages, and writes it back. "
+         "It never changes prices or product data.",
+         "Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours"),
+    ]
 
-    st.divider()
-    tool_choice = st.radio("Choose one:", [TOOL_OUTREACH, TOOL_UPLOAD, TOOL_TRANSLATE],
-                            key="tool_choice_radio")
-    if st.button("➡️ Continue", type="primary", key="tool_continue"):
-        st.session_state.active_tool = tool_choice
-        st.rerun()
+    for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(3), _TOOL_CARDS):
+        with _col:
+            st.markdown(f"##### {_label}")
+            st.caption(f"**{_lead}**")
+            st.caption(_detail)
+            st.caption(f"*{_scope}*")
+            st.write("")
+            if st.button(_label, key=_key, type="primary", use_container_width=True):
+                st.session_state.active_tool = _label
+                st.rerun()
     st.stop()
 
 # ---- Outreach tool: hand straight off, it has no product-type step ----

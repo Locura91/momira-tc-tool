@@ -30,12 +30,12 @@ are the traps specific to this file):
 DELIBERATE ADDITION (not in the original, flagged rather than hidden):
 `dispatch_batch(..., dry_run=True)` builds every message exactly as a real run
 would - same template rendering, same recipient resolution, same skip logic -
-and returns the full log WITHOUT contacting any provider. The original had no
-equivalent; its safety net was TEST_MODE_RECIPIENTS (which still works here
-and is still honoured). Dry run is the platform's default in the UI because
-sending to real external companies under Momira's name is the one irreversible
-action in the whole platform, and a preview that exercises the real code path
-is worth more than one that approximates it.
+and returns the full log WITHOUT contacting any provider. It's what the UI's
+optional preview uses, so the preview exercises the real code path rather than
+approximating it.
+
+REMOVED FROM THE ORIGINAL: the TEST_MODE_RECIPIENTS redirect - see the note
+where it used to live, further down this file.
 """
 import base64
 import os
@@ -91,16 +91,13 @@ def _read_pdf_bytes() -> Optional[bytes]:
         return None
 
 
-# ============================================================================
-# TEST MODE - redirect every outbound email to your own inbox(es)
-# Blank = normal behaviour (real supplier addresses), which is the safe default.
-# ============================================================================
-def get_test_mode_recipients() -> List[str]:
-    return [e.strip() for e in (os.getenv("TEST_MODE_RECIPIENTS") or "").split(",") if e.strip()]
-
-
-def is_test_mode_enabled() -> bool:
-    return len(get_test_mode_recipients()) > 0
+# NOTE: the original had a TEST_MODE_RECIPIENTS mechanism that redirected every
+# outbound email to your own inbox. It was removed at the product owner's request once
+# real sending was verified working end to end, because it added a step to every run and
+# a permanent "is this actually going to suppliers?" question. If TEST_MODE_RECIPIENTS
+# is still set in the environment it is now INERT and ignored - delete it to avoid
+# confusion. To test against yourself now, just run a search and put your own address in
+# the email column of the review table.
 
 
 # ============================================================================
@@ -137,11 +134,7 @@ def verify_transport() -> Dict[str, Any]:
     lightweight real API call (listing domains) - a bad key surfaces here rather than
     only failing later on a real send."""
     provider = get_email_provider()
-    common = {
-        "provider": provider,
-        "testMode": is_test_mode_enabled(),
-        "testRecipients": get_test_mode_recipients(),
-    }
+    common = {"provider": provider}
 
     if provider == "resend":
         try:
@@ -318,29 +311,13 @@ def build_message(supplier: Dict[str, Any], session: Dict[str, Any],
         html = render_template(template.get("htmlBody"), data)
         text = html_to_plain_text(html)
 
-    test_recipients = get_test_mode_recipients()
-    test_mode = len(test_recipients) > 0
-    to_list = test_recipients if test_mode else ([supplier["email"]] if supplier.get("email") else [])
-
-    if test_mode:
-        # Unmistakable in the inbox, plus a clear note of who this WOULD have gone to -
-        # useful when test-sending several suppliers in a row into one inbox.
-        subject = f"[TEST] {subject}"
-        notice = (f"This is a TEST send (TEST_MODE_RECIPIENTS is set). In real use this would have "
-                  f"gone to: {supplier.get('name')} <{supplier.get('email') or 'no email on file'}>.")
-        html = (f'<div style="background:#fef3c7;border:1px solid #f59e0b;padding:10px 14px;'
-                f'border-radius:6px;color:#92400e;font-family:Arial,Helvetica,sans-serif;'
-                f'font-size:13px;margin-bottom:16px;">{notice}</div>{html}')
-        text = f"{notice}\n\n{text}"
-
     return {
         "from": get_from_address(),
-        "to": to_list,
+        "to": [supplier["email"]] if supplier.get("email") else [],
         "replyTo": os.getenv("SMTP_REPLY_TO") or None,
         "subject": subject,
         "html": html,
         "text": text,
-        "testMode": test_mode,
     }
 
 
@@ -378,13 +355,11 @@ def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
             except ValueError:
                 raise RuntimeError(f"HTTP {res.status_code}: {res.text[:200]}")
         body = res.json() if res.content else {}
-        return {"messageId": body.get("id"), "demo": False,
-                "testMode": message["testMode"], "provider": provider}
+        return {"messageId": body.get("id"), "demo": False, "provider": provider}
 
     if provider == "demo":
         # Fully built but never delivered, so the workflow stays testable.
-        return {"messageId": None, "demo": True,
-                "testMode": message["testMode"], "provider": provider}
+        return {"messageId": None, "demo": True, "provider": provider}
 
     msg = EmailMessage()
     msg["From"] = message["from"]
@@ -399,8 +374,7 @@ def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
                            filename=_ATTACHMENT_FILENAME)
     with _smtp_connection() as server:
         server.send_message(msg)
-    return {"messageId": msg.get("Message-ID"), "demo": False,
-            "testMode": message["testMode"], "provider": provider}
+    return {"messageId": msg.get("Message-ID"), "demo": False, "provider": provider}
 
 
 # ============================================================================
@@ -430,21 +404,13 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
     see this module's header for why that was added.
     """
     results: List[Dict[str, Any]] = []
-    test_mode = is_test_mode_enabled()
-    if test_mode:
-        print(f"[outreach_email] TEST MODE is ON - every email in this batch will be redirected to "
-              f"{', '.join(get_test_mode_recipients())} instead of the real supplier.")
-
     throttle_s = _default_throttle_s()
 
     for supplier in suppliers:
         started_at = _now_iso()
 
-        # Outside test mode, a supplier with no discovered email is correctly skipped -
-        # there's genuinely nowhere to send. In test mode this is bypassed on purpose:
-        # everything is redirected to the test inbox anyway, so a demo run can show the
-        # full template for every selected supplier.
-        if not supplier.get("email") and not test_mode:
+        # A supplier with no email is skipped - there's genuinely nowhere to send.
+        if not supplier.get("email"):
             entry = {
                 "supplierId": supplier.get("id"), "supplierName": supplier.get("name"),
                 "email": supplier.get("email"), "status": "skipped",
@@ -462,7 +428,7 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
                     "supplierId": supplier.get("id"), "supplierName": supplier.get("name"),
                     "email": supplier.get("email"), "status": "would_send",
                     "to": message["to"], "subject": message["subject"],
-                    "testMode": message["testMode"], "timestamp": _now_iso(),
+                    "timestamp": _now_iso(),
                 }
             except Exception as e:
                 entry = {
@@ -481,7 +447,7 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
                 "supplierId": supplier.get("id"), "supplierName": supplier.get("name"),
                 "email": supplier.get("email"), "status": "sent",
                 "messageId": sent.get("messageId"), "demo": sent.get("demo"),
-                "testMode": sent.get("testMode"), "timestamp": _now_iso(),
+                "timestamp": _now_iso(),
             }
         except Exception as e:
             # Per-recipient failure is logged and the batch continues, rather than one
