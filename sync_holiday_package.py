@@ -64,6 +64,34 @@ def filter_successful_translations(
     return successful
 
 
+def _flag_state(value):
+    """
+    Interprets an on/off flag from a Travel Compositor list response as True, False, or
+    None ("not reported / can't tell").
+
+    The None case is the important one and the reason this helper exists: a field that
+    simply isn't present in a list response carries NO information about the underlying
+    setting, so callers must be able to tell it apart from an explicit false. Collapsing
+    the two (which `x is not True` does) turns "the API didn't mention it" into "the
+    answer is no" - see sync_one_package_entry() for the real bug that caused.
+
+    Strings and numbers are accepted too, since list endpoints aren't always consistent
+    about returning JSON booleans for flags.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        if cleaned in ("true", "yes", "1"):
+            return True
+        if cleaned in ("false", "no", "0"):
+            return False
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
 def extract_translatable_fields(package_entry: Dict[str, Any]) -> Dict[str, str]:
     """Pull out title, description, ribbonText – only if present and non‑empty."""
     fields: Dict[str, str] = {}
@@ -146,16 +174,36 @@ def sync_one_package_entry(api, translator, store: StateStore,
     if package_id is None:
         return {"status": "skipped", "reason": "no 'id' field on package entry"}
 
-    # Only translate packages that are BOTH active and visible. Previously
-    # this only checked "active" — "visible" was in WRITABLE_FIELDS (passed
-    # through untouched on every PUT) but never used as a filter, so a
-    # package with active=true but visible=false would still get
-    # translated even though it's not actually shown to customers. Mirrors
-    # the "active" check: missing/non-True is treated the same as False.
-    if entry.get("active") is not True:
-        return {"status": "skipped", "package_id": package_id, "reason": "active is not true"}
-    if entry.get("visible") is not True:
-        return {"status": "skipped", "package_id": package_id, "reason": "visible is not true"}
+    # Only translate packages that are BOTH active and visible - no point spending
+    # translation budget on something customers can't see.
+    #
+    # CONFIRMED BUG FIX (real report: a package that IS active and visible in Travel
+    # Compositor was skipped with "visible is not true"): this used to test
+    # `entry.get("visible") is not True`, a strict identity check against the boolean
+    # True, which treats THREE different situations as "not visible":
+    #   1. the field is genuinely false            -> skipping is correct
+    #   2. the field is absent from the response   -> skipping is WRONG
+    #   3. the field is a string "true" / 1        -> skipping is WRONG
+    # These packages come from the LIST endpoint (GET /package/{micrositeId}), which
+    # doesn't necessarily return every field the detail/PUT shape has - and the payload
+    # builder above already assumes exactly that, copying writable fields only via
+    # `if key in original_entry`. So an absent flag is normal here, not a signal of
+    # invisibility, and treating it as false silently disabled Holiday Package
+    # translation entirely.
+    #
+    # Now only an EXPLICIT false skips. An absent or unrecognizable flag falls through
+    # and translates - matching how this function behaved before the visible filter was
+    # added, so a missing field can never again silently block all work. The raw value
+    # is echoed into the skip reason so the next case like this is diagnosable from the
+    # result alone, without reading code.
+    active_state = _flag_state(entry.get("active"))
+    if active_state is False:
+        return {"status": "skipped", "package_id": package_id,
+                "reason": f"active is false (raw value: {entry.get('active')!r})"}
+    visible_state = _flag_state(entry.get("visible"))
+    if visible_state is False:
+        return {"status": "skipped", "package_id": package_id,
+                "reason": f"visible is false (raw value: {entry.get('visible')!r})"}
 
     translatable = extract_translatable_fields(entry)
     if not translatable:
