@@ -1,5 +1,8 @@
 """
-Review UI for the DMC -> Travel Compositor Closed Tour pipeline.
+Momira Travel Platform - review UI for the DMC -> Travel Compositor pipeline.
+
+Covers all five product types: ClosedTour, Ticket, Transfer, Transport and
+Hotel. Step 1 picks the product type; each type then runs its own wizard.
 
 Restructured as a strict sequential wizard so the human always specifies
 WHAT they're doing (create/add-option/update-tour/update-option) and WHICH
@@ -38,16 +41,21 @@ if hasattr(st, "secrets"):
             pass
 
 from api_client import TravelCompositorAPI
-from schemas import HumanPreConfig, TicketHumanPreConfig, TransferHumanPreConfig
+from schemas import HumanPreConfig, TicketHumanPreConfig, TransferHumanPreConfig, TransportHumanPreConfig, HotelHumanPreConfig
 from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
+from builder import build_transport_payloads
+from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
+                     build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data
+from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
 from web_extractor import get_page_text, get_page_image_bytes
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from freeimage_client import upload_images as upload_images_freeimage
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
+import transport_matcher
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -5565,7 +5573,1273 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         return
 
 
-st.set_page_config(page_title="Momira: DMC -> Travel Compositor", layout="wide")
+# ======================================================================
+# TRANSPORT FLOW
+# Mirrors the Transfer flow's proven 3-phase queue pattern (gather ->
+# select -> review one at a time) since Transport documents are confirmed
+# to be "usually the same style as documents from transfers". The real
+# structural difference is at publish time: a Transport is TWO API calls
+# minimum - the parent record, then one Option sub-resource per occupancy
+# bracket (see builder.build_transport_payloads / schemas'
+# ContractTransportOptionVO for the confirmed additive-supplement model).
+# Uses xtp_-prefixed session keys so nothing collides with the other flows.
+# ======================================================================
+def render_transport_flow(client):
+    """Transport wizard entry point: Supplier + Currency + release window, then Input Source,
+    then hands off to render_multi_transport_flow for detection/review/matching/publish."""
+    if "tp_step1_confirmed" not in st.session_state:
+        st.session_state.tp_step1_confirmed = False
+
+    st.header("Transport — Step 2: Supplier & defaults")
+
+    if st.session_state.tp_step1_confirmed:
+        st.success(f"✅ Supplier ID: **{st.session_state.tp_cfg_supplier_id}** | "
+                   f"Currency: **{st.session_state.tp_cfg_currency}**")
+        if st.button("🔄 Change supplier / defaults", key="tp_change_action"):
+            st.session_state.tp_step1_confirmed = False
+            st.rerun()
+    else:
+        if st.session_state.suppliers_cache is None:
+            with st.spinner("Loading supplier list from Travel Compositor..."):
+                try:
+                    st.session_state.suppliers_cache = client.get_all_suppliers()
+                except Exception as e:
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.session_state.suppliers_cache = []
+
+        supplier_id_choice = None
+        if st.session_state.suppliers_cache:
+            momira_suppliers = [
+                s for s in st.session_state.suppliers_cache
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+            ]
+            if not momira_suppliers:
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
+            else:
+                supplier_options = {
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                    for s in momira_suppliers
+                }
+                selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tp_supplier_select")
+                supplier_id_choice = str(supplier_options[selected_label])
+            if st.button("🔄 Refresh supplier list", key="tp_refresh_suppliers"):
+                st.session_state.suppliers_cache = None
+                st.rerun()
+        else:
+            st.error("Could not load the supplier list from Travel Compositor.")
+            with st.expander("⚠️ Emergency manual entry"):
+                supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tp_supplier_manual")
+
+        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tp_currency")
+        release_days_in = st.number_input(
+            "Release Contract (days before departure this transport becomes bookable)",
+            min_value=0, value=5, key="tp_release_days",
+            help="Confirmed real field name is releaseContract - real values seen in live data range 5-14."
+        )
+
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tp_continue1"):
+            st.session_state.tp_cfg_supplier_id = supplier_id_choice
+            st.session_state.tp_cfg_currency = currency_in
+            st.session_state.tp_cfg_release_days = release_days_in
+            st.session_state.tp_step1_confirmed = True
+            st.rerun()
+        return
+
+    supplier_id = st.session_state.tp_cfg_supplier_id
+    currency = st.session_state.tp_cfg_currency
+    release_days = st.session_state.tp_cfg_release_days
+
+    st.header("Transport — Step 3: Input Source")
+    st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan → Hurghada, "
+              "Praslin → La Digue), priced per occupancy bracket. Rate sheets are usually the same style as "
+              "Transfer documents and often describe several routes at once - all get detected and queued below.")
+    tp_url = st.text_input("Product page URL (optional)", key="tp_url")
+    tp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
+                                accept_multiple_files=True, key="tp_files")
+    tp_hint = st.text_input("Extraction hint (optional)", key="tp_hint")
+
+    render_multi_transport_flow(client, supplier_id, currency, release_days, tp_url, tp_files, tp_hint)
+
+
+def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_url, tp_files, tp_hint):
+    """Batch/queue flow for Transports - same 3-phase pattern as render_multi_transfer_flow,
+    with a two-stage publish (parent transport, then one Option per occupancy bracket)."""
+    if "xtp_phase" not in st.session_state:
+        st.session_state.xtp_phase = "gather"
+
+    # ------------------------------------------------------------------
+    # PHASE 1: detect distinct transport products from the source provided above
+    # ------------------------------------------------------------------
+    if st.session_state.xtp_phase == "gather":
+        if not (tp_url or tp_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Detect Transport Products", disabled=not (tp_url or tp_files)):
+            with st.spinner("Gathering content and detecting distinct transport products..."):
+                try:
+                    combined_parts = []
+                    if tp_url:
+                        page_text, page_text_err = _fetch_url_text_safe(tp_url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({tp_url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
+                    for uploaded in (tp_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
+
+                    raw_text = "\n\n".join(combined_parts)
+                    detected = detect_transport_products(raw_text)
+
+                    candidates = []
+                    for t in detected:
+                        candidates.append({
+                            "label": t.get("label", ""), "service_name": t.get("service_name", ""),
+                            "departure_hint": t.get("departure_hint", ""), "arrival_hint": t.get("arrival_hint", ""),
+                            "selected": True,
+                        })
+                    if not candidates:
+                        candidates = [{"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
+                                      "selected": True}]
+
+                    st.session_state.xtp_raw_text = raw_text
+                    st.session_state.xtp_candidates = candidates
+                    st.session_state.xtp_phase = "prepare_queue"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: explicitly SELECT which transport products to review/publish
+    # ------------------------------------------------------------------
+    if st.session_state.xtp_phase == "prepare_queue":
+        candidates = st.session_state.xtp_candidates
+        if len(candidates) == 1:
+            st.subheader("Set up this Transport")
+            st.caption("Only one distinct transport product was found in this document.")
+        else:
+            st.subheader(f"{len(candidates)} distinct transport products detected - choose which to review")
+            st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
+
+        for i, cand in enumerate(candidates):
+            ccol1, ccol2 = st.columns([1, 5])
+            with ccol1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"xtp_sel_{i}")
+            with ccol2:
+                cand["label"] = st.text_input("Transport", value=cand["label"], key=f"xtp_label_{i}")
+
+        if st.button("➕ Add another transport product manually"):
+            candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
+                              "selected": True})
+            st.rerun()
+
+        new_queue = [
+            {"label": c["label"], "service_name": c["service_name"], "departure_hint": c["departure_hint"],
+             "arrival_hint": c["arrival_hint"], "data": None, "publish_status": None}
+            for c in candidates if c["selected"]
+        ]
+
+        st.caption(f"**{len(new_queue)}** transport(s) ready to review." if new_queue else
+                  "Select at least one transport product to continue.")
+
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+            st.session_state.xtp_queue = new_queue
+            st.session_state.xtp_queue_index = 0
+            st.session_state.xtp_phase = "reviewing"
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 3: review + match + publish each transport, one at a time
+    # ------------------------------------------------------------------
+    if st.session_state.xtp_phase == "reviewing":
+        idx = st.session_state.xtp_queue_index
+        queue = st.session_state.xtp_queue
+        current = queue[idx]
+        XTP_STATE_KEYS = ["xtp_phase", "xtp_raw_text", "xtp_candidates", "xtp_queue", "xtp_queue_index"]
+
+        st.subheader(f"Reviewing transport {idx + 1} of {len(queue)}: {current['label'] or '(unnamed)'}")
+
+        if st.button("🔙 Cancel this batch - return to Transport setup", key=f"xtp_cancel_{idx}"):
+            for key in XTP_STATE_KEYS:
+                st.session_state.pop(key, None)
+            _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES)
+            st.rerun()
+
+        if current["data"] is None:
+            with st.spinner("Extracting this transport's details..."):
+                try:
+                    transport_hint = None
+                    if current.get("service_name") or current.get("departure_hint") or current.get("arrival_hint"):
+                        transport_hint = (f"{current.get('service_name', '')} - "
+                                          f"{current.get('departure_hint', '')} to {current.get('arrival_hint', '')}")
+                    elif current["label"]:
+                        transport_hint = current["label"]
+                    current["data"] = extract_transport_data(st.session_state.xtp_raw_text,
+                                                              transport_hint=transport_hint, human_hint=tp_hint)
+                except Exception as e:
+                    st.error(f"Extraction failed for this transport: {friendly_error_message(e)}")
+                    current["data"] = {}
+
+        data = current["data"]
+        key_suffix = f"_{idx}"
+
+        render_skip_item_button(
+            current["label"] or "(unnamed transport)", queue, idx, "xtp_queue", "xtp_queue_index",
+            XTP_STATE_KEYS, f"xtp_skip_{idx}", widget_state_prefixes=["xtp_"] + SHARED_WIDGET_STATE_PREFIXES,
+        )
+
+        st.markdown("#### Route")
+        st.caption("Departure/arrival resolve against Travel Compositor's Transport Bases (the same master "
+                  "location list the Transport screen itself uses), not raw GPS coordinates.")
+        rcol1, rcol2 = st.columns(2)
+        with rcol1:
+            editable_field("Departure", data, "departure_name", key_suffix=key_suffix)
+        with rcol2:
+            editable_field("Arrival", data, "arrival_name", key_suffix=key_suffix)
+
+        st.markdown("#### Service")
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            editable_field("Service name", data, "service_name", key_suffix=key_suffix)
+        with scol2:
+            editable_field("Transport type hint", data, "transport_type_hint", key_suffix=key_suffix)
+        with scol3:
+            editable_field("Company name", data, "company_name", key_suffix=key_suffix)
+
+        vcol1, vcol2, vcol3 = st.columns(3)
+        with vcol1:
+            editable_field("Vehicle / aircraft model", data, "vehicle_model", key_suffix=key_suffix)
+        with vcol2:
+            editable_field("Service / flight number", data, "service_number", key_suffix=key_suffix)
+        with vcol3:
+            data["currency"] = st.selectbox(
+                "Currency", CURRENCY_OPTIONS,
+                index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
+                key=f"xtp_currency_{idx}"
+            )
+
+        ccol1, ccol2, ccol3, ccol4 = st.columns(4)
+        with ccol1:
+            data["charge_unit"] = st.selectbox(
+                "Charge unit", ["per_pax", "per_service"],
+                index=0 if data.get("charge_unit", "per_pax") != "per_service" else 1,
+                key=f"xtp_chargeunit_{idx}",
+                help="per_pax = priced per person. per_service = one flat price for the whole vehicle "
+                     "regardless of headcount (this is what enables multi-vehicle price synthesis for "
+                     "larger groups, up to the 9-pax system cap)."
+            )
+        with ccol2:
+            editable_field("Departure time", data, "departure_time", key_suffix=key_suffix)
+        with ccol3:
+            editable_field("Arrival time", data, "arrival_time", key_suffix=key_suffix)
+        with ccol4:
+            data["plus_days"] = st.number_input("Plus days", min_value=0, value=int(data.get("plus_days") or 0),
+                                                 key=f"xtp_plusdays_{idx}",
+                                                 help="Only above 0 for an overnight journey arriving a later calendar day.")
+
+        editable_field("Active travel duration (HH:MM:SS) — NOT arrival minus departure; only fill from a stated duration",
+                       data, "duration_time", key_suffix=key_suffix)
+
+        st.markdown("#### Pricing by occupancy bracket")
+        st.caption("One row per bracket the document actually states (e.g. 1-2 Pax, 3-4 Pax). Each price is "
+                  "the ACTUAL final price for that bracket - never interpolated between brackets, since real "
+                  "contracts have shown non-monotonic patterns. Brackets above 9 pax are dropped automatically "
+                  "(system cap). For a per-vehicle transport, larger groups are priced automatically as needing "
+                  "multiple vehicles. Leave Child/Infant blank (not 0) when the document states no price.")
+        br_df = pd.DataFrame(data.get("occupancy_brackets") or
+                             [{"min_occupancy": 1, "max_occupancy": 4, "price": 0.0, "child_price": None, "infant_price": None}])
+        for col in ["min_occupancy", "max_occupancy", "price", "child_price", "infant_price"]:
+            if col not in br_df.columns:
+                br_df[col] = None
+
+        def _save_brackets(edited_df):
+            rows = []
+            dropped_incomplete = 0
+            for _, row in edited_df.iterrows():
+                min_blank = pd.isna(row.get("min_occupancy"))
+                max_blank = pd.isna(row.get("max_occupancy"))
+                price_blank = pd.isna(row.get("price"))
+                if min_blank and max_blank and price_blank:
+                    continue
+                if min_blank or max_blank or price_blank:
+                    dropped_incomplete += 1
+                    continue
+                rows.append({
+                    "min_occupancy": _safe_int(row.get("min_occupancy"), fallback=1),
+                    "max_occupancy": _safe_int(row.get("max_occupancy"), fallback=1),
+                    "price": _safe_float(row.get("price"), fallback=0.0),
+                    "child_price": None if pd.isna(row.get("child_price")) else _safe_float(row.get("child_price"), fallback=0.0),
+                    "infant_price": None if pd.isna(row.get("infant_price")) else _safe_float(row.get("infant_price"), fallback=0.0),
+                })
+            data["occupancy_brackets"] = rows
+            if dropped_incomplete:
+                st.warning(f"⚠️ Dropped {dropped_incomplete} bracket row(s) missing a min, max or price - "
+                          f"all three are required to keep a row.")
+
+        editable_table("Occupancy brackets", br_df, f"xtp_brackets_{idx}", on_save=_save_brackets)
+        editable_field("Blanket child/infant rule (if the document states one instead of per-row prices)",
+                       data, "child_infant_rule_text", key_suffix=key_suffix)
+
+        st.markdown("#### Notes, validity & cancellation")
+        st.caption("Transport has no supplements/additionalServices field at all, so any priced extra "
+                  "(guide language, permit fee, etc) is folded into the description as informational text.")
+        editable_field("Additional notes (priced extras with no structured home)", data, "additional_notes",
+                       widget="text_area", height=80, key_suffix=key_suffix)
+        editable_field("Description", data, "description", widget="text_area", height=100, key_suffix=key_suffix)
+
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            editable_field("Start date (YYYY-MM-DD)", data, "start_date", key_suffix=key_suffix)
+        with dcol2:
+            editable_field("End date (YYYY-MM-DD)", data, "end_date", key_suffix=key_suffix)
+        st.caption("Inventory/availability convention: Transports are normally left open-ended (2049) so they "
+                  "stay bookable and simply pick up new prices when rates refresh.")
+
+        cancel_df = pd.DataFrame(data.get("cancellation_policy_tiers") or [{"days": 30, "fee_percentage": 0.0}])
+        for col in ["days", "fee_percentage"]:
+            if col not in cancel_df.columns:
+                cancel_df[col] = None
+
+        def _save_tp_cancel_tiers(edited_df):
+            rows = []
+            for _, row in edited_df.iterrows():
+                if pd.isna(row.get("days")):
+                    continue
+                rows.append({
+                    "days": _safe_int(row.get("days"), fallback=0),
+                    "fee_percentage": _safe_float(row.get("fee_percentage"), fallback=0.0),
+                })
+            data["cancellation_policy_tiers"] = rows
+
+        editable_table("Cancellation fee tiers (leave empty to use the standard 30-day/100%-refund default)",
+                       cancel_df, f"xtp_cancel_{idx}", on_save=_save_tp_cancel_tiers)
+        editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
+                       widget="text_area", height=80, key_suffix=key_suffix)
+
+        st.markdown("#### Which existing Transport does this update, if any?")
+        st.caption("Travel Compositor assigns Transport ids itself (e.g. TRANSPORT-412579) with no human code, "
+                  "so this app tracks its own id->route mapping locally and falls back to a route-name "
+                  "similarity match - either way, YOU always confirm before anything publishes.")
+
+        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
+        if current.get("match_route_fingerprint") != current_route_fingerprint:
+            current["match_result"] = None
+            current["match_route_fingerprint"] = current_route_fingerprint
+
+        if st.button("🔎 Check for a matching existing transport", key=f"xtp_checkmatch_{idx}"):
+            with st.spinner("Checking..."):
+                current["match_result"] = transport_matcher.resolve_transport_match(
+                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
+                )
+                current["match_route_fingerprint"] = current_route_fingerprint
+
+        match_result = current.get("match_result")
+        chosen_existing_id = None
+        if match_result:
+            if match_result.get("fetch_error"):
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a match: "
+                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
+                          f"Will create as new.")
+            if match_result.get("tracked_id"):
+                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                          f"**{match_result['tracked_id']}**.")
+                use_tracked = st.checkbox("Update that transport", value=True, key=f"xtp_usetracked_{idx}")
+                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+            elif match_result.get("fallback_candidates"):
+                options = ["Create as a NEW transport"] + [
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transport_id']} (match score {c['score']})"
+                    for c in match_result["fallback_candidates"]
+                ]
+                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
+                                  options, key=f"xtp_matchpick_{idx}")
+                if picked != options[0]:
+                    picked_idx = options.index(picked) - 1
+                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transport_id"]
+            else:
+                st.info("No existing transports found for this supplier - will create as new.")
+
+        current["confirmed_existing_id"] = chosen_existing_id
+
+        # Merge-on-update: fetch the live parent record AND its existing options so
+        # build_transport_payloads can preserve existing dates/images and match each new bracket
+        # onto the right existing Option (by min/maxPassengers overlap) instead of duplicating.
+        existing_transport_snapshot = None
+        existing_options_snapshot = None
+        if chosen_existing_id:
+            if current.get("existing_snapshot_id") != chosen_existing_id:
+                with st.spinner(f"Fetching existing transport {chosen_existing_id} and its options to merge into..."):
+                    snapshot_result = client.get_transport(supplier_id, chosen_existing_id)
+                    if isinstance(snapshot_result, dict) and "error" in snapshot_result:
+                        st.warning(f"⚠️ Couldn't fetch existing transport {chosen_existing_id} "
+                                  f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
+                                  f"document's own dates/images instead of preserving the existing ones.")
+                        current["existing_snapshot"] = None
+                        current["existing_options"] = None
+                    else:
+                        current["existing_snapshot"] = snapshot_result
+                        opts = []
+                        for opt_code in (snapshot_result.get("optionCodes") or []):
+                            opt = client.get_transport_option(supplier_id, chosen_existing_id, opt_code)
+                            if isinstance(opt, dict) and "error" not in opt:
+                                opts.append(opt)
+                        current["existing_options"] = opts
+                current["existing_snapshot_id"] = chosen_existing_id
+            existing_transport_snapshot = current.get("existing_snapshot")
+            existing_options_snapshot = current.get("existing_options")
+        else:
+            current["existing_snapshot"] = None
+            current["existing_options"] = None
+            current["existing_snapshot_id"] = None
+
+        st.markdown("#### Publish")
+        pre_config = TransportHumanPreConfig(supplier_id=supplier_id, currency=currency,
+                                              days_available_before_release=release_days)
+        build_result = build_transport_payloads(
+            pre_config, data, client,
+            existing_transport_id=chosen_existing_id,
+            existing_transport_snapshot=existing_transport_snapshot,
+            existing_options_snapshot=existing_options_snapshot,
+        )
+        current["build_result"] = build_result
+
+        match_checked = match_result is not None
+        dates_ok = bool((data.get("start_date") or "").strip()) and bool((data.get("end_date") or "").strip())
+        bases_ok = bool(build_result.get("departure_base_resolved")) and bool(build_result.get("arrival_base_resolved"))
+        option_actions = build_result.get("option_actions") or []
+        option_errors = [a for a in option_actions if a.get("option_error")]
+
+        if build_result.get("transport_error"):
+            st.error(f"⚠️ This transport can't be built yet: {build_result['transport_error']}")
+        else:
+            with st.expander("🔎 Preview payloads"):
+                st.markdown("**Transport (parent record)**")
+                st.json(build_result["transport_payload"])
+                st.markdown(f"**Options ({len(option_actions)} occupancy bracket(s))**")
+                for a in option_actions:
+                    st.caption(f"{a['action'].upper()} — `{a['code']}` "
+                              f"({a['min_occupancy']}-{a['max_occupancy']} pax)")
+                    st.json(a.get("option_payload"))
+                if build_result.get("options_to_deactivate"):
+                    st.markdown("**Options to deactivate (bracket no longer in this rate sheet)**")
+                    st.json(build_result["options_to_deactivate"])
+
+            if not bases_ok:
+                st.warning(f"⚠️ Departure and/or arrival couldn't be resolved to a real Travel Compositor "
+                          f"Transport Base (departure: {build_result.get('departure_base_match_type')}, "
+                          f"arrival: {build_result.get('arrival_base_match_type')}) - fix the names above "
+                          f"before publishing.")
+            if not dates_ok:
+                st.warning("⚠️ Start date and/or end date is blank - enter the document's real validity range "
+                          "before publishing; Travel Compositor requires both.")
+            if not option_actions:
+                st.warning("⚠️ No occupancy brackets - add at least one priced bracket above before publishing.")
+            if option_errors:
+                st.error(f"⚠️ {len(option_errors)} occupancy bracket(s) couldn't be built: "
+                        f"{option_errors[0].get('option_error')}")
+            if not match_checked:
+                st.warning("⚠️ Click **Check for a matching existing transport** above before publishing - this "
+                          "is the only safeguard against accidentally creating a duplicate.")
+
+            publish_label = (f"🚀 Publish — UPDATE existing transport {chosen_existing_id}" if chosen_existing_id
+                             else "🚀 Publish — CREATE new transport")
+            publish_disabled = (bool(build_result.get("transport_error")) or not match_checked or not dates_ok
+                                or not bases_ok or not option_actions or bool(option_errors))
+            if st.button(publish_label, type="primary", key=f"xtp_publish_{idx}", disabled=publish_disabled):
+                with st.spinner("Publishing to Travel Compositor..."):
+                    try:
+                        # STAGE 1 - the parent transport record.
+                        if chosen_existing_id:
+                            result = client.update_transport(supplier_id, build_result["transport_payload"])
+                        else:
+                            result = client.create_transport(supplier_id, build_result["transport_payload"])
+
+                        if isinstance(result, dict) and "error" in result:
+                            show_publish_error(f"publish transport **{current['label'] or '(unnamed)'}**", result)
+                        else:
+                            new_id = result.get("id") if isinstance(result, dict) else None
+                            final_id = chosen_existing_id or new_id
+                            if not final_id:
+                                st.error("❌ Travel Compositor didn't return a transport id, so the occupancy "
+                                        "brackets can't be attached. Nothing further was sent - check the "
+                                        "transport in Travel Compositor before retrying.")
+                            else:
+                                # STAGE 2 - one Option per occupancy bracket, then deactivate stale ones.
+                                option_failures = []
+                                for a in option_actions:
+                                    if not a.get("option_payload"):
+                                        continue
+                                    if a["action"] == "update":
+                                        opt_result = client.update_transport_option(supplier_id, final_id, a["option_payload"])
+                                    else:
+                                        opt_result = client.create_transport_option(supplier_id, final_id, a["option_payload"])
+                                    if isinstance(opt_result, dict) and "error" in opt_result:
+                                        option_failures.append((a["code"], opt_result))
+
+                                for stale in (build_result.get("options_to_deactivate") or []):
+                                    stale_result = client.update_transport_option(supplier_id, final_id, stale)
+                                    if isinstance(stale_result, dict) and "error" in stale_result:
+                                        option_failures.append((stale.get("code"), stale_result))
+
+                                transport_matcher.remember_transport_id(
+                                    supplier_id, data.get("departure_name", ""), data.get("arrival_name", ""), final_id
+                                )
+
+                                if option_failures:
+                                    st.error(f"⚠️ The transport itself published (id: {final_id}), but "
+                                            f"{len(option_failures)} occupancy bracket(s) failed: "
+                                            f"{', '.join(str(c) for c, _ in option_failures)}. Fix and re-publish - "
+                                            f"re-running is safe, brackets are matched and updated in place.")
+                                else:
+                                    st.success(f"✅ Published successfully (id: {final_id}) with "
+                                              f"{len(option_actions)} occupancy bracket(s).")
+                                    current["publish_status"] = "success"
+                    except Exception as e:
+                        show_publish_error(f"publish transport **{current['label'] or '(unnamed)'}**", str(e))
+
+        nav_col1, nav_col2 = st.columns(2)
+        with nav_col1:
+            if idx > 0 and st.button("⬅️ Previous", key=f"xtp_prev_{idx}"):
+                st.session_state.xtp_queue_index -= 1
+                st.rerun()
+        with nav_col2:
+            if idx < len(queue) - 1 and st.button("➡️ Next", key=f"xtp_next_{idx}"):
+                st.session_state.xtp_queue_index += 1
+                st.rerun()
+
+        if all(q.get("publish_status") == "success" for q in queue):
+            st.balloons()
+            st.success(f"🎉 All {len(queue)} transport(s) in this batch published.")
+            if st.button("🆕 Start a new batch", key="xtp_new_batch"):
+                for key in XTP_STATE_KEYS:
+                    st.session_state.pop(key, None)
+                _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES)
+                st.rerun()
+        return
+
+
+# ======================================================================
+# HOTEL FLOW
+# Deliberately a straight linear wizard rather than the batch/queue
+# pattern the other product types use: one hotel contract document
+# normally describes exactly ONE property (its many rooms/seasons/rates
+# all belong to that same hotel record), and a hotel's providerCode is
+# human-assigned up front - so there's nothing to detect-and-queue the way
+# there is for multi-route Transfer/Transport rate sheets.
+#
+# Publishing is genuinely TWO-PHASE and that's visible in the UI: the
+# hotel contract (with its rooms and meal plans) must be created first
+# because Travel Compositor assigns each room a system-generated
+# providerCode that only comes back in that response - and rates can't
+# reference a room until they have it. See builder.py's HOTEL BUILDER
+# section for the full sequencing rationale.
+# ======================================================================
+def _hp_dist_to_str(distributions):
+    """[{'adults':2,'children':1}, ...] -> '2+1, ...' (the same "Adult + child" shorthand Travel
+    Compositor's own room Distribution grid uses, so the table reads the way the system does)."""
+    parts = []
+    for d in distributions or []:
+        if isinstance(d, dict):
+            parts.append(f"{_safe_int(d.get('adults'), fallback=1)}+{_safe_int(d.get('children'), fallback=0)}")
+    return ", ".join(parts)
+
+
+def _hp_str_to_dist(text):
+    """'2+1, 1+0' -> [{'adults':2,'children':1}, {'adults':1,'children':0}]. Silently skips
+    anything unparseable rather than crashing the whole save on one typo."""
+    result = []
+    for chunk in str(text or "").replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        match = re.match(r"^(\d+)\s*\+\s*(\d+)$", chunk)
+        if match:
+            result.append({"adults": int(match.group(1)), "children": int(match.group(2))})
+        elif chunk.isdigit():
+            result.append({"adults": int(chunk), "children": 0})
+    return result
+
+
+def _hp_nums_to_str(values):
+    return ", ".join(str(_safe_float(v)) for v in (values or []))
+
+
+def _hp_str_to_nums(text):
+    result = []
+    for chunk in str(text or "").replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if chunk:
+            result.append(_safe_float(chunk, fallback=0.0))
+    return result
+
+
+def _hp_names_to_str(values):
+    return ", ".join(str(v) for v in (values or []) if str(v).strip())
+
+
+def _hp_str_to_names(text):
+    return [c.strip() for c in str(text or "").replace(";", ",").split(",") if c.strip()]
+
+
+def _hp_first_window(windows, key):
+    for w in windows or []:
+        if isinstance(w, dict) and w.get(key):
+            return w[key]
+    return ""
+
+
+def _hp_window_list(start, end):
+    start, end = str(start or "").strip(), str(end or "").strip()
+    return [{"start": start, "end": end}] if start and end else []
+
+
+def render_hotel_flow(client):
+    """Hotel wizard entry point: Supplier + hotel code + currency + release window, then Input
+    Source, then a single review screen, then the two-phase publish."""
+    if "hp_step1_confirmed" not in st.session_state:
+        st.session_state.hp_step1_confirmed = False
+
+    st.header("Hotel — Step 2: Supplier & hotel code")
+
+    if st.session_state.hp_step1_confirmed:
+        st.success(f"✅ Supplier ID: **{st.session_state.hp_cfg_supplier_id}** | "
+                   f"Hotel code: **{st.session_state.hp_cfg_provider_code}** | "
+                   f"Currency: **{st.session_state.hp_cfg_currency}**")
+        if st.button("🔄 Change supplier / hotel code", key="hp_change_action"):
+            st.session_state.hp_step1_confirmed = False
+            st.rerun()
+    else:
+        if st.session_state.suppliers_cache is None:
+            with st.spinner("Loading supplier list from Travel Compositor..."):
+                try:
+                    st.session_state.suppliers_cache = client.get_all_suppliers()
+                except Exception as e:
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.session_state.suppliers_cache = []
+
+        supplier_id_choice = None
+        if st.session_state.suppliers_cache:
+            momira_suppliers = [
+                s for s in st.session_state.suppliers_cache
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+            ]
+            if not momira_suppliers:
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
+            else:
+                supplier_options = {
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                    for s in momira_suppliers
+                }
+                selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="hp_supplier_select")
+                supplier_id_choice = str(supplier_options[selected_label])
+            if st.button("🔄 Refresh supplier list", key="hp_refresh_suppliers"):
+                st.session_state.suppliers_cache = None
+                st.rerun()
+        else:
+            st.error("Could not load the supplier list from Travel Compositor.")
+            with st.expander("⚠️ Emergency manual entry"):
+                supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="hp_supplier_manual")
+
+        provider_code_in = st.text_input(
+            "Hotel code (providerCode)", value="", key="hp_provider_code",
+            help="Human-assigned, unlike every other product type - e.g. CAI-H1. This is the identifier "
+                 "Travel Compositor keys the whole contract off, for both create and update. Re-using an "
+                 "existing code updates that hotel; a new code creates a new one."
+        )
+        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="hp_currency")
+        release_days_in = st.number_input(
+            "Release Days (days before arrival this hotel becomes bookable)",
+            min_value=0, value=7, key="hp_release_days",
+            help="Confirmed real field name is releaseDays - real value seen in live data = 7."
+        )
+
+        if st.button("➡️ Continue to Step 3", type="primary",
+                     disabled=not (supplier_id_choice and provider_code_in.strip()), key="hp_continue1"):
+            st.session_state.hp_cfg_supplier_id = supplier_id_choice
+            st.session_state.hp_cfg_provider_code = provider_code_in.strip()
+            st.session_state.hp_cfg_currency = currency_in
+            st.session_state.hp_cfg_release_days = release_days_in
+            st.session_state.hp_step1_confirmed = True
+            st.rerun()
+        return
+
+    supplier_id = st.session_state.hp_cfg_supplier_id
+    provider_code = st.session_state.hp_cfg_provider_code
+    currency = st.session_state.hp_cfg_currency
+    release_days = st.session_state.hp_cfg_release_days
+
+    if "hp_phase" not in st.session_state:
+        st.session_state.hp_phase = "gather"
+
+    # ------------------------------------------------------------------
+    # PHASE 1: gather source + extract
+    # ------------------------------------------------------------------
+    if st.session_state.hp_phase == "gather":
+        st.header("Hotel — Step 3: Input Source")
+        st.caption("A hotel contract normally covers ONE property: its rooms and allowed occupancy "
+                  "combinations, meal plans, any offers/supplements, and the rate seasons with a price per "
+                  "occupancy combination per room.")
+        hp_url = st.text_input("Hotel page URL (optional)", key="hp_url")
+        hp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
+                                     accept_multiple_files=True, key="hp_files")
+        hp_hint = st.text_input("Extraction hint (optional)", key="hp_hint")
+
+        if not (hp_url or hp_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Extract Hotel Contract", type="primary", disabled=not (hp_url or hp_files)):
+            with st.spinner("Gathering content and extracting the hotel contract..."):
+                try:
+                    combined_parts = []
+                    if hp_url:
+                        page_text, page_text_err = _fetch_url_text_safe(hp_url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({hp_url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the hotel page URL: {page_text_err}.")
+                    for uploaded in (hp_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the hotel page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
+
+                    raw_text = "\n\n".join(combined_parts)
+
+                    # A combined rate sheet covering several properties is rare but real - warn rather
+                    # than silently merging two hotels' rooms/rates into one contract.
+                    detected = detect_hotel_products(raw_text)
+                    hotel_hint = None
+                    if len(detected) > 1:
+                        st.warning(f"⚠️ This document appears to describe {len(detected)} different hotel "
+                                  f"properties: {', '.join(h.get('label', '?') for h in detected)}. Only the "
+                                  f"FIRST is being extracted - run this flow again with a different hotel code "
+                                  f"for each of the others.")
+                        hotel_hint = detected[0].get("hotelname_hint") or detected[0].get("label")
+
+                    st.session_state.hp_raw_text = raw_text
+                    st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)
+                    st.session_state.hp_phase = "reviewing"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Extraction failed: {friendly_error_message(e)}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: review everything, then publish
+    # ------------------------------------------------------------------
+    data = st.session_state.hp_data
+    HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked"]
+
+    st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
+
+    if st.button("🔙 Start over with a different document", key="hp_cancel"):
+        for key in HP_STATE_KEYS:
+            st.session_state.pop(key, None)
+        _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
+        st.rerun()
+
+    # ---- Does this hotel code already exist? (decides create vs update) ----
+    if not st.session_state.get("hp_existing_checked"):
+        with st.spinner(f"Checking whether hotel code {provider_code} already exists..."):
+            snapshot = client.get_hotel(supplier_id, provider_code)
+        if isinstance(snapshot, dict) and "error" in snapshot:
+            st.session_state.hp_existing_snapshot = None
+        else:
+            st.session_state.hp_existing_snapshot = snapshot
+        st.session_state.hp_existing_checked = True
+
+    existing_snapshot = st.session_state.get("hp_existing_snapshot")
+    if existing_snapshot:
+        st.info(f"📌 Hotel code **{provider_code}** already exists in Travel Compositor "
+                f"(“{existing_snapshot.get('hotelname')}”, contract {existing_snapshot.get('contractId')}). "
+                f"Publishing will UPDATE it. Rooms and meal plans already there that this document doesn't "
+                f"mention are preserved, not dropped.")
+    else:
+        st.info(f"🆕 Hotel code **{provider_code}** isn't in Travel Compositor yet - publishing will CREATE it.")
+    if st.button("🔄 Re-check", key="hp_recheck"):
+        st.session_state.hp_existing_checked = False
+        st.rerun()
+
+    # ---- Hotel basics ----
+    st.markdown("#### Property")
+    bcol1, bcol2, bcol3 = st.columns(3)
+    with bcol1:
+        editable_field("Hotel name", data, "hotelname")
+    with bcol2:
+        editable_field("Category", data, "category")
+    with bcol3:
+        editable_field("Chain", data, "chain")
+
+    address = data.get("address") or {}
+    data["address"] = address
+    acol1, acol2, acol3 = st.columns(3)
+    with acol1:
+        editable_field("Street address", address, "address")
+    with acol2:
+        editable_field("City / location", address, "location_name")
+    with acol3:
+        editable_field("Postal code", address, "postal_code")
+    acol4, acol5, acol6 = st.columns(3)
+    with acol4:
+        editable_field("Country", address, "country")
+    with acol5:
+        editable_field("Phone", address, "phone")
+    with acol6:
+        editable_field("Email", address, "email")
+
+    editable_field("Description", data, "description", widget="text_area", height=110)
+
+    gcol1, gcol2, gcol3, gcol4 = st.columns(4)
+    with gcol1:
+        data["infants_allowed"] = st.number_input("Infants allowed (max per booking)", min_value=0,
+                                                    value=_safe_int(data.get("infants_allowed"), fallback=2),
+                                                    key="hp_infants")
+    with gcol2:
+        data["min_children_age"] = st.number_input("Min children age", min_value=0,
+                                                     value=_safe_int(data.get("min_children_age"), fallback=0),
+                                                     key="hp_minchildage")
+    with gcol3:
+        data["max_children_age"] = st.number_input("Max children age", min_value=0,
+                                                     value=_safe_int(data.get("max_children_age"), fallback=12),
+                                                     key="hp_maxchildage")
+    with gcol4:
+        data["minimum_stay"] = st.number_input("Minimum stay (nights)", min_value=1,
+                                                 value=_safe_int(data.get("minimum_stay"), fallback=1),
+                                                 key="hp_minstay")
+    st.caption("This API supports only ONE children age range (unlike the Travel Compositor admin screen's "
+              "up-to-4-range widget), so infants and children share one combined band - 0-12 by default.")
+
+    img_df = pd.DataFrame({"url": data.get("images") or [""]})
+
+    def _hp_save_images(edited_df):
+        data["images"] = [str(u).strip() for u in edited_df["url"].tolist() if str(u or "").strip()]
+
+    editable_table("Image URLs", img_df, "hp_images", on_save=_hp_save_images)
+
+    # ---- Rooms ----
+    st.markdown("#### Rooms")
+    st.caption("“Allowed distributions” uses Travel Compositor's own Adult+child shorthand, e.g. "
+              "`1+0, 2+0, 2+1` means 1 adult; 2 adults; 2 adults + 1 child. Any combination totalling more "
+              "than 9 people is dropped automatically (system cap).")
+    rooms_df = pd.DataFrame([
+        {"name": r.get("name", ""), "allowed_distributions": _hp_dist_to_str(r.get("distributions"))}
+        for r in (data.get("rooms") or [{"name": "", "distributions": []}])
+    ])
+
+    def _hp_save_rooms(edited_df):
+        rows = []
+        for _, row in edited_df.iterrows():
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            rows.append({"name": name, "type_id": None,
+                          "distributions": _hp_str_to_dist(row.get("allowed_distributions"))})
+        data["rooms"] = rows
+
+    editable_table("Room types", rooms_df, "hp_rooms", on_save=_hp_save_rooms)
+    room_names = [r.get("name") for r in (data.get("rooms") or []) if r.get("name")]
+    if not room_names:
+        st.warning("⚠️ At least one room is required - Travel Compositor rejects a hotel contract with none.")
+    rooms_missing_dist = [r.get("name") for r in (data.get("rooms") or []) if not r.get("distributions")]
+    if rooms_missing_dist:
+        st.warning(f"⚠️ These rooms have no allowed distributions and can't publish: {', '.join(rooms_missing_dist)}")
+
+    # ---- Meal plans ----
+    st.markdown("#### Meal plans")
+    st.caption("Room Only is always added automatically at 0 cost - only list the paid add-ons here. "
+              "Base price = the 1st adult's cost; the extra-adult/child columns are comma-separated per "
+              "additional person (e.g. `0, 40` = 2nd adult free, 3rd adult +40).")
+    mp_df = pd.DataFrame([
+        {"meal_plan": m.get("meal_plan_hint", ""), "base_price": _safe_float(m.get("base_price")),
+         "extra_adult_prices": _hp_nums_to_str(m.get("adult_prices")),
+         "child_prices": _hp_nums_to_str(m.get("child_prices"))}
+        for m in (data.get("meal_plans") or [{"meal_plan_hint": "", "base_price": 0.0}])
+    ])
+
+    def _hp_save_meal_plans(edited_df):
+        rows = []
+        for _, row in edited_df.iterrows():
+            hint = str(row.get("meal_plan") or "").strip()
+            if not hint:
+                continue
+            rows.append({"meal_plan_hint": hint, "base_price": _safe_float(row.get("base_price"), fallback=0.0),
+                          "adult_prices": _hp_str_to_nums(row.get("extra_adult_prices")),
+                          "child_prices": _hp_str_to_nums(row.get("child_prices"))})
+        data["meal_plans"] = rows
+
+    editable_table("Meal plans (mapped onto Room Only / B&B / Half Board / Full Board / All Inclusive)",
+                   mp_df, "hp_mealplans", on_save=_hp_save_meal_plans)
+
+    # ---- Offers ----
+    st.markdown("#### Offers (discounts)")
+    st.caption("Type: PERCENT (e.g. 10% off), ABSOLUTE (a fixed amount off), or STAY_TO_PAY (stay 7 pay 6 - "
+              "fill Stay/Pay). Apply: LODGING, MEAL, LODGING_AND_MEAL, PER_NIGHT, PER_NIGHT_PERSON, PER_STAY "
+              "or PER_STAY_PERSON. Travel window = when the guest STAYS; booking window = when they must BOOK. "
+              "Leave Rooms blank to apply to every room.")
+    offers_df = pd.DataFrame([
+        {"name": o.get("name", ""), "type": o.get("type", "PERCENT"), "apply": o.get("apply", "LODGING"),
+         "value": _safe_float(o.get("value")), "child_value": _safe_float(o.get("child_value")),
+         "stay": o.get("stay"), "pay": o.get("pay"), "min_stay": o.get("minimum_stay"),
+         "travel_start": _hp_first_window(o.get("travel_windows"), "start"),
+         "travel_end": _hp_first_window(o.get("travel_windows"), "end"),
+         "booking_start": _hp_first_window(o.get("booking_windows"), "start"),
+         "booking_end": _hp_first_window(o.get("booking_windows"), "end"),
+         "rooms": _hp_names_to_str(o.get("room_names"))}
+        for o in (data.get("offers") or [])
+    ] or [{"name": "", "type": "PERCENT", "apply": "LODGING", "value": 0.0, "child_value": 0.0,
+           "stay": None, "pay": None, "min_stay": None, "travel_start": "", "travel_end": "",
+           "booking_start": "", "booking_end": "", "rooms": ""}])
+
+    def _hp_save_offers(edited_df):
+        rows = []
+        for _, row in edited_df.iterrows():
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            rows.append({
+                "name": name,
+                "type": str(row.get("type") or "PERCENT").strip().upper(),
+                "apply": str(row.get("apply") or "LODGING").strip().upper(),
+                "value": _safe_float(row.get("value"), fallback=0.0),
+                "child_value": _safe_float(row.get("child_value"), fallback=0.0),
+                "stay": None if pd.isna(row.get("stay")) else _safe_int(row.get("stay")),
+                "pay": None if pd.isna(row.get("pay")) else _safe_int(row.get("pay")),
+                "minimum_stay": None if pd.isna(row.get("min_stay")) else _safe_int(row.get("min_stay")),
+                "travel_windows": _hp_window_list(row.get("travel_start"), row.get("travel_end")),
+                "booking_windows": _hp_window_list(row.get("booking_start"), row.get("booking_end")),
+                "room_names": _hp_str_to_names(row.get("rooms")),
+            })
+        data["offers"] = rows
+
+    editable_table("Offers", offers_df, "hp_offers", on_save=_hp_save_offers)
+
+    # ---- Supplements ----
+    st.markdown("#### Supplements (extra charges)")
+    st.caption("Same shape as Offers, but type is only PERCENT or ABSOLUTE.")
+    supp_df = pd.DataFrame([
+        {"name": s.get("name", ""), "type": s.get("type", "ABSOLUTE"), "apply": s.get("apply", "LODGING"),
+         "value": _safe_float(s.get("value")), "child_value": _safe_float(s.get("child_value")),
+         "travel_start": _hp_first_window(s.get("travel_windows"), "start"),
+         "travel_end": _hp_first_window(s.get("travel_windows"), "end"),
+         "rooms": _hp_names_to_str(s.get("room_names"))}
+        for s in (data.get("supplements") or [])
+    ] or [{"name": "", "type": "ABSOLUTE", "apply": "LODGING", "value": 0.0, "child_value": 0.0,
+           "travel_start": "", "travel_end": "", "rooms": ""}])
+
+    def _hp_save_supplements(edited_df):
+        rows = []
+        for _, row in edited_df.iterrows():
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            rows.append({
+                "name": name,
+                "type": str(row.get("type") or "ABSOLUTE").strip().upper(),
+                "apply": str(row.get("apply") or "LODGING").strip().upper(),
+                "value": _safe_float(row.get("value"), fallback=0.0),
+                "child_value": _safe_float(row.get("child_value"), fallback=0.0),
+                "travel_windows": _hp_window_list(row.get("travel_start"), row.get("travel_end")),
+                "room_names": _hp_str_to_names(row.get("rooms")),
+            })
+        data["supplements"] = rows
+
+    editable_table("Supplements", supp_df, "hp_supplements", on_save=_hp_save_supplements)
+
+    # ---- Rates / seasons / prices ----
+    st.markdown("#### Rates, seasons & prices")
+    if not data.get("rates"):
+        data["rates"] = [{"name": data.get("hotelname") or "Standard Rates", "minimum_stay": 1,
+                          "seasons": [], "stop_sales": [], "offer_names": [], "supplement_names": []}]
+
+    for r_idx, rate in enumerate(data["rates"]):
+        with st.expander(f"Rate: {rate.get('name') or '(unnamed)'} "
+                          f"({len(rate.get('seasons') or [])} season(s))", expanded=(r_idx == 0)):
+            editable_field("Rate name", rate, "name", key_suffix=f"_hprate{r_idx}")
+
+            rate["offer_names"] = _hp_str_to_names(st.text_input(
+                "Offers applied to this rate (comma-separated, must match names above)",
+                value=_hp_names_to_str(rate.get("offer_names")), key=f"hp_rate_offers_{r_idx}"))
+            rate["supplement_names"] = _hp_str_to_names(st.text_input(
+                "Supplements applied to this rate (comma-separated, must match names above)",
+                value=_hp_names_to_str(rate.get("supplement_names")), key=f"hp_rate_supps_{r_idx}"))
+
+            if not rate.get("seasons"):
+                st.warning("⚠️ This rate has no seasons - add at least one with dates and prices below.")
+                if st.button("➕ Add a season", key=f"hp_addseason_{r_idx}"):
+                    rate.setdefault("seasons", []).append(
+                        {"name": "Season 1", "date_ranges": [], "price_type": "DISTRIBUTION",
+                         "minimum_stay": 1, "room_prices": [], "meal_plans": []})
+                    st.rerun()
+
+            for s_idx, season in enumerate(rate.get("seasons") or []):
+                st.markdown(f"**Season {s_idx + 1}: {season.get('name') or '(unnamed)'}**")
+                scol1, scol2 = st.columns([3, 1])
+                with scol1:
+                    editable_field("Season name", season, "name", key_suffix=f"_hpseason{r_idx}_{s_idx}")
+                with scol2:
+                    season["price_type"] = st.selectbox(
+                        "Price type", ["DISTRIBUTION", "PAX"],
+                        index=0 if (season.get("price_type") or "DISTRIBUTION").upper() != "PAX" else 1,
+                        key=f"hp_pricetype_{r_idx}_{s_idx}",
+                        help="DISTRIBUTION = one flat price per adults+children combination (the normal case). "
+                             "PAX = a base rate plus incremental per-extra-person charges."
+                    )
+
+                dr_df = pd.DataFrame(season.get("date_ranges") or [{"start": "", "end": ""}])
+                for col in ["start", "end"]:
+                    if col not in dr_df.columns:
+                        dr_df[col] = ""
+
+                def _hp_save_date_ranges(edited_df, _season=season):
+                    rows = []
+                    for _, row in edited_df.iterrows():
+                        start, end = str(row.get("start") or "").strip(), str(row.get("end") or "").strip()
+                        if start and end:
+                            rows.append({"start": start, "end": end})
+                    _season["date_ranges"] = rows
+
+                editable_table("Season date ranges (YYYY-MM-DD; several rows allowed for a split season)",
+                               dr_df, f"hp_dr_{r_idx}_{s_idx}", on_save=_hp_save_date_ranges)
+
+                # One priced-distribution table per room in this season.
+                existing_room_prices = {rp.get("room_name"): rp for rp in (season.get("room_prices") or [])}
+                for rm_name in room_names:
+                    rp = existing_room_prices.get(rm_name) or {"room_name": rm_name, "units_quota": 20,
+                                                                "units_on_request": 0, "distribution_prices": []}
+                    existing_room_prices[rm_name] = rp
+
+                    qcol1, qcol2 = st.columns(2)
+                    with qcol1:
+                        rp["units_quota"] = st.number_input(
+                            f"{rm_name} — quota (rooms allotted)", min_value=0,
+                            value=_safe_int(rp.get("units_quota"), fallback=20),
+                            key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
+                            help="Defaults to 20 when the contract doesn't state an allotment.")
+                    with qcol2:
+                        rp["units_on_request"] = st.number_input(
+                            f"{rm_name} — on request", min_value=0,
+                            value=_safe_int(rp.get("units_on_request"), fallback=0),
+                            key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
+                            help="Defaults to 0 when the contract doesn't state one.")
+
+                    dp_df = pd.DataFrame(rp.get("distribution_prices") or [{"adults": 1, "children": 0, "amount": 0.0}])
+                    for col in ["adults", "children", "amount"]:
+                        if col not in dp_df.columns:
+                            dp_df[col] = None
+
+                    def _hp_save_dist_prices(edited_df, _rp=rp):
+                        rows = []
+                        for _, row in edited_df.iterrows():
+                            if pd.isna(row.get("adults")) or pd.isna(row.get("amount")):
+                                continue
+                            rows.append({
+                                "adults": _safe_int(row.get("adults"), fallback=1),
+                                "children": 0 if pd.isna(row.get("children")) else _safe_int(row.get("children")),
+                                "amount": _safe_float(row.get("amount"), fallback=0.0),
+                            })
+                        _rp["distribution_prices"] = rows
+
+                    editable_table(f"{rm_name} — price per occupancy combination", dp_df,
+                                   f"hp_dp_{r_idx}_{s_idx}_{rm_name}", on_save=_hp_save_dist_prices)
+
+                season["room_prices"] = [existing_room_prices[n] for n in room_names if n in existing_room_prices]
+                st.divider()
+
+            if st.button("➕ Add another season", key=f"hp_addseason2_{r_idx}"):
+                rate.setdefault("seasons", []).append(
+                    {"name": f"Season {len(rate.get('seasons') or []) + 1}", "date_ranges": [],
+                     "price_type": "DISTRIBUTION", "minimum_stay": 1, "room_prices": [], "meal_plans": []})
+                st.rerun()
+
+            # ---- Stop sales ----
+            st.markdown("**Stop sales (blackout dates per room)**")
+            st.caption("⚠️ Submitted by room NAME only - Travel Compositor's API never exposes the numeric "
+                      "room id these normally reference, so this relies on the server matching by name. Not "
+                      "yet confirmed against a live upload; check the result in Travel Compositor afterwards.")
+            ss_df = pd.DataFrame([
+                {"room_name": s.get("room_name", ""),
+                 "start": _hp_first_window(s.get("date_ranges"), "start"),
+                 "end": _hp_first_window(s.get("date_ranges"), "end")}
+                for s in (rate.get("stop_sales") or [])
+            ] or [{"room_name": "", "start": "", "end": ""}])
+
+            def _hp_save_stop_sales(edited_df, _rate=rate):
+                rows = []
+                for _, row in edited_df.iterrows():
+                    rm = str(row.get("room_name") or "").strip()
+                    windows = _hp_window_list(row.get("start"), row.get("end"))
+                    if rm and windows:
+                        rows.append({"room_name": rm, "date_ranges": windows})
+                _rate["stop_sales"] = rows
+
+            editable_table("Stop sales", ss_df, f"hp_ss_{r_idx}", on_save=_hp_save_stop_sales)
+
+    # ---- Cancellation ----
+    st.markdown("#### Cancellation policy")
+    st.caption("Hotel has no structured cancellation field at all, so this text is what actually reaches "
+              "Voucher Remarks - the only place the policy is visible to staff and customers.")
+    hcancel_df = pd.DataFrame(data.get("cancellation_policy_tiers") or [{"days": 30, "fee_percentage": 0.0}])
+    for col in ["days", "fee_percentage"]:
+        if col not in hcancel_df.columns:
+            hcancel_df[col] = None
+
+    def _hp_save_cancel(edited_df):
+        rows = []
+        for _, row in edited_df.iterrows():
+            if pd.isna(row.get("days")):
+                continue
+            rows.append({"days": _safe_int(row.get("days"), fallback=0),
+                          "fee_percentage": _safe_float(row.get("fee_percentage"), fallback=0.0)})
+        data["cancellation_policy_tiers"] = rows
+
+    editable_table("Cancellation fee tiers (leave empty to use the standard 30-day/100%-refund default)",
+                   hcancel_df, "hp_cancel", on_save=_hp_save_cancel)
+    editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
+                   widget="text_area", height=90)
+
+    # ------------------------------------------------------------------
+    # PUBLISH - two phases, in order
+    # ------------------------------------------------------------------
+    st.markdown("#### Publish")
+    pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
+                                      currency=currency, days_available_before_release=release_days)
+    contract_result = build_hotel_contract_payload(pre_config, data, existing_hotel_snapshot=existing_snapshot)
+
+    if contract_result.get("hotel_error"):
+        st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")
+        return
+
+    with st.expander("🔎 Preview hotel contract payload (phase 1)"):
+        st.json(contract_result["hotel_payload"])
+
+    seasons_total = sum(len(r.get("seasons") or []) for r in (data.get("rates") or []))
+    priced_rooms = sum(
+        1 for r in (data.get("rates") or []) for s in (r.get("seasons") or [])
+        for rp in (s.get("room_prices") or []) if rp.get("distribution_prices")
+    )
+    st.caption(f"Ready to publish: **{len(contract_result['hotel_payload'].get('rooms') or [])}** room(s), "
+              f"**{len(contract_result['hotel_payload'].get('mealPlans') or [])}** meal plan(s), "
+              f"**{len(data.get('offers') or [])}** offer(s), **{len(data.get('supplements') or [])}** "
+              f"supplement(s), **{len(data.get('rates') or [])}** rate(s) with **{seasons_total}** season(s).")
+
+    rooms_ok = bool(room_names) and not rooms_missing_dist
+    if not priced_rooms:
+        st.warning("⚠️ No room in any season has prices yet - the hotel and its rooms would publish, but "
+                  "nothing would be sellable.")
+
+    if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
+                 type="primary", key="hp_publish", disabled=not rooms_ok):
+        progress = st.container()
+        try:
+            # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
+            with st.spinner("Phase 1 of 2 — publishing the hotel contract, rooms and meal plans..."):
+                if existing_snapshot:
+                    hotel_response = client.update_hotel(supplier_id, contract_result["hotel_payload"])
+                else:
+                    hotel_response = client.create_hotel(supplier_id, contract_result["hotel_payload"])
+
+            if isinstance(hotel_response, dict) and "error" in hotel_response:
+                show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
+                return
+
+            progress.success("✅ Phase 1 — hotel contract, rooms and meal plans published.")
+
+            # Travel Compositor assigns each room its providerCode here - phase 2 can't run without them.
+            room_map = resolve_room_provider_codes(hotel_response.get("rooms") or [])
+            unresolved = [n for n in room_names if not room_map.get(n)]
+            if unresolved:
+                progress.warning(f"⚠️ Travel Compositor didn't return a code for these room(s): "
+                                f"{', '.join(unresolved)}. Their prices will be skipped in phase 2.")
+
+            # ---- PHASE 2a: offers ----
+            offer_map = {}
+            offer_results = build_hotel_offer_payloads(data.get("offers") or [], room_map,
+                                                        existing_hotel_snapshot=existing_snapshot)
+            offer_failures = []
+            with st.spinner("Phase 2 of 2 — publishing offers..."):
+                for offer_data, res in zip(data.get("offers") or [], offer_results):
+                    name = offer_data.get("name")
+                    if res["action"] == "skip_duplicate":
+                        offer_map[name] = res.get("matched_provider_code")
+                        continue
+                    if res.get("offer_error") or not res.get("offer_payload"):
+                        offer_failures.append((name, res.get("offer_error")))
+                        continue
+                    resp = client.create_hotel_offer(supplier_id, provider_code, res["offer_payload"])
+                    if isinstance(resp, dict) and "error" in resp:
+                        offer_failures.append((name, resp.get("message")))
+                    else:
+                        offer_map[name] = resp.get("providerCode") if isinstance(resp, dict) else None
+
+            # ---- PHASE 2b: supplements ----
+            supplement_map = {}
+            supp_results = build_hotel_supplement_payloads(data.get("supplements") or [], room_map,
+                                                            existing_hotel_snapshot=existing_snapshot)
+            supp_failures = []
+            with st.spinner("Phase 2 of 2 — publishing supplements..."):
+                for supp_data, res in zip(data.get("supplements") or [], supp_results):
+                    name = supp_data.get("name")
+                    if res["action"] == "skip_duplicate":
+                        supplement_map[name] = res.get("matched_provider_code")
+                        continue
+                    if res.get("supplement_error") or not res.get("supplement_payload"):
+                        supp_failures.append((name, res.get("supplement_error")))
+                        continue
+                    resp = client.create_hotel_supplement(supplier_id, provider_code, res["supplement_payload"])
+                    if isinstance(resp, dict) and "error" in resp:
+                        supp_failures.append((name, resp.get("message")))
+                    else:
+                        supplement_map[name] = resp.get("providerCode") if isinstance(resp, dict) else None
+
+            # ---- PHASE 2c: rates (needs the room/offer/supplement codes resolved above) ----
+            rate_results = build_hotel_rate_payloads(data.get("rates") or [], room_map, offer_map,
+                                                      supplement_map, existing_hotel_snapshot=existing_snapshot)
+            rate_failures = []
+            with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
+                for res in rate_results:
+                    if res.get("rate_error") or not res.get("rate_payload"):
+                        rate_failures.append((res.get("rate_payload", {}).get("name"), res.get("rate_error")))
+                        continue
+                    if res["action"] == "update":
+                        resp = client.update_hotel_rates(supplier_id, provider_code, res["rate_payload"])
+                    else:
+                        resp = client.create_hotel_rates(supplier_id, provider_code, res["rate_payload"])
+                    if isinstance(resp, dict) and "error" in resp:
+                        rate_failures.append((res["rate_payload"].get("name"), resp.get("message")))
+
+            all_failures = offer_failures + supp_failures + rate_failures
+            if all_failures:
+                st.error("⚠️ The hotel contract published, but some parts failed:\n\n" + "\n".join(
+                    f"- **{name or '(unnamed)'}**: {err}" for name, err in all_failures
+                ) + "\n\nFix the details above and publish again - re-running is safe: rooms, rates and "
+                    "seasons are matched and updated in place rather than duplicated.")
+            else:
+                st.balloons()
+                st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
+                          f"offers, supplements and {seasons_total} season(s) of prices.")
+                if st.button("🆕 Start another hotel", key="hp_new"):
+                    for key in HP_STATE_KEYS:
+                        st.session_state.pop(key, None)
+                    _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
+                    st.rerun()
+        except Exception as e:
+            show_publish_error(f"publish hotel **{provider_code}**", str(e))
+
+
+st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
 # built almost entirely on rem units, so scaling the ROOT font-size (rather
@@ -5589,8 +6863,8 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-st.title("DMC → Travel Compositor: Closed Tour Draft Builder")
-st.caption("Build version: 2026-07-29-geolocation-search-and-pick — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.title("Momira Travel Platform")
+st.caption("Build version: 2026-08-08-transport-and-hotel-ui — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 
@@ -5614,10 +6888,16 @@ if st.session_state.product_type is not None:
 
 if st.session_state.product_type is None:
     st.header("Step 1 — What do you want to work on?")
-    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket", "Transfer"], key="pt_choice_radio")
-    st.caption("ClosedTour = multi-day tour (itinerary, room-occupancy pricing). "
-              "Ticket = single-destination excursion/activity, no overnight, passenger-type pricing. "
-              "Transfer = point-to-point or zone-to-zone vehicle transfer (e.g. airport-to-hotel).")
+    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel"],
+                          key="pt_choice_radio")
+    st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
+              "**Ticket** = single-destination excursion/activity, no overnight, passenger-type pricing. "
+              "**Transfer** = short point-to-point or zone-to-zone vehicle transfer between an "
+              "airport/station/harbour and a hotel, using geolocation. "
+              "**Transport** = a connection between two Travel Compositor destinations (e.g. Aswan → "
+              "Hurghada), priced per occupancy bracket. "
+              "**Hotel** = a full accommodation contract: rooms, meal plans, offers, supplements and "
+              "rate seasons.")
     if st.button("➡️ Continue", type="primary"):
         st.session_state.product_type = pt_choice
         st.rerun()
@@ -5629,6 +6909,14 @@ if st.session_state.product_type == "Ticket":
 
 if st.session_state.product_type == "Transfer":
     render_transfer_flow(client)
+    st.stop()
+
+if st.session_state.product_type == "Transport":
+    render_transport_flow(client)
+    st.stop()
+
+if st.session_state.product_type == "Hotel":
+    render_hotel_flow(client)
     st.stop()
 
 
