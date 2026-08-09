@@ -6907,13 +6907,35 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-08-durable-storage — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-storage-healthcheck — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
 # looks identical either way: it silently re-translates content already paid for and
 # forgets route matches a human confirmed, with no symptom an operator would notice.
-if not platform_store.is_durable():
+#
+# This asks platform_store.health(), which does a real write-and-read-back against the
+# database - NOT is_durable(), which only checks that a DATABASE_URL exists. The
+# difference matters: a wrong password, a paused project or an IPv6-only connection
+# string all satisfy is_durable() and then fail silently on every read. Those are the
+# realistic misconfigurations, so they get their own loud red state rather than being
+# indistinguishable from success.
+_storage = platform_store.health()
+if _storage["ok"] and _storage["durable"]:
+    st.caption(f"💾 Memory: {_storage['detail']} — connection verified.")
+elif _storage["mode"] == "postgres":
+    st.error(
+        "🚨 **`DATABASE_URL` is set, but the database is not answering — so nothing is being "
+        "remembered.** This is the dangerous case: the setting looks correct, and the platform "
+        "keeps working, but every translation will be paid for again and every confirmed route "
+        "match will be lost.\n\n"
+        f"The database said:\n\n`{_storage['error']}`\n\n"
+        "Usual causes: a wrong database password; the `[YOUR-PASSWORD]` placeholder or its "
+        "square brackets left in the string; a password containing `@ : / ? # %` that needs "
+        "percent-encoding; the *Direct connection* string used instead of the *Session pooler* "
+        "one (direct is IPv6-only and unreachable from here); or a paused Supabase project."
+    )
+else:
     st.warning(
         "⚠️ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
         "so what has already been translated and which routes map to which Travel Compositor id "
@@ -6921,6 +6943,33 @@ if not platform_store.is_durable():
         "translate the same content again, and re-confirming route matches. Add a `DATABASE_URL` "
         "(any hosted Postgres) to fix it."
     )
+    if _storage["error"]:
+        st.caption(f"Detail: {_storage['error']}")
+
+with st.expander("💾 What the platform remembers", expanded=False):
+    st.caption(f"Storage: {_storage['detail']}")
+    if st.button("🔌 Test the database connection now", key="storage_health_btn"):
+        _fresh = platform_store.health(force=True)
+        if _fresh["ok"] and _fresh["durable"]:
+            st.success(f"Connected. Wrote a row and read it back from {_fresh['detail']}.")
+        elif _fresh["mode"] == "local":
+            st.warning("Running on a local file — nothing here survives a redeploy.")
+        else:
+            st.error(f"Could not reach the database: {_fresh['error']}")
+    _counts = platform_store.stats()
+    if _counts:
+        # Namespace names are internal; say what each one actually means to an operator.
+        _labels = {
+            "translation_state": "translated entities tracked",
+            "transfer_matches": "confirmed transfer route matches",
+            "transport_matches": "confirmed transport route matches",
+            "standing_notes": "standing supplier notes",
+            "hotel_matches": "confirmed hotel matches",
+        }
+        for _ns, _n in sorted(_counts.items()):
+            st.write(f"- **{_n}** {_labels.get(_ns, _ns)}")
+    else:
+        st.caption("Nothing stored yet. This fills up as you translate and confirm route matches.")
 
 
 # ======================================================================

@@ -37,6 +37,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -58,8 +59,9 @@ def _database_url() -> Optional[str]:
 
 
 def is_durable() -> bool:
-    """True when state survives a redeploy. False means a local file is in use, which
-    on Streamlit Cloud is wiped on restart."""
+    """True when a Postgres URL is CONFIGURED. This is a cheap settings check, not proof
+    that the database answers - a typo in the password looks identical to a working setup
+    here. Use health() when the answer actually matters."""
     return _database_url() is not None
 
 
@@ -264,14 +266,110 @@ def delete(namespace: str, key: str) -> bool:
         return False
 
 
+# ----------------------------------------------------------------------
+# Health check
+#
+# WHY THIS EXISTS: is_durable() only asks "is DATABASE_URL set?". Every way this can be
+# misconfigured - wrong password, wrong host, project paused, IPv6-only direct connection
+# string used from an IPv4 host - passes that check and then fails at the first read. And
+# every read here deliberately swallows its exception and returns None, because losing a
+# cache lookup must never abort an upload. Those two behaviours combine badly: the app
+# says "durable", writes nothing, reads nothing, and looks entirely healthy while
+# forgetting everything. health() is the only thing in this module that does a REAL
+# round trip and reports the raw failure.
+_HEALTH_CACHE = None  # (url, result, monotonic timestamp)
+_HEALTH_TTL_SECONDS = 60
+_HEALTH_NAMESPACE = "__healthcheck__"
+
+
+def _scrub(text: str, url: Optional[str]) -> str:
+    """Driver errors shouldn't quote the password back into a UI or a log. psycopg2 does
+    not normally include it, but 'normally' is not a guarantee worth taking with a
+    credential, so it is removed explicitly."""
+    if not url:
+        return text
+    try:
+        creds = url.split("://", 1)[1].split("@", 1)[0]
+        password = creds.split(":", 1)[1] if ":" in creds else ""
+    except Exception:
+        password = ""
+    if password and password in text:
+        text = text.replace(password, "***")
+    return text
+
+
+def health(force: bool = False) -> Dict[str, Any]:
+    """Actually writes a row, reads it back and deletes it. Returns:
+
+        mode    "postgres" | "local"
+        ok      did the round trip succeed
+        durable will this data still be here after a redeploy
+        detail  one line for a human
+        error   the raw (password-scrubbed) failure, or None
+
+    Cached for a minute, because Streamlit re-runs the whole script on every widget
+    interaction and this must not become a database round trip per keystroke. Pass
+    force=True from a "test connection" button."""
+    global _HEALTH_CACHE
+    url = _database_url()
+    now = time.monotonic()
+    if not force and _HEALTH_CACHE is not None:
+        cached_url, cached_result, ts = _HEALTH_CACHE
+        if cached_url == url and (now - ts) < _HEALTH_TTL_SECONDS:
+            return dict(cached_result)
+
+    if url is None:
+        result = {"mode": "local", "ok": True, "durable": False,
+                  "detail": describe(), "error": None}
+    elif _psycopg() is None:
+        result = {"mode": "local", "ok": False, "durable": False,
+                  "detail": "DATABASE_URL is set, but the psycopg2 driver is not installed, "
+                            "so a local file is being used and nothing will survive a redeploy.",
+                  "error": "psycopg2 is not installed - add psycopg2-binary to requirements.txt"}
+    else:
+        try:
+            probe = {"checked_at": datetime.now(timezone.utc).isoformat()}
+            payload = json.dumps(probe)
+            with _connect() as (conn, is_pg):
+                _ensure_schema(conn, is_pg)
+                p = _ph(is_pg)
+                cur = conn.cursor()
+                cur.execute(
+                    f"""INSERT INTO platform_state (namespace, key, value, updated_at)
+                        VALUES ({p}, {p}, {p}, {p})
+                        ON CONFLICT (namespace, key)
+                        DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                    (_HEALTH_NAMESPACE, "probe", payload, probe["checked_at"]),
+                )
+                # Read it back rather than trusting the write. A connection can be open and
+                # a permission or replica problem still make the write a no-op.
+                cur.execute(
+                    f"SELECT value FROM platform_state WHERE namespace={p} AND key={p}",
+                    (_HEALTH_NAMESPACE, "probe"))
+                row = cur.fetchone()
+            if not row or json.loads(row[0]) != probe:
+                raise RuntimeError("the probe row was written but could not be read back")
+            result = {"mode": "postgres", "ok": True, "durable": True,
+                      "detail": describe(), "error": None}
+        except Exception as e:
+            result = {"mode": "postgres", "ok": False, "durable": False,
+                      "detail": "DATABASE_URL is set, but the database did not answer. Nothing "
+                                "is being remembered.",
+                      "error": _scrub(f"{type(e).__name__}: {e}", url).strip()}
+
+    _HEALTH_CACHE = (url, result, now)
+    return dict(result)
+
+
 def stats() -> Dict[str, int]:
-    """Row count per namespace - for a UI panel showing what the platform remembers."""
+    """Row count per namespace - for a UI panel showing what the platform remembers. The
+    health probe's own row is hidden; it is bookkeeping, not something the platform learned."""
     try:
         with _connect() as (conn, is_pg):
             _ensure_schema(conn, is_pg)
             cur = conn.cursor()
             cur.execute("SELECT namespace, COUNT(*) FROM platform_state GROUP BY namespace")
-            return {ns: int(n) for ns, n in cur.fetchall()}
+            return {ns: int(n) for ns, n in cur.fetchall() if ns != _HEALTH_NAMESPACE}
     except Exception as e:
         print(f"[platform_store] stats failed: {e}")
         return {}
