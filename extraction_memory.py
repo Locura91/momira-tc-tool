@@ -52,12 +52,12 @@ _APPLY_AFTER = 2
 
 # Values longer than this are recorded but never used as a lookup key - they are unlikely
 # to recur character-for-character and would bloat the per-supplier row.
-_MAX_VALUE_CHARS = 4000
+_MAX_VALUE_CHARS = 600
 
 # Per (supplier, product type, field), keep at most this many distinct mappings; the
 # least-recently-seen is dropped. Stops a field whose value is unique per service (a
 # service name, say) from growing without limit.
-_MAX_MAPPINGS_PER_FIELD = 100
+_MAX_MAPPINGS_PER_FIELD = 40
 
 # Fields never learned at all. Notes have their own deliberate mechanism in
 # service_notes.py - learning them here would apply a one-off remark to every future
@@ -72,11 +72,28 @@ _NEVER_LEARN = {
 # Recorded, shown in the memory panel, but never pre-filled. See the module docstring.
 _APPLY_BLOCKED_PATTERNS = (
     "date", "price", "amount", "cost", "fee", "rate", "tariff", "supplement",
+    "time",          # departure_time/arrival_time: an extractor default, see below
 )
+
+# CONFIRMED REAL BUG (audit): the block list was name-based only, and the extractor emits a
+# FIXED DEFAULT for these when a document doesn't state them - every transfer comes out
+# charge_unit="per_pax", currency="EUR", is_zone_based=False, min/max_occupancy=1/4, and
+# every transport departure_time="09:00:00". Because the default is byte-identical in every
+# document, two corrections in a row look like a confident supplier-wide rule and get
+# applied to the next document, which may genuinely be per-pax, or genuinely EUR, or
+# genuinely depart at 09:00. charge_unit decides whether a price is multiplied by headcount,
+# so this is a money error of exactly the class the price block exists to prevent. They are
+# still RECORDED and visible - just never auto-filled.
+_APPLY_BLOCKED_FIELDS = {
+    "charge_unit", "currency", "is_zone_based", "min_occupancy", "max_occupancy",
+    "plus_days", "price_type", "min_pax", "max_pax",
+}
 
 
 def _apply_blocked(field: str) -> bool:
     f = field.lower()
+    if f in _APPLY_BLOCKED_FIELDS:
+        return True
     return any(p in f for p in _APPLY_BLOCKED_PATTERNS)
 
 
@@ -146,7 +163,13 @@ def record_corrections(supplier_id: str, product_type: str,
     Returns the corrections recorded, for a UI that wants to say what was learned."""
     if not (supplier_id and product_type) or not isinstance(final, dict):
         return []
-    extracted = extracted or {}
+    if not extracted:
+        # CONFIRMED REAL BUG (audit): when extraction throws, the flow sets data = {} and a
+        # human types the whole service in by hand. Comparing against {} turned every hand-
+        # typed value into an "empty -> X" rule, and the next document that merely left a
+        # field blank was silently pre-filled from an unrelated service. Nothing extracted
+        # means nothing was corrected.
+        return []
     row = _load(supplier_id, product_type)
     fields = row.setdefault("fields", {})
     now = datetime.now(timezone.utc).isoformat()
@@ -185,8 +208,10 @@ def record_corrections(supplier_id: str, product_type: str,
                          "count": entry["count"], "applies": entry["count"] >= _APPLY_AFTER
                          and not _apply_blocked(field)})
 
-    if recorded:
-        _save(supplier_id, product_type, row)
+    if recorded and not _save(supplier_id, product_type, row):
+        # Say nothing was learned rather than let the UI report a success the store refused.
+        print("[extraction_memory] corrections could NOT be saved - nothing was learned")
+        return []
     return recorded
 
 
@@ -305,6 +330,7 @@ def prepare(supplier_id: str, product_type: str, item: Dict[str, Any],
     learn nothing, or learn nonsense, and nothing on screen would reveal it."""
     data = item.get(data_key) or {}
     item["_raw"] = snapshot(data)
+    item["_committed"] = False
     applied = apply_learned(supplier_id, product_type, data)
     item["_learned_applied"] = applied
     return applied
@@ -312,7 +338,18 @@ def prepare(supplier_id: str, product_type: str, item: Dict[str, Any],
 
 def commit(supplier_id: str, product_type: str, item: Dict[str, Any],
            service_label: str = "", data_key: str = "data") -> List[Dict[str, Any]]:
-    """The counterpart to prepare(), called on a SUCCESSFUL publish."""
+    """The counterpart to prepare(), called on a SUCCESSFUL publish.
+
+    Runs at most ONCE per extraction. CONFIRMED REAL BUG (audit): the Publish button stays
+    live after a successful publish, and the app itself tells an operator to re-publish
+    after a partial failure ("re-running is safe"). Each click called commit() again with
+    the identical before/after, so one document could push a correction's confidence from 1
+    to 2 and promote a single one-off edit into a supplier-wide rule that pre-fills every
+    future upload. Confidence has to mean "seen on N separate documents", not "clicked N
+    times". prepare() clears the flag, so a genuinely re-extracted item can commit again."""
+    if item.get("_committed"):
+        return []
+    item["_committed"] = True
     return record_corrections(supplier_id, product_type, item.get("_raw") or {},
                               item.get(data_key) or {}, service_label)
 

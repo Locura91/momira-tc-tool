@@ -77,7 +77,8 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
         # have to be supplied by a human. Everything else works identically.
         "list_fn": None, "list_keys": (), "id_field": "code",
         "fetch_fn": "get_closed_tour", "update_fn": "update_closed_tour",
-        "full_in_list": False, "shape": SHAPE_DATASHEETS,
+        # list_services() fetches each tour in full by code, so plan() must not fetch again.
+        "full_in_list": True, "shape": SHAPE_DATASHEETS,
     },
 }
 
@@ -176,8 +177,20 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split()).strip().lower()
 
 
-def read_field(record: Dict[str, Any], product_type: str, target: str) -> Dict[str, str]:
-    """The field's current text, per language. Returns {language: text}."""
+# Fields that are a LIST of bullet strings rather than one block of text. A Ticket's
+# includes/excludes are List[str] (schemas.TicketDatasheetEN) - treating them as text would
+# stringify the Python list into the field, so "Lunch", "Guide" would be PUT back as the
+# literal characters ['Lunch', 'Guide'] and the structure would be gone.
+LIST_FIELDS = {"includes", "excludes", "facilities", "languageOptions"}
+
+
+def _is_list_field(product_type: str, target: str) -> bool:
+    return TARGETS.get(product_type, {}).get(target) in LIST_FIELDS
+
+
+def read_field(record: Dict[str, Any], product_type: str, target: str) -> Dict[str, Any]:
+    """The field's current value, per language. Strings for text fields, lists for list
+    fields - deliberately NOT coerced, so a caller can't accidentally flatten a list."""
     field = TARGETS.get(product_type, {}).get(target)
     if not field or not isinstance(record, dict):
         return {}
@@ -186,8 +199,13 @@ def read_field(record: Dict[str, Any], product_type: str, target: str) -> Dict[s
         sheets = record.get("datasheets") or {}
         if not isinstance(sheets, dict):
             return {}
-        return {lang: str((sheet or {}).get(field) or "")
-                for lang, sheet in sheets.items() if isinstance(sheet, dict)}
+        out = {}
+        for lang, sheet in sheets.items():
+            if not isinstance(sheet, dict):
+                continue
+            value = sheet.get(field)
+            out[lang] = list(value) if isinstance(value, list) else str(value or "")
+        return out
     entries = record.get(field) or []
     if not isinstance(entries, list):
         return {}
@@ -195,24 +213,48 @@ def read_field(record: Dict[str, Any], product_type: str, target: str) -> Dict[s
             for e in entries if isinstance(e, dict)}
 
 
-def combine(existing: str, text: str, mode: str) -> str:
-    """The new value for one language.
+def _contains(existing: Any, text: str) -> bool:
+    """Is this note already present?
 
-    Append puts the new text at the bottom, separated by a blank line, which is what
-    "Description (bottom)" means and keeps the supplier's own wording first. Replace
-    returns just the new text. Either way, text already present is left alone: the same
-    note sent twice must not appear twice."""
-    existing = existing or ""
+    Compares whole blocks, not raw substrings. CONFIRMED REAL BUG (audit): a plain
+    substring test made any note that happens to be a fragment of existing wording look
+    already-published - "All pickups depart from the new terminal." was silently dropped
+    because the field said "Until 30 June, all pickups depart from the new terminal.".
+    The screen then reported "0 would change, already there" and offered no Send, so an
+    operator would reasonably conclude the note was live when it was not."""
+    needle = _norm(text)
+    if not needle:
+        return False
+    if isinstance(existing, list):
+        return any(_norm(item) == needle for item in existing)
+    blocks = [_norm(b) for b in str(existing or "").split("\n\n")]
+    return needle in blocks
+
+
+def combine(existing: Any, text: str, mode: str):
+    """The new value for one language, preserving the field's own type.
+
+    Append puts the new text at the bottom - a new block for a text field, a new entry for
+    a list field - which is what "Description (bottom)" means and keeps the supplier's own
+    wording first. Replace returns only the new text. Either way a note already present is
+    left alone, so pressing Send twice cannot print it twice."""
     text = (text or "").strip()
+    if isinstance(existing, list):
+        if not text:
+            return list(existing)
+        if mode == MODE_REPLACE:
+            return [text]
+        return list(existing) if _contains(existing, text) else list(existing) + [text]
+    existing = existing or ""
     if not text:
         return existing
     if mode == MODE_REPLACE:
         return text
-    if _norm(text) and _norm(text) in _norm(existing):
+    if _contains(existing, text):
         return existing
-    if not existing.strip():
+    if not str(existing).strip():
         return text
-    return f"{existing.rstrip()}\n\n{text}"
+    return f"{str(existing).rstrip()}\n\n{text}"
 
 
 def write_field(record: Dict[str, Any], product_type: str, target: str,
@@ -241,7 +283,13 @@ def write_field(record: Dict[str, Any], product_type: str, target: str,
         for lang, sheet in sheets.items():
             if not isinstance(sheet, dict):
                 continue
-            before = str(sheet.get(field) or "")
+            raw = sheet.get(field)
+            before = list(raw) if isinstance(raw, list) else str(raw or "")
+            if _is_list_field(product_type, target) and not isinstance(before, list):
+                # The schema says this field is a list; an existing scalar (or absent
+                # value) is normalised rather than concatenated, so the PUT still sends
+                # the shape Travel Compositor expects.
+                before = [before] if str(before).strip() else []
             after = combine(before, text, mode)
             if after != before:
                 sheet[field] = after
@@ -303,9 +351,15 @@ def list_services(client, supplier_id: str, product_type: str,
             code = (code or "").strip()
             if not code:
                 continue
-            rec = getattr(client, cfg["fetch_fn"])(supplier_id, code)
-            if isinstance(rec, dict) and "error" in rec:
-                failures.append(f"{code} ({rec.get('message', rec.get('error'))})")
+            try:
+                rec = getattr(client, cfg["fetch_fn"])(supplier_id, code)
+            except Exception as e:
+                failures.append(f"{code} ({type(e).__name__}: {e})")
+                continue
+            if not isinstance(rec, dict) or "error" in rec:
+                detail = (rec.get("message", rec.get("error")) if isinstance(rec, dict)
+                          else f"unexpected response type {type(rec).__name__}")
+                failures.append(f"{code} ({detail})")
                 continue
             records.append(rec)
         return records, ("Couldn't fetch: " + ", ".join(failures)) if failures else None
@@ -322,7 +376,14 @@ def list_services(client, supplier_id: str, product_type: str,
                     break
                 records.extend(batch)
                 first += len(batch)
-                if len(batch) < 100 or first > 5000:
+                total = None
+                if isinstance(page, dict):
+                    pag = page.get("pagination") or {}
+                    if isinstance(pag, dict):
+                        total = pag.get("totalResults") or pag.get("total")
+                if total is not None and first >= int(total):
+                    break
+                if not batch or first > 5000:
                     break
             return records, None
         data = getattr(client, cfg["list_fn"])(supplier_id)
@@ -381,11 +442,19 @@ def plan(client, supplier_id: str, product_type: str, target: str, text: str,
             progress(i + 1, total, name)
         record = summary
         if not cfg["full_in_list"]:
-            record = getattr(client, cfg["fetch_fn"])(supplier_id, ident)
-            if isinstance(record, dict) and "error" in record:
+            # Wrapped: one unreachable service out of forty must not abort the whole
+            # preview with a traceback. Without this the page crashed AND left the previous
+            # plan armed, so the next Send would have pushed a stale snapshot.
+            try:
+                record = getattr(client, cfg["fetch_fn"])(supplier_id, ident)
+            except Exception as e:
+                record = {"error": type(e).__name__, "message": str(e)}
+            if not isinstance(record, dict) or "error" in record:
+                detail = (str(record.get("message") or record.get("error"))
+                          if isinstance(record, dict) else
+                          f"unexpected response type {type(record).__name__}")
                 result["items"].append({"id": ident, "name": name, "status": "failed",
-                                        "detail": str(record.get("message") or record.get("error")),
-                                        "changes": {}})
+                                        "detail": detail, "changes": {}})
                 result["failed"] += 1
                 continue
         updated, changes = write_field(record, product_type, target, text, mode)
@@ -403,7 +472,7 @@ def _unchanged_reason(record, product_type, target, text, mode) -> str:
     current = read_field(record, product_type, target)
     if not current:
         return "this service has no datasheet to write into"
-    if any(_norm(text) in _norm(v) for v in current.values()):
+    if any(_contains(v, text) for v in current.values()):
         return "the same text is already there"
     return "nothing to change"
 

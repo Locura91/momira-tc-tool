@@ -176,7 +176,13 @@ def _connect():
 
 def _ensure_schema(conn, is_postgres: bool) -> None:
     global _initialized_for
-    marker = "pg" if is_postgres else _LOCAL_DB_PATH
+    # Keyed by the actual URL, not the constant string "pg". CONFIRMED REAL BUG (audit):
+    # with a fixed marker, pointing DATABASE_URL at a different database in a live process -
+    # correcting a typo'd password in Streamlit secrets does exactly this - left the flag
+    # saying "schema already created", so every read and write on the new database failed
+    # with "no such table" and was swallowed by the callers' except blocks. The app kept
+    # running and silently forgot every learned rule and standing note.
+    marker = (_database_url() or "pg") if is_postgres else _LOCAL_DB_PATH
     with _INIT_LOCK:
         if _initialized_for == marker:
             return

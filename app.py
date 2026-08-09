@@ -105,7 +105,11 @@ ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDA
 # these). Safe to sweep-clear in bulk: see _clear_batch_widget_state's
 # docstring for why this is needed (positional-index widget keys getting
 # reused by a different queue item after a skip or a fresh batch start).
-SHARED_WIDGET_STATE_PREFIXES = ["_editing_", "_widgetval_", "pencil_", "save_", "editor_"]
+SHARED_WIDGET_STATE_PREFIXES = ["_editing_", "_widgetval_", "pencil_", "save_", "editor_",
+                                # "sn_" = service_notes widgets, also keyed per queue item -
+                                # without this a one-off note typed on one service reappears
+                                # on the next one and gets published to the wrong voucher.
+                                "sn_"]
 
 # Currency dropdown options - EUR/USD first as the ones actually used in
 # practice, then the rest of the common ISO codes a DMC document might quote
@@ -828,7 +832,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             "mm_queue", "mm_queue_index",
             ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"],
             button_key=f"mm_skip_{idx}",
-            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
+            widget_state_prefixes=["mm_"] + SHARED_WIDGET_STATE_PREFIXES
         )
 
         if current["data"] is None:
@@ -1208,6 +1212,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
         editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
         render_cancellation_policy_editor(data, "mct_main")
+        service_notes.render_notes_editor(supplier_id, "ClosedTour", data, key_suffix="_mct")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
         tcol1, tcol2 = st.columns(2)
@@ -1390,6 +1395,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.write("")
                 if st.button("🗑️", key=f"mct_modcand_remove_{i}", help="Remove this Modality"):
                     candidates.pop(i)
+                    # Widgets here are keyed by POSITION, so after the pop the candidate that
+                    # shifts into slot i would re-render with the removed one's typed code -
+                    # and that code is what gets published as the option code.
+                    _clear_batch_widget_state(["mct_modcand_"])
                     st.rerun()
 
             if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-", "."]):
@@ -2878,7 +2887,7 @@ def render_modalities_review(kind, base_code, base_label, base_data, extra_modal
             _summarize_modality_pricing(kind, mod["data"], currency)
 
 
-def _clear_batch_widget_state(prefixes):
+def _clear_batch_widget_state(prefixes, keep=None):
     """
     Sweeps st.session_state for every key starting with any of the given
     prefixes and removes it.
@@ -2901,8 +2910,19 @@ def _clear_batch_widget_state(prefixes):
     fixed list - closes both holes: the next render has nothing stale to
     fall back on, so every widget genuinely re-reads from the (correct,
     freshly-positioned) `data` dict again.
+
+    CONFIRMED REAL BUG (found by audit, 2026-08-09): a flow's own control state shares its
+    widget prefix. Transfer's queue lives in `xtf_queue` and its widgets in `xtf_adult_0`
+    etc, so sweeping "xtf_" removed the queue, the extracted document text and the phase
+    marker along with the widgets - and skipping one item mid-batch silently threw the
+    operator back to the upload screen, losing every remaining item's AI extraction and
+    every human edit already made. `keep` is how a caller protects the keys it is about to
+    rely on; render_skip_item_button passes the flow's control keys.
     """
+    protected = set(keep or ())
     for key in list(st.session_state.keys()):
+        if key in protected:
+            continue
         if any(key.startswith(p) for p in prefixes):
             st.session_state.pop(key, None)
 
@@ -2932,7 +2952,9 @@ def render_skip_item_button(item_label, queue, idx, queue_session_key, index_ses
             st.session_state[queue_session_key] = queue
             st.session_state[index_session_key] = min(idx, len(queue) - 1)
             if widget_state_prefixes:
-                _clear_batch_widget_state(widget_state_prefixes)
+                # keep=cleanup_keys: those ARE the flow's queue/phase/source keys and they
+                # start with the same prefix as its widgets - see _clear_batch_widget_state.
+                _clear_batch_widget_state(widget_state_prefixes, keep=cleanup_keys)
         st.rerun()
 
 
@@ -3214,6 +3236,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         render_cancellation_policy_editor(data, f"mt_{idx}")
         editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
         editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
+        service_notes.render_notes_editor(supplier_id, "Ticket", data, key_suffix=f"_{idx}")
 
         render_skip_item_button(
             current['label'] or current['ticket_code'], queue, idx,
@@ -3221,7 +3244,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
              "mt_doc_raw_images", "mt_hosted_image_candidates"],
             button_key=f"mt_skip_{idx}",
-            widget_state_prefixes=SHARED_WIDGET_STATE_PREFIXES
+            widget_state_prefixes=["mt_"] + SHARED_WIDGET_STATE_PREFIXES
         )
 
         editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
@@ -4224,6 +4247,7 @@ def render_ticket_flow(client):
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
                 editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80)
+                service_notes.render_notes_editor(supplier_id, "Ticket", data, key_suffix="_legacy")
 
                 if data.get("is_private") and "private" not in (modality_code or "").lower():
                     st.info(f"💡 This excursion is described as **PRIVATE** in the source - a genuine "
@@ -4999,10 +5023,12 @@ def render_ticket_flow(client):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
+                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
                 st.session_state.clear()
                 st.session_state.client = keep_client
                 st.session_state.suppliers_cache = keep_suppliers
                 st.session_state.product_type = keep_product_type
+                st.session_state.active_tool = keep_tool
                 st.rerun()
         else:
             fcol1, fcol2 = st.columns(2)
@@ -5011,10 +5037,12 @@ def render_ticket_flow(client):
                     keep_client = st.session_state.client
                     keep_suppliers = st.session_state.suppliers_cache
                     keep_product_type = st.session_state.product_type
+                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
                     st.session_state.clear()
                     st.session_state.client = keep_client
                     st.session_state.suppliers_cache = keep_suppliers
                     st.session_state.product_type = keep_product_type
+                    st.session_state.active_tool = keep_tool
                     st.rerun()
             with fcol2:
                 if st.button("➕ Add another Modality to this same Ticket", key="tk_add_modality_followup"):
@@ -5023,10 +5051,12 @@ def render_ticket_flow(client):
                     keep_client = st.session_state.client
                     keep_suppliers = st.session_state.suppliers_cache
                     keep_product_type = st.session_state.product_type
+                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
                     st.session_state.clear()
                     st.session_state.client = keep_client
                     st.session_state.suppliers_cache = keep_suppliers
                     st.session_state.product_type = keep_product_type
+                    st.session_state.active_tool = keep_tool
                     st.session_state.tk_cfg_action = "add_option"
                     st.session_state.tk_cfg_supplier_id = prefill_supplier_id
                     st.session_state.tk_cfg_existing_ticket_code = prefill_ticket_code
@@ -6421,7 +6451,13 @@ def render_hotel_flow(client):
     if st.button("🔙 Start over with a different document", key="hp_cancel"):
         for key in HP_STATE_KEYS:
             st.session_state.pop(key, None)
-        _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
+        # keep the supplier/hotel-code setup: the button says "a different DOCUMENT", so
+        # sweeping hp_cfg_* as well (they share the "hp_" prefix) made the operator retype
+        # the supplier and hotel code every time.
+        _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES,
+                                  keep=["hp_cfg_supplier_id", "hp_cfg_provider_code",
+                                        "hp_cfg_currency", "hp_cfg_release_days",
+                                        "hp_step1_confirmed"])
         st.rerun()
 
     # ---- Does this hotel code already exist? (decides create vs update) ----
@@ -7031,18 +7067,28 @@ def render_manual_information_flow(client):
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Checking {name} ({done}/{total})")
 
-            st.session_state.mi_plan = bulk_notes.plan(
-                client, supplier_id, product_type, target, text, mode=mode,
-                codes=codes, progress=_tick)
+            try:
+                st.session_state.mi_plan = bulk_notes.plan(
+                    client, supplier_id, product_type, target, text, mode=mode,
+                    codes=codes, progress=_tick)
+                # The signature includes `codes`: without it, previewing tours A+B and then
+                # editing the box to C left Send armed and would have written A+B.
+                st.session_state.mi_plan_sig = (supplier_id, product_type, target, text,
+                                                mode, tuple(codes or ()))
+            except Exception as e:
+                # A failed refresh must DISARM, never leave the previous plan pressable.
+                for _k in ("mi_plan", "mi_plan_sig"):
+                    st.session_state.pop(_k, None)
+                st.error(f"Couldn't read Travel Compositor: {friendly_error_message(e)}")
             bar.empty()
-            st.session_state.mi_plan_sig = (supplier_id, product_type, target, text, mode)
             st.session_state.pop("mi_result", None)
             st.rerun()
 
     planned = st.session_state.get("mi_plan")
     # A plan is only valid for the exact inputs it was built from. Editing the text after
     # previewing and then pressing Send would otherwise publish the OLD text.
-    if planned and st.session_state.get("mi_plan_sig") != (supplier_id, product_type, target, text, mode):
+    if planned and st.session_state.get("mi_plan_sig") != (supplier_id, product_type, target,
+                                                          text, mode, tuple(codes or ())):
         st.info("You changed something after previewing — press Preview again to see the new result.")
         planned = None
 
@@ -7081,10 +7127,22 @@ def render_manual_information_flow(client):
                                                               progress=_tick2)
                 bar.empty()
                 if also_future:
-                    service_notes.set_standing_note(supplier_id, product_type, text)
+                    st.session_state.mi_future_saved = service_notes.set_standing_note(
+                        supplier_id, product_type, text)
+                # Drop the plan: it holds pre-modified snapshots, so leaving Send on screen
+                # let a second click re-PUT them and silently revert any edit made in Travel
+                # Compositor in between.
+                for _k in ("mi_plan", "mi_plan_sig"):
+                    st.session_state.pop(_k, None)
                 st.rerun()
         else:
-            st.info("Nothing to send — every service already has this text.")
+            st.info("Nothing to send — every live service already has this text.")
+            if also_future and st.button("💾 Save it for future uploads anyway",
+                                         key="mi_save_future_only"):
+                if service_notes.set_standing_note(supplier_id, product_type, text):
+                    st.success("Saved. It will be added to every future upload of this type.")
+                else:
+                    st.error("Could not save it — it will NOT apply to future uploads.")
 
     result = st.session_state.get("mi_result")
     if result:
@@ -7092,13 +7150,16 @@ def render_manual_information_flow(client):
             st.success(f"✅ Sent. {len(result['updated'])} service(s) updated.")
             for u in result["updated"]:
                 st.write(f"- {u['name']} ({', '.join(u['languages'])})")
+        if st.session_state.get("mi_future_saved") is False:
+            st.error("⚠️ The live services were updated, but the note could NOT be saved for "
+                     "future uploads — check the database banner at the top of the page.")
         if result["failed"]:
             st.error(f"❌ {len(result['failed'])} service(s) failed — nothing was changed on these:")
             for f in result["failed"]:
                 st.write(f"- {f.get('name')}: {f.get('detail')}")
             st.caption("Re-running is safe: services already updated are detected and skipped.")
         if st.button("Clear this result", key="mi_clear_result"):
-            for k in ("mi_result", "mi_plan", "mi_plan_sig"):
+            for k in ("mi_result", "mi_plan", "mi_plan_sig", "mi_future_saved"):
                 st.session_state.pop(k, None)
             st.rerun()
 
@@ -7155,7 +7216,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-send-to-live-services — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-audit-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -7959,6 +8020,7 @@ if st.session_state.extracted:
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
             render_cancellation_policy_editor(data, "legacy_tour")
+            service_notes.render_notes_editor(supplier_id, "ClosedTour", data, key_suffix="_legacy")
             editable_field("Nights", data, "nights", widget="number_input")
 
             tcol1, tcol2 = st.columns(2)
@@ -8762,10 +8824,12 @@ if st.session_state.get("just_published_tour_code"):
             keep_client = st.session_state.client
             keep_suppliers = st.session_state.suppliers_cache
             keep_product_type = st.session_state.product_type
+            keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
             st.session_state.clear()
             st.session_state.client = keep_client
             st.session_state.suppliers_cache = keep_suppliers
             st.session_state.product_type = keep_product_type
+            st.session_state.active_tool = keep_tool
             st.rerun()
     else:
         fcol1, fcol2 = st.columns(2)
@@ -8774,10 +8838,12 @@ if st.session_state.get("just_published_tour_code"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
+                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
                 st.session_state.clear()
                 st.session_state.client = keep_client
                 st.session_state.suppliers_cache = keep_suppliers
                 st.session_state.product_type = keep_product_type
+                st.session_state.active_tool = keep_tool
                 st.rerun()
         with fcol2:
             if st.button("➕ Add another Modality to this same ClosedTour"):
@@ -8786,10 +8852,12 @@ if st.session_state.get("just_published_tour_code"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
+                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
                 st.session_state.clear()
                 st.session_state.client = keep_client
                 st.session_state.suppliers_cache = keep_suppliers
                 st.session_state.product_type = keep_product_type
+                st.session_state.active_tool = keep_tool
                 st.session_state.cfg_action = "add_option"
                 st.session_state.cfg_supplier_id = prefill_supplier_id
                 st.session_state.cfg_existing_tour_code = prefill_tour_code
