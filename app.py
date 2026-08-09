@@ -83,6 +83,7 @@ import transfer_matcher
 import transport_matcher
 import platform_store
 import service_notes
+import extraction_memory
 # The Translation Sync tool, merged in from the standalone momira-translation-sync
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
@@ -5265,9 +5266,16 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 except Exception as e:
                     st.error(f"Extraction failed for this transfer: {friendly_error_message(e)}")
                     current["data"] = {}
+            # Snapshot the raw extractor output and pre-fill anything this supplier's past
+            # corrections have already taught. Must happen HERE - inside the run that
+            # extracted - so the snapshot is the extractor's own output, before a human has
+            # touched it. Snapshotting later would compare corrected values against
+            # corrected values and learn nothing at all.
+            extraction_memory.prepare(supplier_id, "Transfer", current)
 
         data = current["data"]
         key_suffix = f"_{idx}"
+        extraction_memory.render_applied_banner(current.get("_learned_applied") or [])
 
         render_skip_item_button(
             current["label"] or "(unnamed transfer)", queue, idx, "xtf_queue", "xtf_queue_index",
@@ -5588,6 +5596,13 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                                 )
                             st.success(f"✅ Published successfully (id: {final_id or 'unknown'}).")
                             current["publish_status"] = "success"
+                            # Learn only from what was actually published. A correction made
+                            # and then abandoned is not a decision anyone stood behind.
+                            _learned = extraction_memory.commit(
+                                supplier_id, "Transfer", current, current.get("label") or "")
+                            if _learned:
+                                st.caption(f"🧠 Remembered {len(_learned)} correction(s) for this "
+                                           f"supplier — see “What the platform remembers”.")
                     except Exception as e:
                         show_publish_error(f"publish transfer **{current['label'] or '(unnamed)'}**", str(e))
 
@@ -5827,9 +5842,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 except Exception as e:
                     st.error(f"Extraction failed for this transport: {friendly_error_message(e)}")
                     current["data"] = {}
+            extraction_memory.prepare(supplier_id, "Transport", current)
 
         data = current["data"]
         key_suffix = f"_{idx}"
+        extraction_memory.render_applied_banner(current.get("_learned_applied") or [])
 
         render_skip_item_button(
             current["label"] or "(unnamed transport)", queue, idx, "xtp_queue", "xtp_queue_index",
@@ -6143,6 +6160,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                                     st.success(f"✅ Published successfully (id: {final_id}) with "
                                               f"{len(option_actions)} occupancy bracket(s).")
                                     current["publish_status"] = "success"
+                                    _learned = extraction_memory.commit(
+                                        supplier_id, "Transport", current, current.get("label") or "")
+                                    if _learned:
+                                        st.caption(f"🧠 Remembered {len(_learned)} correction(s) for "
+                                                   f"this supplier.")
                     except Exception as e:
                         show_publish_error(f"publish transport **{current['label'] or '(unnamed)'}**", str(e))
 
@@ -6907,7 +6929,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-storage-healthcheck — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-learns-from-corrections — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -6965,11 +6987,20 @@ with st.expander("💾 What the platform remembers", expanded=False):
             "transport_matches": "confirmed transport route matches",
             "standing_notes": "standing supplier notes",
             "hotel_matches": "confirmed hotel matches",
+            "extraction_memory": "suppliers with learned corrections",
         }
         for _ns, _n in sorted(_counts.items()):
             st.write(f"- **{_n}** {_labels.get(_ns, _ns)}")
     else:
-        st.caption("Nothing stored yet. This fills up as you translate and confirm route matches.")
+        st.caption("Nothing stored yet. This fills up as you correct documents, translate "
+                   "and confirm route matches.")
+
+    # Everything learned from corrections, with a delete button on each. A learning system
+    # nobody can inspect or overrule is one you have to take on trust; this is the page that
+    # makes it answerable instead.
+    st.markdown("---")
+    st.markdown("##### 🧠 What it has learned from your corrections")
+    extraction_memory.render_memory_panel()
 
 
 # ======================================================================

@@ -1,0 +1,382 @@
+"""
+extraction_memory.py — the platform learns from the corrections a human makes.
+
+THE PROBLEM: every contract is read from scratch. When the extractor misreads something
+and a human fixes it on the review screen — a pickup point written the way the supplier
+writes it rather than the way Travel Compositor needs it, a vehicle called "Car" that
+should be "Sedan", a cancellation policy the document never states and the operator types
+in every single time — that correction is thrown away the moment the service is published.
+The next contract from the same supplier makes the identical mistake, and a person fixes
+it again. Nothing gets better, no matter how many contracts go through.
+
+WHAT IS ACTUALLY LEARNED: one very specific, defensible thing —
+
+    "for supplier X, product type Y, whenever the extractor produces value V in field F,
+     a human changes it to W."
+
+That is a value mapping, not a guess about meaning. It is recorded per supplier because
+suppliers are the unit that has a consistent house style: Masons Travel always writes
+"Airport" where the system needs "Seychelles International Airport", and that fact says
+nothing about any other supplier. It is recorded per product type because the same word
+can mean different things on a transfer and on a hotel.
+
+WHY MAPPINGS AND NOT SOMETHING CLEVERER: a mapping can be shown to a person in one line
+("you have changed this 3 times before"), audited, and deleted. It cannot silently drift.
+An operator can look at the list and immediately tell whether it is right. That property
+matters more here than sophistication, because these corrections flow into live inventory
+that customers book.
+
+WHAT IS DELIBERATELY *NOT* AUTO-APPLIED (see _apply_blocked): dates and prices. A season
+date or a price repeats across every service in one contract, so a mapping learned from it
+looks extremely confident after a single document — and then fires on next season's
+contract, where it is not just wrong but wrong in a way that costs money and is hard to
+spot on a review screen. Those corrections are still RECORDED and visible in the memory
+panel, so a person can see the pattern; they are never pre-filled.
+
+CONFIRMATION THRESHOLD: a mapping is applied only after it has been seen on
+_APPLY_AFTER separate publishes. One correction is as likely to be a typo or a one-off as
+a rule; two is a pattern. Everything applied is marked on screen and a human still confirms
+it before publishing, so the failure mode of a bad lesson is a person noticing a pre-filled
+value is wrong — not bad data reaching Travel Compositor.
+"""
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import platform_store
+
+_NAMESPACE = "extraction_memory"
+
+# How many separate publishes must show the same correction before it is pre-filled.
+_APPLY_AFTER = 2
+
+# Values longer than this are recorded but never used as a lookup key - they are unlikely
+# to recur character-for-character and would bloat the per-supplier row.
+_MAX_VALUE_CHARS = 4000
+
+# Per (supplier, product type, field), keep at most this many distinct mappings; the
+# least-recently-seen is dropped. Stops a field whose value is unique per service (a
+# service name, say) from growing without limit.
+_MAX_MAPPINGS_PER_FIELD = 100
+
+# Fields never learned at all. Notes have their own deliberate mechanism in
+# service_notes.py - learning them here would apply a one-off remark to every future
+# service, which is exactly the thing standing notes exist to make an explicit choice.
+_NEVER_LEARN = {
+    "manual_notes", "one_off_note",
+    # Internal bookkeeping that happens to ride along in the same dict.
+    "_raw", "_learned_applied", "publish_status", "build_result",
+    "existing_snapshot", "existing_snapshot_id", "confirmed_existing_id",
+}
+
+# Recorded, shown in the memory panel, but never pre-filled. See the module docstring.
+_APPLY_BLOCKED_PATTERNS = (
+    "date", "price", "amount", "cost", "fee", "rate", "tariff", "supplement",
+)
+
+
+def _apply_blocked(field: str) -> bool:
+    f = field.lower()
+    return any(p in f for p in _APPLY_BLOCKED_PATTERNS)
+
+
+def _key(supplier_id: str, product_type: str) -> str:
+    return f"{supplier_id}|{product_type}"
+
+
+def _norm(value: Any) -> Optional[str]:
+    """The lookup key for a value. Case- and whitespace-insensitive, because a supplier
+    writing "HURGHADA  AIRPORT" and "Hurghada Airport" in two contracts is the same fact.
+
+    Returns None for anything that must not be learned: lists and dicts (a correction to a
+    price table is specific to one service and generalises to nothing), and values too long
+    to plausibly recur."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        # 22 and 22.0 are the same correction.
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, str):
+        if len(value) > _MAX_VALUE_CHARS:
+            return None
+        return re.sub(r"\s+", " ", value).strip().lower()
+    return None  # list / dict / anything else
+
+
+def _load(supplier_id: str, product_type: str) -> Dict[str, Any]:
+    row = platform_store.get(_NAMESPACE, _key(str(supplier_id), product_type)) or {}
+    if not isinstance(row, dict) or "fields" not in row:
+        return {"fields": {}}
+    return row
+
+
+def _save(supplier_id: str, product_type: str, row: Dict[str, Any]) -> bool:
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return platform_store.set(_NAMESPACE, _key(str(supplier_id), product_type), row)
+
+
+def _prune(mappings: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the most useful mappings when a field has accumulated too many: highest
+    confirmation count first, then most recently seen. Dropping the rarely-confirmed ones
+    is right - they are the ones least likely to be a real rule."""
+    if len(mappings) <= _MAX_MAPPINGS_PER_FIELD:
+        return mappings
+    ranked = sorted(mappings.items(),
+                    key=lambda kv: (kv[1].get("count", 0), kv[1].get("last_seen", "")),
+                    reverse=True)
+    return dict(ranked[:_MAX_MAPPINGS_PER_FIELD])
+
+
+def record_corrections(supplier_id: str, product_type: str,
+                       extracted: Dict[str, Any], final: Dict[str, Any],
+                       service_label: str = "") -> List[Dict[str, Any]]:
+    """Compare what the extractor produced against what the human actually published, and
+    remember every difference as a mapping.
+
+    Call this ONCE, on a SUCCESSFUL publish. Not while editing: a half-typed value is not a
+    correction, and not on a failed publish either, because nobody has yet agreed that the
+    value was right. `extracted` must be the raw extractor output taken before any learned
+    mapping was applied - see snapshot(). Recording against the already-corrected values
+    would chain mappings (V->W, then W->X) instead of collapsing them (V->X).
+
+    Returns the corrections recorded, for a UI that wants to say what was learned."""
+    if not (supplier_id and product_type) or not isinstance(final, dict):
+        return []
+    extracted = extracted or {}
+    row = _load(supplier_id, product_type)
+    fields = row.setdefault("fields", {})
+    now = datetime.now(timezone.utc).isoformat()
+    recorded = []
+
+    for field, new_value in final.items():
+        if field in _NEVER_LEARN or field.startswith("_"):
+            continue
+        old_value = extracted.get(field)
+        from_key = _norm(old_value)
+        to_key = _norm(new_value)
+        # None means "not a learnable shape" (a table, an over-long blob). Equal means the
+        # human left it alone, which is not a correction.
+        if from_key is None or to_key is None or from_key == to_key:
+            continue
+
+        bucket = fields.setdefault(field, {})
+        entry = bucket.get(from_key)
+        if entry and _norm(entry.get("to")) == to_key:
+            # The same correction again - this is the confirmation that turns it into a rule.
+            entry["count"] = int(entry.get("count", 0)) + 1
+            entry["last_seen"] = now
+        else:
+            # Either brand new, or the human has changed their mind about what this value
+            # should become. Replacing rather than accumulating means the newest decision
+            # wins, and the count restarts so a reversal has to earn its confidence again.
+            entry = {"from": old_value, "to": new_value, "count": 1,
+                     "first_seen": now, "last_seen": now, "examples": []}
+            bucket[from_key] = entry
+        if service_label and service_label not in entry.get("examples", []):
+            entry.setdefault("examples", []).append(service_label)
+            entry["examples"] = entry["examples"][-3:]
+
+        fields[field] = _prune(bucket)
+        recorded.append({"field": field, "from": old_value, "to": new_value,
+                         "count": entry["count"], "applies": entry["count"] >= _APPLY_AFTER
+                         and not _apply_blocked(field)})
+
+    if recorded:
+        _save(supplier_id, product_type, row)
+    return recorded
+
+
+def learned_for(supplier_id: str, product_type: str, field: str, value: Any) -> Optional[Dict[str, Any]]:
+    """The mapping that would fire for this exact field/value, or None. Exposed separately
+    so a caller can ask without mutating anything."""
+    if _apply_blocked(field) or field in _NEVER_LEARN:
+        return None
+    from_key = _norm(value)
+    if from_key is None:
+        return None
+    entry = _load(supplier_id, product_type).get("fields", {}).get(field, {}).get(from_key)
+    if not entry or int(entry.get("count", 0)) < _APPLY_AFTER:
+        return None
+    if _norm(entry.get("to")) == from_key:
+        return None
+    return entry
+
+
+def apply_learned(supplier_id: str, product_type: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pre-fill fields where this supplier's past corrections say the extractor is
+    predictably wrong. Mutates `data` in place.
+
+    Call this immediately after extraction and immediately after snapshot(), so the raw
+    extractor output is preserved for record_corrections() to compare against.
+
+    Returns one entry per field changed, so the review screen can show a person exactly
+    what was altered and why. Nothing here is silent: an unexplained pre-filled value would
+    be worse than no learning at all."""
+    if not (supplier_id and product_type) or not isinstance(data, dict):
+        return []
+    row = _load(supplier_id, product_type)
+    fields = row.get("fields", {})
+    if not fields:
+        return []
+
+    applied = []
+    for field, value in list(data.items()):
+        if field in _NEVER_LEARN or field.startswith("_") or _apply_blocked(field):
+            continue
+        from_key = _norm(value)
+        if from_key is None:
+            continue
+        entry = fields.get(field, {}).get(from_key)
+        if not entry or int(entry.get("count", 0)) < _APPLY_AFTER:
+            continue
+        if _norm(entry.get("to")) == from_key:
+            continue
+        data[field] = entry["to"]
+        applied.append({"field": field, "from": value, "to": entry["to"],
+                        "count": int(entry.get("count", 0)),
+                        "last_seen": entry.get("last_seen", "")})
+    return applied
+
+
+def snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of the extractor's raw output, to compare against at publish time.
+
+    Only scalars are kept. Nested tables are excluded on purpose: they are never learned,
+    and copying them would mean holding a second full copy of every price grid in session
+    state for the whole review."""
+    return {k: v for k, v in (data or {}).items()
+            if k not in _NEVER_LEARN and not k.startswith("_")
+            and isinstance(v, (str, int, float, bool, type(None)))}
+
+
+def list_learned(supplier_id: Optional[str] = None,
+                 product_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Everything learned, flattened for display. Sorted most-confirmed first so the rules
+    actually shaping uploads are at the top."""
+    rows = []
+    for key, row in platform_store.get_namespace(_NAMESPACE).items():
+        sid, _, ptype = key.partition("|")
+        if supplier_id and str(supplier_id) != sid:
+            continue
+        if product_type and product_type != ptype:
+            continue
+        for field, bucket in (row or {}).get("fields", {}).items():
+            for from_key, entry in (bucket or {}).items():
+                count = int(entry.get("count", 0))
+                rows.append({
+                    "supplier_id": sid, "product_type": ptype, "field": field,
+                    "from": entry.get("from"), "to": entry.get("to"),
+                    "count": count, "last_seen": entry.get("last_seen", ""),
+                    "examples": entry.get("examples", []),
+                    "active": count >= _APPLY_AFTER and not _apply_blocked(field),
+                    "blocked": _apply_blocked(field),
+                    "from_key": from_key,
+                })
+    return sorted(rows, key=lambda r: (-r["count"], r["supplier_id"], r["product_type"],
+                                       r["field"], str(r["from"])))
+
+
+def forget(supplier_id: str, product_type: str, field: str, from_key: str) -> bool:
+    """Delete one mapping. A human must always be able to remove something the platform
+    learned - without this, a wrong lesson is permanent and the only escape is wiping the
+    supplier's whole history."""
+    row = _load(supplier_id, product_type)
+    bucket = row.get("fields", {}).get(field, {})
+    if from_key not in bucket:
+        return False
+    del bucket[from_key]
+    if not bucket:
+        row["fields"].pop(field, None)
+    return _save(supplier_id, product_type, row)
+
+
+def prepare(supplier_id: str, product_type: str, item: Dict[str, Any],
+            data_key: str = "data") -> List[Dict[str, Any]]:
+    """The one call a flow makes right after extraction: snapshot the raw output, then
+    apply whatever has been learned. Stores both on `item` so the review screen can show
+    what changed and publish() can compare against the original.
+
+    Kept here rather than repeated in each flow so all five product types capture
+    corrections identically - a flow that snapshotted at the wrong moment would silently
+    learn nothing, or learn nonsense, and nothing on screen would reveal it."""
+    data = item.get(data_key) or {}
+    item["_raw"] = snapshot(data)
+    applied = apply_learned(supplier_id, product_type, data)
+    item["_learned_applied"] = applied
+    return applied
+
+
+def commit(supplier_id: str, product_type: str, item: Dict[str, Any],
+           service_label: str = "", data_key: str = "data") -> List[Dict[str, Any]]:
+    """The counterpart to prepare(), called on a SUCCESSFUL publish."""
+    return record_corrections(supplier_id, product_type, item.get("_raw") or {},
+                              item.get(data_key) or {}, service_label)
+
+
+def render_applied_banner(applied: List[Dict[str, Any]]) -> None:
+    """Say, on the review screen, exactly which fields were pre-filled from past
+    corrections. A pre-filled value that nobody announced is indistinguishable from the
+    extractor having read the document correctly - which is precisely how a wrong lesson
+    would slip through unnoticed."""
+    if not applied:
+        return
+    import streamlit as st
+    with st.expander(f"🧠 {len(applied)} field(s) pre-filled from your past corrections",
+                     expanded=True):
+        st.caption("The extractor produced these values, and you have corrected them the same "
+                   "way before for this supplier. They are filled in for you — check them as "
+                   "usual, and just edit any that are wrong; that teaches it the new answer.")
+        for a in applied:
+            st.markdown(f"- **{a['field']}**: `{a['from']}` → `{a['to']}`  "
+                        f"<span style='color:#888'>(you changed this {a['count']}× before)</span>",
+                        unsafe_allow_html=True)
+
+
+def render_memory_panel(supplier_id: Optional[str] = None) -> None:
+    """The audit screen. Everything the platform has learned, what is actually being
+    applied, and a way to delete any of it."""
+    import streamlit as st
+
+    rows = list_learned(supplier_id)
+    if not rows:
+        st.caption("Nothing learned yet. Corrections you make on the review screen before "
+                   "publishing are remembered here, and start being applied once the same "
+                   f"correction has been made {_APPLY_AFTER} times.")
+        return
+
+    active = [r for r in rows if r["active"]]
+    st.caption(f"{len(active)} rule(s) being applied, {len(rows) - len(active)} correction(s) "
+               f"recorded but not applied.")
+    for r in rows:
+        if r["active"]:
+            state = f"✅ applied (seen {r['count']}×)"
+        elif r["blocked"]:
+            # Explain the refusal - otherwise it reads like a bug that a 5×-confirmed
+            # correction still isn't being used.
+            state = f"👀 observed {r['count']}× — dates and prices are never auto-filled"
+        else:
+            state = f"👀 seen {r['count']}× — applied at {_APPLY_AFTER}"
+        cols = st.columns([6, 1])
+        with cols[0]:
+            st.markdown(f"**{r['product_type']} · {r['field']}** (supplier {r['supplier_id']})  \n"
+                        f"`{r['from']}` → `{r['to']}`  \n{state}")
+        with cols[1]:
+            if st.button("🗑️", key=f"em_forget_{r['supplier_id']}_{r['product_type']}_"
+                                   f"{r['field']}_{r['from_key']}", help="Forget this"):
+                forget(r["supplier_id"], r["product_type"], r["field"], r["from_key"])
+                st.rerun()
+
+
+def summary(supplier_id: str, product_type: str) -> Tuple[int, int]:
+    """(mappings being applied, mappings still only observed) for this supplier."""
+    active = observed = 0
+    for r in list_learned(supplier_id, product_type):
+        if r["active"]:
+            active += 1
+        else:
+            observed += 1
+    return active, observed
