@@ -225,6 +225,28 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     return default_text
 
 
+def _with_manual_notes(voucher_text, extracted_data):
+    """Appends the human's manual notes to whatever voucher text was already built.
+
+    Manual notes are things a person knows that the supplier's document doesn't say -
+    "the pickup spot moved to the new terminal", "this supplier's cancellation terms
+    changed in March". They arrive on the extracted-data dict under 'manual_notes',
+    already composed by service_notes.compose_manual_notes() from the supplier-wide
+    standing note plus anything typed for this one service.
+
+    APPENDED, never substituted: a note is extra context, not a correction to what was
+    extracted. Dropping the document's own cancellation policy because someone added a
+    remark would be a silent, customer-visible data loss - so both always survive, with
+    the note last since it's the more recent and more specific information.
+
+    Applied through the extracted-data dict rather than a new function parameter so the
+    five builders' signatures (and every caller of them) stay unchanged."""
+    note = ((extracted_data or {}).get("manual_notes") or "").strip()
+    if not note:
+        return voucher_text
+    return f"{voucher_text}\n\n{note}".strip() if voucher_text else note
+
+
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
     """
     Converts the app's internal flat supplement dicts (name/price/single_price/
@@ -573,7 +595,9 @@ def build_closed_tour_payloads(
             name=extracted_dmc_data.get("tour_name") or "",
             description=extracted_dmc_data.get("description") or "",
             hotels=extracted_dmc_data.get("hotels_text") or "",
-            voucherRemarks=_cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+            voucherRemarks=_with_manual_notes(
+                _cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+                extracted_dmc_data),
             included=extracted_dmc_data.get("included") or "",
             excluded=extracted_dmc_data.get("excluded") or "",
             meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
@@ -805,8 +829,11 @@ def build_ticket_payloads(
         # (document-stated, or our standing default) must always reach the voucher - see
         # _cancellation_voucher_text()'s docstring. `voucher_remarks` (a broader, human-
         # editable field, not cancellation-specific) still wins if a human explicitly set it.
-        ticket_cancellation_voucher_text = _cancellation_voucher_text(
-            extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
+        ticket_cancellation_voucher_text = _with_manual_notes(
+            _cancellation_voucher_text(
+                extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
+            ),
+            extracted_ticket_data,
         )
 
         datasheet_en = TicketDatasheetEN(
@@ -1140,7 +1167,9 @@ def build_transfer_payload(
         # document-stated policy could silently vanish from the voucher. Now synthesizes
         # text from the tiers themselves in that case, instead of dropping it.
         cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transfer_data.get("cancellation_policy_tiers"))
-        voucher_text = _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers)
+        voucher_text = _with_manual_notes(
+            _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers),
+            extracted_transfer_data)
         # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
         # auto-applied to price (e.g. a harbor-only pickup fee on a route that also serves
         # airport pickups) becomes an informational voucher note instead - never a mandatory
@@ -1479,7 +1508,9 @@ def build_transport_payloads(
         [ContractTransportCancellationRangeVO(days=d, percentage=p) for d, p in cancellation_tiers]
         if cancellation_tiers else [ContractTransportCancellationRangeVO()]
     )
-    voucher_text = _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers)
+    voucher_text = _with_manual_notes(
+        _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers),
+        extracted_transport_data)
 
     # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
     # owner rule, applies "for all services"), then apply the multi-vehicle synthesis rule.
@@ -1939,10 +1970,14 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
                 childPrices=[_safe_float(p) for p in existing_mp.get("childPrices") or []],
             ))
 
-    # ---- Cancellation text -> voucherRemarks only (CONFIRMED: no structured cancellation field exists on Hotel) ----
-    voucher_text = _cancellation_voucher_text(
-        extracted.get("cancellation_policy_text"),
-        extracted.get("cancellation_policy_tiers"),
+    # ---- Cancellation text + manual notes -> voucherRemarks only (CONFIRMED: no structured
+    # cancellation field exists on Hotel) ----
+    voucher_text = _with_manual_notes(
+        _cancellation_voucher_text(
+            extracted.get("cancellation_policy_text"),
+            extracted.get("cancellation_policy_tiers"),
+        ),
+        extracted,
     )
 
     address_data = extracted.get("address") or {}

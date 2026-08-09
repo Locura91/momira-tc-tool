@@ -10,3 +10,4 @@ pymupdf
 python-docx
 openpyxl
 google-genai
+psycopg2-binary

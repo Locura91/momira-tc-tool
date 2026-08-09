@@ -50,7 +50,12 @@ if hasattr(st, "secrets"):
                  "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER",
                  "SMTP_PASS", "SMTP_FROM", "SMTP_REPLY_TO", "EMAIL_FROM", "SENDER_NAME",
                  "TEST_MODE_RECIPIENTS", "EMAIL_THROTTLE_MS", "PDF_ATTACHMENT_PATH",
-                 "MIN_SUPPLIER_RATING", "MAX_SUPPLIER_RESULTS", "MAX_SUPPLIER_CANDIDATES"]:
+                 "MIN_SUPPLIER_RATING", "MAX_SUPPLIER_RESULTS", "MAX_SUPPLIER_CANDIDATES",
+                 # Durable storage. Without DATABASE_URL the platform still runs, but every
+                 # thing it remembers between runs (what has already been translated, which
+                 # routes map to which Travel Compositor id) lives in a local file that
+                 # Streamlit Cloud wipes on redeploy - see platform_store.py.
+                 "DATABASE_URL"]:
         try:
             if _key in st.secrets and _key not in os.environ:
                 # str() because os.environ rejects non-string values - a secret typed as a
@@ -76,6 +81,8 @@ from freeimage_client import upload_images as upload_images_freeimage
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
+import platform_store
+import service_notes
 # The Translation Sync tool, merged in from the standalone momira-translation-sync
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
@@ -5450,6 +5457,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                        cancel_df, f"xtf_cancel_{idx}", on_save=_save_cancel_tiers)
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text", key_suffix=key_suffix)
 
+        service_notes.render_notes_editor(supplier_id, "Transfer", data, key_suffix=key_suffix)
+
         st.markdown("#### Which existing Transfer does this update, if any?")
         st.caption("Travel Compositor has no human-assigned code for Transfers, so this app tracks its own "
                   "id->route mapping locally, falling back to a departure/arrival similarity match against "
@@ -5954,6 +5963,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                        cancel_df, f"xtp_cancel_{idx}", on_save=_save_tp_cancel_tiers)
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                        widget="text_area", height=80, key_suffix=key_suffix)
+
+        service_notes.render_notes_editor(supplier_id, "Transport", data, key_suffix=key_suffix)
 
         st.markdown("#### Which existing Transport does this update, if any?")
         st.caption("Travel Compositor assigns Transport ids itself (e.g. TRANSPORT-412579) with no human code, "
@@ -6740,6 +6751,8 @@ def render_hotel_flow(client):
     editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                    widget="text_area", height=90)
 
+    service_notes.render_notes_editor(supplier_id, "Hotel", data)
+
     # ------------------------------------------------------------------
     # PUBLISH - two phases, in order
     # ------------------------------------------------------------------
@@ -6894,8 +6907,20 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-08-transport-and-hotel-ui — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-08-durable-storage — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
+
+# Say out loud when nothing is being remembered between runs. Without this the platform
+# looks identical either way: it silently re-translates content already paid for and
+# forgets route matches a human confirmed, with no symptom an operator would notice.
+if not platform_store.is_durable():
+    st.warning(
+        "⚠️ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
+        "so what has already been translated and which routes map to which Travel Compositor id "
+        "sit in a local file this host wipes on every redeploy. In practice that means paying to "
+        "translate the same content again, and re-confirming route matches. Add a `DATABASE_URL` "
+        "(any hosted Postgres) to fix it."
+    )
 
 
 # ======================================================================

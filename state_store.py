@@ -1,45 +1,41 @@
 """
 state_store.py — tracks what's already been translated, so re-running the
-tool is safe (idempotent) and so the future "autonomous scan" mode (Mode B)
-can tell new/changed entities apart from already-up-to-date ones.
+tool is safe (idempotent) and cheap.
 
-Uses SQLite (stdlib, no install needed) in a single local file:
-nbext_state.db — keep this file around; deleting it just means everything
-looks "new" again on the next run.
+THIS IS THE MOST EXPENSIVE THING THE PLATFORM REMEMBERS. Every entry here
+represents translation work already paid for. If the record is lost, the next
+run sees everything as new and re-translates content that never changed - and
+the translation API bills for it again.
+
+MOVED OFF THE LOCAL FILESYSTEM: this used to be a SQLite file (nbext_state.db)
+sitting next to the app. On Streamlit Cloud that filesystem is wiped on every
+redeploy and container restart, so in production the tracker was being reset
+regularly and the re-translation cost was real, recurring, and completely
+invisible - the app looked like it was working, it just redid paid work. State
+now lives in platform_store: Postgres when DATABASE_URL is set, which survives
+restarts.
+
+The public API (compute_hash, and StateStore.get_state / upsert_state /
+languages_needed) is unchanged, so every sync_*.py module, the translation tool
+and the run_sync_*.py CLI scripts all call it exactly as before.
 """
 
-import sqlite3
 import json
 import hashlib
-from contextlib import contextmanager
+import os
+import sqlite3
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
-DB_PATH = "nbext_state.db"
+import platform_store
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS translation_state (
-    entity_type TEXT NOT NULL,
-    supplier_id TEXT NOT NULL,
-    entity_id TEXT NOT NULL,
-    option_code TEXT NOT NULL DEFAULT '',
-    source_hash TEXT NOT NULL,
-    translated_languages TEXT NOT NULL,
-    last_synced_at TEXT NOT NULL,
-    PRIMARY KEY (entity_type, supplier_id, entity_id, option_code)
-);
-"""
+_NAMESPACE = "translation_state"
 
+# Only read, once, to migrate an existing local database. Nothing writes here now.
+LEGACY_DB_PATH = os.getenv("LEGACY_TRANSLATION_DB_PATH", "nbext_state.db")
 
-@contextmanager
-def _connect(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute(SCHEMA)
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+# Kept so run_sync_*.py, which reference state_store.DB_PATH, keep importing cleanly.
+DB_PATH = LEGACY_DB_PATH
 
 
 def compute_hash(fields: Dict[str, str]) -> str:
@@ -48,25 +44,64 @@ def compute_hash(fields: Dict[str, str]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-class StateStore:
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        with _connect(self.db_path):
-            pass  # just ensures the table exists
+def _key(entity_type: str, supplier_id: str, entity_id: str, option_code: str = "") -> str:
+    """The old table's four-part primary key, flattened into one string. '|' is safe as a
+    separator here because none of the four parts (entity type, numeric supplier id, TC
+    id/code, option code) can contain it."""
+    return f"{entity_type}|{supplier_id}|{entity_id}|{option_code}"
 
-    def get_state(self, entity_type: str, supplier_id: str, entity_id: str, option_code: str = "") -> Optional[Dict[str, Any]]:
-        with _connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM translation_state WHERE entity_type=? AND supplier_id=? AND entity_id=? AND option_code=?",
-                (entity_type, str(supplier_id), str(entity_id), option_code),
-            ).fetchone()
-            if not row:
-                return None
-            return {
-                "source_hash": row["source_hash"],
-                "translated_languages": json.loads(row["translated_languages"]),
-                "last_synced_at": row["last_synced_at"],
-            }
+
+class StateStore:
+    def __init__(self, db_path: str = None):
+        # db_path is accepted and ignored so the existing run_sync_*.py CLI scripts keep
+        # working unchanged. Where state actually lives is now decided by DATABASE_URL.
+        self.db_path = db_path or LEGACY_DB_PATH
+        self._migrate_legacy_if_present()
+
+    def _migrate_legacy_if_present(self) -> None:
+        """Copies an existing nbext_state.db into durable storage once, so upgrading
+        doesn't discard translations already paid for. Only runs while the durable store
+        still has no translation rows."""
+        try:
+            if platform_store.get_namespace(_NAMESPACE):
+                return
+            if not os.path.exists(self.db_path):
+                return
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("SELECT * FROM translation_state").fetchall()
+            except sqlite3.Error:
+                return
+            finally:
+                conn.close()
+            migrated = 0
+            for row in rows:
+                platform_store.set(
+                    _NAMESPACE,
+                    _key(row["entity_type"], row["supplier_id"], row["entity_id"], row["option_code"] or ""),
+                    {
+                        "source_hash": row["source_hash"],
+                        # sorted() to match what upsert_state writes, so a migrated row and a
+                        # freshly-written one are byte-identical. languages_needed() compares
+                        # via a set so order never affected correctness, but an inconsistent
+                        # ordering would make any future diffing of these rows misleading.
+                        "translated_languages": sorted(json.loads(row["translated_languages"])),
+                        "last_synced_at": row["last_synced_at"],
+                    },
+                )
+                migrated += 1
+            if migrated:
+                print(f"📦 Migrated {migrated} translation record(s) from {self.db_path} into "
+                      f"durable storage - that work won't be re-translated or re-billed.")
+        except Exception as e:
+            print(f"⚠️ Could not migrate the legacy translation tracker ({e}) - continuing with "
+                  f"durable storage only. Worst case, some content gets translated once more.")
+
+    def get_state(self, entity_type: str, supplier_id: str, entity_id: str,
+                  option_code: str = "") -> Optional[Dict[str, Any]]:
+        return platform_store.get(_NAMESPACE,
+                                   _key(entity_type, str(supplier_id), str(entity_id), option_code))
 
     def upsert_state(
         self,
@@ -77,19 +112,15 @@ class StateStore:
         translated_languages: List[str],
         option_code: str = "",
     ):
-        with _connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO translation_state
-                    (entity_type, supplier_id, entity_id, option_code, source_hash, translated_languages, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT(entity_type, supplier_id, entity_id, option_code)
-                DO UPDATE SET source_hash=excluded.source_hash,
-                              translated_languages=excluded.translated_languages,
-                              last_synced_at=excluded.last_synced_at
-                """,
-                (entity_type, str(supplier_id), str(entity_id), option_code, source_hash, json.dumps(sorted(translated_languages))),
-            )
+        platform_store.set(
+            _NAMESPACE,
+            _key(entity_type, str(supplier_id), str(entity_id), option_code),
+            {
+                "source_hash": source_hash,
+                "translated_languages": sorted(translated_languages),
+                "last_synced_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     def languages_needed(self, entity_type, supplier_id, entity_id, source_hash, target_languages, option_code=""):
         """

@@ -43,30 +43,49 @@ import re
 import difflib
 from typing import Dict, Any, List, Optional
 
-_STORE_PATH = os.getenv(
+import platform_store
+
+# Kept only so an existing local transport_match_store.json can still be read once and
+# migrated into the shared durable store - see _load_store() below. Nothing writes
+# here any more.
+_LEGACY_STORE_PATH = os.getenv(
     "TRANSPORT_MATCH_STORE_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "transport_match_store.json"),
 )
+_NAMESPACE = "transport_match"
 
 
 def _load_store() -> Dict[str, Any]:
-    if not os.path.exists(_STORE_PATH):
-        return {}
-    try:
-        with open(_STORE_PATH, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not read transport match store ({e}) - starting fresh (falls back to departure/arrival matching).")
-        return {}
+    """Reads the whole supplier -> {route: tc_id} map from the shared durable store.
+
+    MOVED OFF THE LOCAL FILESYSTEM: this used to be a JSON file next to the app, which
+    on Streamlit Cloud is wiped on every redeploy - so every match a human had confirmed
+    was silently forgotten and had to be confirmed again. It now lives in platform_store
+    (Postgres when DATABASE_URL is set), which survives restarts.
+
+    A legacy transport_match_store.json is still read ONCE if present and merged in, so an
+    existing local install doesn't lose what it already knew when this ships."""
+    store = platform_store.get_namespace(_NAMESPACE)
+    if not store and os.path.exists(_LEGACY_STORE_PATH):
+        try:
+            with open(_LEGACY_STORE_PATH, "r") as f:
+                legacy = json.load(f)
+            if legacy:
+                for supplier_key, routes in legacy.items():
+                    platform_store.set(_NAMESPACE, str(supplier_key), routes)
+                print(f"📦 Migrated {len(legacy)} supplier(s) of transport match history "
+                      f"from {_LEGACY_STORE_PATH} into durable storage.")
+                return legacy
+        except Exception as e:
+            print(f"⚠️ Could not read the legacy transport match store ({e}) - starting fresh "
+                  f"(falls back to name matching, nothing breaks).")
+    return store
 
 
-def _save_store(store: Dict[str, Any]) -> None:
-    try:
-        with open(_STORE_PATH, "w") as f:
-            json.dump(store, f, indent=2)
-    except Exception as e:
-        print(f"⚠️ Could not save transport match store ({e}) - the id -> route mapping just learned won't persist "
-              f"to the next session, but nothing about this upload itself failed.")
+def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
+    if not platform_store.set(_NAMESPACE, str(supplier_key), routes):
+        print("⚠️ Could not save the transport match store - the id -> route mapping just "
+              "learned won't persist to the next session, but nothing about this upload failed.")
 
 
 def _route_key(departure_name: str, arrival_name: str) -> str:
@@ -83,31 +102,33 @@ def remember_transport_id(supplier_id: str, departure_name: str, arrival_name: s
     departure/arrival-matched candidate as the correct existing transport."""
     if not (supplier_id and departure_name and arrival_name and transport_id):
         return
-    store = _load_store()
     supplier_key = str(supplier_id)
-    store.setdefault(supplier_key, {})
-    store[supplier_key][_route_key(departure_name, arrival_name)] = transport_id
-    _save_store(store)
+    # Only this supplier's row is written, not the whole store - two people working on
+    # different suppliers at the same time can't clobber each other's entry the way a
+    # whole-file rewrite could.
+    routes = platform_store.get(_NAMESPACE, supplier_key) or {}
+    routes[_route_key(departure_name, arrival_name)] = transport_id
+    _save_supplier(supplier_key, routes)
     print(f"📌 Remembered TC id '{transport_id}' for route '{departure_name}' -> '{arrival_name}' "
           f"(supplier {supplier_id}) - future updates to this route will auto-match.")
 
 
 def forget_transport_id(supplier_id: str, departure_name: str, arrival_name: str) -> None:
     """Removes a tracked mapping - e.g. if a human later says a previous auto-match was wrong."""
-    store = _load_store()
     supplier_key = str(supplier_id)
-    if supplier_key in store:
-        store[supplier_key].pop(_route_key(departure_name, arrival_name), None)
-        _save_store(store)
+    routes = platform_store.get(_NAMESPACE, supplier_key)
+    if routes:
+        routes.pop(_route_key(departure_name, arrival_name), None)
+        _save_supplier(supplier_key, routes)
 
 
 def lookup_tracked_transport_id(supplier_id: str, departure_name: str, arrival_name: str) -> Optional[str]:
     """PRIMARY matching step - returns a TC id if this app has already created/confirmed a
     match for this exact route before, or None if it isn't tracked yet (caller should then fall
     back to suggest_existing_transport_matches)."""
-    store = _load_store()
-    supplier_key = str(supplier_id)
-    return store.get(supplier_key, {}).get(_route_key(departure_name, arrival_name))
+    _load_store()  # triggers a one-time migration of any legacy local file
+    routes = platform_store.get(_NAMESPACE, str(supplier_id)) or {}
+    return routes.get(_route_key(departure_name, arrival_name))
 
 
 def _name_similarity(a: str, b: str) -> float:
