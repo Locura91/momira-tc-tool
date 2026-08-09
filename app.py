@@ -155,7 +155,11 @@ ACTION_FIELDS = {
     "create": ["provider_code", "min_pax", "max_pax", "currency", "on_request", "release_days"],
     "add_option": ["existing_tour_code", "modality_code", "on_request"],
     "update_tour": ["existing_tour_code", "release_days"],
-    "update_option": ["existing_tour_code", "currency", "modality_code", "on_request"],
+    # CONFIRMED REAL RULE (product owner): an UPDATE never asks for things the live record
+    # already has - the code, the currency, the min/max passengers. "update_option" used to
+    # ask for currency, which meant re-picking (and possibly re-denominating) the currency
+    # of a tour that already has one. It is inherited from the fetched tour instead.
+    "update_option": ["existing_tour_code", "modality_code", "on_request"],
 }
 
 def render_seasonal_price_editor(label, target_data, edit_key, currency):
@@ -4012,6 +4016,19 @@ def render_ticket_flow(client):
     release_days = st.session_state.tk_cfg_release_days
     existing_ticket_code = st.session_state.tk_cfg_existing_ticket_code
 
+    # Same product-owner rule as ClosedTour: on an update the live ticket's own code,
+    # currency and passenger limits win over anything Step 2 holds. TICKET_ACTION_FIELDS
+    # already stops asking for them; this is what makes the published payload agree.
+    if action in ("update_ticket", "update_option", "add_option"):
+        _tk_live = st.session_state.get("tk_fetched_ticket") or {}
+        if isinstance(_tk_live, dict) and "error" not in _tk_live:
+            currency = _tk_live.get("currency") or st.session_state.get("tk_fetched_currency") or currency
+            if _tk_live.get("minPassengers") not in (None, ""):
+                min_passengers = _tk_live["minPassengers"]
+            if _tk_live.get("maxPassengers") not in (None, ""):
+                max_passengers = _tk_live["maxPassengers"]
+            ticket_code = _tk_live.get("code") or existing_ticket_code or ticket_code
+
     _tk_action_to_publish_label = {
         "create": "Create a brand-new ticket (+ first option)",
         "add_option": "Add a new option to an existing ticket",
@@ -5131,6 +5148,7 @@ def render_transfer_flow(client):
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tf_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tf_currency")
+        st.caption("Only used when CREATING a new transfer. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
         release_days_in = st.number_input(
             "Release Contract (days before arrival this transfer becomes bookable)",
             min_value=0, value=5, key="tf_release_days",
@@ -5721,6 +5739,7 @@ def render_transport_flow(client):
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tp_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tp_currency")
+        st.caption("Only used when CREATING a new transport. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
         release_days_in = st.number_input(
             "Release Contract (days before departure this transport becomes bookable)",
             min_value=0, value=5, key="tp_release_days",
@@ -6356,6 +6375,7 @@ def render_hotel_flow(client):
                  "existing code updates that hotel; a new code creates a new one."
         )
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="hp_currency")
+        st.caption("Only used when CREATING a new hotel. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
         release_days_in = st.number_input(
             "Release Days (days before arrival this hotel becomes bookable)",
             min_value=0, value=7, key="hp_release_days",
@@ -7216,7 +7236,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-audit-fixes — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-update-inherits — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -7707,6 +7727,21 @@ min_pax = st.session_state.cfg_min_pax
 max_pax = st.session_state.cfg_max_pax
 currency = st.session_state.cfg_currency
 modality_code = st.session_state.cfg_modality_code
+
+# CONFIRMED REAL RULE (product owner): "if updating a service it never has to be asked for
+# the code (it is set already), never for the currency (it also is set), never for the min
+# and max passenger." Step 3 no longer asks for them on an update - so take them from the
+# tour that was actually fetched. Without this the update would publish the blank/default
+# Step-3 values over a live tour, re-denominating its prices and resetting its capacity.
+if action in ("update_tour", "update_option", "add_option"):
+    _live_currency = st.session_state.get("fetched_tour_currency")
+    _live_min = st.session_state.get("fetched_tour_min_pax")
+    _live_max = st.session_state.get("fetched_tour_max_pax")
+    _live_code = st.session_state.get("fetched_tour_provider_code")
+    currency = _live_currency or currency
+    min_pax = _live_min if _live_min not in (None, "") else min_pax
+    max_pax = _live_max if _live_max not in (None, "") else max_pax
+    provider_code = _live_code or provider_code
 on_request = st.session_state.cfg_on_request
 days_available_before_release = st.session_state.cfg_release_days
 existing_tour_code = st.session_state.cfg_existing_tour_code

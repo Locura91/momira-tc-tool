@@ -225,6 +225,31 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     return default_text
 
 
+def _locked_on_update(existing_snapshot, field, fallback, label=""):
+    """On an UPDATE, the LIVE record wins for fields that are properties of the service
+    itself rather than of the document being read.
+
+    CONFIRMED REAL RULE (product owner): "if updating a service it never has to be asked
+    for code (it is set already), it never has to be asked for the currency (it also is
+    set), it also never has to be asked for the min and max passenger."
+
+    Those values were fixed when the service was created and are already live. A rate sheet
+    arriving in July is a statement about PRICES, not about what currency the contract is
+    denominated in - so letting the Step-2 dropdown (which defaults to EUR and is asked
+    before anyone knows whether this is a create or an update) overwrite a live USD contract
+    silently re-denominates every price on it. Same for occupancy limits: shrinking
+    maxOccupancy on a live transfer invalidates bookings already taken against it.
+
+    Returns (value, was_inherited) so a caller can say on screen where the value came from -
+    an inherited value that looks like a chosen one is its own kind of trap."""
+    if not existing_snapshot:
+        return fallback, False
+    current = existing_snapshot.get(field)
+    if current in (None, "", []):
+        return fallback, False
+    return current, True
+
+
 def _with_manual_notes(voucher_text, extracted_data):
     """Appends the human's manual notes to whatever voucher text was already built.
 
@@ -1188,6 +1213,9 @@ def build_transfer_payload(
         charge_unit = (extracted_transfer_data.get("charge_unit") or "per_pax").lower()
         price_by_pax = charge_unit != "per_service"
         currency = extracted_transfer_data.get("currency") or pre_config.currency
+        # An existing transfer's own currency is authoritative - see _locked_on_update.
+        currency, _currency_inherited = _locked_on_update(
+            existing_transfer_snapshot, "currency", currency)
 
         # CONFIRMED REAL SYSTEM LIMIT (product owner): TC caps bookings at 9 passengers - a
         # supplier rate sheet pricing larger vehicles (e.g. a 9-14 pax coach tier) is pricing
@@ -1497,6 +1525,8 @@ def build_transport_payloads(
         {"code": None, "name": arrival_name, "valid": False, "match_type": "empty_query"}
 
     currency = extracted_transport_data.get("currency") or pre_config.currency
+    currency, _currency_inherited = _locked_on_update(
+        existing_transport_snapshot, "currency", currency)
     charge_unit = (extracted_transport_data.get("charge_unit") or "per_pax").lower()
     price_per_pax = charge_unit != "per_service"
 
@@ -1999,7 +2029,9 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         ),
         category=extracted.get("category") or (existing_hotel_snapshot or {}).get("category") or "",
         chain=extracted.get("chain") or (existing_hotel_snapshot or {}).get("chain"),
-        currency=pre_config.currency,
+        # A live hotel contract's currency is already set; the Step-2 dropdown must not
+        # re-denominate it. See _locked_on_update.
+        currency=_locked_on_update(existing_hotel_snapshot, "currency", pre_config.currency)[0],
         releaseDays=_safe_int(extracted.get("release_days", pre_config.days_available_before_release), fallback=pre_config.days_available_before_release),
         minimumStay=_safe_int(extracted.get("minimum_stay", 1), fallback=1),
         maximumStay=extracted.get("maximum_stay"),
