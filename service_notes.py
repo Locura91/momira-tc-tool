@@ -86,6 +86,55 @@ def list_standing_notes() -> List[Dict[str, Any]]:
     return sorted(rows, key=lambda r: (r["supplier_id"], r["product_type"]))
 
 
+def render_standing_note_editor(supplier_id: str, product_type: str,
+                                key_suffix: str = "", expanded: Optional[bool] = None) -> str:
+    """The supplier-wide note on its own, with no service attached.
+
+    WHY IT IS SEPARATE: setting a standing note is a maintenance job, not part of uploading
+    a document. "The pickup point for all Masons transfers moved" is a thing you sit down to
+    record once, on a Tuesday, with no contract in hand. When this only existed inside the
+    per-service review screen, doing that meant starting a fake batch upload just to reach
+    the box - so the flow's own shape discouraged the exact task it was built for. This
+    version is rendered right after the supplier is chosen, before any document is needed.
+
+    Returns the note text currently stored."""
+    import streamlit as st
+
+    standing_key = f"sn_standing_{supplier_id}_{product_type}{key_suffix}"
+    existing = get_standing_note(supplier_id, product_type)
+    existing_text = (existing or {}).get("text", "")
+
+    with st.expander(
+        f"📌 Standing note — applies to EVERY {product_type} from this supplier"
+        + ("  ·  currently set" if existing_text else ""),
+        expanded=bool(existing_text) if expanded is None else expanded,
+    ):
+        st.caption(f"Use this when something changed for all of them at once — a moved pickup "
+                  f"point, revised cancellation terms. Saved against supplier {supplier_id} and "
+                  f"applied automatically to every {product_type} you upload from now on, "
+                  f"including by someone who wasn't told about the change.")
+        new_standing = st.text_area("Standing note", value=existing_text, height=90,
+                                     key=standing_key, label_visibility="collapsed",
+                                     placeholder="e.g. All pickups now from the new terminal, "
+                                                 "not the old arrivals hall")
+        scol1, scol2 = st.columns([1, 3])
+        with scol1:
+            if st.button("💾 Save", key=f"{standing_key}_save"):
+                if set_standing_note(supplier_id, product_type, new_standing):
+                    st.success("Saved." if new_standing.strip() else "Standing note cleared.")
+                else:
+                    # Never imply it's stored when the write failed - the whole value of a
+                    # standing note is that it's still there on the next upload.
+                    st.error("Could not save the standing note — it will NOT apply to future uploads.")
+        with scol2:
+            if existing and existing.get("updated_at"):
+                st.caption(f"Last updated {existing['updated_at'][:16].replace('T', ' ')} UTC")
+        if not platform_store.is_durable():
+            st.warning("⚠️ No `DATABASE_URL` configured — a standing note saved here is lost on "
+                       "the next redeploy.")
+    return existing_text
+
+
 def render_notes_editor(supplier_id: str, product_type: str, data: dict, key_suffix: str = "") -> str:
     """Renders the manual-notes block and writes the composed result onto `data` under
     'manual_notes', which is where builder._with_manual_notes() picks it up.
@@ -102,36 +151,7 @@ def render_notes_editor(supplier_id: str, product_type: str, data: dict, key_suf
               "**added to** the Voucher Remarks — they never replace the cancellation policy or "
               "anything else extracted from the document.")
 
-    standing_key = f"sn_standing_{supplier_id}_{product_type}{key_suffix}"
-    existing = get_standing_note(supplier_id, product_type)
-    existing_text = (existing or {}).get("text", "")
-
-    with st.expander(
-        f"📌 Standing note — applies to EVERY {product_type} from this supplier"
-        + ("  ·  currently set" if existing_text else ""),
-        expanded=bool(existing_text),
-    ):
-        st.caption(f"Use this when something changed for all of them at once — a moved pickup "
-                  f"point, revised cancellation terms. Saved against supplier {supplier_id} and "
-                  f"applied automatically to every {product_type} you upload from now on, "
-                  f"including by someone who wasn't told about the change.")
-        new_standing = st.text_area("Standing note", value=existing_text, height=90,
-                                     key=standing_key, label_visibility="collapsed")
-        scol1, scol2 = st.columns([1, 3])
-        with scol1:
-            if st.button("💾 Save", key=f"{standing_key}_save"):
-                if set_standing_note(supplier_id, product_type, new_standing):
-                    st.success("Saved." if new_standing.strip() else "Standing note cleared.")
-                else:
-                    # Never imply it's stored when the write failed - the whole value of a
-                    # standing note is that it's still there on the next upload.
-                    st.error("Could not save the standing note — it will NOT apply to future uploads.")
-        with scol2:
-            if existing and existing.get("updated_at"):
-                st.caption(f"Last updated {existing['updated_at'][:16].replace('T', ' ')} UTC")
-        if not platform_store.is_durable():
-            st.warning("⚠️ No `DATABASE_URL` configured — a standing note saved here is lost on "
-                       "the next redeploy.")
+    render_standing_note_editor(supplier_id, product_type, key_suffix=key_suffix)
 
     one_off = st.text_area(
         "Note for this service only", value=data.get("one_off_note", ""), height=80,

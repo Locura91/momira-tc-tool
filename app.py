@@ -5118,6 +5118,11 @@ def render_transfer_flow(client):
     currency = st.session_state.tf_cfg_currency
     release_days = st.session_state.tf_cfg_release_days
 
+    # Reachable here, with no document loaded, because "the pickup point for all of this
+    # supplier's transfers changed" is a standalone maintenance task - not something you
+    # should have to start a batch upload to record.
+    service_notes.render_standing_note_editor(supplier_id, "Transfer", key_suffix="_setup")
+
     st.header("Transfer — Step 3: Input Source")
     st.caption("Rate sheets commonly describe MANY distinct transfer products at once (per route, per "
               "vehicle class, sometimes repeated per guide language) - all of them get detected and "
@@ -5702,6 +5707,8 @@ def render_transport_flow(client):
     supplier_id = st.session_state.tp_cfg_supplier_id
     currency = st.session_state.tp_cfg_currency
     release_days = st.session_state.tp_cfg_release_days
+
+    service_notes.render_standing_note_editor(supplier_id, "Transport", key_suffix="_setup")
 
     st.header("Transport — Step 3: Input Source")
     st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan → Hurghada, "
@@ -6339,6 +6346,8 @@ def render_hotel_flow(client):
     currency = st.session_state.hp_cfg_currency
     release_days = st.session_state.hp_cfg_release_days
 
+    service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
+
     if "hp_phase" not in st.session_state:
         st.session_state.hp_phase = "gather"
 
@@ -6904,6 +6913,95 @@ def render_hotel_flow(client):
             show_publish_error(f"publish hotel **{provider_code}**", str(e))
 
 
+# ======================================================================
+# ADDING MANUAL INFORMATION
+#
+# Standing notes reachable on their own, as a Step 1 destination alongside the five product
+# types. The task this serves - "the pickup point for every transfer from this supplier
+# moved, tell every future upload about it" - has nothing to do with any particular
+# document. It happens on its own, prompted by an email from a supplier, and whoever does
+# the next upload may know nothing about it. Making it a first-class choice rather than a
+# box buried inside a service review screen matches how the work actually arrives.
+# ======================================================================
+def render_manual_information_flow(client):
+    st.header("Adding manual information")
+    st.caption("Information a person knows that the supplier's documents don't say — a moved "
+              "pickup point, revised cancellation terms, a temporary closure. Saved against a "
+              "supplier and a product type, and **added automatically to the Voucher Remarks of "
+              "every service of that type you upload from then on**, including uploads done by "
+              "someone who never heard about the change. Notes are always *added to* what the "
+              "document said; they never replace the cancellation policy or anything extracted.")
+
+    if not platform_store.is_durable():
+        st.warning("⚠️ No `DATABASE_URL` is configured, so a note saved here is lost on the next "
+                   "redeploy and will not reach future uploads.")
+
+    if st.session_state.suppliers_cache is None:
+        with st.spinner("Loading supplier list from Travel Compositor..."):
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception as e:
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.session_state.suppliers_cache = []
+
+    supplier_id = None
+    momira_suppliers = [
+        s for s in (st.session_state.suppliers_cache or [])
+        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+    ]
+    if momira_suppliers:
+        options = {f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+                   for s in momira_suppliers}
+        chosen = st.selectbox("Which supplier?", list(options.keys()), key="mi_supplier_select")
+        supplier_id = str(options[chosen])
+        if st.button("🔄 Refresh supplier list", key="mi_refresh_suppliers"):
+            st.session_state.suppliers_cache = None
+            st.rerun()
+    else:
+        st.error("Could not load the supplier list from Travel Compositor.")
+        with st.expander("⚠️ Emergency manual entry"):
+            supplier_id = st.text_input("Supplier ID (numeric)", value="", key="mi_supplier_manual")
+
+    product_type = st.radio("Which product type does this apply to?",
+                            service_notes.PRODUCT_TYPES, key="mi_product_type", horizontal=True)
+    st.caption("A note is scoped to one supplier AND one product type, because a change to how "
+              "transfers are picked up says nothing about that supplier's hotels. To cover more "
+              "than one, save it once per type.")
+
+    if supplier_id:
+        service_notes.render_standing_note_editor(supplier_id, product_type,
+                                                  key_suffix="_manual", expanded=True)
+    else:
+        st.info("Choose a supplier above to write a note.")
+
+    st.markdown("---")
+    st.subheader("📌 All standing notes currently in force")
+    existing = service_notes.list_standing_notes()
+    if not existing:
+        st.caption("None yet. Anything saved above appears here, and applies to every future "
+                  "upload of that type until you clear it.")
+    else:
+        # Every note here silently alters future uploads, so they all have to be visible and
+        # removable in one place - otherwise a note written months ago keeps appending itself
+        # to vouchers with nobody remembering it exists.
+        name_by_id = {str(s.get("id")): (s.get("commercialName") or s.get("legalName") or "")
+                      for s in (st.session_state.suppliers_cache or [])}
+        for note in existing:
+            cols = st.columns([6, 1])
+            with cols[0]:
+                who = name_by_id.get(note["supplier_id"], "")
+                st.markdown(f"**{note['product_type']} · {who or 'supplier'} "
+                            f"(ID {note['supplier_id']})**")
+                st.info(note["text"])
+                if note.get("updated_at"):
+                    st.caption(f"Last updated {note['updated_at'][:16].replace('T', ' ')} UTC")
+            with cols[1]:
+                if st.button("🗑️", key=f"mi_clear_{note['supplier_id']}_{note['product_type']}",
+                             help="Clear this note"):
+                    service_notes.set_standing_note(note["supplier_id"], note["product_type"], "")
+                    st.rerun()
+
+
 st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
@@ -6929,7 +7027,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-learns-from-corrections — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-manual-information — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -7033,6 +7131,11 @@ TOOL_UPLOAD = "📤 Upload & Update Products"
 TOOL_TRANSLATE = "🌐 Translate Products"
 TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 
+# A Step 1 destination that is not a product type. It sits in the same list because that is
+# where a person looks when they have something to record about a supplier, even though
+# nothing is being uploaded.
+MANUAL_INFO_CHOICE = "Adding manual information"
+
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
 if "product_type" not in st.session_state:
@@ -7122,7 +7225,9 @@ if st.session_state.active_tool == TOOL_TRANSLATE:
 # ======================================================================
 if st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
-    pt_choice = st.radio("Choose one:", ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel"],
+    pt_choice = st.radio("Choose one:",
+                          ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel",
+                           MANUAL_INFO_CHOICE],
                           key="pt_choice_radio")
     st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
               "**Ticket** = single-destination excursion/activity, no overnight, passenger-type pricing. "
@@ -7131,10 +7236,17 @@ if st.session_state.product_type is None:
               "**Transport** = a connection between two Travel Compositor destinations (e.g. Aswan → "
               "Hurghada), priced per occupancy bracket. "
               "**Hotel** = a full accommodation contract: rooms, meal plans, offers, supplements and "
-              "rate seasons.")
+              "rate seasons. "
+              "**Adding manual information** = no document at all: write something you know about a "
+              "supplier — a moved pickup point, changed cancellation terms — and it is attached "
+              "automatically to every future upload of that product type.")
     if st.button("➡️ Continue", type="primary"):
         st.session_state.product_type = pt_choice
         st.rerun()
+    st.stop()
+
+if st.session_state.product_type == MANUAL_INFO_CHOICE:
+    render_manual_information_flow(client)
     st.stop()
 
 if st.session_state.product_type == "Ticket":
