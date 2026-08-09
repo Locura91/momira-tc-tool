@@ -84,6 +84,7 @@ import transport_matcher
 import platform_store
 import service_notes
 import extraction_memory
+import bulk_notes
 # The Translation Sync tool, merged in from the standalone momira-translation-sync
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
@@ -6966,13 +6967,140 @@ def render_manual_information_flow(client):
                             service_notes.PRODUCT_TYPES, key="mi_product_type", horizontal=True)
     st.caption("A note is scoped to one supplier AND one product type, because a change to how "
               "transfers are picked up says nothing about that supplier's hotels. To cover more "
-              "than one, save it once per type.")
+              "than one, do it once per type.")
 
-    if supplier_id:
-        service_notes.render_standing_note_editor(supplier_id, product_type,
-                                                  key_suffix="_manual", expanded=True)
-    else:
+    if not supplier_id:
         st.info("Choose a supplier above to write a note.")
+        return
+
+    # ---- 1. Where does the text go? -----------------------------------
+    st.markdown("### 1. Where should the text go?")
+    targets = bulk_notes.available_targets(product_type)
+    target = st.selectbox("Field", targets, key="mi_target")
+    missing = bulk_notes.unavailable_targets(product_type)
+    if missing:
+        # Naming what ISN'T possible, and why, stops someone hunting for an option that
+        # was never there - which is exactly what happened with the first Hotel note.
+        st.caption("Not available on " + product_type + ": "
+                   + "  ·  ".join(f"**{k}** — {v}" for k, v in missing.items()))
+
+    # ---- 2. The text --------------------------------------------------
+    st.markdown("### 2. What should it say?")
+    text = st.text_area(
+        "Text to add to every one of this supplier's " + product_type + " services",
+        key="mi_text", height=120,
+        placeholder="e.g. All pickups now depart from the new terminal, not the old arrivals hall.",
+    )
+    mode_label = st.radio(
+        "How should it be written?",
+        ["Add at the bottom (keep what is already there)",
+         "Replace the field completely"],
+        key="mi_mode",
+    )
+    mode = (bulk_notes.MODE_REPLACE if mode_label.startswith("Replace") else bulk_notes.MODE_APPEND)
+    if mode == bulk_notes.MODE_REPLACE:
+        st.warning("⚠️ Replace deletes whatever is currently in that field — including text "
+                   "extracted from the supplier's own contract. There is no undo in Travel "
+                   "Compositor. Use it only when the old wording is genuinely superseded.")
+
+    codes = None
+    if bulk_notes.needs_manual_codes(product_type):
+        st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
+                "found automatically — paste the tour codes, one per line.")
+        raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
+                                 placeholder="ASW-CT1\nCAI-CT2")
+        codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+
+    also_future = st.checkbox(
+        f"Also attach this to every {product_type} I upload from now on",
+        value=True, key="mi_also_future",
+        help="Saved as a standing note. Note: on future uploads it is added to the Voucher "
+             "Remarks, which is the field the upload flows write notes into.",
+    )
+
+    # ---- 3. Preview, then send ----------------------------------------
+    st.markdown("### 3. Check it, then send")
+    st.caption("Preview reads Travel Compositor and shows exactly what would change. Nothing "
+              "is written until you press Send.")
+
+    pcol1, pcol2 = st.columns([1, 3])
+    with pcol1:
+        if st.button("🔍 Preview", key="mi_preview", disabled=not (text or "").strip()):
+            bar = st.progress(0.0, text="Reading Travel Compositor...")
+
+            def _tick(done, total, name):
+                bar.progress(min(done / max(total, 1), 1.0), text=f"Checking {name} ({done}/{total})")
+
+            st.session_state.mi_plan = bulk_notes.plan(
+                client, supplier_id, product_type, target, text, mode=mode,
+                codes=codes, progress=_tick)
+            bar.empty()
+            st.session_state.mi_plan_sig = (supplier_id, product_type, target, text, mode)
+            st.session_state.pop("mi_result", None)
+            st.rerun()
+
+    planned = st.session_state.get("mi_plan")
+    # A plan is only valid for the exact inputs it was built from. Editing the text after
+    # previewing and then pressing Send would otherwise publish the OLD text.
+    if planned and st.session_state.get("mi_plan_sig") != (supplier_id, product_type, target, text, mode):
+        st.info("You changed something after previewing — press Preview again to see the new result.")
+        planned = None
+
+    if planned:
+        if planned.get("error"):
+            st.error(planned["error"])
+        st.markdown(f"**{planned['will_change']} service(s) would change**, "
+                    f"{planned['unchanged']} already have this text or have nothing to write "
+                    f"into, {planned['failed']} couldn't be read.")
+        for it in planned["items"]:
+            icon = {"will_change": "✏️", "unchanged": "➖", "failed": "❌"}[it["status"]]
+            with st.expander(f"{icon} {it['name']}"
+                             + (f" — {it.get('reason') or it.get('detail','')}"
+                                if it["status"] != "will_change" else ""),
+                             expanded=False):
+                if it["status"] == "will_change":
+                    for lang, (before, after) in sorted(it["changes"].items()):
+                        st.caption(f"{lang} — before")
+                        st.code(before or "(empty)")
+                        st.caption(f"{lang} — after")
+                        st.code(after)
+                else:
+                    st.caption(it.get("reason") or it.get("detail") or "")
+
+        if planned["will_change"]:
+            st.warning(f"This writes to **{planned['will_change']} live service(s)** for supplier "
+                       f"{supplier_id}. Travel Compositor has no undo.")
+            if st.button(f"🚀 Send to {planned['will_change']} service(s)", type="primary",
+                         key="mi_send"):
+                bar = st.progress(0.0, text="Sending...")
+
+                def _tick2(done, total, name):
+                    bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
+
+                st.session_state.mi_result = bulk_notes.apply(client, supplier_id, planned,
+                                                              progress=_tick2)
+                bar.empty()
+                if also_future:
+                    service_notes.set_standing_note(supplier_id, product_type, text)
+                st.rerun()
+        else:
+            st.info("Nothing to send — every service already has this text.")
+
+    result = st.session_state.get("mi_result")
+    if result:
+        if result["updated"]:
+            st.success(f"✅ Sent. {len(result['updated'])} service(s) updated.")
+            for u in result["updated"]:
+                st.write(f"- {u['name']} ({', '.join(u['languages'])})")
+        if result["failed"]:
+            st.error(f"❌ {len(result['failed'])} service(s) failed — nothing was changed on these:")
+            for f in result["failed"]:
+                st.write(f"- {f.get('name')}: {f.get('detail')}")
+            st.caption("Re-running is safe: services already updated are detected and skipped.")
+        if st.button("Clear this result", key="mi_clear_result"):
+            for k in ("mi_result", "mi_plan", "mi_plan_sig"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
     st.markdown("---")
     st.subheader("📌 All standing notes currently in force")
@@ -7027,7 +7155,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-manual-information — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-send-to-live-services — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
