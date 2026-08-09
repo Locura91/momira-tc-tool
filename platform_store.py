@@ -83,6 +83,51 @@ def _psycopg():
         return None
 
 
+# One reused Postgres connection, guarded by a lock.
+#
+# WHY REUSE: every get/set here is its own operation, and opening a fresh connection per
+# call means a TCP handshake, TLS negotiation and auth round-trip to a remote database
+# each time - roughly 100-300ms over the internet. That's tolerable for a page render
+# doing a handful of reads, but the translation sync calls languages_needed() once per
+# entity in a loop; at a few hundred entities, per-call connections would add minutes of
+# pure connection overhead to a run and look like the tool had hung.
+#
+# WHY A LOCK: psycopg2 connections are not safe for concurrent use, and Streamlit serves
+# each browser session on its own thread. Serializing access is the simple, correct
+# choice at this volume - these are millisecond queries, not long transactions.
+_PG_CONN = None
+_PG_CONN_URL: Optional[str] = None
+_PG_LOCK = threading.Lock()
+
+
+def _reset_pg_connection():
+    global _PG_CONN, _PG_CONN_URL
+    if _PG_CONN is not None:
+        try:
+            _PG_CONN.close()
+        except Exception:
+            pass
+    _PG_CONN = None
+    _PG_CONN_URL = None
+
+
+def _live_pg_connection(driver, url):
+    """Returns the cached connection, reconnecting if it's missing, closed, or pointed at
+    a different URL. A connection dropped by the server (idle timeout, pooler recycling,
+    a Supabase restart) shows up as closed != 0 and is transparently replaced."""
+    global _PG_CONN, _PG_CONN_URL
+    if _PG_CONN is not None and _PG_CONN_URL == url:
+        try:
+            if _PG_CONN.closed == 0:
+                return _PG_CONN
+        except Exception:
+            pass
+        _reset_pg_connection()
+    _PG_CONN = driver.connect(url)
+    _PG_CONN_URL = url
+    return _PG_CONN
+
+
 @contextmanager
 def _connect():
     """Yields (connection, is_postgres). Postgres when DATABASE_URL is set and the
@@ -100,12 +145,23 @@ def _connect():
                   "falling back to a LOCAL file, which will NOT survive a redeploy. "
                   "Add psycopg2-binary to requirements.txt.")
         else:
-            conn = driver.connect(url)
-            try:
-                yield conn, True
-                conn.commit()
-            finally:
-                conn.close()
+            with _PG_LOCK:
+                conn = _live_pg_connection(driver, url)
+                try:
+                    yield conn, True
+                    conn.commit()
+                except Exception:
+                    # Roll back so a failed statement can't leave the reused connection in
+                    # an aborted transaction, where every later query fails with
+                    # "current transaction is aborted" until it's reset. Then drop the
+                    # connection entirely, so the next call reconnects cleanly rather than
+                    # inheriting whatever broke it.
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    _reset_pg_connection()
+                    raise
             return
 
     conn = sqlite3.connect(_LOCAL_DB_PATH)
