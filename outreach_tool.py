@@ -196,7 +196,7 @@ def _render_review_and_send():
                 if not s["selected"]:
                     url = s.get("website") or s.get("listingUrl")
                     if url:
-                        domain = om._extract_domain(url)  # we can expose this function or use the public is_blocked
+                        domain = om.extract_domain(url)  # <-- FIXED: now uses public function
                         if domain:
                             unticked_domains.add(domain)
             st.caption(f"📌 {len(unticked_domains)} unique domain(s) from unticked suppliers will be blocked.")
