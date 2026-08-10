@@ -63,13 +63,16 @@ def _reset_run():
 def _render_search():
     st.subheader("Find suppliers")
     st.caption("Searches Google, Tripadvisor, Trustpilot, Viator and GetYourGuide for well-reviewed "
-              "local operators, filters out articles, listicles, forums and booking marketplaces, then "
-              "looks for a direct email for each one.")
+               "local operators, filters out articles, listicles, forums and booking marketplaces, then "
+               "looks for a direct email for each one.")
 
-    col1, col2 = st.columns(2)
+    # ---- THREE COLUMNS: Country, City (optional), Keyword ----
+    col1, col2, col3 = st.columns(3)
     with col1:
-        country = st.text_input("Country / region", placeholder="e.g. Egypt", key="or_country")
+        country = st.text_input("Country", placeholder="e.g. Egypt", key="or_country")
     with col2:
+        city = st.text_input("City (optional)", placeholder="e.g. Cairo", key="or_city")
+    with col3:
         keyword = st.text_input("What they should offer", placeholder="e.g. Nile Cruise", key="or_keyword")
 
     if not (os.getenv("TAVILY_API_KEY") or os.getenv("SERPAPI_API_KEY")):
@@ -82,7 +85,9 @@ def _render_search():
         with st.spinner("Searching…"):
             try:
                 result = od.discover_suppliers(
-                    country.strip(), keyword.strip(),
+                    country.strip(),
+                    city.strip(),          # <-- Pass city (may be empty)
+                    keyword.strip(),
                     progress=lambda msg: progress_box.caption(f"⏳ {msg}"),
                 )
             except Exception as e:
@@ -91,7 +96,11 @@ def _render_search():
                 return
         progress_box.empty()
         st.session_state.or_result = result
-        st.session_state.or_session = {"country": country.strip(), "keyword": keyword.strip()}
+        st.session_state.or_session = {
+            "country": country.strip(),
+            "city": city.strip(),
+            "keyword": keyword.strip(),
+        }
         st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
         st.session_state[_PHASE_KEY] = "review"
         st.rerun()
@@ -119,7 +128,9 @@ def _render_review_and_send():
 
     top1, top2 = st.columns([5, 1])
     with top1:
-        st.subheader(f"{len(suppliers)} supplier(s) for {session['keyword']} in {session['country']}")
+        # Show city if provided, otherwise fall back to country
+        location = session.get("city") or session.get("country")
+        st.subheader(f"{len(suppliers)} supplier(s) for {session['keyword']} in {location}")
     with top2:
         if st.button("🔎 New search", use_container_width=True):
             _reset_run()
@@ -133,7 +144,7 @@ def _render_review_and_send():
 
     # ---- Results table ----
     st.caption("Untick anyone you don't want to contact. You can also type in an email the search "
-              "couldn't find — a row with no email is skipped at send time.")
+               "couldn't find — a row with no email is skipped at send time.")
 
     if suppliers:
         df = pd.DataFrame([{
@@ -170,8 +181,8 @@ def _render_review_and_send():
 
     with st.expander(f"🔬 How the {stats['raw']} raw results became {stats['final']}"):
         st.caption("The original tool wrote this to a server console. It's here instead because the "
-                  "distinction matters: a known operator never appearing at all is a search problem, "
-                  "whereas appearing and being dropped is a filter problem.")
+                   "distinction matters: a known operator never appearing at all is a search problem, "
+                   "whereas appearing and being dropped is a filter problem.")
         scol1, scol2, scol3 = st.columns(3)
         scol1.metric("Raw results", stats["raw"])
         scol1.metric("Passed pre-filter", stats["after_prefilter"])
@@ -187,9 +198,9 @@ def _render_review_and_send():
     # ---- Template ----
     st.markdown("##### Email")
     st.caption("Tags in square brackets are filled in per supplier: `[SupplierName]`, `[ContactName]`, "
-              "`[Country]`, `[FocusKeyword]`, `[Website]`, `[SenderName]`. A tag with no value stays "
-              "visible rather than blanking, so a typo is obvious. The HTML version is generated from "
-              "this text at send time, so there's only one body to edit.")
+               "`[Country]`, `[FocusKeyword]`, `[Website]`, `[SenderName]`. A tag with no value stays "
+               "visible rather than blanking, so a typo is obvious. The HTML version is generated from "
+               "this text at send time, so there's only one body to edit.")
     template["subject"] = st.text_input("Subject", value=template["subject"], key="or_subject")
     template["textBody"] = st.text_area("Body", value=template["textBody"], height=320, key="or_body")
 
@@ -231,7 +242,7 @@ def _render_review_and_send():
                        f"Place it at `{pdf['path']}`.")
 
     st.caption(f"**{len(selected)}** selected · **{len(sendable)}** with an email address · "
-              f"**{len(selected) - len(sendable)}** would be skipped")
+               f"**{len(selected) - len(sendable)}** would be skipped")
 
     if sendable:
         with st.expander(f"📋 The {len(sendable)} address(es) that would receive this"):
@@ -244,14 +255,14 @@ def _render_review_and_send():
 
     if provider != "demo" and status["ok"]:
         st.caption(f"This sends real email from {oe.get_from_address()} to {len(sendable)} external "
-                  f"companies and cannot be recalled.")
+                   f"companies and cannot be recalled.")
 
     ccol1, ccol2 = st.columns([2, 3])
     with ccol1:
         confirmed = st.checkbox(f"Yes, send to {len(sendable)}", key="or_confirm_real")
     with ccol2:
         send_clicked = st.button(f"📨 Send to {len(sendable)} supplier(s)", type="primary",
-                                  disabled=not confirmed, use_container_width=True)
+                                 disabled=not confirmed, use_container_width=True)
 
     # Optional preview run - available, never required.
     if st.button("🧪 Dry run instead (builds everything, sends nothing)"):
@@ -287,7 +298,7 @@ def _render_review_and_send():
         failed = sum(1 for e in send_log if e["status"] == "failed")
         if failed:
             st.warning(f"Finished — **{sent}** sent, **{skipped}** skipped, **{failed}** failed. "
-                      f"Failures are per-recipient; the rest of the batch still went out.")
+                       f"Failures are per-recipient; the rest of the batch still went out.")
         else:
             st.balloons()
             st.success(f"🎉 Finished — **{sent}** sent, **{skipped}** skipped.")
@@ -298,8 +309,11 @@ def _render_review_and_send():
                                                   "messageId", "timestamp"], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(send_log)
+        # Build filename with city if available
+        location = session.get("city") or session.get("country")
+        filename = f"outreach-{location}-{session['keyword']}.csv".replace(" ", "-")
         st.download_button("⬇️ Download send log (CSV)", buf.getvalue(),
-                           file_name=f"outreach-{session['country']}-{session['keyword']}.csv".replace(" ", "-"),
+                           file_name=filename,
                            mime="text/csv")
 
 

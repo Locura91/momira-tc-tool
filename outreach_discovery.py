@@ -56,7 +56,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-REQUEST_TIMEOUT_S = 8  # REQUEST_TIMEOUT_MS = 8000 in the original
+REQUEST_TIMEOUT_S = 15  # increased from 8 to handle slower contact pages
 
 
 # ============================================================================
@@ -92,39 +92,44 @@ def _max_candidates() -> int:
 # ============================================================================
 # 1. QUERY BUILDING - one query per target source
 # ============================================================================
-def build_queries(country: str, keyword: str) -> List[Dict[str, Any]]:
-    base = f"{keyword} {country}".strip()
-    return [
-        # domains: passed to the provider's real domain-restriction parameter
-        # (Tavily's include_domains / SerpAPI's site: operator), NOT embedded as
-        # "site:x.com" text in the query. Tavily does not treat "site:" text as a
-        # strict filter - it just does loose keyword matching, which let totally
-        # unrelated pages (retail stores, dictionary definitions) leak in.
-        {"source": "tripadvisor", "query": f"{base} reviews", "domains": ["tripadvisor.com"], "max_results": 10},
-        # Trustpilot / Viator / GetYourGuide are REVIEW-QUALITY signal sources
-        # (rating/review-count text to feed vetting), same role as Tripadvisor above -
-        # not places to find a contact email (OTA listing pages almost never expose
-        # one). Small result budget each: secondary signal, not primary discovery.
-        {"source": "trustpilot", "query": f"{base} reviews", "domains": ["trustpilot.com"], "max_results": 6},
-        {"source": "viator", "query": f"{base} reviews", "domains": ["viator.com"], "max_results": 6},
-        {"source": "getyourguide", "query": f"{base} reviews", "domains": ["getyourguide.com"], "max_results": 6},
-        # "contact email" used to be baked into these two queries, which biased the
-        # engine toward CONTACT subpages instead of the operator's actual homepage
-        # (real evidence: supplier sites showing up titled "Contact Us" instead of
-        # their business name). Enrichment already scrapes for an email afterward.
-        {"source": "google", "query": f"{base} tour operator best reviews", "domains": [], "max_results": 10},
-        # Aimed at the operator's OWN site rather than review/listicle content - more
-        # likely to surface direct-supplier brands than aggregators. This is the
-        # priority source (own website first, social secondary), so the largest budget.
-        {"source": "website", "query": f"{base} official website", "domains": [], "max_results": 14},
-        # Social is a distant second priority - a fallback contact channel, not a
-        # primary discovery source, so a smaller budget.
-        {"source": "instagram", "query": f"{base}", "domains": ["instagram.com"], "max_results": 5},
-        # No dedicated Facebook query - results were overwhelmingly personal posts and
-        # group discussions rather than business pages, even after profile-shape
-        # filtering. A Facebook Page can still surface incidentally via the queries
-        # above (see _is_facebook_url).
-    ]
+def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]:
+    """
+    Builds targeted search queries for:
+      - City-specific DMCs, agencies, and guides (if a city is provided)
+      - Country-wide DMCs, agencies, and guides
+      - A minimal set of review-site queries for signal (very low budget)
+      - A fallback Instagram query
+    """
+    country_base = f"{keyword} {country}".strip()
+    queries = []
+
+    # ---- 1. CITY-SPECIFIC (if city is provided) ----
+    if city and city.strip():
+        city_base = f"{keyword} {city} {country}".strip()
+        queries.extend([
+            {"source": "dmc_city", "query": f"{city_base} Destination Management Company", "domains": [], "max_results": 8},
+            {"source": "agency_city", "query": f"{city_base} local travel agency tour operator", "domains": [], "max_results": 8},
+            {"source": "guide_city", "query": f"{city_base} private tour guide", "domains": [], "max_results": 5},
+        ])
+
+    # ---- 2. COUNTRY-WIDE ----
+    queries.extend([
+        {"source": "dmc_country", "query": f"{country_base} Destination Management Company", "domains": [], "max_results": 6},
+        {"source": "agency_country", "query": f"{country_base} local travel agency tour operator", "domains": [], "max_results": 6},
+        {"source": "guide_country", "query": f"{country_base} private tour guide", "domains": [], "max_results": 4},
+    ])
+
+    # ---- 3. REVIEW SITES (minimal budget, just for signal) ----
+    queries.extend([
+        {"source": "tripadvisor", "query": f"{country_base} reviews", "domains": ["tripadvisor.com"], "max_results": 2},
+        {"source": "viator", "query": f"{country_base} reviews", "domains": ["viator.com"], "max_results": 1},
+        {"source": "getyourguide", "query": f"{country_base} reviews", "domains": ["getyourguide.com"], "max_results": 1},
+    ])
+
+    # ---- 4. FALLBACK SOCIAL ----
+    queries.append({"source": "instagram", "query": f"{country_base}", "domains": ["instagram.com"], "max_results": 2})
+
+    return queries
 
 
 # ============================================================================
@@ -290,6 +295,7 @@ def has_positive_signal(text: Optional[str]) -> bool:
 TITLE_NOISE_SEGMENTS = [
     "reviews", "review", "photos", "photo", "tripadvisor", "facebook", "instagram",
     "home", "contact", "about", "best", "top", "deals", "deal", "welcome",
+    "viator", "getyourguide", "expedia", "booking.com", "trip.com",  # added aggregators
 ]
 
 _STARS_IN_TITLE = re.compile(r"\d(\.\d)?\s*stars?", re.I)
@@ -322,6 +328,7 @@ GENERIC_NAME_BLOCKLIST = [
     "contact", "contact us", "about", "about us", "privacy policy", "privacy",
     "terms of service", "terms and conditions", "terms", "faq", "faqs", "blog",
     "sitemap", "cookie policy", "cookies", "menu", "search",
+    "viator", "getyourguide", "tripadvisor", "expedia", "booking",  # added aggregators
 ]
 
 # Fragment names like "In" or "On" happen when a page's real title never loaded and
@@ -663,7 +670,8 @@ CONTACT_TITLE_PATTERN = re.compile(
 # "Impressum" legal-notice page, which is legally required to list a contact email.
 # Terms & Conditions is the second most common place.
 CONTACT_LINK_PATTERN = re.compile(
-    r"contact(\s|-|_)?us\b|\bcontact\b|\bkontakt\b|\bimpressum\b|\bimprint\b", re.I)
+    r"contact(\s|-|_)?us\b|\bcontact\b|\bkontakt\b|\bimpressum\b|\bimprint\b"
+    r"|\benquire\b|\bquote\b|book(\s|-|_)?now|reservation", re.I)   # expanded
 TERMS_LINK_PATTERN = re.compile(
     r"terms(\s|-|_)?(and|&)?(\s|-|_)?conditions|terms of (service|use)|\bterms\b|\bagb\b|\blegal\b", re.I)
 
@@ -810,14 +818,11 @@ def scrape_aggregator_for_website_and_contact(url: str) -> Dict[str, Any]:
         outbound = find_outbound_website_link(soup, url)
         if outbound:
             site_result = scrape_website_contact(outbound)
-            if site_result["email"] or site_result["contactName"]:
-                return {"website": outbound, **site_result}
-            # Found their real site but no email on it - still worth surfacing the
-            # website itself, plus whatever the listing page's own text has.
+            # Even if site_result has no email, we have the website – that's valuable.
             listing_fallback = extract_email_and_instagram_from_page(soup)
             return {
-                "website": outbound,
-                "email": listing_fallback["email"],
+                "website": outbound,  # always return the found official site
+                "email": site_result["email"] or listing_fallback["email"],
                 "instagram": site_result["instagram"] or listing_fallback["instagram"],
                 "contactName": site_result["contactName"],
             }
@@ -911,6 +916,8 @@ SOURCE_LABELS = {
     "tripadvisor": "Tripadvisor", "google": "Google", "website": "Official website",
     "instagram": "Instagram", "facebook": "Facebook", "trustpilot": "Trustpilot",
     "viator": "Viator", "getyourguide": "GetYourGuide",
+    "dmc_city": "DMC (City)", "agency_city": "Travel Agency (City)", "guide_city": "Tour Guide (City)",
+    "dmc_country": "DMC (Country)", "agency_country": "Travel Agency (Country)", "guide_country": "Tour Guide (Country)",
 }
 
 
@@ -978,10 +985,9 @@ def to_supplier_record(candidate: Dict[str, Any], country: str, keyword: str) ->
         "rating": candidate.get("rating"),
         "reviewCount": candidate.get("reviewCount"),
         "sources": candidate.get("sources") or [],
-        # Ready-to-mail suppliers (a real email was found) are pre-selected so the
-        # operator sees them as good to go; suppliers with no email start UNSELECTED,
-        # since they aren't actually ready to send to yet.
-        "selected": bool(candidate.get("email")),
+        # Pre‑select if there's an email, website, or social – so the operator can
+        # easily add a missing email from the website.
+        "selected": bool(candidate.get("email") or candidate.get("website") or candidate.get("social")),
         "isMock": bool(candidate.get("isMock")),
     }
 
@@ -1030,7 +1036,8 @@ def merge_supplier_records(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, An
         "sources": (primary.get("sources") or []) + (secondary.get("sources") or []),
         # Recomputed rather than inherited - a merge can combine a no-email row with an
         # email-having one, and the checkbox default must reflect the FINAL merged email.
-        "selected": bool(merged_email),
+        "selected": bool(merged_email or primary.get("website") or primary.get("social") or
+                         secondary.get("website") or secondary.get("social")),
     })
     return merged
 
@@ -1139,15 +1146,17 @@ def _build_verification_prompt(candidates: List[Dict[str, Any]], country: str, k
         f'round trips, seat-in-coach (SIC), or hotel accommodation) returned the raw candidates below, pulled '
         f'from search snippets. Some may be forum posts, articles, unrelated businesses, or based outside '
         f'{country} - your job is to judge each one.\n\n'
+        f'Important: DMCs (Destination Management Companies), local travel agencies, tour operators, and private '
+        f'tour guides are ALL valid direct suppliers. Prefer to keep a candidate if it looks like a legitimate '
+        f'travel business with a website, even if the snippet is sparse. Only reject if it is clearly an OTA '
+        f'(like Viator/GetYourGuide), a forum post, a listicle, or an unrelated business.\n\n'
         f'For EVERY candidate, report:\n'
-        f'- isDirectSupplier: is this really a local travel agent, travel agency, tour guide, local DMC, or local '
-        f'expert offering the services above - not an article/forum post/listicle/unrelated business/generic '
-        f'booking marketplace?\n'
-        f'- isInCountry: is it physically located and operating within {country}?\n'
-        f'- cleanCompanyName: the correct business name (fix it if the given name looks mangled or truncated, '
-        f'e.g. a stray word or a generic page-title fragment)\n'
+        f'- isDirectSupplier: true if it is a travel agency, tour operator, DMC, or tour guide - false if it is '
+        f'an article, forum, listicle, OTA, or unrelated.\n'
+        f'- isInCountry: true if the business is physically located and operating within {country}.\n'
+        f'- cleanCompanyName: the correct business name (fix mangled/truncated titles if needed).\n'
         f'- reviewTeaser + reviewSource: a short 1-2 sentence summary of any customer feedback in the snippet, '
-        f'and which platform it\'s from\n\n'
+        f'and which platform it\'s from.\n\n'
         f'Candidates:\n\n{listing}\n\n'
         f'Call report_verification with a verdict for every single candidate listed (same count, same ids).'
     )
@@ -1169,10 +1178,6 @@ def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: s
         client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         response = client.messages.create(
             model=os.getenv("ANTHROPIC_MODEL") or "claude-haiku-4-5",
-            # Was 4096 in an earlier version of the original: real evidence showed the
-            # call intermittently returning an unexpected shape on larger batches - at
-            # ~30 candidates the verdicts array can run past 4096 output tokens, so the
-            # tool_use call gets cut off mid-JSON. Doubled to give real headroom.
             max_tokens=8192,
             tools=[VERIFY_TOOL],
             tool_choice={"type": "tool", "name": "report_verification"},
@@ -1198,7 +1203,7 @@ def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: s
 # ============================================================================
 # PUBLIC ENTRY POINT
 # ============================================================================
-def discover_suppliers(country: str, keyword: str, progress=None) -> Dict[str, Any]:
+def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> Dict[str, Any]:
     """
     Runs the whole discovery pipeline and returns:
       {"suppliers": [...], "stats": {...}, "drop_log": [...]}
@@ -1216,7 +1221,7 @@ def discover_suppliers(country: str, keyword: str, progress=None) -> Dict[str, A
         if progress:
             progress(msg)
 
-    queries = build_queries(country, keyword)
+    queries = build_queries(country, city, keyword)
     candidates: List[Dict[str, Any]] = []
 
     for q in queries:
