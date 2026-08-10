@@ -241,7 +241,7 @@ def _locked_on_update(existing_snapshot, field, fallback, label=""):
     maxOccupancy on a live transfer invalidates bookings already taken against it.
 
     Returns (value, was_inherited) so a caller can say on screen where the value came from -
-    an inherited value that looks like a chosen one is its own kind of trap."""
+    an inherited value that looks like a chosen one is its own trap."""
     if not existing_snapshot:
         return fallback, False
     current = existing_snapshot.get(field)
@@ -912,6 +912,40 @@ def build_ticket_payloads(
     ticket_option_payload = None
     ticket_option_error = None
     try:
+        # ---- ENFORCE 9-PAX SYSTEM CAP ----
+        SYSTEM_MAX_PAX = 9
+        user_max = pre_config.max_passengers
+        # Clamp max_passengers to system cap (never exceed 9)
+        max_passengers = min(user_max, SYSTEM_MAX_PAX)
+        if max_passengers != user_max:
+            extracted_ticket_data["pricing_notes"] = (
+                extracted_ticket_data.get("pricing_notes", "") +
+                f" The max passenger count was reduced to {SYSTEM_MAX_PAX} (system limit)."
+            ).strip()
+
+        # ---- Filter occupancy_prices (if used) ----
+        selected_price_type = extracted_ticket_data.get("price_type") or "OCCUPANCY"
+        if selected_price_type == "OCCUPANCY":
+            raw_occupancy = extracted_ticket_data.get("occupancy_prices") or []
+            filtered_occupancy = []
+            dropped_occupancy = []
+            for o in raw_occupancy:
+                occ = _safe_int(o.get("occupancy", 1), fallback=1)
+                if occ <= SYSTEM_MAX_PAX:
+                    filtered_occupancy.append({
+                        "occupancy": occ,
+                        "amount": _safe_float(o.get("amount", 0))
+                    })
+                else:
+                    dropped_occupancy.append(occ)
+            if dropped_occupancy:
+                extracted_ticket_data["pricing_notes"] = (
+                    extracted_ticket_data.get("pricing_notes", "") +
+                    f" Dropped occupancy tiers for group sizes > {SYSTEM_MAX_PAX}: {dropped_occupancy}."
+                ).strip()
+            extracted_ticket_data["occupancy_prices"] = filtered_occupancy
+
+        # ---- Now build the option with the enforced cap ----
         # Pricing is 3 mutually-exclusive modes (DISTRIBUTION/OCCUPANCY/SERVICE).
         # The API doesn't ignore the fields belonging to the two UNSELECTED
         # modes - it validates/stores whatever is sent. Historically all three
@@ -976,7 +1010,7 @@ def build_ticket_payloads(
             baseServicePrice=base_service_price,
             occupancyPrices=occupancy_prices,
             priceType=selected_price_type,
-            maxPassengers=pre_config.max_passengers,
+            maxPassengers=max_passengers,  # Use the clamped value
             minPassengers=pre_config.min_passengers,
             # Confirmed by product owner: infant = 0-2, child = 2-12,
             # internationally standard, same for Tickets and ClosedTours -
