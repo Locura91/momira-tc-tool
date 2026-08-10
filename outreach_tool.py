@@ -41,12 +41,12 @@ misreading a screen.
 import csv
 import io
 import os
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
 import outreach_discovery as od
 import outreach_email as oe
+import outreach_memory as om  # new learning module
 
 _PHASE_KEY = "or_phase"
 
@@ -180,6 +180,50 @@ def _render_review_and_send():
                 s["selected"] = bool(edited.iloc[i]["Send"])
                 s["name"] = str(edited.iloc[i]["Name"]).strip() or s["name"]  # update name
                 s["email"] = (str(edited.iloc[i]["Email"]).strip() or None)
+
+        # ---- LEARNING: Block domains of unticked suppliers ----
+        st.divider()
+        st.markdown("##### 🧠 Teach the system to block these in future searches")
+        st.caption("If you see domains that are never useful (e.g. directories, aggregators, unrelated sites), "
+                   "click the button below to add their domains to the permanent blocklist. "
+                   "Future searches from **anyone** will skip them automatically.")
+
+        col_learn1, col_learn2 = st.columns([3, 1])
+        with col_learn1:
+            # Count unticked suppliers that have a website or listing URL
+            unticked_domains = set()
+            for s in suppliers:
+                if not s["selected"]:
+                    url = s.get("website") or s.get("listingUrl")
+                    if url:
+                        domain = om._extract_domain(url)  # we can expose this function or use the public is_blocked
+                        if domain:
+                            unticked_domains.add(domain)
+            st.caption(f"📌 {len(unticked_domains)} unique domain(s) from unticked suppliers will be blocked.")
+        with col_learn2:
+            if st.button("🧠 Block them", key="or_block_unticked", disabled=not unticked_domains):
+                blocked_count = 0
+                for domain in unticked_domains:
+                    om.add_domain_to_blocklist(domain)
+                    blocked_count += 1
+                st.success(f"✅ Blocked {blocked_count} domain(s) from future searches.")
+                st.rerun()
+
+        # ---- Optional: Show current blocklist ----
+        with st.expander("🔍 Show current blocklist"):
+            blocked = om.get_blocklist()
+            if not blocked:
+                st.caption("No domains blocked yet.")
+            else:
+                for domain in blocked:
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.write(f"`{domain}`")
+                    with c2:
+                        if st.button("🗑️ Remove", key=f"or_unblock_{domain}"):
+                            om.remove_domain_from_blocklist(domain)
+                            st.success(f"Removed `{domain}` from blocklist.")
+                            st.rerun()
 
     with st.expander(f"🔬 How the {stats['raw']} raw results became {stats['final']}"):
         st.caption("The original tool wrote this to a server console. It's here instead because the "
