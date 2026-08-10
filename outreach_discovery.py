@@ -95,8 +95,8 @@ def _max_candidates() -> int:
 def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]:
     """
     Builds targeted search queries for:
-      - City-specific DMCs, agencies, and guides (if a city is provided)
-      - Country-wide DMCs, agencies, and guides
+      - City-specific: local DMC, local travel agency, private tour guide
+      - Country-wide: local DMC, local travel agency, private tour guide
       - A minimal set of review-site queries for signal (very low budget)
       - A fallback Instagram query
     """
@@ -107,14 +107,15 @@ def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]
     if city and city.strip():
         city_base = f"{keyword} {city} {country}".strip()
         queries.extend([
-            {"source": "dmc_city", "query": f"{city_base} Destination Management Company", "domains": [], "max_results": 8},
+            # Use "local DMC" instead of "Destination Management Company"
+            {"source": "dmc_city", "query": f"{city_base} local DMC", "domains": [], "max_results": 8},
             {"source": "agency_city", "query": f"{city_base} local travel agency tour operator", "domains": [], "max_results": 8},
             {"source": "guide_city", "query": f"{city_base} private tour guide", "domains": [], "max_results": 5},
         ])
 
     # ---- 2. COUNTRY-WIDE ----
     queries.extend([
-        {"source": "dmc_country", "query": f"{country_base} Destination Management Company", "domains": [], "max_results": 6},
+        {"source": "dmc_country", "query": f"{country_base} local DMC", "domains": [], "max_results": 6},
         {"source": "agency_country", "query": f"{country_base} local travel agency tour operator", "domains": [], "max_results": 6},
         {"source": "guide_country", "query": f"{country_base} private tour guide", "domains": [], "max_results": 4},
     ])
@@ -468,9 +469,13 @@ def is_tripadvisor_listing_url(url: str) -> bool:
 # Brand size isn't the signal (Oberoi, Jaz Group, Mövenpick are big AND direct
 # suppliers, and should show up). DMCs are allowed through too. The only thing
 # filtered here is a generic online marketplace/OTA, which isn't a supplier at all.
+# Add global DMC aggregators/consolidators here as well.
 OTA_MARKETPLACE_BLOCKLIST = [
     "expedia", "booking.com", "viator", "getyourguide", "trip.com",
     "kayak", "skyscanner", "hotels.com", "agoda",
+    # International DMC platforms / consolidators
+    "fyndtravel", "dmcworld", "globetrotter", "arrivia", "tourico",
+    "hotelbeds", "gta", "travelbound", "travelex", "allianz",
 ]
 
 
@@ -479,6 +484,32 @@ def is_ota_or_marketplace(name: Optional[str]) -> bool:
         return False
     n = name.lower()
     return any(b in n for b in OTA_MARKETPLACE_BLOCKLIST)
+
+
+# New filter: drop candidates that appear to be international/global DMCs
+# by looking at name, snippet, or URL for words like "global", "international", "worldwide"
+# combined with "dmc" or "destination management".
+GLOBAL_DMC_KEYWORDS = re.compile(
+    r"\b(global|international|worldwide)\s+(dmc|destination\s*management)",
+    re.I
+)
+
+
+def is_likely_international_dmc(candidate: Dict[str, Any]) -> bool:
+    """Returns True if the candidate appears to be a global/international DMC
+    (not a local, in-country operator)."""
+    text = (f"{candidate.get('name') or ''} {candidate.get('snippet') or ''} "
+            f"{candidate.get('sourceUrl') or ''}")
+    if GLOBAL_DMC_KEYWORDS.search(text):
+        return True
+    # Also check for known domain patterns of international DMCs
+    url = candidate.get("sourceUrl") or ""
+    host = _hostname(url)
+    if host:
+        # If the domain contains "dmc" but also "global" or "world" – block
+        if "dmc" in host and (host.startswith("global") or host.startswith("world")):
+            return True
+    return False
 
 
 # Defense-in-depth: even with provider-side domain restriction, a loosely-matched
@@ -1244,6 +1275,12 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> 
             return False
 
         url = c.get("sourceUrl") or ""
+
+        # ---- NEW: Drop global/international DMCs ----
+        if is_likely_international_dmc(c):
+            reject("international/global DMC (not local)")
+            continue
+
         if is_generic_name(c.get("name")):
             # Before giving up entirely, see if it's sitting on its own real business
             # website - if so, rescue it with a domain-derived name instead of dropping.

@@ -143,8 +143,8 @@ def _render_review_and_send():
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
 
     # ---- Results table ----
-    st.caption("Untick anyone you don't want to contact. You can also type in an email the search "
-               "couldn't find — a row with no email is skipped at send time.")
+    st.caption("Untick anyone you don't want to contact. You can also edit the **Name** or **Email** fields directly "
+               "— corrections are saved back to the supplier list.")
 
     if suppliers:
         df = pd.DataFrame([{
@@ -162,6 +162,7 @@ def _render_review_and_send():
             df, use_container_width=True, hide_index=True, key="or_editor",
             column_config={
                 "Send": st.column_config.CheckboxColumn("Send", help="Rows ticked here will be emailed."),
+                "Name": st.column_config.TextColumn("Name", help="Editable — correct the supplier name if needed."),
                 "Email": st.column_config.TextColumn("Email", help="Editable — add one the search missed."),
                 "Rating": st.column_config.NumberColumn("Rating", format="%.1f"),
                 "Website": st.column_config.LinkColumn("Website"),
@@ -169,14 +170,15 @@ def _render_review_and_send():
                 "Listing": st.column_config.LinkColumn("Listing"),
                 "Why selected": st.column_config.TextColumn("Why selected", width="large"),
             },
-            disabled=["Name", "Website", "Social", "Listing", "Rating", "Why selected"],
+            # Only the read‑only columns remain disabled – Name is now editable
+            disabled=["Website", "Social", "Listing", "Rating", "Why selected"],
         )
 
-        # Fold the operator's edits back onto the real records, matched by row order (the
-        # table is never sorted or filtered, so position is stable).
+        # Fold the operator's edits back onto the real records, matched by row order.
         for i, s in enumerate(suppliers):
             if i < len(edited):
                 s["selected"] = bool(edited.iloc[i]["Send"])
+                s["name"] = str(edited.iloc[i]["Name"]).strip() or s["name"]  # update name
                 s["email"] = (str(edited.iloc[i]["Email"]).strip() or None)
 
     with st.expander(f"🔬 How the {stats['raw']} raw results became {stats['final']}"):
