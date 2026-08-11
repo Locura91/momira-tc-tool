@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-table-grid"
+MODULE_BUILD = "2026-08-12-column-view"
 
 import os
 import re
@@ -64,10 +64,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -1570,10 +1580,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -1657,10 +1677,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -1948,10 +1978,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -2269,10 +2309,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -2460,10 +2510,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -2786,10 +2846,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
@@ -3003,10 +3073,20 @@ which price sits under which heading. The notation is:
                                  column means. This is common: Word often stores one visual
                                  table as two, with all the headings in the first and all the
                                  numbers in the second.
-TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
-(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
-range. Never match a price to a season by counting values left to right - merged cells make the
-count wrong.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from, e.g.
+                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
+                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
+                                        Double Luxury Cabin: $353 > ...
+                               Read that and the season, its date ranges and each cabin's price
+                               are already together on one line. Use the R-rows above only to
+                               check something that looks wrong.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
+each price from the cell covering that same range. Never match a price to a season by counting
+values left to right - merged cells make the count wrong.
 STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
 listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
 then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
