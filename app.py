@@ -2931,6 +2931,18 @@ def _clear_batch_widget_state(prefixes, keep=None):
             st.session_state.pop(key, None)
 
 
+def _swapped_label(label, dep, arr):
+    """Rewrite a route label so it reads in the other direction.
+
+    Falls back to appending "(return)" rather than producing something wrong: a label is what
+    a human scans the list by, and a mislabelled row that says the opposite of what it does is
+    worse than one that is merely verbose."""
+    if dep and arr and dep in label and arr in label:
+        placeholder = "\x00"
+        return label.replace(dep, placeholder).replace(arr, dep).replace(placeholder, arr)
+    return f"{label} (return)"
+
+
 def render_candidate_filter(candidates, key_prefix, noun):
     """A search box and three bulk buttons above a long candidate list.
 
@@ -2979,6 +2991,47 @@ def render_candidate_filter(candidates, key_prefix, noun):
     with fcol4:
         if st.button("Clear all", key=f"{key_prefix}_none", use_container_width=True):
             _apply(lambda c: c.__setitem__("selected", False))
+
+    # Travel Compositor stores a route in ONE direction, and a "per way" rate sheet lists it
+    # once - so selling the return leg means a second product per route. Sixteen routes is
+    # sixteen more rows to type by hand, which is exactly the kind of work this screen exists
+    # to remove. Added as candidates rather than silently doubling the queue, so the return
+    # legs sit in the list and can be unticked or renamed like any other.
+    ticked = [c for c in candidates if c.get("selected")]
+    if ticked and st.button(f"↔️ Add the return direction for the {len(ticked)} ticked route(s)",
+                            key=f"{key_prefix}_returns", use_container_width=True,
+                            help="Creates a mirrored candidate for each ticked route, with the "
+                                 "departure and arrival swapped. Prices are read from the "
+                                 "document again for each one, so a return leg priced "
+                                 "differently is still read correctly."):
+        existing = {(str(c.get("departure_hint") or "").strip().lower(),
+                     str(c.get("arrival_hint") or "").strip().lower(),
+                     str(c.get("service_name") or "").strip().lower()) for c in candidates}
+        added = 0
+        for cand in ticked:
+            dep = str(cand.get("departure_hint") or "").strip()
+            arr = str(cand.get("arrival_hint") or "").strip()
+            if not (dep and arr):
+                continue
+            key = (arr.lower(), dep.lower(), str(cand.get("service_name") or "").strip().lower())
+            if key in existing:
+                continue          # the document already listed this direction separately
+            existing.add(key)
+            mirrored = dict(cand)
+            mirrored["departure_hint"], mirrored["arrival_hint"] = arr, dep
+            label = str(cand.get("label") or "").strip()
+            mirrored["label"] = (f"{cand.get('service_name') or 'Return'}: {arr} to {dep}"
+                                 if not label else _swapped_label(label, dep, arr))
+            mirrored["selected"] = True
+            candidates.append(mirrored)
+            added += 1
+        _clear_batch_widget_state([f"{key_prefix}_sel_", f"{key_prefix}_label_"])
+        st.session_state[f"{key_prefix}_returns_added"] = added
+        st.rerun()
+
+    if st.session_state.get(f"{key_prefix}_returns_added"):
+        st.success(f"Added {st.session_state.pop(f'{key_prefix}_returns_added')} return "
+                   f"direction(s) to the list below.")
 
     if term:
         st.caption(f"{sum(1 for c in candidates if _matches(c))} of {total} row(s) match "
@@ -5235,7 +5288,11 @@ def render_transfer_flow(client):
     tf_url = st.text_input("Product page URL (optional)", key="tf_url")
     tf_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
                                 accept_multiple_files=True, key="tf_files")
-    tf_hint = st.text_input("Extraction hint (optional)", key="tf_hint")
+    tf_hint = st.text_input(
+        "Instruction (optional)", key="tf_hint",
+        placeholder="e.g. only the Hurghada section, private transfers only",
+        help="Plain English, and it steers BOTH steps: which products get detected, and how "
+             "each one is read. It overrides the tool's own judgement.")
 
     render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_url, tf_files, tf_hint)
 
@@ -5282,7 +5339,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                         st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
-                    detected = detect_transfer_products(raw_text)
+                    detected = detect_transfer_products(raw_text, human_hint=tf_hint)
 
                     candidates = []
                     for t in detected:
@@ -5312,7 +5369,13 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         if single_transfer:
             st.subheader("Set up this Transfer")
-            st.caption("Only one distinct transfer product was found in this document.")
+            if (candidates[0].get("label") or "").strip():
+                st.caption("Only one distinct transfer product was found in this document.")
+            else:
+                st.warning("**No transfer products were detected in this document.** Name the one "
+                           "you want below, or go back and check the document actually contains "
+                           "transfer rates.")
+                st.caption("One route per row — the closer to the document's own wording, the better.")
         else:
             st.subheader(f"{len(candidates)} distinct transfer products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transfer, reviewed one at a time next. "
@@ -5325,7 +5388,13 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             with ccol1:
                 cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"xtf_sel_{i}")
             with ccol2:
-                cand["label"] = st.text_input("Transfer", value=cand["label"], key=f"xtf_label_{i}")
+                cand["label"] = st.text_input(
+                    "Which route?", value=cand["label"], key=f"xtf_label_{i}",
+                    placeholder="e.g. Private Transfer: HRG Airport to Sahl Hashish",
+                    help="Name ONE route the way the document writes it — the service or class, "
+                         "then where it goes from and to. This is what the AI is told to look for "
+                         "when it reads the document for this row, so the closer it is to the "
+                         "document's own wording the better.")
 
         if st.button("➕ Add another transfer product manually"):
             candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
@@ -5825,7 +5894,12 @@ def render_transport_flow(client):
     tp_url = st.text_input("Product page URL (optional)", key="tp_url")
     tp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
                                 accept_multiple_files=True, key="tp_files")
-    tp_hint = st.text_input("Extraction hint (optional)", key="tp_hint")
+    tp_hint = st.text_input(
+        "Instruction (optional)", key="tp_hint",
+        placeholder="e.g. only the Hurghada section, private transfers only",
+        help="Plain English, and it now steers BOTH steps: which products get detected, and "
+             "how each one is read. It overrides the tool's own judgement — say 'all of them, "
+             "including the local airport routes' and it will list them all.")
 
     render_multi_transport_flow(client, supplier_id, currency, release_days, tp_url, tp_files, tp_hint)
 
@@ -5865,7 +5939,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
-                    detected = detect_transport_products(raw_text)
+                    detected = detect_transport_products(raw_text, human_hint=tp_hint)
 
                     candidates = []
                     for t in detected:
@@ -5893,7 +5967,21 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         candidates = st.session_state.xtp_candidates
         if len(candidates) == 1:
             st.subheader("Set up this Transport")
-            st.caption("Only one distinct transport product was found in this document.")
+            if (candidates[0].get("label") or "").strip():
+                st.caption("Only one distinct transport product was found in this document.")
+            else:
+                # An EMPTY single row means detection found nothing, which is a different
+                # situation from "found exactly one" and used to look identical on screen -
+                # a blank box with no explanation, which reads as a bug rather than as a
+                # question. The most common cause with a real rate sheet is that every row
+                # is a local airport-to-resort transfer, i.e. genuinely not a Transport.
+                st.warning("**No transport products were detected in this document.** That usually "
+                           "means every route in it is a local airport-to-hotel journey, which is a "
+                           "**Transfer**, not a Transport — Travel Compositor treats those as different "
+                           "products. If that is the case, switch to the Transfer flow.")
+                st.caption("If the document DOES contain a long-distance route (a different city or "
+                          "region at each end), name it in the box below and it will be extracted. "
+                          "One route per row.")
         else:
             st.subheader(f"{len(candidates)} distinct transport products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
@@ -5905,7 +5993,14 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             with ccol1:
                 cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"xtp_sel_{i}")
             with ccol2:
-                cand["label"] = st.text_input("Transport", value=cand["label"], key=f"xtp_label_{i}")
+                cand["label"] = st.text_input(
+                    "Which route?", value=cand["label"], key=f"xtp_label_{i}",
+                    placeholder="e.g. Private Transfer: HRG Airport to Luxor",
+                    help="Name ONE route the way the document writes it — the service or class, "
+                         "then where it goes from and to. This is what the AI is told to look for "
+                         "when it reads the document for this row, so the closer it is to the "
+                         "document's own wording the better. It is not the product name in Travel "
+                         "Compositor; that comes from the extraction and you can edit it next.")
 
         if st.button("➕ Add another transport product manually"):
             candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
@@ -7296,7 +7391,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-candidate-filter — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-transport-detection — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform

@@ -922,6 +922,24 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
     return merged
 
 
+def _with_hint(raw_text: str, human_hint: str = None) -> str:
+    """Put the operator's instruction in front of the document, where detection will see it.
+
+    CONFIRMED REAL GAP (product owner): the "Extraction hint" box was only ever passed to the
+    EXTRACTION step, never to DETECTION - so typing "only the Hurghada routes" had no effect
+    on which products were found, only on how each one was subsequently read. Since detection
+    is what decides the list a human then picks from, the instruction was arriving one step
+    too late to do the thing it looks like it does.
+
+    It goes ABOVE the document, and the prompts are told it outrides their own heuristics: the
+    operator can see the document and knows how these products are actually sold."""
+    hint = (human_hint or "").strip()
+    if not hint:
+        return raw_text
+    return (f"INSTRUCTION FROM THE OPERATOR (follow this over your own judgement):\n{hint}\n\n"
+            f"--- DOCUMENT ---\n{raw_text}")
+
+
 def _route_identity(item: dict) -> tuple:
     """Two routes are the same product if they are the same class between the same two
     places - in EITHER direction. The detection prompts already say A->B and B->A are one
@@ -1959,6 +1977,14 @@ For each distinct route+class product found, output a candidate with:
 - departure_hint: the departure area/point name(s) as stated in the document
 - arrival_hint: the arrival area/point name(s) as stated in the document
 
+HUMAN INSTRUCTION OVERRIDES EVERYTHING ABOVE. If an instruction from the operator is given, it decides
+what to list and the rules above are only a fallback for whatever the instruction does not cover. "Only
+the Hurghada routes" means list every route in the Hurghada section and nothing from the other sections.
+"Only the private ones" means ignore the shuttle/seat-in-coach column entirely. "All of them, including
+the local ones" means exactly that - list them all, even the ones you would otherwise judge to be local
+transfers. The operator can see the document and knows how these products are being sold; do not
+second-guess an explicit instruction.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_transfers": true or false,
@@ -1970,7 +1996,8 @@ If there is genuinely only one distinct transfer product in the whole document, 
 and "transfers": [] ."""
 
 
-def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5") -> list:
+def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
+                             human_hint: str = None) -> list:
     """
     Checks whether the source describes MULTIPLE distinct transfer products
     (route + service/class combinations, deduplicated across any repeated
@@ -1980,7 +2007,8 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5") -> l
     contract for the existing batch/queue review UI pattern.
     """
     print("🔎 Checking for multiple distinct transfer products (routes/classes) in this document...")
-    transfers = _detect_items(TRANSFER_PRODUCT_DETECTION_PROMPT, raw_text, model,
+    transfers = _detect_items(TRANSFER_PRODUCT_DETECTION_PROMPT,
+                              _with_hint(raw_text, human_hint), model,
                               "multiple_transfers", "transfers", _route_identity)
     if transfers:
         print(f"⚠️ Detected {len(transfers)} distinct transfer product(s): {[t.get('label') for t in transfers]}")
@@ -2125,9 +2153,21 @@ identify every DISTINCT transport product it describes, so each can be reviewed 
 Compositor as its own record.
 
 TRANSPORT here means a connection between two named Travel Compositor destinations/locations (e.g. a private
-car route between two towns, a car+ferry combined journey, a scheduled flight or train leg) - NOT a local
-airport/hotel transfer (that's a different product type, already handled elsewhere). These documents are
-typically the same style/layout as Transfer rate sheets, just for longer inter-destination routes.
+car route between two towns, a car+ferry combined journey, a scheduled flight or train leg). These documents
+are typically the same style/layout as Transfer rate sheets - very often they ARE a transfer rate sheet that
+happens to also contain a few long-distance routes.
+
+CRITICAL - HOW TO TELL A TRANSPORT FROM A TRANSFER, because getting this wrong returns nothing at all:
+what matters is WHERE THE ROUTE GOES, not whether an airport is involved. A route is a TRANSPORT when the
+two ends are different cities, regions or resort areas that a traveller would think of as separate
+destinations - "Hurghada Airport to Luxor", "Hurghada Airport to Cairo", "Sharm to Dahab". It is a TRANSFER
+only when both ends are within ONE local area - an airport and the hotels it serves, a harbour and the
+resort beside it ("Hurghada Airport to Hurghada", "HRG Airport to Sahl Hashish").
+
+So a rate sheet whose rows all start at an airport still contains TRANSPORTS: list the long-distance rows
+and leave out the local ones. An airport at one end NEVER disqualifies a route. If a document contains no
+long-distance routes at all, return "multiple_transports": false with an empty list - but do not reach that
+conclusion merely because every row starts at an airport.
 
 A DISTINCT transport product is one specific ROUTE (a departure location to an arrival location) at one
 specific SERVICE/CLASS/TIER (e.g. "Private Car", "Car + Ferry Combined", "Economy").
@@ -2146,6 +2186,14 @@ For each distinct route+class product found, output a candidate with:
 - departure_hint: the departure location name(s) as stated in the document
 - arrival_hint: the arrival location name(s) as stated in the document
 
+HUMAN INSTRUCTION OVERRIDES EVERYTHING ABOVE. If an instruction from the operator is given, it decides
+what to list and the rules above are only a fallback for whatever the instruction does not cover. "Only
+the Hurghada routes" means list every route in the Hurghada section and nothing from the other sections.
+"Only the private ones" means ignore the shuttle/seat-in-coach column entirely. "All of them, including
+the local ones" means exactly that - list them all, even the ones you would otherwise judge to be local
+transfers. The operator can see the document and knows how these products are being sold; do not
+second-guess an explicit instruction.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_transports": true or false,
@@ -2157,7 +2205,8 @@ If there is genuinely only one distinct transport product in the whole document,
 and "transports": [] ."""
 
 
-def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5") -> list:
+def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
+                              human_hint: str = None) -> list:
     """
     Checks whether the source describes MULTIPLE distinct transport products (route + service/
     class combinations) as opposed to a single one. Mirrors detect_transfer_products' contract
@@ -2165,7 +2214,8 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5") -> 
     or a list of {"label", "service_name", "departure_hint", "arrival_hint"} dicts.
     """
     print("🔎 Checking for multiple distinct transport products (routes/classes) in this document...")
-    transports = _detect_items(TRANSPORT_PRODUCT_DETECTION_PROMPT, raw_text, model,
+    transports = _detect_items(TRANSPORT_PRODUCT_DETECTION_PROMPT,
+                               _with_hint(raw_text, human_hint), model,
                                "multiple_transports", "transports", _route_identity)
     if transports:
         print(f"⚠️ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
