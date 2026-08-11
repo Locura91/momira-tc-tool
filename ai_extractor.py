@@ -2052,8 +2052,20 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
     {"label": "...", "service_name": "...", "departure_hint": "...", "arrival_hint": "..."}
   ]
 }
-If there is genuinely only one distinct transfer product in the whole document, set "multiple_transfers": false
-and "transfers": [] ."""
+ALWAYS LIST WHAT YOU FOUND, INCLUDING WHEN THERE IS ONLY ONE.
+An earlier version of this prompt ended by telling you to return an EMPTY list when the document held only
+one product. That instruction caused a real, repeated production failure: on a rate sheet pricing forty
+routes the answer came back empty, the operator saw a blank screen with no explanation, and there was no
+way to tell the difference between "found nothing" and "chose to say nothing". It is withdrawn.
+
+  * One product found  -> "multiple_transfers": false, and "transfers" containing that ONE product.
+  * Several found      -> "multiple_transfers": true, and every one of them.
+  * The document prices no routes at all (it is an invoice, a contract, a covering letter)
+                       -> "multiple_transfers": false and an empty "transfers". This is the ONLY case where the list
+                          may be empty.
+
+The boolean is a summary of the list, never a substitute for it. Never leave the list empty for a document
+that visibly prices routes."""
 
 
 def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
@@ -2297,8 +2309,20 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
     {"label": "...", "service_name": "...", "departure_hint": "...", "arrival_hint": "...", "scope": "long_distance"}
   ]
 }
-If there is genuinely only one distinct transport product in the whole document, set "multiple_transports": false
-and "transports": [] ."""
+ALWAYS LIST WHAT YOU FOUND, INCLUDING WHEN THERE IS ONLY ONE.
+An earlier version of this prompt ended by telling you to return an EMPTY list when the document held only
+one product. That instruction caused a real, repeated production failure: on a rate sheet pricing forty
+routes the answer came back empty, the operator saw a blank screen with no explanation, and there was no
+way to tell the difference between "found nothing" and "chose to say nothing". It is withdrawn.
+
+  * One product found  -> "multiple_transports": false, and "transports" containing that ONE product.
+  * Several found      -> "multiple_transports": true, and every one of them.
+  * The document prices no routes at all (it is an invoice, a contract, a covering letter)
+                       -> "multiple_transports": false and an empty "transports". This is the ONLY case where the list
+                          may be empty.
+
+The boolean is a summary of the list, never a substitute for it. Never leave the list empty for a document
+that visibly prices routes."""
 
 
 def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
