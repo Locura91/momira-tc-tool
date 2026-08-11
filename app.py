@@ -7236,7 +7236,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-detection-chunking — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-stop-sales-tool — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -7339,6 +7339,10 @@ with st.expander("💾 What the platform remembers", expanded=False):
 TOOL_UPLOAD = "📤 Upload & Update Products"
 TOOL_TRANSLATE = "🌐 Translate Products"
 TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
+# Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
+# product type, because the source of truth is an EMAIL, not a contract and not Travel
+# Compositor - and because it changes availability on products that are already live.
+TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 
 # A Step 1 destination that is not a product type. It sits in the same list because that is
 # where a person looks when they have something to record about a supplier, even though
@@ -7405,9 +7409,14 @@ if st.session_state.active_tool is None:
          "It reads the English content, translates it into 19 languages, and writes it back. "
          "It never changes prices or product data.",
          "Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours"),
+        (TOOL_STOPSALES, "tool_btn_stopsales",
+         "Block dates a supplier has closed, from their email.",
+         "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
+         "would change, and blocks them only after you confirm. Existing blocks are kept.",
+         "Closed Tours · Hotels"),
     ]
 
-    for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(3), _TOOL_CARDS):
+    for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
         with _col:
             st.markdown(f"##### {_label}")
             st.caption(f"**{_lead}**")
@@ -7425,6 +7434,11 @@ if st.session_state.active_tool == TOOL_OUTREACH:
     st.stop()
 
 # ---- Translate tool: hand straight off, it has no product-type step ----
+if st.session_state.active_tool == TOOL_STOPSALES:
+    from stop_sales_tool import render_stop_sales_tool
+    render_stop_sales_tool(client)
+    st.stop()
+
 if st.session_state.active_tool == TOOL_TRANSLATE:
     render_translation_tool()
     st.stop()
