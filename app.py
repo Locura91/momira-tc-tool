@@ -3153,6 +3153,58 @@ def render_candidate_filter(candidates, key_prefix, noun):
         st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
 
 
+def render_batch_bulk_controls(queue, queue_key, index_key, phase_key, state_keys,
+                               widget_prefixes, noun, key_prefix):
+    """Leaving a review batch, without doing it one item at a time.
+
+    CONFIRMED REAL NEED (product owner): "if multiple transports are detected, I must be able
+    to remove with one click all transports instead of removing every detected transport
+    manually." Six items meant six clicks on "Don't want this one"; forty would mean forty.
+
+    Two DIFFERENT exits, because the existing "Cancel this batch" conflated them and always
+    took the expensive one:
+
+      * Back to the list - keeps the extracted document AND the detected candidates, and
+        returns to the tick-box screen. Nothing is re-uploaded and nothing is re-detected, so
+        changing your mind about which six of eighty to do costs one click, not another
+        upload and another detection run.
+      * Discard the rest - drops every item still unreviewed, keeping anything already
+        published. This is the one that answers "remove them all".
+
+    Neither touches Travel Compositor: an item already published stays published."""
+    unpublished = [q for q in queue if q.get("publish_status") != "success"]
+    published = len(queue) - len(unpublished)
+    if len(queue) < 2:
+        return
+    bcol1, bcol2, bcol3 = st.columns([2, 2, 3])
+    with bcol1:
+        if st.button(f"⬅️ Back to the list of {noun}s", key=f"{key_prefix}_back_to_list",
+                     use_container_width=True,
+                     help="Return to the tick boxes without re-uploading or re-reading the "
+                          "document. What you have already published stays published."):
+            st.session_state[phase_key] = "prepare_queue"
+            for key in (queue_key, index_key):
+                st.session_state.pop(key, None)
+            _clear_batch_widget_state(widget_prefixes, keep=state_keys)
+            st.rerun()
+    with bcol2:
+        if st.button(f"🗑️ Discard the remaining {len(unpublished)}", key=f"{key_prefix}_discard_rest",
+                     use_container_width=True, disabled=not unpublished,
+                     help="Removes every one still to be reviewed, in one click."):
+            remaining = [q for q in queue if q.get("publish_status") == "success"]
+            if remaining:
+                st.session_state[queue_key] = remaining
+                st.session_state[index_key] = 0
+            else:
+                for key in state_keys:
+                    st.session_state.pop(key, None)
+            _clear_batch_widget_state(widget_prefixes, keep=state_keys)
+            st.rerun()
+    with bcol3:
+        st.caption(f"{len(unpublished)} still to review"
+                   + (f", {published} already published." if published else "."))
+
+
 def render_skip_item_button(item_label, queue, idx, queue_session_key, index_session_key, cleanup_keys, button_key,
                             widget_state_prefixes=None):
     """
@@ -5564,7 +5616,12 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         st.subheader(f"Reviewing transfer {idx + 1} of {len(queue)}: {current['label'] or '(unnamed)'}")
 
-        if st.button("🔙 Cancel this batch - return to Transfer setup", key=f"xtf_cancel_{idx}"):
+        render_batch_bulk_controls(queue, "xtf_queue", "xtf_queue_index", "xtf_phase",
+                                   ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue",
+                                    "xtf_queue_index"],
+                                   ["xtf_"] + SHARED_WIDGET_STATE_PREFIXES, "transfer", "xtf")
+
+        if st.button("🔙 Start over - upload a different document", key=f"xtf_cancel_{idx}"):
             for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
                 st.session_state.pop(key, None)
             _clear_batch_widget_state(["xtf_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -6194,7 +6251,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
 
         st.subheader(f"Reviewing transport {idx + 1} of {len(queue)}: {current['label'] or '(unnamed)'}")
 
-        if st.button("🔙 Cancel this batch - return to Transport setup", key=f"xtp_cancel_{idx}"):
+        render_batch_bulk_controls(queue, "xtp_queue", "xtp_queue_index", "xtp_phase",
+                                   XTP_STATE_KEYS, ["xtp_"] + SHARED_WIDGET_STATE_PREFIXES,
+                                   "transport", "xtp")
+
+        if st.button("🔙 Start over - upload a different document", key=f"xtp_cancel_{idx}"):
             for key in XTP_STATE_KEYS:
                 st.session_state.pop(key, None)
             _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -7657,7 +7718,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-extraction-hint-match — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-bulk-discard — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
