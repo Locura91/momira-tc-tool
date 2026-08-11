@@ -2931,6 +2931,62 @@ def _clear_batch_widget_state(prefixes, keep=None):
             st.session_state.pop(key, None)
 
 
+def render_candidate_filter(candidates, key_prefix, noun):
+    """A search box and three bulk buttons above a long candidate list.
+
+    WHY: a real supplier rate sheet prices TWO services on every row - a Shuttle and a
+    Private version of the same route - so a forty-route document detects as ~80 separate
+    products, all pre-ticked. A human who only wants the Private ones was left un-ticking
+    forty boxes by hand, which is both tedious and easy to get wrong by one.
+
+    Matching is on the whole candidate (label, service name and both location hints), so
+    typing "private" isolates a service class and typing "luxor" isolates a destination.
+
+    The widget keys are swept after a bulk action on purpose: a Streamlit checkbox with a
+    fixed key ignores its `value=` argument on every render after the first, so setting
+    cand["selected"] alone would change the data and leave every box on screen showing its
+    old state - the confirmed failure that _clear_batch_widget_state exists for."""
+    if len(candidates) < 2:
+        return
+    total = len(candidates)
+    chosen = sum(1 for c in candidates if c.get("selected"))
+
+    fcol1, fcol2, fcol3, fcol4 = st.columns([3, 1.4, 1.2, 1.2])
+    with fcol1:
+        term = st.text_input(f"Filter {noun}s", key=f"{key_prefix}_filter",
+                             placeholder="e.g. Private   ·   Shuttle   ·   Luxor",
+                             label_visibility="collapsed").strip().lower()
+
+    def _matches(cand):
+        haystack = " ".join(str(cand.get(k) or "") for k in
+                            ("label", "service_name", "departure_hint", "arrival_hint")).lower()
+        return term in haystack
+
+    def _apply(fn):
+        for cand in candidates:
+            fn(cand)
+        _clear_batch_widget_state([f"{key_prefix}_sel_"])
+        st.rerun()
+
+    with fcol2:
+        if st.button("Keep only these", key=f"{key_prefix}_only", disabled=not term,
+                     use_container_width=True,
+                     help="Tick every row matching the filter and untick every other row."):
+            _apply(lambda c: c.__setitem__("selected", _matches(c)))
+    with fcol3:
+        if st.button("Select all", key=f"{key_prefix}_all", use_container_width=True):
+            _apply(lambda c: c.__setitem__("selected", True))
+    with fcol4:
+        if st.button("Clear all", key=f"{key_prefix}_none", use_container_width=True):
+            _apply(lambda c: c.__setitem__("selected", False))
+
+    if term:
+        st.caption(f"{sum(1 for c in candidates if _matches(c))} of {total} row(s) match "
+                   f"“{term}”. **{chosen} currently ticked.**")
+    else:
+        st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
+
+
 def render_skip_item_button(item_label, queue, idx, queue_session_key, index_session_key, cleanup_keys, button_key,
                             widget_state_prefixes=None):
     """
@@ -5262,6 +5318,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             st.caption("Each ticked row becomes its own separate Transfer, reviewed one at a time next. "
                       "Guide-language variants are already folded into each row, not listed separately.")
 
+        render_candidate_filter(candidates, "xtf", "transfer")
+
         for i, cand in enumerate(candidates):
             ccol1, ccol2 = st.columns([1, 5])
             with ccol1:
@@ -5839,6 +5897,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         else:
             st.subheader(f"{len(candidates)} distinct transport products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
+
+        render_candidate_filter(candidates, "xtp", "transport")
 
         for i, cand in enumerate(candidates):
             ccol1, ccol2 = st.columns([1, 5])
@@ -7236,7 +7296,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-stop-sales-tool — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-candidate-filter — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
