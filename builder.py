@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-column-view"
+MODULE_BUILD = "2026-08-12-tour-supplements"
 
 import math
 import datetime
@@ -650,20 +650,22 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
         if s.get("travel_start_date") and s.get("travel_end_date"):
             travel_windows = [{"start": s["travel_start_date"], "end": s["travel_end_date"]}]
 
-        # CONFIRMED FIX (triple-charging bug): scope this supplement to the
-        # specific Modality it belongs to, instead of leaving modalityCodes
-        # empty (which Travel Compositor treats as "applies to ALL Modalities"
-        # on this tour) - previously EVERY supplement silently applied to
-        # every Modality/room-category, stacking Standard + Superior +
-        # Deluxe surcharges on top of each other on every single one of them.
-        applies_to = str(s.get("applies_to") or "").strip()
-        modality_codes = [] if applies_to in ("", "All Modalities", "ALL") else [applies_to]
-
+        # CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
+        # applies to ALL Modalities to the ClosedTour." An empty modalityCodes is exactly how
+        # Travel Compositor spells that, so it is now ALWAYS empty.
+        #
+        # THIS REVERSES AN EARLIER FIX OF MINE, and the earlier reasoning was wrong. Seeing one
+        # supplement listed against three room categories, I read it as triple-charging and
+        # scoped each supplement to a single Modality. But a ClosedTour supplement is a property
+        # of the TOUR - one optional Abu Simbel excursion, offered whichever cabin you booked -
+        # so scoping it to one Modality meant a client in any other cabin could not buy it at
+        # all. Nothing would have looked wrong on screen; the excursion would simply never be
+        # offered. Any `applies_to` still arriving from an older draft is ignored.
         supplements_list.append(SupplementVO(
             translations={"EN": SupplementTranslation(name=s.get("name", ""))},
             price=SupplementPriceVO(singlePrice=single_val, doublePrice=double_val,
                                    triplePrice=triple_val, quadruplePrice=quadruple_val),
-            modalityCodes=modality_codes,
+            modalityCodes=[],   # empty = every Modality on this tour
             mandatory=bool(s.get("mandatory", False)),
             onRequest=bool(s.get("on_request", False)),
             # HOUSE RULE (product owner, confirmed): a ClosedTour supplement is NEVER

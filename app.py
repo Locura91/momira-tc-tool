@@ -1342,6 +1342,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "mct_pixabay_main_closed", _mct_add_pixabay)
 
+        # Supplements belong to the tour, not to a Modality - so they are set HERE, once, before
+        # the Modality list. See render_closedtour_supplements.
+        render_closedtour_supplements(data, "mct_main")
+
         st.markdown("**🤖 Tell AI what to fix**")
         mct_clarify_q = st.text_input("Your message", key="mct_clarify_input_main")
         if st.button("Send", disabled=not mct_clarify_q.strip(), key="mct_clarify_send_main"):
@@ -1351,6 +1355,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_clarify_q, result)
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    if "supplements" in result["changes"]:
+                        st.session_state["_editing_table_mct_main_supplements"] = False
                 st.rerun()
         if st.session_state.get("mct_clarify_result_main"):
             r = st.session_state["mct_clarify_result_main"]
@@ -1499,18 +1505,42 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         st.subheader(f"Modality {midx + 1} of {len(modalities)}: **{mod['code']}**")
         st.progress(midx / len(modalities))
 
-        mod["hint"] = st.text_input(
-            "AI focus hint (optional - helps the AI find the right pricing table for this Modality)",
-            value=mod.get("hint", ""), key=f"mct_mod_hint_{midx}"
+        # CONFIRMED PRODUCT-OWNER COMPLAINT: "the hint for the ClosedTour modality must be more
+        # present, as this must be the most important tool to read the Modalities rule." It was a
+        # one-line box labelled "optional", below the fold and easy to skip - on the screen that
+        # does the hardest reading in the app. Given prominence, room to write, and worked
+        # examples, because a good hint here is worth more than any prompt change.
+        st.markdown("#### 🎯 Tell the AI which Modality this is")
+        st.caption("**This is the most useful thing on the screen.** The document prices several "
+                  "categories and the AI has to pick the right row or column out of a rate grid. "
+                  "One sentence naming where to look is worth more than any amount of correcting "
+                  "afterwards.")
+        st.caption("Good hints: *“the row labelled Per Junior Suite 333 — the rates are per suite "
+                  "per night”* · *“the Deluxe column, second price block, ignore the Standard "
+                  "table above it”* · *“Superior Class — its dates are the three ranges under "
+                  "Normal”*.")
+        mod["hint"] = st.text_area(
+            f"Where in the document is '{mod['code']}' priced?",
+            value=mod.get("hint", ""), key=f"mct_mod_hint_{midx}", height=90,
+            placeholder=f"e.g. the row labelled '{mod['code']}' — rates are per person per night",
         )
+        if not (mod.get("hint") or "").strip():
+            st.info(f"No hint given, so the AI will search for **{mod['code']}** on its own. That "
+                    f"works on a simple sheet; on a merged rate grid it is where things go wrong.")
 
         if mod["data"] is None:
-            with st.spinner(f"Extracting pricing/schedule for '{mod['code']}'..."):
+            with st.spinner(f"Reading '{mod['code']}' carefully - this is the slow part, and "
+                            f"deliberately so..."):
                 try:
                     tour_nights = (tour["main_data"] or {}).get("nights")
+                    # House rules and this supplier's learned corrections were NOT reaching this
+                    # call - the one that builds the price list. Every pricing rule taught to the
+                    # platform was being ignored at exactly the point it mattered most.
                     mod["data"] = extract_modality_data(
                         st.session_state.mct_raw_text, tour_nights=tour_nights,
-                        human_hint=mod["hint"] or mod["code"]
+                        human_hint=with_learned_guidance(
+                            clarify_supplier_id(supplier_id), "ClosedTour",
+                            mod["hint"] or mod["code"])
                     )
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
@@ -1583,83 +1613,16 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             )
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
 
-        st.markdown(f"**Optional Add-ons / Upgrades / Excursions (Supplements) - {mod['code']}**")
-        st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
-                  "upgrade, a meal upgrade, or an optional excursion day, OR a peak-season surcharge, "
-                  "SPECIFIC TO THIS MODALITY. Leave empty if this Modality has none. Every row needs a "
-                  "clear Name. **Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per "
-                  "room' (e.g. 'USD 71.00 per room per night') - since that flat per-room charge must be "
-                  "split by how many people share the room, these 4 columns hold the resulting per-person "
-                  "amount for each occupancy. For a normal per-person add-on, just fill 'Price (per "
-                  "person)' - the 4 occupancy columns default to matching it.")
-        st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
-                  "supplement is often genuinely optional, so these two boxes are the difference between "
-                  "an add-on the client chooses and a charge they cannot avoid - the AI's guess is a "
-                  "starting point, not a decision. House rule: ClosedTour supplements are never "
-                  "refundable, and the app always publishes them that way.")
-        if midx > 0:
-            st.caption("💡 Pre-filled below with whatever was entered for Modality 1's supplements, as a "
-                      "starting point - edit or remove any that don't actually apply to this Modality.")
-
-        mct_default_supplements = data.get("supplements") or []
-        mct_supp_df_rows = [
-            {
-                "Name": s.get("name", ""),
-                "Price (per person)": s.get("price", 0),
-                "Single": s.get("single_price", s.get("price", 0)),
-                "Double": s.get("double_price", s.get("price", 0)),
-                "Triple": s.get("triple_price", s.get("price", 0)),
-                "Quadruple": s.get("quadruple_price", s.get("price", 0)),
-                "Per Pax": s.get("per_pax", True),
-                "Mandatory": s.get("mandatory", False),
-                "On Request": s.get("on_request", False),
-                "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
-                "Special Travel End Date": _disp(s.get("travel_end_date", "")),
-            }
-            for s in mct_default_supplements
-        ]
-        mct_supp_df = pd.DataFrame(mct_supp_df_rows) if mct_supp_df_rows else pd.DataFrame(
-            columns=["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
-                     "Per Pax", "Mandatory", "On Request", "Special Travel Start Date", "Special Travel End Date"]
-        )
-
-        def _save_mct_supplements(edited_df, data=data, midx=midx):
-            missing_name = False
-            new_supplements = []
-            for _, row in edited_df.iterrows():
-                name = _safe_cell_str(row.get("Name")).strip()
-                price_given = row.get("Price (per person)", 0)
-                price_given_is_blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
-                has_any_data = name or (not price_given_is_blank and price_given not in (0, ""))
-                if not name and has_any_data:
-                    missing_name = True
-                    continue
-                if not name:
-                    continue
-                flat_price = _safe_float(price_given)
-
-                def _occ(col, fallback=flat_price):
-                    return _safe_float(row.get(col), fallback)
-
-                new_supplements.append({
-                    "name": name,
-                    "price": flat_price,
-                    "single_price": _occ("Single"),
-                    "double_price": _occ("Double"),
-                    "triple_price": _occ("Triple"),
-                    "quadruple_price": _occ("Quadruple"),
-                    "per_pax": bool(row.get("Per Pax", True)),
-                    "mandatory": bool(row.get("Mandatory", False)),
-                    "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
-                    "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
-                })
-            data["supplements"] = new_supplements
-            st.session_state[f"_mct_mod_supplements_missing_name_{midx}"] = missing_name
-
-        editable_table(f"Supplements - {mod['code']}", mct_supp_df, f"mct_mod_supplements_{midx}", on_save=_save_mct_supplements)
-        if st.session_state.get(f"_mct_mod_supplements_missing_name_{midx}"):
-            st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+        # CONFIRMED PRODUCT-OWNER CORRECTION: supplements belong to the TOUR, not to a
+        # Modality - see render_closedtour_supplements. Edited once on the main tour screen.
+        st.caption("💡 **Supplements are not set here.** A ClosedTour's supplements are set once "
+                  "for the whole tour and apply to every Modality - they are on the main tour "
+                  "screen, before the Modality list.")
+        _tour_supplements = (st.session_state.get("mct_tour", {}).get("main_data", {})
+                             .get("supplements") or [])
+        if _tour_supplements:
+            st.caption("In force for this tour: " +
+                       ", ".join(x.get("name", "(unnamed)") for x in _tour_supplements if isinstance(x, dict)))
 
         st.markdown(f"**🤖 Tell AI what to fix - {mod['code']}**")
         mct_mod_clarify_q = st.text_input("Your message", key=f"mct_mod_clarify_input_{midx}")
@@ -1772,21 +1735,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         modalities = tour["modalities"]
         st.subheader(f"Ready to publish: {main_data.get('tour_name') or tour['tour_code']}")
 
-        # Merge every Modality's own supplements into ONE list for the main tour
-        # payload, each explicitly tagged to its own Modality Code via "applies_to"
-        # (builder.py turns this into SupplementVO.modalityCodes) - no guessing
-        # needed, since each Modality's supplements were reviewed on its own
-        # dedicated screen and are already correctly scoped by construction.
-        merged_supplements = []
-        for m in modalities:
-            for s in (m["data"].get("supplements") or []):
-                s_copy = dict(s)
-                s_copy["applies_to"] = m["code"]
-                merged_supplements.append(s_copy)
-
+        # CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
+        # applies to ALL Modalities." So there is one list, taken from the main tour record, and
+        # nothing is tagged to a Modality. Modality data is merged in for pricing and schedule,
+        # which is why its own "supplements" key must not be allowed to overwrite the tour's.
         combined_data = dict(main_data)
-        combined_data.update(modalities[0]["data"])
-        combined_data["supplements"] = merged_supplements
+        modality_zero = dict(modalities[0]["data"])
+        modality_zero.pop("supplements", None)
+        combined_data.update(modality_zero)
+        combined_data["supplements"] = main_data.get("supplements") or []
 
         extra_note = f" + {len(modalities) - 1} more Modalit{'y' if len(modalities) == 2 else 'ies'}" if len(modalities) > 1 else ""
         with st.expander(f"**{tour['tour_code']}** - Modality: {modalities[0]['code']}{extra_note}", expanded=True):
@@ -2454,6 +2411,98 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
                 if st.button("Forget", key=f"{key_prefix}_forget_{e.get('key')}"):
                     extraction_memory.forget_instruction(str(supplier_id), product_type, e.get("key"))
                     st.rerun()
+
+
+SUPPLEMENT_COLUMNS = ["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
+                      "Per Pax", "Mandatory", "On Request",
+                      "Special Travel Start Date", "Special Travel End Date"]
+
+
+def render_closedtour_supplements(data, key_prefix):
+    """The ONE supplement list for a whole ClosedTour.
+
+    CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
+    applies to ALL Modalities of the ClosedTour. The supplements must be added to the main body
+    of the closedtour and not to the Modalities."
+
+    THIS REVERSES AN EARLIER DECISION OF MINE, and the earlier reasoning was wrong. Seeing the
+    same supplement appear against three room categories, I concluded it was being triple-charged
+    and scoped each one to a single Modality via modalityCodes. But a ClosedTour supplement is a
+    property of the TOUR - one optional Abu Simbel excursion, offered whoever's cabin you booked -
+    so scoping it to one Modality meant a client in any other cabin could not buy it at all.
+
+    So supplements live on the main tour record, edited once here, and modalityCodes is left
+    empty, which is how Travel Compositor spells "applies to every Modality"."""
+    st.markdown("**Optional Add-ons / Upgrades / Excursions (Supplements) — the whole tour**")
+    st.caption("Set **once for the entire tour**: every Modality can be sold with these. TRUE "
+              "optional extras the customer only pays for if they choose them — a room upgrade, a "
+              "meal upgrade, an optional excursion — or a peak-season surcharge. Leave empty if "
+              "this tour has none. Every row needs a clear Name.")
+    st.caption("**Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per room' "
+              "(e.g. 'USD 71.00 per room per night'): that flat per-room charge has to be split by "
+              "how many share the room, so those four columns hold the resulting per-person amount. "
+              "For a normal per-person add-on just fill 'Price (per person)' and the four occupancy "
+              "columns follow it.")
+    st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+              "supplement is often genuinely optional, so these two boxes are the difference between "
+              "an add-on the client chooses and a charge they cannot avoid — the AI's guess is a "
+              "starting point, not a decision. House rule: ClosedTour supplements are never "
+              "refundable, and the app always publishes them that way.")
+
+    rows = [
+        {
+            "Name": s.get("name", ""),
+            "Price (per person)": s.get("price", 0),
+            "Single": s.get("single_price", s.get("price", 0)),
+            "Double": s.get("double_price", s.get("price", 0)),
+            "Triple": s.get("triple_price", s.get("price", 0)),
+            "Quadruple": s.get("quadruple_price", s.get("price", 0)),
+            "Per Pax": s.get("per_pax", True),
+            "Mandatory": s.get("mandatory", False),
+            "On Request": s.get("on_request", False),
+            "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
+            "Special Travel End Date": _disp(s.get("travel_end_date", "")),
+        }
+        for s in (data.get("supplements") or []) if isinstance(s, dict)
+    ]
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=SUPPLEMENT_COLUMNS)
+
+    def _save(edited_df, data=data):
+        missing_name = False
+        out = []
+        for _, row in edited_df.iterrows():
+            name = _safe_cell_str(row.get("Name")).strip()
+            price_given = row.get("Price (per person)", 0)
+            blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
+            if not name:
+                if not blank and price_given not in (0, ""):
+                    missing_name = True
+                continue
+            flat_price = _safe_float(price_given)
+
+            def _occ(col, fallback=flat_price):
+                return _safe_float(row.get(col), fallback)
+
+            out.append({
+                "name": name,
+                "price": flat_price,
+                "single_price": _occ("Single"),
+                "double_price": _occ("Double"),
+                "triple_price": _occ("Triple"),
+                "quadruple_price": _occ("Quadruple"),
+                "per_pax": bool(row.get("Per Pax", True)),
+                "mandatory": bool(row.get("Mandatory", False)),
+                "on_request": bool(row.get("On Request", False)),
+                "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
+                "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
+            })
+        data["supplements"] = out
+        st.session_state[f"_{key_prefix}_supplements_missing_name"] = missing_name
+
+    editable_table("Supplements", df, f"{key_prefix}_supplements", on_save=_save)
+    if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):
+        st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement "
+                   "needs a clear Name.")
 
 
 def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="max_child_age"):
@@ -8492,7 +8541,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-column-view"
+BUILD_VERSION = "2026-08-12-tour-supplements"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10169,9 +10218,12 @@ if st.session_state.extracted:
                                             f"add the supplements separately."
                                         )
                                     else:
+                                        # CONFIRMED PRODUCT-OWNER CORRECTION: a ClosedTour
+                                        # supplement applies to EVERY Modality, so it is added to
+                                        # the tour unscoped. Scoping it to the Modality being
+                                        # added would have made it unbuyable for everyone already
+                                        # booked on the tour's other Modalities.
                                         new_vos = [v.dict() for v in build_supplement_vos(new_supplements)]
-                                        for v in new_vos:
-                                            v["modalityCodes"] = [modality_code]  # this Modality only, regardless of what "applies_to" said
                                         update_payload = dict(old_tour)
                                         update_payload["supplements"] = (old_tour.get("supplements") or []) + new_vos
                                         update_payload["modalityCodes"] = list(dict.fromkeys(

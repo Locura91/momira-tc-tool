@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-column-view"
+MODULE_BUILD = "2026-08-12-tour-supplements"
 
 import os
 import re
@@ -230,17 +230,14 @@ Rules:
   arrive at it, so a human can double-check it before publishing) in pricing_notes, never in the name.
   This does NOT apply to normal optional supplements (non-peak-season add-ons/upgrades) - only to
   peak-season/holiday surcharges.
-  MODALITY SCOPING - CONFIRMED RULE: if (and only if) this document describes MULTIPLE distinct room/
-  cabin/pricing categories (Modalities) for this same tour - e.g. separate "Standard", "Superior", and
-  "Deluxe" pricing/supplement tables - a supplement can belong to just ONE of those categories, or to all
-  of them. Tag every supplement with "applies_to" so this never gets mixed up: use the EXACT category
-  label as it appears in the source (e.g. "Standard", "Superior Class", "Deluxe") if the supplement is
-  explicitly listed under, or clearly named/tied to, only that one category (e.g. a surcharge appearing
-  only in a "Deluxe Class Hotel" supplements section, or named "Deluxe Room Upgrade"); use "ALL" if the
-  supplement clearly applies to every category (or if the document only describes ONE category/modality
-  to begin with - "ALL" is always correct in that single-modality case); use "UNCLEAR" ONLY if the
-  document genuinely has multiple categories AND you truly cannot tell which one(s) this supplement
-  belongs to - a human will resolve those cases, so it's always safe to say "UNCLEAR" rather than guess.
+  ONE SUPPLEMENT LIST FOR THE WHOLE TOUR - CONFIRMED HOUSE RULE (product owner): "Supplement within
+  ClosedTour is set only once and applies to ALL Modalities of the ClosedTour." So do NOT try to work
+  out which room/cabin category a supplement belongs to, and do NOT repeat a supplement once per
+  category. List each distinct supplement ONCE. An optional Abu Simbel excursion is offered to every
+  guest on the tour whichever cabin they booked, and that is how supplements work here in general.
+  If a document genuinely prices the SAME extra differently per category (e.g. a room upgrade that
+  costs more from Deluxe than from Standard), that is not a supplement - say so in pricing_notes so a
+  human can decide, rather than inventing one entry per category.
   For each TRUE supplement (optional add-on, or a peak-season surcharge per the rule above), output:
   {
     "name": "clear, specific short label - always required, never leave blank",
@@ -252,7 +249,6 @@ Rules:
     "per_pax": true if this charge applies per traveler (the normal case), false if the source says it's a flat/one-time charge regardless of group size, OR if this is a "per room"/"per room per night" surcharge (see BASIS RULE above),
     "mandatory": true if the source says this is required despite being listed separately, OR if this is a peak-season/holiday surcharge (see rule above - those are ALWAYS mandatory: true); false for a normal optional add-on,
     "on_request": true if the source says this needs advance request/confirmation rather than being instantly bookable,
-    "applies_to": "ALL", or the exact category label, or "UNCLEAR" - see MODALITY SCOPING above,
     "travel_start_date": "YYYY-MM-DD" if this supplement is restricted to a specific date range (e.g. a seasonal excursion) - ALWAYS required (never empty) for a peak-season/holiday surcharge, otherwise omit/empty string,
     "travel_end_date": "YYYY-MM-DD" - same condition as above
   }
@@ -1795,6 +1791,9 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 }"""
 
 
+_MODALITY_MAX_OUTPUT_TOKENS = 32768
+
+
 def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None, tour_nights=None) -> dict:
     """
     Focused per-Modality extraction for the NEW single-tour ClosedTour create
@@ -1818,11 +1817,28 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
     user_content = raw_text
     if human_hint:
         user_content = (
-            f"IMPORTANT: focus ONLY on the Modality/pricing category matching this guidance, ignore all "
-            f"others in the document: {human_hint}\n\n--- Source content ---\n{raw_text}"
+            f"WHICH MODALITY TO EXTRACT - read this first, and re-read it before you answer.\n"
+            f"{human_hint}\n\n"
+            f"Work ONLY on that Modality. The document almost certainly prices several, and taking a "
+            f"number from the wrong one produces a tour that looks complete and is priced wrongly - "
+            f"the single most expensive mistake available here.\n"
+            f"Before answering, satisfy yourself of three things and say so in pricing_notes if any "
+            f"of them is in doubt:\n"
+            f"  1. WHICH ROW OR COLUMN of the rate table is this Modality's. Name it.\n"
+            f"  2. That you have EVERY season/date range for it, including ones listed further down "
+            f"     under the same heading - a missed period is the commonest failure on rate sheets.\n"
+            f"  3. That the figures are totals for the whole stay, not per-night rates left "
+            f"     unmultiplied.\n\n"
+            f"--- Source content ---\n{raw_text}"
         )
 
-    data = _call_claude(system_prompt, user_content, model, max_tokens=4096)
+    # CONFIRMED PRODUCT-OWNER COMPLAINT: "The AI must spend more time for the modality, as it is
+    # too badly made yet and many informations are not read." This call had the SMALLEST output
+    # budget in the whole app - 4,096 tokens - while doing the most detailed work in it: every
+    # season row, with four occupancy prices each, plus supplements, stop sales and schedule. A
+    # cruise with eight seasons overruns that, and an overrun is not a partial answer, it is a
+    # refused one (see _call_claude). Raised to match the other extraction calls.
+    data = _call_claude(system_prompt, user_content, model, max_tokens=_MODALITY_MAX_OUTPUT_TOKENS)
 
     defaults = {
         "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
