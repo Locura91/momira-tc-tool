@@ -1466,6 +1466,17 @@ def transport_description(service_name, departure_name, arrival_name):
             f"in {destination}.")
 
 
+def transport_company_name(service_name):
+    """CONFIRMED REAL TEMPLATE (product owner): "Company name would be 'Private from Hotel to
+    Hotel'." Built from the service class so a shuttle reads "Shuttle from Hotel to Hotel"
+    without anyone typing it forty times."""
+    style = (service_name or "").strip()
+    style = re.sub(r"(?i)\btra?ns?fers?\b", "", style)
+    style = re.sub(r"(?i)\btransports?\b", "", style)
+    style = re.sub(r"\s{2,}", " ", style).strip(" -–—,") or "Private"
+    return f"{style} from Hotel to Hotel"
+
+
 def transport_display_name(departure_name, arrival_name):
     """CONFIRMED REAL TEMPLATE (product owner): name is "DEPARTURE - ARRIVAL"."""
     dep = (departure_name or "").strip()

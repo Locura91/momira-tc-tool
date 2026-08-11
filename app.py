@@ -67,6 +67,9 @@ if hasattr(st, "secrets"):
 
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig, TransferHumanPreConfig, TransportHumanPreConfig, HotelHumanPreConfig
+from builder import (transport_company_name as builder_transport_company_name,
+                     transport_description as builder_transport_description,
+                     start_date_or_today as builder_start_date_or_today)
 from builder import derive_arrival_from_duration, build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
 from builder import build_transport_payloads
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
@@ -3151,6 +3154,49 @@ def render_candidate_filter(candidates, key_prefix, noun):
                    f"“{term}”. **{chosen} currently ticked.**")
     else:
         st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
+
+
+def seed_transport_from_candidate(item, data, chosen_currency):
+    """Fill in everything the app ALREADY KNOWS, so the review screen is never blank.
+
+    CONFIRMED REAL FAILURE (product owner): "when I say focus on Marsa Alam to Hurghada, the
+    arrival and the departure are already set, but it is never seen. Always empty... at this
+    moment the App is not useful."
+
+    He was exactly right. Detection had established the route, the human had chosen the
+    currency at Step 2, and the house conventions fix the name, description, company and type -
+    yet all of it was left to the extraction step, so when the model under-delivered the screen
+    came back empty and the operator had to retype facts the app was already holding.
+
+    Only PRICES genuinely require the document. Everything else is seeded here, deterministically
+    and without an AI call. Seeding never overwrites: a value the extractor did produce always
+    wins, so this can only ever add.
+
+    Returns the list of field names it had to fill in, so the screen can say so - a pre-filled
+    value that looks extracted is worse than a blank one."""
+    seeded = []
+
+    def _fill(key, value):
+        if value and not str(data.get(key) or "").strip():
+            data[key] = value
+            seeded.append(key)
+
+    _fill("departure_name", (item.get("departure_hint") or "").strip())
+    _fill("arrival_name", (item.get("arrival_hint") or "").strip())
+
+    service = (item.get("service_name") or "").strip()
+    if not service and item.get("label"):
+        # Labels look like "Private Transfer: Marsa Alam <-> Hurghada".
+        service = str(item["label"]).split(":")[0].strip()
+    _fill("service_name", service)
+    _fill("transport_type_hint", service)
+    _fill("company_name", builder_transport_company_name(service))
+    # The human picked this at Step 2; it should never come back blank.
+    _fill("currency", chosen_currency)
+    _fill("description", builder_transport_description(
+        service, data.get("departure_name"), data.get("arrival_name")))
+    _fill("start_date", builder_start_date_or_today(""))
+    return seeded
 
 
 def render_batch_bulk_controls(queue, queue_key, index_key, phase_key, state_keys,
@@ -6275,11 +6321,35 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 except Exception as e:
                     st.error(f"Extraction failed for this transport: {friendly_error_message(e)}")
                     current["data"] = {}
+            # Everything the app already knows, filled in before the human ever sees the form.
+            current["_seeded_fields"] = seed_transport_from_candidate(
+                current, current["data"], currency)
             extraction_memory.prepare(supplier_id, "Transport", current)
 
         data = current["data"]
         key_suffix = f"_{idx}"
         extraction_memory.render_applied_banner(current.get("_learned_applied") or [])
+
+        if not (data.get("occupancy_brackets") or []):
+            # No prices means the document was not read for this route. Everything else on the
+            # screen came from the route you picked and your Step 2 settings, so say which -
+            # a seeded value that looks extracted is worse than an empty one.
+            st.error(
+                "🔴 **No prices were read from the document for this route.** The fields below "
+                "were filled in from the route you selected and your Step 2 settings — they are "
+                "NOT from the document. Add the occupancy brackets by hand, or try reading this "
+                "route again."
+            )
+            if current.get("_seeded_fields"):
+                st.caption("Filled in by the app, not read from the document: "
+                           + ", ".join(f"`{f}`" for f in current["_seeded_fields"]))
+        if st.button("🔁 Read this route from the document again", key=f"xtp_reextract_{idx}",
+                     help="Re-runs the extraction for this one route only. The rest of the batch "
+                          "is untouched."):
+            current["data"] = None
+            current.pop("_seeded_fields", None)
+            _clear_batch_widget_state(["xtp_"], keep=XTP_STATE_KEYS)
+            st.rerun()
 
         render_skip_item_button(
             current["label"] or "(unnamed transport)", queue, idx, "xtp_queue", "xtp_queue_index",
@@ -7718,7 +7788,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-bulk-discard — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-seed-known-fields — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
