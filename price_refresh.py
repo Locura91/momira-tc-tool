@@ -35,7 +35,14 @@ import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ai_extractor
+import transfer_matcher
 import transport_matcher
+
+# The two product types this flow can refresh. Both are priced per occupancy and both arrive
+# on the same kind of rate sheet, but they store the numbers very differently - see
+# load_supplier_products() and rebuild_prices().
+KIND_TRANSPORT = "Transport"
+KIND_TRANSFER = "Transfer"
 
 PRICE_LOOKUP_SYSTEM_PROMPT = """You are reading a supplier's rate sheet to find the NEW PRICE for routes that
 already exist in a booking system. You are NOT deciding which products exist - that list is given to you and
@@ -159,6 +166,81 @@ def load_supplier_transports(client, supplier_id: str,
     return out, None
 
 
+DEFAULT_BRACKET_CODE = "__default__"
+
+
+def _transfer_brackets(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A transfer's prices, expressed as brackets so both product types look the same upstream.
+
+    CONFIRMED SEMANTICS (schemas.TransferOccupancyPriceVO): basePrice is the DEFAULT rate for
+    any occupancy, and pricesByOccupancy holds an entry ONLY for an occupancy whose rate
+    genuinely differs - a solo surcharge, typically. So the default is modelled as one bracket
+    spanning min to max occupancy, and each explicit entry as a bracket of exactly one."""
+    base = _num(record.get("basePrice"))
+    min_occ = int(_num(record.get("minOccupancy"), 1)) or 1
+    max_occ = int(_num(record.get("maxOccupancy"), 1)) or 1
+    brackets = [{"code": DEFAULT_BRACKET_CODE, "min_pax": min_occ, "max_pax": max_occ,
+                 "unit_price": round(base, 2), "name": "default rate", "raw": None}]
+    for entry in (record.get("pricesByOccupancy") or []):
+        if not isinstance(entry, dict):
+            continue
+        occ = int(_num(entry.get("occupancy"), 0))
+        if occ <= 0:
+            continue
+        amount = entry.get("basePrice")
+        amount = _num(amount.get("amount")) if isinstance(amount, dict) else _num(amount)
+        brackets.append({"code": f"occ{occ}", "min_pax": occ, "max_pax": occ,
+                         "unit_price": round(amount, 2), "name": f"{occ} pax", "raw": dict(entry)})
+    return sorted(brackets, key=lambda b: (b["min_pax"], b["max_pax"]))
+
+
+def load_supplier_transfers(client, supplier_id: str,
+                            progress: Optional[Callable[[int, int, str], None]] = None
+                            ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Every transfer this supplier has. One request, unlike Transport - a transfer's prices
+    all live on the record itself, with no option sub-resources to fetch."""
+    try:
+        data = client.get_transfers(supplier_id)
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    records = data.get("transfer", []) if isinstance(data, dict) else (data or [])
+    records = [r for r in records if isinstance(r, dict)]
+
+    out = []
+    for i, record in enumerate(records):
+        dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
+        arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
+        name = record.get("name") or ((record.get("datasheets") or {}).get("EN") or {}).get("name", "") \
+            or f"{dep} - {arr}".strip(" -")
+        if progress:
+            progress(i + 1, len(records), name)
+        out.append({
+            "kind": KIND_TRANSFER,
+            "id": record.get("id"),
+            "name": name,
+            "departure_name": dep,
+            "arrival_name": arr,
+            "currency": record.get("currency"),
+            "price_per_pax": bool(record.get("priceByPax", True)),
+            "base_adult": _num(record.get("basePrice")),
+            "base_child": 0.0,
+            "base_infant": 0.0,
+            "options": _transfer_brackets(record),
+            "raw": record,
+        })
+    return out, None
+
+
+def load_supplier_products(client, supplier_id: str, kind: str,
+                           progress: Optional[Callable[[int, int, str], None]] = None
+                           ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    if kind == KIND_TRANSFER:
+        return load_supplier_transfers(client, supplier_id, progress=progress)
+    return load_supplier_transports(client, supplier_id, progress=progress)
+
+
 def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
     """Departure and arrival as readable place names.
 
@@ -166,6 +248,10 @@ def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
     readable place name appears - the segment carries codes like "meet_LXR". Falls back to the
     codes when the name is not in that shape, so a badly-named record still matches on
     something rather than on nothing."""
+    # A transfer carries real place names on the record; a transport only carries codes, so
+    # its name is the only readable source.
+    if route.get("departure_name") and route.get("arrival_name"):
+        return str(route["departure_name"]).strip(), str(route["arrival_name"]).strip()
     name = str(route.get("name") or "")
     for separator in (" - ", " – ", " to ", " > ", "->"):
         if separator in name:
@@ -307,6 +393,45 @@ def build_proposals(routes: List[Dict[str, Any]],
     return proposals
 
 
+def _rebuild_transfer_prices(route: Dict[str, Any],
+                             new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
+    """New prices onto a transfer record, keeping its structure and its DATES.
+
+    CONFIRMED REAL RULE (product owner): "if the price will be refreshed, the date of Transfer
+    and the date of Transports will most likely be until 2049 or even 2099, but the price must
+    still be updated." So startDate and endDate are never touched here - the document's own
+    season is irrelevant to a product deliberately left open-ended, and overwriting a 2099 end
+    date with a rate sheet's July 2027 would silently retire the product next summer."""
+    payload = json.loads(json.dumps(route["raw"]))
+    brackets = route["options"]
+    resolved = {b["code"]: round(float(new_unit_prices.get(b["code"], b["unit_price"])), 2)
+                for b in brackets}
+    default = next((b for b in brackets if b["code"] == DEFAULT_BRACKET_CODE), None)
+    base = resolved.get(DEFAULT_BRACKET_CODE, _num(payload.get("basePrice")))
+    payload["basePrice"] = base
+
+    currency = payload.get("currency") or "EUR"
+    entries = []
+    for bracket in brackets:
+        if bracket["code"] == DEFAULT_BRACKET_CODE:
+            continue
+        price = resolved[bracket["code"]]
+        if abs(price - base) < 0.005:
+            # An entry equal to the default is redundant - schemas.TransferOccupancyPriceVO
+            # exists only for occupancies that genuinely differ.
+            continue
+        entry = dict(bracket.get("raw") or {"occupancy": bracket["min_pax"]})
+        existing = entry.get("basePrice")
+        entry["basePrice"] = {"amount": price,
+                              "currency": (existing or {}).get("currency", currency)
+                              if isinstance(existing, dict) else currency}
+        entries.append(entry)
+    payload["pricesByOccupancy"] = entries
+    if default is None:
+        payload["basePrice"] = base
+    return {"transport": payload, "options": []}
+
+
 def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
     """The payloads that put these prices live, keeping base and supplements consistent.
 
@@ -315,6 +440,8 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     the same rule the upload flow uses - so the common bracket carries no supplement and only
     genuine outliers (the solo surcharge) do. Sending an option's supplement without updating
     the base, or the reverse, would silently reprice every OTHER modality on the transport."""
+    if route.get("kind") == KIND_TRANSFER:
+        return _rebuild_transfer_prices(route, new_unit_prices)
     options = [o for o in route["options"] if not o.get("fetch_failed")]
     if not options:
         return {"transport": None, "options": []}
@@ -366,8 +493,10 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
         if not payloads["transport"]:
             out["failed"].append({"name": route.get("name"), "detail": "no readable modalities"})
             continue
+        updater = (client.update_transfer if route.get("kind") == KIND_TRANSFER
+                   else client.update_transport)
         try:
-            res = client.update_transport(supplier_id, payloads["transport"])
+            res = updater(supplier_id, payloads["transport"])
             if isinstance(res, dict) and "error" in res:
                 out["failed"].append({"name": route.get("name"),
                                       "detail": str(res.get("message") or res.get("error"))})
@@ -404,13 +533,18 @@ def suggest_route_for_row(row_text: str, routes: List[Dict[str, Any]], limit: in
              if p.strip()]
     dep = parts[0] if parts else str(row_text or "")
     arr = parts[1] if len(parts) > 1 else ""
-    scored = transport_matcher.suggest_existing_transport_matches(
-        dep, arr, [r["raw"] for r in routes], top_n=limit)
+    if routes and routes[0].get("kind") == KIND_TRANSFER:
+        scored = transfer_matcher.suggest_existing_transfer_matches(
+            dep, arr, [r["raw"] for r in routes], top_n=limit)
+    else:
+        scored = transport_matcher.suggest_existing_transport_matches(
+            dep, arr, [r["raw"] for r in routes], top_n=limit)
     # The matcher reports the id under "transport_id", not "id".
     by_id = {r["id"]: r for r in routes}
     out = []
     for candidate in scored:
-        route = by_id.get(candidate.get("transport_id") or candidate.get("id"))
+        route = by_id.get(candidate.get("transport_id") or candidate.get("transfer_id")
+                          or candidate.get("id"))
         if route:
             out.append({"route": route, "score": candidate.get("score", 0)})
     return out

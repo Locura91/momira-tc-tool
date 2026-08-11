@@ -9,6 +9,8 @@ import re
 import json
 import math
 import datetime
+from typing import List, Tuple
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -618,7 +620,10 @@ def friendly_error_message(e: Exception) -> str:
         return "Couldn't connect to the AI service. Please check your internet connection and try again."
     if "authenticationerror" in lower or "401" in text or "403" in text:
         return "The AI service rejected the request (authentication problem). Please contact whoever manages this tool."
-    if "as far as the tool will go" in lower or "no paragraph breaks" in lower:
+    if ("as far as the tool will go" in lower or "no paragraph breaks" in lower
+            or "one change at a time" in lower):
+        # Already written for a human, and more specific than the generic truncation advice
+        # below - replacing it with "try again" would throw away the useful part.
         # Detection already retried in sections and still couldn't fit - saying "try again"
         # here would be false advice, because the automatic retry has already been spent.
         return text
@@ -1184,6 +1189,45 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     return variants
 
 
+_CLARIFY_DOC_CHARS = 120000
+_CLARIFY_DATA_CHARS = 90000
+
+
+def _json_within_budget(data: dict, budget: int) -> Tuple[str, List[str]]:
+    """Serialise `data` to JSON that FITS, by dropping whole fields rather than cutting text.
+
+    CONFIRMED REAL BUG (product owner: "Tell AI what to fix - the results are actually very
+    bad"): this used to be json.dumps(data)[:20000]. A ClosedTour with a full itinerary and a
+    price list goes well past that, so the model was handed a JSON object sliced off mid-string
+    - not a large object, an INVALID one. It could not reliably tell what the current values
+    even were, which is exactly the input it needs to change one of them.
+
+    Dropping whole fields keeps the object parseable, and the caller is told which fields went
+    so it can say so in the prompt. Biggest fields go first, because one enormous itinerary is
+    usually what blows the budget while thirty small fields are what the instruction is about."""
+    try:
+        full = json.dumps(data, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(data)[:budget], []
+    if len(full) <= budget:
+        return full, []
+
+    kept = dict(data)
+    dropped = []
+    by_size = sorted(
+        kept.keys(),
+        key=lambda k: len(json.dumps(kept[k], ensure_ascii=False, default=str)),
+        reverse=True)
+    for key in by_size:
+        if len(json.dumps(kept, indent=2, ensure_ascii=False, default=str)) <= budget:
+            break
+        if len(kept) <= 1:
+            break
+        dropped.append(key)
+        kept.pop(key, None)
+    return json.dumps(kept, indent=2, ensure_ascii=False, default=str), dropped
+
+
 def apply_clarification(raw_text: str, current_data: dict, instruction: str, model: str = "claude-sonnet-5") -> dict:
     """
     Understands a human's free-text instruction (a question OR a change
@@ -1222,11 +1266,34 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
     # the first call in that session pays full price for it - every
     # follow-up question/fix on the same item reuses the cached copy instead
     # of resending it at full cost.
+    # CONFIRMED REAL COMPLAINT (product owner): "the results are actually very bad." The two
+    # causes were both here, in what the model was being GIVEN rather than in how it was asked.
+    #
+    # The document was cut to 15,000 characters. A ClosedTour itinerary runs far past that, so
+    # an instruction about day 6 was routinely answered by a model that had never been shown
+    # day 6 - and it has no way to know that, so it answers anyway.
+    #
+    # The extracted data was cut to 20,000 characters MID-JSON, handing over an object that
+    # does not parse. See _json_within_budget.
+    doc = raw_text or ""
+    doc_note = ""
+    if len(doc) > _CLARIFY_DOC_CHARS:
+        doc = doc[:_CLARIFY_DOC_CHARS]
+        doc_note = ("\n\n[This document was too long to include in full and has been cut here. "
+                    "If the answer depends on a part you cannot see, SAY SO in your summary "
+                    "rather than guessing.]")
+    data_json, dropped = _json_within_budget(current_data or {}, _CLARIFY_DATA_CHARS)
+    data_note = ""
+    if dropped:
+        data_note = ("\n\n[These fields were too large to include and are NOT shown above: "
+                     + ", ".join(dropped) +
+                     ". Do not change them, and say so if the request concerns one of them.]")
+
     user_content = [
-        {"type": "text", "text": f"--- Source document text ---\n{raw_text[:15000]}",
+        {"type": "text", "text": f"--- Source document text ---\n{doc}{doc_note}",
          "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": (
-            f"--- Currently extracted data ---\n{json.dumps(current_data, indent=2)[:20000]}\n\n"
+            f"--- Currently extracted data ---\n{data_json}{data_note}\n\n"
             f"--- Human's message ---\n{instruction}"
         )},
     ]
@@ -1236,7 +1303,16 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         # JSON - same reasoning as _call_claude: a "changes" payload can contain
         # arbitrary long text (e.g. a corrected description) that's exactly the
         # kind of content prone to breaking free-text JSON parsing.
-        result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, user_content, tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
+        result, stop_reason = _stream_claude_tool_call(
+            client, model, 16384, system_prompt, user_content,
+            tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
+        if stop_reason == "max_tokens":
+            # A truncated tool call still returns a partial object, which would be merged
+            # into the product as if it were complete. Refusing is the only safe answer.
+            raise RuntimeError(
+                "The answer was cut off before it finished, so it can't be applied safely. "
+                "Ask for one change at a time - e.g. just the day-6 description, then the "
+                "price - rather than several at once.")
 
         # SAFETY NET: a strict input_schema with "required" is a strong hint to
         # the model, but the Anthropic API does NOT hard-enforce "required" on
@@ -1252,8 +1328,10 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
                          "non-empty 'summary' explaining what you understood/changed or answered, "
                          "alongside 'changes'."),
             }]
-            result, _ = _stream_claude_tool_call(client, model, 4096, system_prompt, corrective_user_content,
-                                                 tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
+            result, _ = _stream_claude_tool_call(client, model, 16384, system_prompt,
+                                                 corrective_user_content,
+                                                 tool_name="apply_changes",
+                                                 input_schema=CLARIFY_TOOL_SCHEMA)
 
         if not (result.get("summary") or "").strip():
             # Both attempts failed to include a summary - build a factual one

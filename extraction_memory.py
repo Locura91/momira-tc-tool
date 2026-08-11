@@ -319,6 +319,158 @@ def forget(supplier_id: str, product_type: str, field: str, from_key: str) -> bo
     return _save(supplier_id, product_type, row)
 
 
+
+# ----------------------------------------------------------------------
+# Instructions typed into "Tell AI what to fix"
+#
+# CONFIRMED REAL REQUEST (product owner): "it would be extremely helpful if the included
+# database could learn from the 'Tell AI what to fix' as this is the biggest issue."
+#
+# WHY THESE ARE THE BEST SIGNAL IN THE APP: a value correction says WHAT was wrong. An
+# instruction says WHY, in the operator's own words - "the triple price is the third column,
+# not the second", "this supplier writes the return leg first". That is a rule about how this
+# supplier's documents read, and it is exactly the thing the extractor cannot work out on its
+# own. Until now it was typed, used once, and discarded.
+#
+# Stored per supplier AND product type, because it is a fact about how one supplier writes one
+# kind of document. Only instructions that actually CHANGED something are kept: a question
+# ("what does the third column mean?") teaches nothing, and filling the store with questions
+# would bury the rules.
+_INSTRUCTION_NAMESPACE = "clarify_instructions"
+
+# How many past instructions are fed into the next extraction. Enough to carry a supplier's
+# real quirks, few enough that they cannot crowd out the document itself.
+_MAX_INSTRUCTIONS_FED = 8
+_MAX_INSTRUCTIONS_STORED = 40
+_MAX_INSTRUCTION_CHARS = 400
+
+
+def _instruction_key(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()[:_MAX_INSTRUCTION_CHARS]
+
+
+def record_instruction(supplier_id: str, product_type: str, instruction: str,
+                       changed_fields: Any = None) -> bool:
+    """Remember an instruction that actually changed something.
+
+    changed_fields is stored alongside so the memory panel can show what the instruction did -
+    "you said this 3 times, and it changed price_list each time" is far easier to judge than
+    the sentence on its own."""
+    text = (instruction or "").strip()
+    if not (supplier_id and product_type and text):
+        return False
+    if not changed_fields:
+        # A question that changed nothing is not a rule about the supplier.
+        return False
+    key = _instruction_key(text)
+    if not key:
+        return False
+    row = platform_store.get(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type)) or {}
+    if not isinstance(row, dict):
+        row = {}
+    entries = row.get("instructions") or {}
+    fields = sorted({str(f) for f in (changed_fields or [])})
+    entry = entries.get(key) or {"text": text[:_MAX_INSTRUCTION_CHARS], "count": 0, "fields": []}
+    entry["count"] = int(entry.get("count", 0)) + 1
+    # Keep the FIRST wording. The key already treats "  the TRIPLE price..." and "The triple
+    # price..." as the same instruction, so overwriting would let a hurried re-typing degrade
+    # the considered original that gets fed to the model.
+    entry.setdefault("text", text[:_MAX_INSTRUCTION_CHARS])
+    entry["fields"] = sorted(set(entry.get("fields", [])) | set(fields))
+    entry["last_seen"] = datetime.now(timezone.utc).isoformat()
+    entries[key] = entry
+    if len(entries) > _MAX_INSTRUCTIONS_STORED:
+        ranked = sorted(entries.items(),
+                        key=lambda kv: (kv[1].get("count", 0), kv[1].get("last_seen", "")),
+                        reverse=True)
+        entries = dict(ranked[:_MAX_INSTRUCTIONS_STORED])
+    row["instructions"] = entries
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return platform_store.set(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type), row)
+
+
+def list_instructions(supplier_id: str, product_type: str) -> List[Dict[str, Any]]:
+    """Instructions remembered for this supplier and product type, most-repeated first."""
+    row = platform_store.get(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type)) or {}
+    entries = (row or {}).get("instructions") or {}
+    out = [dict(v, key=k) for k, v in entries.items() if isinstance(v, dict) and v.get("text")]
+    return sorted(out, key=lambda e: (-int(e.get("count", 0)), e.get("last_seen", "")), reverse=False)
+
+
+def forget_instruction(supplier_id: str, product_type: str, key: str) -> bool:
+    row = platform_store.get(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type)) or {}
+    entries = (row or {}).get("instructions") or {}
+    if key not in entries:
+        return False
+    del entries[key]
+    row["instructions"] = entries
+    return platform_store.set(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type), row)
+
+
+def instruction_guidance(supplier_id: str, product_type: str) -> str:
+    """Past instructions, as a block to put in front of the next extraction.
+
+    Framed as guidance rather than as facts: the document always wins. A corrective that was
+    right for last season's rate sheet must not overwrite what this one plainly says, so the
+    wording tells the model to apply them only where they still fit."""
+    entries = list_instructions(supplier_id, product_type)[:_MAX_INSTRUCTIONS_FED]
+    if not entries:
+        return ""
+    lines = []
+    for e in entries:
+        times = int(e.get("count", 0))
+        suffix = f" (said {times}x)" if times > 1 else ""
+        lines.append(f"- {e['text']}{suffix}")
+    return ("THINGS A HUMAN HAS PREVIOUSLY HAD TO CORRECT ON THIS SUPPLIER'S DOCUMENTS. These are "
+            "notes from the operator about how THIS supplier writes things, collected from earlier "
+            "corrections. Apply them where they still fit this document, and ignore any that "
+            "plainly do not - the document in front of you always wins:\n" + "\n".join(lines))
+
+
+def list_all_instructions() -> List[Dict[str, Any]]:
+    """Every learned instruction across all suppliers, for the platform-wide memory panel.
+
+    Sorted most-repeated first: an instruction typed five times is a rule about the supplier,
+    while one typed once may just have been a one-off fix."""
+    rows = []
+    for key, row in platform_store.get_namespace(_INSTRUCTION_NAMESPACE).items():
+        supplier_id, _, product_type = key.partition("|")
+        for ikey, entry in ((row or {}).get("instructions") or {}).items():
+            if not isinstance(entry, dict) or not entry.get("text"):
+                continue
+            rows.append({"supplier_id": supplier_id, "product_type": product_type,
+                         "key": ikey, "text": entry["text"],
+                         "count": int(entry.get("count", 0)),
+                         "fields": entry.get("fields", []),
+                         "last_seen": entry.get("last_seen", "")})
+    return sorted(rows, key=lambda r: (-r["count"], r["supplier_id"], r["product_type"]))
+
+
+def render_instruction_panel(supplier_id: str, product_type: str) -> None:
+    """Show what has been learned from corrections for this supplier, with a way to delete."""
+    import streamlit as st
+
+    entries = list_instructions(supplier_id, product_type)
+    if not entries:
+        return
+    with st.expander(f"🧠 {len(entries)} thing(s) learned from your past corrections for this "
+                     f"supplier", expanded=False):
+        st.caption("Typed into “Tell AI what to fix” on an earlier document, and now given to the "
+                  "AI before it reads a new one. The document always wins over these.")
+        for e in entries:
+            cols = st.columns([6, 1])
+            with cols[0]:
+                times = int(e.get("count", 0))
+                st.markdown(f"- {e['text']}" + (f"  ·  *said {times}×*" if times > 1 else ""))
+                if e.get("fields"):
+                    st.caption("changed: " + ", ".join(f"`{f}`" for f in e["fields"]))
+            with cols[1]:
+                if st.button("🗑️", key=f"em_forget_instr_{supplier_id}_{product_type}_{e['key']}",
+                             help="Forget this"):
+                    forget_instruction(supplier_id, product_type, e["key"])
+                    st.rerun()
+
+
 def prepare(supplier_id: str, product_type: str, item: Dict[str, Any],
             data_key: str = "data") -> List[Dict[str, Any]]:
     """The one call a flow makes right after extraction: snapshot the raw output, then

@@ -903,6 +903,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mm_raw_text, data, mm_clarify_q)
                 st.session_state[f"mm_clarify_result_{idx}"] = result
+                remember_clarification(clarify_supplier_id(), "ClosedTour", mm_clarify_q, result)
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
@@ -1194,7 +1195,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             with st.spinner(f"Extracting tour details{f' focused on ' + repr(tour['label']) if variant_hint else ''}..."):
                 try:
                     tour["main_data"] = extract_structured_data(
-                        st.session_state.mct_raw_text, variant_hint=variant_hint, human_hint=extraction_hint
+                        st.session_state.mct_raw_text, variant_hint=variant_hint,
+                        human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint)
                     )
                     tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
                 except Exception as e:
@@ -1315,6 +1317,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
                 st.session_state["mct_clarify_result_main"] = result
+                remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_clarify_q, result)
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
@@ -1625,6 +1628,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_mod_clarify_q)
                 st.session_state[f"mct_mod_clarify_result_{midx}"] = result
+                remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_mod_clarify_q, result)
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
@@ -3157,6 +3161,57 @@ def render_candidate_filter(candidates, key_prefix, noun):
         st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
 
 
+def with_learned_guidance(supplier_id, product_type, hint):
+    """The operator's hint for this run, with what was learned from past corrections in front.
+
+    Past corrections go FIRST and this run's hint LAST, because the hint is about the document
+    in hand and must be able to override a habit learned from an older one. Returns the hint
+    unchanged when nothing has been learned, so a supplier with no history behaves exactly as
+    before."""
+    guidance = extraction_memory.instruction_guidance(supplier_id, product_type) if supplier_id else ""
+    hint = (hint or "").strip()
+    if not guidance:
+        return hint or None
+    return f"{guidance}\n\nFOR THIS DOCUMENT: {hint}" if hint else guidance
+
+
+def clarify_supplier_id(*preferred):
+    """The supplier this correction belongs to, however the current flow happens to hold it.
+
+    Each flow keeps its supplier under its own session key, and one of them
+    (render_multi_modality_flow) has none in scope at all - so reading a local variable
+    would have raised a NameError on the ClosedTour modality screen, which is one of the
+    screens this feature exists for. Resolving from session state keeps every call site
+    identical and cannot fail."""
+    for value in preferred:
+        if value:
+            return str(value)
+    for key in ("cfg_supplier_id", "tk_cfg_supplier_id", "tf_cfg_supplier_id",
+                "tp_cfg_supplier_id", "hp_cfg_supplier_id"):
+        value = st.session_state[key] if key in st.session_state else None
+        if value:
+            return str(value)
+    return None
+
+
+def remember_clarification(supplier_id, product_type, instruction, result):
+    """Learn from an instruction typed into "Tell AI what to fix".
+
+    CONFIRMED REAL REQUEST (product owner): "it would be extremely helpful if the included
+    database could learn from the 'Tell AI what to fix' as this is the biggest issue."
+
+    These are the highest-quality signal the app has. A value correction says what was wrong;
+    an instruction says WHY, in the operator's own words - "this supplier puts the triple price
+    in the third column" - which is a rule about how this supplier writes, and precisely what
+    the extractor cannot work out alone. Only instructions that actually changed something are
+    kept, so questions do not bury the rules."""
+    changed = list((result or {}).get("changes") or {})
+    if not (supplier_id and product_type and changed):
+        return []
+    extraction_memory.record_instruction(supplier_id, product_type, instruction, changed)
+    return changed
+
+
 def seed_transport_from_candidate(item, data, chosen_currency):
     """Fill in everything the app ALREADY KNOWS, so the review screen is never blank.
 
@@ -3925,6 +3980,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mt_raw_text, data, mt_clarify_q)
                 st.session_state[f"mt_clarify_result_{idx}"] = result
+                remember_clarification(clarify_supplier_id(supplier_id), "Ticket", mt_clarify_q, result)
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
@@ -4439,7 +4495,9 @@ def render_ticket_flow(client):
                         st.session_state.tk_pending_doc_images = doc_image_urls
                         st.session_state.tk_pending_doc_raw_images = doc_raw_images
                     else:
-                        data = extract_ticket_data(raw_text, human_hint=tk_hint or None)
+                        data = extract_ticket_data(
+                            raw_text,
+                            human_hint=with_learned_guidance(clarify_supplier_id(), "Ticket", tk_hint))
                         data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
@@ -4709,6 +4767,7 @@ def render_ticket_flow(client):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q)
                 st.session_state.tk_clarify_result = result
+                remember_clarification(clarify_supplier_id(supplier_id), "Ticket", tk_clarify_q, result)
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
@@ -4977,6 +5036,7 @@ def render_ticket_flow(client):
         if st.button("Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q2)
+                remember_clarification(clarify_supplier_id(), "Ticket", tk_clarify_q2, result)
                 st.session_state.tk_clarify_result_pricing = result
                 if result.get("changes"):
                     for field_name, new_value in result["changes"].items():
@@ -5684,7 +5744,9 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                     elif current["label"]:
                         transfer_hint = current["label"]
                     current["data"] = extract_transfer_data(st.session_state.xtf_raw_text,
-                                                             transfer_hint=transfer_hint, human_hint=tf_hint)
+                                                             transfer_hint=transfer_hint,
+                                                             human_hint=with_learned_guidance(
+                                                                 supplier_id, "Transfer", tf_hint))
                 except Exception as e:
                     st.error(f"Extraction failed for this transfer: {friendly_error_message(e)}")
                     current["data"] = {}
@@ -6318,7 +6380,9 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                     elif current["label"]:
                         transport_hint = current["label"]
                     current["data"] = extract_transport_data(st.session_state.xtp_raw_text,
-                                                              transport_hint=transport_hint, human_hint=tp_hint)
+                                                              transport_hint=transport_hint,
+                                                              human_hint=with_learned_guidance(
+                                                                  supplier_id, "Transport", tp_hint))
                 except Exception as e:
                     st.error(f"Extraction failed for this transport: {friendly_error_message(e)}")
                     current["data"] = {}
@@ -7776,9 +7840,12 @@ def render_price_refresh_flow(client):
     Nothing here resolves a location, estimates a duration, names anything, or creates
     anything. Only numbers move."""
     st.header("💶 Refresh prices from a rate sheet")
-    st.caption("For a rate sheet covering transports that already exist. The list of routes comes "
+    st.caption("For a rate sheet covering products that already exist. The list of routes comes "
               "from Travel Compositor, not from the document — the document is only asked what "
-              "each one now costs. Nothing is created and nothing but prices changes.")
+              "each one now costs. Nothing is created, and **nothing but prices changes** — "
+              "validity dates, times, names and modality structure are left exactly as they are.")
+    kind = st.radio("Which product type?", [price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER],
+                    horizontal=True, key="pr_kind")
 
     if st.session_state.suppliers_cache is None:
         with st.spinner("Loading supplier list…"):
@@ -7806,7 +7873,7 @@ def render_price_refresh_flow(client):
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
 
-    if st.button("🔍 Read prices for this supplier's transports", type="primary",
+    if st.button(f"🔍 Read prices for this supplier's {kind.lower()}s", type="primary",
                  disabled=not supplier_id, key="pr_read"):
         raw_parts = []
         if url:
@@ -7826,18 +7893,20 @@ def render_price_refresh_flow(client):
             st.error("No document to read — upload a rate sheet or give a URL.")
         else:
             raw_text = "\n\n".join(raw_parts)
-            bar = st.progress(0.0, text="Reading this supplier's transports from Travel Compositor…")
+            bar = st.progress(0.0, text=f"Reading this supplier's {kind.lower()}s from Travel Compositor…")
 
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
 
-            routes, err = price_refresh.load_supplier_transports(client, supplier_id, progress=_tick)
+            routes, err = price_refresh.load_supplier_products(client, supplier_id, kind,
+                                                               progress=_tick)
             bar.empty()
             if err:
-                st.error(f"Couldn't read this supplier's transports: {err}")
+                st.error(f"Couldn't read this supplier's {kind.lower()}s: {err}")
             elif not routes:
-                st.warning("This supplier has no transports yet. Create them with **Upload & Update "
-                           "Products → Transport** first; this flow only updates what already exists.")
+                st.warning(f"This supplier has no {kind.lower()}s yet. Create them with "
+                           f"**Upload & Update Products → {kind}** first; this flow only updates "
+                           f"what already exists.")
             else:
                 with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
                     try:
@@ -7945,9 +8014,10 @@ def render_price_refresh_flow(client):
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    st.warning(f"This changes prices on **{len(accepted)} live transport(s)** for supplier "
-               f"{supplier_id}. Nothing else about them is touched.")
-    if st.button(f"🚀 Update {len(accepted)} transport(s)", type="primary",
+    st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
+               f"{supplier_id}. Nothing else is touched — validity dates stay as they are, even "
+               f"where they run to 2049 or 2099.")
+    if st.button(f"🚀 Update {len(accepted)} {kind.lower()}(s)", type="primary",
                  disabled=not accepted, key="pr_apply"):
         bar = st.progress(0.0, text="Updating…")
 
@@ -7962,7 +8032,7 @@ def render_price_refresh_flow(client):
     result = st.session_state.get("pr_result")
     if result:
         if result["updated"]:
-            st.success(f"✅ {len(result['updated'])} transport(s) repriced.")
+            st.success(f"✅ {len(result['updated'])} {kind.lower()}(s) repriced.")
             for u in result["updated"]:
                 st.write(f"- {u['name']}: " + ", ".join(
                     f"{c['min_pax']}–{c['max_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
@@ -8001,7 +8071,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-price-refresh — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-learn-from-corrections — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -8073,6 +8143,25 @@ with st.expander("💾 What the platform remembers", expanded=False):
     st.markdown("---")
     st.markdown("##### 🧠 What it has learned from your corrections")
     extraction_memory.render_memory_panel()
+    _instr = extraction_memory.list_all_instructions()
+    if _instr:
+        st.markdown("##### 💬 What it has learned from “Tell AI what to fix”")
+        st.caption("Instructions you typed while reviewing, now given to the AI before it reads "
+                  "the next document from that supplier. The document always wins over these.")
+        for _row in _instr:
+            _c1, _c2 = st.columns([6, 1])
+            with _c1:
+                _times = int(_row.get("count", 0))
+                st.markdown(f"**{_row['product_type']} · supplier {_row['supplier_id']}** — "
+                            f"{_row['text']}" + (f"  ·  *said {_times}×*" if _times > 1 else ""))
+                if _row.get("fields"):
+                    st.caption("changed: " + ", ".join(f"`{f}`" for f in _row["fields"]))
+            with _c2:
+                if st.button("🗑️", key=f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_row['key']}",
+                             help="Forget this"):
+                    extraction_memory.forget_instruction(_row["supplier_id"], _row["product_type"],
+                                                         _row["key"])
+                    st.rerun()
 
 
 # ======================================================================
@@ -8231,7 +8320,7 @@ if st.session_state.product_type is None:
               "**Adding manual information** = no document at all: write something you know about a "
               "supplier — a moved pickup point, changed cancellation terms — and it is attached "
               "automatically to every future upload of that product type. "
-              "**Refresh prices** = a new rate sheet for transports that already exist: it lists "
+              "**Refresh prices** = a new rate sheet for transfers or transports that already exist: it lists "
               "them from Travel Compositor, finds each one's new price in the document, and you "
               "accept or reject each change. Nothing is created.")
     if st.button("➡️ Continue", type="primary"):
@@ -9210,6 +9299,7 @@ if st.session_state.extracted:
     if st.button("Send", disabled=not clarify_question.strip()):
         with st.spinner("Thinking..."):
             result = apply_clarification(st.session_state.raw_preview, data, clarify_question)
+            remember_clarification(clarify_supplier_id(), "ClosedTour", clarify_question, result)
             st.session_state.clarify_result = result
             if result.get("changes"):
                 for field_name, new_value in result["changes"].items():
