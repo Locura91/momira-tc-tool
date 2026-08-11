@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-clarify-honesty"
+MODULE_BUILD = "2026-08-11-child-age"
 
 import math
 import datetime
@@ -16,6 +16,14 @@ from schemas import TransportHumanPreConfig, ContractTransportVO, TransportSegme
 from schemas import HotelAddressVO, TranslationVO, ContractRoomDistributionVO, ContractRoomVO, ContractMealPlanVO, ContractRoomDistributionPriceVO, ContractHotelSeasonPricesVO, ContractHotelSeasonVO, ContractHotelRoomStopSalesVO, ContractHotelRateVO, ContractHotelOffersVO, ContractHotelSupplementVO, ContractHotelVO
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode
+from date_format import to_iso_date
+
+# LAST LINE OF DEFENCE for the DD/MM/YYYY house rule. Screens convert on the way in and out
+# (see date_format.py), but this module is what actually builds the payload, and Travel
+# Compositor's LocalDate fields accept ONLY YYYY-MM-DD. Normalising here means a date that
+# somehow reached the builder still displayed - a screen added later that forgot to convert,
+# an older saved draft, a value pasted straight in - cannot become a rejected publish or, far
+# worse, a season silently shifted by a month.
 import transport_matcher
 import hotel_matcher
 
@@ -170,6 +178,10 @@ def normalize_price_list(rows, currency):
         if not isinstance(row, dict):
             continue
         row = dict(row)
+        # Dates leave ISO whatever came in - see the to_iso_date import note at the top.
+        for date_key in ("startDate", "endDate"):
+            if row.get(date_key):
+                row[date_key] = to_iso_date(row[date_key])
         price = row.get("price")
         price = dict(price) if isinstance(price, dict) else {}
         cleaned = {}
@@ -405,6 +417,45 @@ def _with_manual_notes(voucher_text, extracted_data):
     if not note:
         return voucher_text
     return f"{voucher_text}\n\n{note}".strip() if voucher_text else note
+
+
+def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12):
+    """The child age band to publish, given whatever the document stated.
+
+    CONFIRMED HOUSE RULE (product owner): "When the document says minimum child age (e.g. 7),
+    then this must be added to the child age allowed. The range for children would be then
+    7 to 12." So a stated MINIMUM replaces the house floor; the ceiling stays at the house
+    maximum unless the document names a different one.
+
+    A MISSING ceiling never becomes the minimum: "children from 7" with nothing said about an
+    upper age gives 7-12, not 7-7. A zero-width band would bill every 7-to-12-year-old as an
+    infant, and the payload would validate perfectly while doing it.
+
+    An INVERTED band (min above max) is repaired rather than published, by lifting the ceiling
+    to meet the minimum - the only reading of "children from 14" that still sells anything.
+
+    What this deliberately does NOT do is second-guess a ceiling the document actually stated.
+    If both ends come back as 7, that is left alone and flagged on the review screen instead:
+    it might be a model error, or the source might really say it, and only a human looking at
+    the document can tell.
+
+    Note what a raised minimum MEANS downstream: below it, a traveller is an infant, not a
+    rejected booking. Travel Compositor has no "under-N not accepted" field on this record, so
+    a genuine refusal has to be written into the description - see the extraction prompt."""
+    def _age(value, fallback):
+        if value is None or value == "":
+            return fallback
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return fallback
+
+    low = _age(stated_min, default_min)
+    high = _age(stated_max, default_max)
+    # A stated minimum must not drag the ceiling down with it (failure mode 1).
+    if high < low:
+        high = max(low, _age(default_max, 12))
+    return low, high
 
 
 def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
@@ -784,8 +835,12 @@ def build_closed_tour_payloads(
             startTime=normalize_time_hhmmss(extracted_dmc_data.get("start_time", "")),
             endTime=normalize_time_hhmmss(extracted_dmc_data.get("end_time", "")),
             supplements=supplements_list,
-            minChildAge=extracted_dmc_data.get("min_child_age") if extracted_dmc_data.get("min_child_age") is not None else pre_config.min_child_age,
-            maxChildAge=extracted_dmc_data.get("max_child_age") if extracted_dmc_data.get("max_child_age") is not None else pre_config.max_child_age,
+            # CONFIRMED HOUSE RULE (product owner): a minimum child age stated in the document
+            # replaces the house floor of 2, and the ceiling stays 12 - "children from 7 years"
+            # gives a 7-12 band. See resolve_child_age_band for why this is not just a passthrough.
+            **dict(zip(("minChildAge", "maxChildAge"), resolve_child_age_band(
+                extracted_dmc_data.get("min_child_age"), extracted_dmc_data.get("max_child_age"),
+                pre_config.min_child_age, pre_config.max_child_age))),
             currency=pre_config.currency,
             nights=extracted_dmc_data.get("nights") if extracted_dmc_data.get("nights") is not None else 1,
             minPax=pre_config.min_pax,
@@ -1566,7 +1621,7 @@ def start_date_or_today(stated):
     Filled here rather than by the AI so it cannot be invented: a hallucinated start date in
     the future makes a product silently unbookable until it arrives, and one in the past is
     equally invisible in a different way. Today is a fact this code has."""
-    stated = (stated or "").strip()
+    stated = to_iso_date((stated or "").strip())
     return stated or datetime.date.today().isoformat()
 
 

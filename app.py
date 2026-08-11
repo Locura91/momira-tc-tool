@@ -74,6 +74,10 @@ from builder import derive_arrival_from_duration, build_closed_tour_payloads, bu
 from builder import build_transport_payloads
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
+# HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
+# types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
+# and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
+from date_format import to_iso_date as _iso, to_display_date as _disp, DISPLAY_HINT as _DATE_HINT
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
@@ -182,7 +186,7 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
             "name": "Example row - edit or delete", "startDate": "2027-01-01", "endDate": "2027-12-31",
             "price": {"singlePrice": {"amount": 0, "currency": currency}, "doublePrice": {"amount": 0, "currency": currency}}
         }],
-        key=lambda entry: entry.get("startDate", "")
+        key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
     )
     target_data["price_list"] = default_price_list
 
@@ -192,8 +196,8 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
         def _amt(key, price=price):
             block = price.get(key)
             return block.get("amount") if isinstance(block, dict) else None
-        price_df_rows.append({"Name": entry.get("name", ""), "Start Date": entry.get("startDate", ""),
-                              "End Date": entry.get("endDate", ""), "Single": _amt("singlePrice"),
+        price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
+                              "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                               "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
     price_df = pd.DataFrame(price_df_rows)
 
@@ -204,13 +208,13 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
                 val = row.get(col)
                 if val is not None and not pd.isna(val):
                     price[key] = {"amount": float(val), "currency": currency}
-            entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+            entry = {"startDate": _iso(_safe_cell_str(row.get("Start Date"))), "endDate": _iso(_safe_cell_str(row.get("End Date"))), "price": price}
             name = _safe_cell_str(row.get("Name")).strip()
             if name:
                 entry["name"] = name
             return entry
         target_data["price_list"] = sorted(
-            [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
+            [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
             key=lambda e: e.get("startDate", "")
         )
 
@@ -418,14 +422,14 @@ def render_stop_sales_editor(data, key_prefix, help_text=None):
         st.caption("Each row blocks bookings for that date range. There's no limit to how many rows you can "
                   "add - use a separate row for each distinct blocked period (e.g. a maintenance closure AND "
                   "a holiday blackout are two rows, not one).")
-        stop_rows = [{"Start Date": s.get("start", ""), "End Date": s.get("end", "")} for s in (data.get("stop_sales") or []) if isinstance(s, dict)]
+        stop_rows = [{"Start Date": _disp(s.get("start", "")), "End Date": _disp(s.get("end", ""))} for s in (data.get("stop_sales") or []) if isinstance(s, dict)]
         stop_df = pd.DataFrame(stop_rows) if stop_rows else pd.DataFrame(columns=["Start Date", "End Date"])
 
         def _save_stop_sales(edited_df, data=data):
             new_stops = []
             for _, row in edited_df.iterrows():
-                start = _safe_cell_str(row.get("Start Date")).strip()
-                end = _safe_cell_str(row.get("End Date")).strip()
+                start = _iso(_safe_cell_str(row.get("Start Date")))
+                end = _iso(_safe_cell_str(row.get("End Date")))
                 if start and end:
                     new_stops.append({"start": start, "end": end})
             data["stop_sales"] = new_stops
@@ -659,6 +663,14 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
     if current_value in (None, ""):
         current_value = default_value
 
+    # HOUSE RULE (product owner): dates read DD/MM/YYYY on screen. Detected from the field name
+    # rather than passed in at each of the ~30 call sites, so a date field added later inherits
+    # the format instead of quietly reverting to ISO. The STORED value stays ISO throughout -
+    # only what is shown, and what is typed back, is converted.
+    _is_date_field = field_key.endswith("_date") or field_key.endswith("_dates")
+    if _is_date_field:
+        current_value = _disp(current_value)
+
     if not st.session_state[edit_flag_key]:
         vcol, bcol = st.columns([12, 1])
         with vcol:
@@ -707,6 +719,10 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 data_dict[field_key] = _plain_to_html_for_saving(new_plain_value)
             elif widget == "html_list_area":
                 data_dict[field_key] = _plain_list_to_html_for_saving(new_plain_value)
+            elif _is_date_field:
+                # Typed as DD/MM/YYYY, stored as ISO. to_iso_date also accepts an ISO value,
+                # so pasting one straight in still works.
+                data_dict[field_key] = _iso(new_value)
             else:
                 data_dict[field_key] = new_value
             st.session_state[edit_flag_key] = False
@@ -873,8 +889,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             def _amt(key, price=price):
                 block = price.get(key)
                 return block.get("amount") if isinstance(block, dict) else None
-            price_df_rows.append({"Name": entry.get("name", ""), "Start Date": entry.get("startDate", ""),
-                                  "End Date": entry.get("endDate", ""), "Single": _amt("singlePrice"),
+            price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
+                                  "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                                   "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
         price_df = pd.DataFrame(price_df_rows)
 
@@ -885,13 +901,13 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     val = row.get(col)
                     if val is not None and not pd.isna(val):
                         price[key] = {"amount": float(val), "currency": currency}
-                entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+                entry = {"startDate": _iso(_safe_cell_str(row.get("Start Date"))), "endDate": _iso(_safe_cell_str(row.get("End Date"))), "price": price}
                 name = _safe_cell_str(row.get("Name")).strip()
                 if name:
                     entry["name"] = name
                 return entry
             data["price_list"] = sorted(
-                [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
+                [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
                 key=lambda e: e.get("startDate", "")
             )
 
@@ -1234,13 +1250,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         with tcol2:
             render_optional_time_input("End Time", data, "end_time", "mct_end_time_main", default_time_str="18:00:00")
 
-        acol1, acol2 = st.columns(2)
-        with acol1:
-            data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("min_child_age", 2) or 2), key="mct_min_child_age_main")
-        with acol2:
-            data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("max_child_age", 12) or 12), key="mct_max_child_age_main")
+        render_child_age_band(data, "mct_main")
 
         dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
         dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
@@ -1526,8 +1536,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             def _amt(key, price=price):
                 block = price.get(key)
                 return block.get("amount") if isinstance(block, dict) else None
-            price_df_rows.append({"Name": entry.get("name", ""), "Start Date": entry.get("startDate", ""),
-                                  "End Date": entry.get("endDate", ""), "Single": _amt("singlePrice"),
+            price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
+                                  "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                                   "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
         price_df = pd.DataFrame(price_df_rows)
 
@@ -1538,13 +1548,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     val = row.get(col)
                     if val is not None and not pd.isna(val):
                         price[key] = {"amount": float(val), "currency": currency}
-                entry = {"startDate": _safe_cell_str(row.get("Start Date")).strip(), "endDate": _safe_cell_str(row.get("End Date")).strip(), "price": price}
+                entry = {"startDate": _iso(_safe_cell_str(row.get("Start Date"))), "endDate": _iso(_safe_cell_str(row.get("End Date"))), "price": price}
                 name = _safe_cell_str(row.get("Name")).strip()
                 if name:
                     entry["name"] = name
                 return entry
             data["price_list"] = sorted(
-                [_row_to_entry(r) for _, r in edited_df.iterrows() if _safe_cell_str(r.get("Start Date")).strip() and _safe_cell_str(r.get("End Date")).strip()],
+                [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
                 key=lambda e: e.get("startDate", "")
             )
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
@@ -1579,8 +1589,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 "Per Pax": s.get("per_pax", True),
                 "Mandatory": s.get("mandatory", False),
                 "On Request": s.get("on_request", False),
-                "Special Travel Start Date": s.get("travel_start_date", ""),
-                "Special Travel End Date": s.get("travel_end_date", ""),
+                "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
+                "Special Travel End Date": _disp(s.get("travel_end_date", "")),
             }
             for s in mct_default_supplements
         ]
@@ -1617,8 +1627,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": _safe_cell_str(row.get("Special Travel Start Date")).strip(),
-                    "travel_end_date": _safe_cell_str(row.get("Special Travel End Date")).strip(),
+                    "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
+                    "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
                 })
             data["supplements"] = new_supplements
             st.session_state[f"_mct_mod_supplements_missing_name_{midx}"] = missing_name
@@ -2371,6 +2381,53 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
                 if st.button("Forget", key=f"{key_prefix}_forget_{e.get('key')}"):
                     extraction_memory.forget_instruction(str(supplier_id), product_type, e.get("key"))
                     st.rerun()
+
+
+def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="max_child_age"):
+    """The child age band, with the consequence of changing it spelled out.
+
+    CONFIRMED PRODUCT-OWNER RULE: "When the document says minimum child age (e.g. 7), then this
+    must be added to the child age allowed. The range for children would be then 7 to 12." So a
+    stated minimum replaces the house floor of 2 and the ceiling stays at 12 unless the document
+    says otherwise.
+
+    WHY THE CAPTION MATTERS: in Travel Compositor these two numbers do not merely describe the
+    child band, they DEFINE where the infant band ends. Raising the minimum to 7 does not make
+    under-7s unbookable - it makes them INFANTS, priced at the infant rate. If the supplier meant
+    "we do not take under-7s at all", that is a different thing entirely and needs handling as a
+    restriction, not an age band. Nobody can be expected to know that from two number boxes."""
+    acol1, acol2 = st.columns(2)
+    with acol1:
+        raw_min = data.get(min_key)
+        data[min_key] = st.number_input(
+            "Min Child Age", min_value=0, max_value=17,
+            # NOT `or 2`: a legitimate 0 is falsy, and would have been silently rewritten to 2.
+            value=int(raw_min if raw_min not in (None, "") else 2), key=f"{key_prefix}_min_child_age")
+    with acol2:
+        raw_max = data.get(max_key)
+        data[max_key] = st.number_input(
+            "Max Child Age", min_value=0, max_value=17,
+            value=int(raw_max if raw_max not in (None, "") else 12), key=f"{key_prefix}_max_child_age")
+
+    low, high = data[min_key], data[max_key]
+    if low > high:
+        st.error(f"⚠️ Min Child Age ({low}) is above Max Child Age ({high}) - no age counts as a "
+                 f"child, so every young traveller would be priced as an infant.")
+    elif low == high and low > 0:
+        # Usually the AI mis-reading "children from 7" as a band of exactly 7. Occasionally a
+        # document really does say it. Flagged rather than auto-corrected, because only someone
+        # looking at the document can tell which.
+        st.warning(f"⚠️ Both ages are {low}, so **only {low}-year-olds** count as children - "
+                   f"everyone from {low + 1} up pays the adult rate, everyone below pays infant. "
+                   f"If the document says \"children from {low}\", the maximum should be **12**.")
+    elif low > 2:
+        st.caption(f"👶 Children are **{low}–{high}**, so anyone **under {low} is an infant** and pays "
+                   f"the infant rate. If the document means under-{low}s cannot join this tour at all, "
+                   f"that is a booking restriction rather than an age band - say so in the description, "
+                   f"because these two boxes cannot express it.")
+    else:
+        st.caption(f"👶 Children are **{low}–{high}**; under {low} counts as an infant. Raise the "
+                   f"minimum if the document states one (e.g. \"children from 7 years\" → 7).")
 
 
 def render_clarify_result(result, review_hint="review above before continuing"):
@@ -4122,9 +4179,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key=f"mt_start_date_{idx}")
+            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=f"mt_start_date_{idx}"))
         with dcol2:
-            data["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=data.get("end_date", ""), key=f"mt_end_date_{idx}")
+            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=f"mt_end_date_{idx}"))
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
@@ -4193,9 +4250,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"mt_extramod_infant_{idx}_{j}")
                 edcol1, edcol2 = st.columns(2)
                 with edcol1:
-                    mod["data"]["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=mod["data"].get("start_date", data.get("start_date", "")), key=f"mt_extramod_start_{idx}_{j}")
+                    mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", data.get("start_date", ""))), key=f"mt_extramod_start_{idx}_{j}"))
                 with edcol2:
-                    mod["data"]["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=mod["data"].get("end_date", data.get("end_date", "")), key=f"mt_extramod_end_{idx}_{j}")
+                    mod["data"]["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(mod["data"].get("end_date", data.get("end_date", ""))), key=f"mt_extramod_end_{idx}_{j}"))
             else:
                 st.info("Click 'Extract pricing' above to get started for this modality.")
             st.divider()
@@ -4372,9 +4429,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     editable_table("Start Time(s)", ftt_df, f"mtf_tt_{fi_idx}", on_save=_save_mtf_tt)
                     fdcol1, fdcol2 = st.columns(2)
                     with fdcol1:
-                        fdata["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=fdata.get("start_date", ""), key=f"mtf_start_{fi_idx}")
+                        fdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(fdata.get("start_date", "")), key=f"mtf_start_{fi_idx}"))
                     with fdcol2:
-                        fdata["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=fdata.get("end_date", ""), key=f"mtf_end_{fi_idx}")
+                        fdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(fdata.get("end_date", "")), key=f"mtf_end_{fi_idx}"))
 
                     if st.button(f"🔄 Retry option for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['ticket_code']}'..."):
@@ -5141,9 +5198,9 @@ def render_ticket_flow(client):
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=data.get("start_date", ""), key="tk_start_date")
+            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key="tk_start_date"))
         with dcol2:
-            data["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=data.get("end_date", ""), key="tk_end_date")
+            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key="tk_end_date"))
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
@@ -5199,9 +5256,9 @@ def render_ticket_flow(client):
                         mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"tk_extramod_infant_{i}")
                     dcol1x, dcol2x = st.columns(2)
                     with dcol1x:
-                        mod["data"]["start_date"] = st.text_input("Valid From (YYYY-MM-DD)", value=mod["data"].get("start_date", ""), key=f"tk_extramod_start_{i}")
+                        mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", "")), key=f"tk_extramod_start_{i}"))
                     with dcol2x:
-                        mod["data"]["end_date"] = st.text_input("Valid Until (YYYY-MM-DD)", value=mod["data"].get("end_date", ""), key=f"tk_extramod_end_{i}")
+                        mod["data"]["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(mod["data"].get("end_date", "")), key=f"tk_extramod_end_{i}"))
                     tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
                     def _save_extramod_tt(edf, mod=mod):
                         mod["data"]["time_tables"] = _clean_time_table_rows(edf)
@@ -6153,9 +6210,9 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            editable_field("Start date (YYYY-MM-DD)", data, "start_date", key_suffix=key_suffix)
+            editable_field("Start date (DD/MM/YYYY)", data, "start_date", key_suffix=key_suffix)
         with dcol2:
-            editable_field("End date (YYYY-MM-DD)", data, "end_date", key_suffix=key_suffix)
+            editable_field("End date (DD/MM/YYYY)", data, "end_date", key_suffix=key_suffix)
 
         cancel_df = pd.DataFrame(data.get("cancellation_policy_tiers") or [{"days": 30, "fee_percentage": 0.0}])
         for col in ["days", "fee_percentage"]:
@@ -6772,9 +6829,9 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            editable_field("Start date (YYYY-MM-DD)", data, "start_date", key_suffix=key_suffix)
+            editable_field("Start date (DD/MM/YYYY)", data, "start_date", key_suffix=key_suffix)
         with dcol2:
-            editable_field("End date (YYYY-MM-DD)", data, "end_date", key_suffix=key_suffix)
+            editable_field("End date (DD/MM/YYYY)", data, "end_date", key_suffix=key_suffix)
         st.caption("Inventory/availability convention: Transports are normally left open-ended (2049) so they "
                   "stay bookable and simply pick up new prices when rates refresh.")
 
@@ -7599,7 +7656,7 @@ def render_hotel_flow(client):
                             rows.append({"start": start, "end": end})
                     _season["date_ranges"] = rows
 
-                editable_table("Season date ranges (YYYY-MM-DD; several rows allowed for a split season)",
+                editable_table("Season date ranges (DD/MM/YYYY; several rows allowed for a split season)",
                                dr_df, f"hp_dr_{r_idx}_{s_idx}", on_save=_hp_save_date_ranges)
 
                 # One priced-distribution table per room in this season.
@@ -8312,7 +8369,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-11-clarify-honesty"
+BUILD_VERSION = "2026-08-11-child-age"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8326,7 +8383,7 @@ def _module_build_mismatches():
     stale = []
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
-                 "platform_store"):
+                 "platform_store", "date_format"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -9221,13 +9278,7 @@ if st.session_state.extracted:
             with tcol2:
                 render_optional_time_input("End Time", data, "end_time", "ct_end_time", default_time_str="18:00:00")
 
-            acol1, acol2 = st.columns(2)
-            with acol1:
-                data["min_child_age"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                        value=int(data.get("min_child_age", 2) or 2), key="ct_min_child_age")
-            with acol2:
-                data["max_child_age"] = st.number_input("Max Child Age", min_value=0, max_value=17,
-                                                        value=int(data.get("max_child_age", 12) or 12), key="ct_max_child_age")
+            render_child_age_band(data, "ct")
 
             dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
             dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
@@ -9377,7 +9428,7 @@ if st.session_state.extracted:
                 "doublePrice": {"amount": 0, "currency": currency}
             }
         }],
-        key=lambda entry: entry.get("startDate", "")
+        key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
     )
     data["price_list"] = default_price_list
 
@@ -9389,8 +9440,8 @@ if st.session_state.extracted:
             return block.get("amount") if isinstance(block, dict) else None
         price_df_rows.append({
             "Name": entry.get("name", ""),
-            "Start Date": entry.get("startDate", ""),
-            "End Date": entry.get("endDate", ""),
+            "Start Date": _disp(entry.get("startDate", "")),
+            "End Date": _disp(entry.get("endDate", "")),
             "Single": _amt("singlePrice"),
             "Double": _amt("doublePrice"),
             "Triple": _amt("triplePrice"),
@@ -9407,8 +9458,8 @@ if st.session_state.extracted:
             if val is not None and not pd.isna(val):
                 price[key] = {"amount": float(val), "currency": currency}
         entry = {
-            "startDate": _safe_cell_str(row.get("Start Date")).strip(),
-            "endDate": _safe_cell_str(row.get("End Date")).strip(),
+            "startDate": _iso(_safe_cell_str(row.get("Start Date"))),
+            "endDate": _iso(_safe_cell_str(row.get("End Date"))),
             "price": price
         }
         name = _safe_cell_str(row.get("Name")).strip()
@@ -9420,9 +9471,9 @@ if st.session_state.extracted:
         data["price_list"] = sorted(
             [
                 _row_to_price_entry(row) for _, row in edited_df.iterrows()
-                if _safe_cell_str(row.get("Start Date")).strip() and _safe_cell_str(row.get("End Date")).strip()
+                if _iso(_safe_cell_str(row.get("Start Date"))) and _iso(_safe_cell_str(row.get("End Date")))
             ],
-            key=lambda entry: entry.get("startDate", "")
+            key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
         )
 
     price_df = pd.DataFrame(price_df_rows)
@@ -9532,8 +9583,8 @@ if st.session_state.extracted:
                 "Per Pax": s.get("per_pax", True),
                 "Mandatory": s.get("mandatory", False),
                 "On Request": s.get("on_request", False),
-                "Special Travel Start Date": s.get("travel_start_date", ""),
-                "Special Travel End Date": s.get("travel_end_date", ""),
+                "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
+                "Special Travel End Date": _disp(s.get("travel_end_date", "")),
             }
             for s in default_supplements
         ]
@@ -9561,8 +9612,8 @@ if st.session_state.extracted:
                     "per_pax": bool(row.get("Per Pax", True)),
                     "mandatory": bool(row.get("Mandatory", False)),
                     "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": _safe_cell_str(row.get("Special Travel Start Date")).strip(),
-                    "travel_end_date": _safe_cell_str(row.get("Special Travel End Date")).strip(),
+                    "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
+                    "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
                 })
             data["supplements"] = new_supplements
             st.session_state._supplements_missing_name = missing_name

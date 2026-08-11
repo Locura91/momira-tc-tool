@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-clarify-honesty"
+MODULE_BUILD = "2026-08-11-child-age"
 
 import os
 import re
@@ -48,6 +48,16 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 If there is only one tour, set "multiple_variants": false and "variants": [] ."""
 
 EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data from a DMC (Destination Management Company) supplier document for Momira Travel.
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 
 Rules:
 - Translate ALL content into English, regardless of the source document's original language.
@@ -266,13 +276,22 @@ Rules:
   day/percentage tier structure (e.g. "bookings made within 30 days of departure follow a different fee
   schedule based on the booking date"), add it as one extra trailing sentence. Leave this field empty
   whenever cancellation_policy_tiers is empty.
-- min_child_age, max_child_age: the age range that counts as "child" (for pricing purposes), AND/OR any
-  stated age eligibility restriction (e.g. "children must be at least 12", "not suitable for children
-  under 12 years old", "minimum age: 12"). Both kinds of language should populate these fields - use
-  whichever number range is most specific to what's actually stated. Default to 2/12 only if genuinely
-  nothing about child age is mentioned anywhere in the source (standard convention: infant = 0-2, child =
-  2-12) - this has been missed before, so actively look for it even in a "Good to know"/notes section,
-  not just a pricing table.
+- min_child_age, max_child_age: the age range that counts as "child" for pricing.
+  CONFIRMED HOUSE RULE (product owner): A STATED MINIMUM CHILD AGE REPLACES THE FLOOR, AND THE CEILING
+  STAYS 12. "Children from 7 years" / "minimum age 7" / "children must be at least 7" / a rate column
+  headed "Child 7-11" all mean min_child_age: 7, max_child_age: 12 - NOT 7/7, NOT 7/11, and never a
+  band left at 2/12. Only lower or raise the CEILING if the source itself names a different upper age
+  (e.g. "child rate applies up to 15" -> max_child_age: 15).
+  READ IT FROM ANYWHERE IT APPEARS: a pricing table's column heading ("Child (7-11.99 yrs)"), a
+  "Good to know"/notes section, a age-policy paragraph, a footnote. It has been missed before because
+  it was only looked for in one of those places.
+  WHAT THE MINIMUM ACTUALLY DOES: everyone below min_child_age is an INFANT, not a forbidden guest.
+  So "children from 7" makes 0-7 the infant band. If the source instead says under-7s CANNOT join at
+  all (e.g. "not suitable for children under 7", "no children under 7 accepted"), that is a booking
+  restriction, not an age band: still set min_child_age to 7, AND state the restriction plainly in the
+  description so a human can see it, since these two numbers cannot express "not accepted".
+  Default to 2/12 ONLY if genuinely nothing about child age appears anywhere in the source (standard
+  convention: infant = 0-2, child = 2-12).
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM).
   CONFIRMED RULE - start_time: if the source gives an actual pick-up/collection time for Day 1 (e.g. "Pick-up
   at 07:30", "collection between 6:00-6:30am" - use the earlier/first time given for a range), always use
@@ -1465,6 +1484,16 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
 
 
 OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel Compositor
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 Modality/Option (ContractClosedTourOptionVO). This is NOT a full tour extraction - do NOT extract
 tour name, description, itinerary, hotels, included/excluded, meeting point, policy remarks, or
 supplements. The source is often just a pricing table.
@@ -1516,6 +1545,16 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 
 
 MODALITY_EXTRACTION_SYSTEM_PROMPT = """You are extracting PRICING/SCHEDULE data for ONE SPECIFIC Modality
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 (room/cabin/pricing category - e.g. "Standard", "Superior", "Deluxe") of a Travel Compositor ClosedTour,
 from a DMC supplier document that may describe multiple such Modalities for the same tour. Focus ONLY on
 the pricing table(s), supplements, and schedule information for the Modality named in the human guidance
@@ -1771,6 +1810,16 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 # ============================================================================
 
 TICKET_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TICKET
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 (an excursion/activity - single destination, no overnight stay) from a DMC supplier document.
 This is DIFFERENT from a multi-day tour: no itinerary, no day-by-day description, no room-occupancy
 pricing. Translate ALL content to English regardless of source language.
@@ -2056,6 +2105,16 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
 
 
 TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
 extract ticket name, description, city, meeting points, includes/excludes, or cancellation policy
 (cancellation and release timing belong to the TICKET itself, not the modality, and aren't touched
@@ -2211,6 +2270,16 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
 
 
 TRANSFER_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSFER
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 (a point-to-point or zone-to-zone vehicle transfer, e.g. airport-to-hotel) from a DMC supplier rate sheet.
 Translate ALL content to English regardless of source language.
 
@@ -2501,6 +2570,16 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
 
 
 TRANSPORT_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSPORT
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 (a connection between two named destinations/locations - e.g. a private car route, a car+ferry combined
 journey, a scheduled flight or train leg between two towns/cities/islands - NOT a local airport/hotel
 transfer) from a DMC supplier rate sheet. Translate ALL content to English regardless of source language.
@@ -2682,6 +2761,16 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
 # ==========================================
 
 HOTEL_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor HOTEL contract
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it - a season boundary quietly
+moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
+impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
+ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
+date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
+output DD/MM/YYYY yourself, whatever the source used.
 from a DMC supplier rate sheet/tariff document. Translate ALL content to English regardless of source language.
 
 CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
