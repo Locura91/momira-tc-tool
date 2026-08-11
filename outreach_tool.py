@@ -188,25 +188,49 @@ def _render_review_and_send():
                    "click the button below to add their domains to the permanent blocklist. "
                    "Future searches from **anyone** will skip them automatically.")
 
-        col_learn1, col_learn2 = st.columns([3, 1])
-        with col_learn1:
-            # Count unticked suppliers that have a website or listing URL
-            unticked_domains = set()
-            for s in suppliers:
-                if not s["selected"]:
-                    url = s.get("website") or s.get("listingUrl")
-                    if url:
-                        domain = om._extract_domain(url)  # we can expose this function or use the public is_blocked
-                        if domain:
-                            unticked_domains.add(domain)
-            st.caption(f"📌 {len(unticked_domains)} unique domain(s) from unticked suppliers will be blocked.")
-        with col_learn2:
-            if st.button("🧠 Block them", key="or_block_unticked", disabled=not unticked_domains):
-                blocked_count = 0
-                for domain in unticked_domains:
-                    om.add_domain_to_blocklist(domain)
-                    blocked_count += 1
-                st.success(f"✅ Blocked {blocked_count} domain(s) from future searches.")
+        # Which domains this would affect, taken from the UNTICKED rows so it follows whatever
+        # the operator just did in the table above.
+        already = set(om.get_blocklist())
+        candidates = {}
+        for s in suppliers:
+            if not s["selected"]:
+                url = s.get("website") or s.get("listingUrl")
+                domain = om.extract_domain(url) if url else ""
+                if domain and domain not in already:
+                    candidates.setdefault(domain, []).append(s["name"])
+
+        if st.session_state.get("or_block_result"):
+            st.success(st.session_state.pop("or_block_result"))
+
+        if not candidates:
+            st.caption("Nothing new to block — every unticked row is either already blocked or has no "
+                       "website to block.")
+        else:
+            # SHOW BEFORE BLOCKING. This writes to a list that every future search by every user
+            # reads, so a one-click bulk action with only a count on screen is not enough: unticking
+            # a row for today ("not this campaign") looks identical to rejecting it forever, and the
+            # difference only surfaces months later when a supplier quietly stops appearing.
+            st.caption(f"These **{len(candidates)}** domain(s) would be blocked for **everyone**, in "
+                       f"**all future searches**. Untick any you only skipped for this campaign.")
+            chosen = []
+            for domain in sorted(candidates):
+                who = ", ".join(sorted(set(candidates[domain]))[:3])
+                if st.checkbox(f"`{domain}` — {who}", value=True, key=f"or_blk_{domain}"):
+                    chosen.append(domain)
+
+            if st.button(f"🧠 Block {len(chosen)} domain(s)", key="or_block_unticked",
+                         disabled=not chosen):
+                added = [d for d in chosen if om.add_domain_to_blocklist(d)]
+                failed = [d for d in chosen if d not in added]
+                parts = []
+                if added:
+                    parts.append(f"✅ Blocked {len(added)}: {', '.join(added)}. Future searches skip them.")
+                if failed:
+                    # Never report a block that didn't land. The store can be unreachable, and a
+                    # false "blocked" is worse than an error, because nobody goes back to re-check.
+                    parts.append(f"⚠️ NOT saved: {', '.join(failed)} — check the Memory line at the "
+                                 f"bottom of the page before relying on this.")
+                st.session_state["or_block_result"] = "  ".join(parts)
                 st.rerun()
 
         # ---- Optional: Show current blocklist ----
@@ -221,8 +245,13 @@ def _render_review_and_send():
                         st.write(f"`{domain}`")
                     with c2:
                         if st.button("🗑️ Remove", key=f"or_unblock_{domain}"):
-                            om.remove_domain_from_blocklist(domain)
-                            st.success(f"Removed `{domain}` from blocklist.")
+                            if om.remove_domain_from_blocklist(domain):
+                                st.session_state["or_block_result"] = (
+                                    f"Removed `{domain}` — it can appear in searches again.")
+                            else:
+                                st.session_state["or_block_result"] = (
+                                    f"⚠️ `{domain}` could NOT be removed — the blocklist may not have "
+                                    f"been written. Check the Memory line at the bottom of the page.")
                             st.rerun()
 
     with st.expander(f"🔬 How the {stats['raw']} raw results became {stats['final']}"):

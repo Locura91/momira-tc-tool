@@ -56,11 +56,11 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-# ---- Platform store for learning ----
-import platform_store
-
-_OUTREACH_NAMESPACE = "outreach_blocklist"
-_BLOCKLIST_KEY = "global_domains"
+# The persistent blocklist lives in outreach_memory - see that module's docstring for why
+# it is the single owner. These names are re-exported so existing callers keep working.
+from outreach_memory import (extract_domain as _extract_domain, get_blocklist,
+                             add_domain_to_blocklist, remove_domain_from_blocklist,
+                             is_blocked)
 
 REQUEST_TIMEOUT_S = 15  # increased from 8 to handle slower contact pages
 
@@ -93,55 +93,6 @@ def _max_candidates() -> int:
     except ValueError:
         configured = 30
     return max(configured, _max_results() + 10)
-
-
-# ============================================================================
-# OUTREACH LEARNING – persistent blocklist
-# ============================================================================
-def _extract_domain(url: str) -> str:
-    """Returns the second-level domain (e.g. 'fyndtravel.com') from a URL."""
-    host = _hostname(url)
-    if not host:
-        return ""
-    host = host.replace('www.', '')
-    parts = host.split('.')
-    if len(parts) >= 2:
-        return '.'.join(parts[-2:]).lower()
-    return host.lower()
-
-
-def _get_blocklist() -> List[str]:
-    """Reads the current user blocklist from durable storage."""
-    return platform_store.get(_OUTREACH_NAMESPACE, _BLOCKLIST_KEY) or []
-
-
-def _set_blocklist(domains: List[str]) -> None:
-    """Replaces the entire blocklist (internal use)."""
-    platform_store.set(_OUTREACH_NAMESPACE, _BLOCKLIST_KEY, domains)
-
-
-def get_blocklist() -> List[str]:
-    """Public read access for the UI."""
-    return _get_blocklist()
-
-
-def add_domain_to_blocklist(domain_or_url: str) -> None:
-    """Adds a domain (or a full URL) to the permanent blocklist."""
-    domain = _extract_domain(domain_or_url)
-    if not domain:
-        return
-    current = _get_blocklist()
-    if domain not in current:
-        current.append(domain)
-        _set_blocklist(current)
-
-
-def remove_domain_from_blocklist(domain: str) -> None:
-    """Removes a domain from the blocklist."""
-    current = _get_blocklist()
-    if domain in current:
-        current.remove(domain)
-        _set_blocklist(current)
 
 
 # ============================================================================
@@ -1308,7 +1259,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> 
             progress(msg)
 
     # Load the user blocklist once per search
-    user_blocklist = _get_blocklist()
+    user_blocklist = get_blocklist()
 
     queries = build_queries(country, city, keyword)
     candidates: List[Dict[str, Any]] = []
