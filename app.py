@@ -918,9 +918,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 st.rerun()
         if st.session_state.get(f"mm_clarify_result_{idx}"):
             r = st.session_state[f"mm_clarify_result_{idx}"]
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(), "ClosedTour", "mm")
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this modality & Finish Review" if is_last else "✅ Confirm this modality & Continue →"
@@ -1326,9 +1325,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.rerun()
         if st.session_state.get("mct_clarify_result_main"):
             r = st.session_state["mct_clarify_result_main"]
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(supplier_id), "ClosedTour", "mctmain")
 
         ready = bool((data.get("tour_name") or "").strip()) and bool((tour["tour_code"] or "").strip())
         if st.button("✅ Confirm main tour info & Continue to Modalities", type="primary", disabled=not ready):
@@ -1653,9 +1651,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.rerun()
         if st.session_state.get(f"mct_mod_clarify_result_{midx}"):
             r = st.session_state[f"mct_mod_clarify_result_{midx}"]
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(supplier_id), "ClosedTour", "mctmod")
 
         is_last = midx == len(modalities) - 1
         btn_label = "✅ Confirm this Modality & Finish Modalities" if is_last else "✅ Confirm this Modality & Continue →"
@@ -2332,6 +2329,86 @@ def show_publish_error(context_label, raw_error, flow=None):
 
     with st.expander("🔧 Technical details"):
         st.code(str(raw_error))
+
+
+def render_learned_instructions(supplier_id, product_type, key_prefix):
+    """What the app has actually learned from this supplier's corrections, and a way to drop any.
+
+    CONFIRMED REAL COMPLAINT (product owner): "I often repeat myself." Until now the learning was
+    entirely invisible - there was no way to tell a rule that had been absorbed from one that had
+    silently failed to stick, so the only safe assumption was to type it again. Showing the list
+    turns that into something checkable.
+
+    It also puts the one rule worth knowing where it is needed: only an instruction that actually
+    CHANGED something is kept, so anything typed while the AI returned no changes was never
+    learned - which is exactly when a person is most likely to type it again."""
+    if not (supplier_id and product_type):
+        return
+    try:
+        learned = extraction_memory.list_instructions(str(supplier_id), product_type)
+    except Exception:
+        return
+    label = (f"🧠 What the app has learned from your corrections ({len(learned)})"
+             if learned else "🧠 What the app has learned from your corrections")
+    with st.expander(label):
+        if not learned:
+            st.caption("Nothing yet for this supplier and product type. A correction is remembered "
+                       "only when it actually changes something - if the AI replies without changing "
+                       "anything, there is no rule to learn from, which is why the same note can end "
+                       "up needing to be said again.")
+            return
+        st.caption("These are fed to every future extraction for this supplier and product type. The "
+                   "document always wins where they disagree, so an out-of-date rule fades rather "
+                   "than corrupting a new rate sheet - but remove anything that is simply wrong.")
+        for e in learned:
+            times = int(e.get("count", 0))
+            fields = ", ".join(e.get("fields") or []) or "—"
+            c1, c2 = st.columns([6, 1])
+            with c1:
+                st.markdown(f"- {e.get('text', '')}")
+                st.caption(f"said {times}× · changed: {fields}")
+            with c2:
+                if st.button("Forget", key=f"{key_prefix}_forget_{e.get('key')}"):
+                    extraction_memory.forget_instruction(str(supplier_id), product_type, e.get("key"))
+                    st.rerun()
+
+
+def render_clarify_result(result, review_hint="review above before continuing"):
+    """Show what "Tell AI what to fix" actually did - never just what it said it did.
+
+    CONFIRMED REAL INCIDENT (product owner, ClosedTour "Luxury Cabin"): the AI returned a long,
+    fluent, past-tense report - "all 8 seasonal periods are now included with correct start/end
+    dates" - and changed nothing at all. The price list was still empty, and the only clue was
+    the ABSENCE of a small green caption underneath. Reading a paragraph that says the work is
+    done and then being expected to notice a missing confirmation line is not a workable check.
+
+    So the outcome now leads, and the AI's own words come second. When nothing changed, that is
+    stated first, in a colour that means "act on this"."""
+    if not result:
+        return
+    summary = (result.get("summary") or "").strip()
+    changes = result.get("changes") or {}
+
+    if changes:
+        st.success(f"✅ Applied changes to: {', '.join(changes.keys())} — {review_hint}.")
+        if result.get("recovered_after_empty_claim"):
+            st.caption("(It first replied without actually returning the changes; it was asked "
+                       "again and this time it did.)")
+        if summary:
+            st.info(summary)
+        return
+
+    if result.get("claimed_but_changed_nothing"):
+        st.warning("⚠️ **Nothing was changed.** The AI described work it did not actually return, "
+                   "and it stood by that on a second attempt — so whatever it says below, your "
+                   "data is exactly as it was. Try naming one specific field and value (e.g. "
+                   "\"the Normal season runs 01-10-2026 to 30-11-2026 at 1450 per person double\"), "
+                   "or edit the table directly.")
+    else:
+        st.warning("⚠️ **Nothing was changed** — this was treated as a question, not an edit. If you "
+                   "wanted something changed, say which field and what it should become.")
+    if summary:
+        st.info(summary)
 
 
 TICKET_EXTRA_COST_COLS = ["Name", "Group (alternatives share one)", "Adult extra", "Child extra", "Infant extra"]
@@ -4142,9 +4219,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.rerun()
         if st.session_state.get(f"mt_clarify_result_{idx}"):
             r = st.session_state[f"mt_clarify_result_{idx}"]
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(supplier_id), "Ticket", "mt")
 
         if mt_price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
@@ -4942,9 +5018,8 @@ def render_ticket_flow(client):
                 st.rerun()
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())}")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(supplier_id), "Ticket", "tk")
 
         st.markdown("**Start Time(s)**")
         st.caption("A Ticket can have multiple valid start times (e.g. a 09:00 and a 14:00 departure). "
@@ -5185,9 +5260,8 @@ def render_ticket_flow(client):
                 st.rerun()
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
-            st.info(r.get("summary", ""))
-            if r.get("changes"):
-                st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+            render_clarify_result(r)
+        render_learned_instructions(clarify_supplier_id(), "Ticket", "tkp")
 
         if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
@@ -8238,7 +8312,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-11-blocklist-fix"
+BUILD_VERSION = "2026-08-11-clarify-honesty"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9530,9 +9604,8 @@ if st.session_state.extracted:
             st.rerun()
     if st.session_state.get("clarify_result"):
         r = st.session_state.clarify_result
-        st.info(r.get("summary", ""))
-        if r.get("changes"):
-            st.caption(f"✅ Applied changes to: {', '.join(r['changes'].keys())} - review above before continuing.")
+        render_clarify_result(r)
+    render_learned_instructions(clarify_supplier_id(), "ClosedTour", "legacy")
 
     if st.button("🔎 Resolve Destinations & Build Payload",
                 disabled=not price_list_valid):

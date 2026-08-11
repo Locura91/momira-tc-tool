@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-blocklist-fix"
+MODULE_BUILD = "2026-08-11-clarify-honesty"
 
 import os
 import re
@@ -1195,8 +1195,43 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     return variants
 
 
-_CLARIFY_DOC_CHARS = 120000
-_CLARIFY_DATA_CHARS = 90000
+# CONFIRMED PRODUCT-OWNER DECISION: "we can also give more tokens, just if the AI misses out on
+# reading crucial information." These budgets exist only to stay inside the model's context
+# window, not to save money, so they are set as high as that window realistically allows. A
+# rate sheet the model was never shown is the single most expensive kind of mistake here - it
+# answers anyway, confidently, and the wrong answer looks exactly like a right one.
+#
+# Roughly 4 characters per token: 400k chars of document is ~100k tokens, 200k chars of
+# extracted data ~50k tokens, which together still leave comfortable room for the reply inside
+# a 200k window. Anything beyond this is genuinely too big for one call, and the notes appended
+# below say so out loud rather than letting the model guess at what it cannot see.
+_CLARIFY_DOC_CHARS = 400000
+_CLARIFY_DATA_CHARS = 200000
+
+# The reply itself. A corrected price_list covering eight seasons with per-occupancy rates is a
+# large object, and a tool call cut off mid-way is refused outright (see the max_tokens check
+# below) - so the ceiling is set well above what any single correction should need.
+_CLARIFY_MAX_OUTPUT_TOKENS = 32768
+
+
+# Past-tense claims of work done. Used only to decide whether a summary that came back with an
+# EMPTY changes object deserves a second look - a false positive costs one cheap retry, and the
+# retry explicitly allows "nothing needed changing" as an answer, so it can never force an edit.
+_CLAIMED_CHANGE_RE = re.compile(
+    r"(?i)\b(updated|changed|corrected|fixed|added|removed|replaced|adjusted|rewrote|"
+    r"recalculated|re-?verified|now includes?|now contains?|are now|is now|have been|has been)\b")
+# ... unless the sentence is explicitly saying it did NOT change anything.
+_NO_CHANGE_RE = re.compile(
+    r"(?i)(no changes?\s+(were\s+)?(needed|made|required)|nothing\s+(was\s+)?changed|"
+    r"did\s+not\s+change|didn'?t\s+change|left\s+(it\s+)?unchanged|no\s+edits?\s+(were\s+)?)")
+
+
+def _summary_claims_a_change(summary: str) -> bool:
+    """True when the wording reports work done, and does not also say nothing was changed."""
+    text = (summary or "").strip()
+    if not text or not _CLAIMED_CHANGE_RE.search(text):
+        return False
+    return not _NO_CHANGE_RE.search(text)
 
 
 def _json_within_budget(data: dict, budget: int) -> Tuple[str, List[str]]:
@@ -1310,7 +1345,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         # arbitrary long text (e.g. a corrected description) that's exactly the
         # kind of content prone to breaking free-text JSON parsing.
         result, stop_reason = _stream_claude_tool_call(
-            client, model, 16384, system_prompt, user_content,
+            client, model, _CLARIFY_MAX_OUTPUT_TOKENS, system_prompt, user_content,
             tool_name="apply_changes", input_schema=CLARIFY_TOOL_SCHEMA)
         if stop_reason == "max_tokens":
             # A truncated tool call still returns a partial object, which would be merged
@@ -1334,8 +1369,8 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
                          "non-empty 'summary' explaining what you understood/changed or answered, "
                          "alongside 'changes'."),
             }]
-            result, _ = _stream_claude_tool_call(client, model, 16384, system_prompt,
-                                                 corrective_user_content,
+            result, _ = _stream_claude_tool_call(client, model, _CLARIFY_MAX_OUTPUT_TOKENS,
+                                                 system_prompt, corrective_user_content,
                                                  tool_name="apply_changes",
                                                  input_schema=CLARIFY_TOOL_SCHEMA)
 
@@ -1349,6 +1384,48 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
                                      "check above whether anything changed, or try rephrasing your request.")
         if "changes" not in result or not isinstance(result["changes"], dict):
             result["changes"] = {}
+
+        # SECOND SAFETY NET, and the more damaging of the two.
+        #
+        # CONFIRMED REAL INCIDENT (product owner, ClosedTour "Luxury Cabin"): the model returned
+        # a detailed past-tense report - "Updated the price list to include all seasonality
+        # periods... all 8 seasonal periods are now included with correct start/end dates" - and
+        # an EMPTY changes object. The price list was still empty afterwards. Nothing on screen
+        # contradicted that paragraph, so the only way to catch it was to disbelieve what you
+        # had just been told and re-read the table.
+        #
+        # A missing summary is obvious. A summary that CLAIMS work it did not return is not, and
+        # it is worse, because it is confidently wrong and the human moves on. So the claim is
+        # checked against what actually came back and the model gets one chance to make good.
+        if not result["changes"] and _summary_claims_a_change(result.get("summary", "")):
+            insistent = user_content + [{
+                "type": "text",
+                "text": ("Your previous tool call described changes you had made, but returned an EMPTY "
+                         "'changes' object - so nothing was applied and the human's data is unchanged. "
+                         "Call apply_changes again. If you did determine concrete edits, put every one "
+                         "of them in 'changes' now, each with its full new value, matching the current "
+                         "data's own shape. If on reflection nothing needs to change - the data is "
+                         "already correct, or this was only a question - call it with an empty 'changes' "
+                         "and rewrite the summary so it plainly says that NOTHING was changed, and why. "
+                         "Never describe work you are not returning."),
+            }]
+            retry, _ = _stream_claude_tool_call(client, model, _CLARIFY_MAX_OUTPUT_TOKENS,
+                                                system_prompt, insistent,
+                                                tool_name="apply_changes",
+                                                input_schema=CLARIFY_TOOL_SCHEMA)
+            retry_changes = retry.get("changes") if isinstance(retry, dict) else None
+            if isinstance(retry_changes, dict) and retry_changes:
+                result["changes"] = retry_changes
+                result["summary"] = ((retry.get("summary") or "").strip()
+                                     or result.get("summary", ""))
+                result["recovered_after_empty_claim"] = True
+            else:
+                # Still nothing to apply. Keep the CORRECTED wording where there is one, so the
+                # human reads "nothing was changed" rather than the original false report.
+                corrected = (retry.get("summary") or "").strip() if isinstance(retry, dict) else ""
+                if corrected:
+                    result["summary"] = corrected
+                result["claimed_but_changed_nothing"] = True
         return result
     except Exception as e:
         return {"summary": f"Couldn't process that request - {friendly_error_message(e)}", "changes": {}}
