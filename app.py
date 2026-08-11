@@ -67,7 +67,7 @@ if hasattr(st, "secrets"):
 
 from api_client import TravelCompositorAPI
 from schemas import HumanPreConfig, TicketHumanPreConfig, TransferHumanPreConfig, TransportHumanPreConfig, HotelHumanPreConfig
-from builder import build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
+from builder import derive_arrival_from_duration, build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
 from builder import build_transport_payloads
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
@@ -3015,6 +3015,46 @@ def _swapped_label(label, dep, arr):
     return f"{label} (return)"
 
 
+def ensure_return_candidates(candidates):
+    """Guarantee that every route in the list has its opposite direction too.
+
+    CONFIRMED REAL RULE (product owner): "when one Transport or Transfer is being created, it
+    always has to be the second one as well, for the return option." Travel Compositor stores
+    a route as departure -> arrival, so selling it both ways is two records.
+
+    Done in CODE rather than left to the detection prompt, because "always" is an invariant and
+    a prompt is a request. The prompt asks for both directions as well, so this usually adds
+    nothing - but when the model lists a route only one way, the return leg still exists, and
+    nobody has to notice that it is missing.
+
+    Returns (candidates, how_many_added). Added rows are ticked, so the default behaviour is to
+    publish both - unticking one is a deliberate act."""
+    seen = {(str(c.get("departure_hint") or "").strip().lower(),
+             str(c.get("arrival_hint") or "").strip().lower(),
+             str(c.get("service_name") or "").strip().lower())
+            for c in candidates}
+    added = 0
+    for cand in list(candidates):
+        dep = str(cand.get("departure_hint") or "").strip()
+        arr = str(cand.get("arrival_hint") or "").strip()
+        if not (dep and arr) or dep.lower() == arr.lower():
+            continue
+        key = (arr.lower(), dep.lower(), str(cand.get("service_name") or "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        mirrored = dict(cand)
+        mirrored["departure_hint"], mirrored["arrival_hint"] = arr, dep
+        label = str(cand.get("label") or "").strip()
+        mirrored["label"] = (_swapped_label(label, dep, arr) if label
+                             else f"{cand.get('service_name') or 'Return'}: {arr} to {dep}")
+        mirrored["selected"] = True
+        mirrored["is_return_leg"] = True
+        candidates.append(mirrored)
+        added += 1
+    return candidates, added
+
+
 def render_candidate_filter(candidates, key_prefix, noun):
     """A search box and three bulk buttons above a long candidate list.
 
@@ -5424,6 +5464,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                         candidates = [{"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
                                       "selected": True, "is_genuine_multiple": False}]
 
+                    # Both directions, always - see ensure_return_candidates.
+                    candidates, _returns_added = ensure_return_candidates(candidates)
+                    if _returns_added:
+                        st.session_state.xtf_auto_returns = _returns_added
                     st.session_state.xtf_raw_text = raw_text
                     st.session_state.xtf_candidates = candidates
                     st.session_state.xtf_phase = "prepare_queue"
@@ -5454,6 +5498,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                          "arrival_hint": t.get("arrival_hint", ""), "selected": True,
                          "is_genuine_multiple": True}
                         for t in found]
+                    st.session_state.xtf_candidates, _n = ensure_return_candidates(
+                        st.session_state.xtf_candidates)
+                    if _n:
+                        st.session_state.xtf_auto_returns = _n
 
                 render_detection_diagnosis("transfer")
                 render_empty_detection_retry(st.session_state.xtf_raw_text, "transfer", "xtf",
@@ -5466,6 +5514,9 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             st.caption("Each ticked row becomes its own separate Transfer, reviewed one at a time next. "
                       "Guide-language variants are already folded into each row, not listed separately.")
 
+        if st.session_state.get("xtf_auto_returns"):
+            st.info(f"↔️ {st.session_state['xtf_auto_returns']} return direction(s) were added "
+                    f"automatically — every route is created both ways. Untick any you don't sell.")
         render_candidate_filter(candidates, "xtf", "transfer")
 
         for i, cand in enumerate(candidates):
@@ -6037,6 +6088,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         candidates = [{"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
                                       "selected": True}]
 
+                    # Both directions, always - see ensure_return_candidates.
+                    candidates, _returns_added = ensure_return_candidates(candidates)
+                    if _returns_added:
+                        st.session_state.xtp_auto_returns = _returns_added
                     st.session_state.xtp_raw_text = raw_text
                     st.session_state.xtp_candidates = candidates
                     st.session_state.xtp_phase = "prepare_queue"
@@ -6073,6 +6128,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                          "departure_hint": t.get("departure_hint", ""),
                          "arrival_hint": t.get("arrival_hint", ""), "selected": True}
                         for t in found]
+                    st.session_state.xtp_candidates, _n = ensure_return_candidates(
+                        st.session_state.xtp_candidates)
+                    if _n:
+                        st.session_state.xtp_auto_returns = _n
 
                 render_detection_diagnosis("transport")
                 render_empty_detection_retry(st.session_state.xtp_raw_text, "transport", "xtp",
@@ -6083,6 +6142,9 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             st.subheader(f"{len(candidates)} distinct transport products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
 
+        if st.session_state.get("xtp_auto_returns"):
+            st.info(f"↔️ {st.session_state['xtp_auto_returns']} return direction(s) were added "
+                    f"automatically — every route is created both ways. Untick any you don't sell.")
         render_candidate_filter(candidates, "xtp", "transport")
 
         for i, cand in enumerate(candidates):
@@ -6203,16 +6265,38 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                      "larger groups, up to the 9-pax system cap)."
             )
         with ccol2:
-            editable_field("Departure time", data, "departure_time", key_suffix=key_suffix)
+            # CONFIRMED REAL RULE (product owner): "the human shall in best case only select
+            # Departure time." Duration is a fact about the route, departure is the operator's
+            # choice, and arrival is arithmetic - so arrival is shown, never typed. Both times
+            # used to default to 09:00, which published a five-hour drive as instantaneous.
+            data["departure_time"] = st.text_input(
+                "Departure time", value=str(data.get("departure_time") or "09:00:00"),
+                key=f"xtp_deptime_{idx}", help="24-hour, HH:MM:SS. The one time you set.")
         with ccol3:
-            editable_field("Arrival time", data, "arrival_time", key_suffix=key_suffix)
+            data["duration_time"] = st.text_input(
+                "Journey duration", value=str(data.get("duration_time") or ""),
+                key=f"xtp_dur_{idx}", placeholder="HH:MM:SS",
+                help="How long the journey actually takes. Read from the document when it says, "
+                     "otherwise estimated by the AI from the real route — check it.")
         with ccol4:
-            data["plus_days"] = st.number_input("Plus days", min_value=0, value=int(data.get("plus_days") or 0),
-                                                 key=f"xtp_plusdays_{idx}",
-                                                 help="Only above 0 for an overnight journey arriving a later calendar day.")
+            _arr, _pd = derive_arrival_from_duration(data.get("departure_time"),
+                                                     data.get("duration_time"))
+            if _arr:
+                data["arrival_time"] = _arr
+                data["plus_days"] = _pd
+                st.metric("Arrival (calculated)", _arr + (f"  +{_pd}d" if _pd else ""))
+            else:
+                st.metric("Arrival (calculated)", "—")
+                st.caption("Enter a duration to calculate it.")
 
-        editable_field("Active travel duration (HH:MM:SS) — NOT arrival minus departure; only fill from a stated duration",
-                       data, "duration_time", key_suffix=key_suffix)
+        if data.get("duration_estimated") and (data.get("duration_time") or "").strip():
+            st.caption(f"⏱️ The document didn't state a duration, so **{data['duration_time']}** is the "
+                      f"AI's estimate for {data.get('departure_name') or 'A'} → "
+                      f"{data.get('arrival_name') or 'B'}. Correct it if you know better — arrival "
+                      f"recalculates.")
+        if not (data.get("duration_time") or "").strip():
+            st.warning("⚠️ No journey duration, so arrival will be published equal to departure — a "
+                       "journey that appears to take no time. Enter one before publishing.")
 
         st.markdown("#### Pricing by occupancy bracket")
         st.caption("One row per bracket the document actually states (e.g. 1-2 Pax, 3-4 Pax). Each price is "
@@ -7500,7 +7584,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-airport-instruction — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-duration-time — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform

@@ -1417,6 +1417,34 @@ def _map_transport_type(type_hint: str, service_name: str) -> str:
     return "CAR"
 
 
+def derive_arrival_from_duration(departure_time, duration_time):
+    """(arrival_time, plus_days) from a departure and a journey duration.
+
+    CONFIRMED REAL RULE (product owner): "we must add in Transport a Duration Time... The human
+    shall in best case only select Departure time." So duration is the fact about the route,
+    departure is the operator's choice, and arrival is arithmetic - the one of the three nobody
+    should be typing. A hand-typed arrival is also the one most likely to be wrong: the whole
+    reason this came up is that both times defaulted to 09:00, publishing a five-hour drive as
+    taking no time at all.
+
+    plus_days is set when the arithmetic crosses midnight, because an overnight journey that
+    reports arriving before it departed is worse than one with no time at all."""
+    dep = normalize_time_hhmmss(departure_time or "")
+    dur = normalize_time_hhmmss(duration_time or "")
+    if not dep or not dur:
+        return None, 0
+    try:
+        dh, dm, ds = (int(x) for x in dep.split(":"))
+        uh, um, us = (int(x) for x in dur.split(":"))
+    except (ValueError, AttributeError):
+        return None, 0
+    total = (dh * 3600 + dm * 60 + ds) + (uh * 3600 + um * 60 + us)
+    plus_days, remainder = divmod(total, 24 * 3600)
+    hh, rest = divmod(remainder, 3600)
+    mm, ss = divmod(rest, 60)
+    return f"{hh:02d}:{mm:02d}:{ss:02d}", int(plus_days)
+
+
 def _add_minimum_charge_bracket(brackets_sorted, price_per_pax, min_billable_pax=None,
                                 max_cap=_MAX_OCCUPANCY_PAX):
     """Make a solo traveller sellable on a per-person rate that has a minimum party size.
@@ -1641,12 +1669,23 @@ def build_transport_payloads(
     full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
     datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
 
+    # Arrival is DERIVED from departure + duration whenever a duration is known, rather than
+    # taken from whatever is sitting in arrival_time. Both used to default to 09:00, which
+    # published every long-distance route as instantaneous.
+    _departure_time = normalize_time_hhmmss(extracted_transport_data.get("departure_time") or "09:00:00")
+    _derived_arrival, _derived_plus_days = derive_arrival_from_duration(
+        _departure_time, extracted_transport_data.get("duration_time"))
+    _arrival_time = _derived_arrival or normalize_time_hhmmss(
+        extracted_transport_data.get("arrival_time") or "09:00:00")
+    _plus_days = (_derived_plus_days if _derived_arrival is not None
+                  else _safe_int(extracted_transport_data.get("plus_days", 0), fallback=0))
+
     segment = TransportSegmentVO(
         departureLocationCode=departure_base.get("code") or "",
         arrivalLocationCode=arrival_base.get("code") or "",
-        departureTime=normalize_time_hhmmss(extracted_transport_data.get("departure_time") or "09:00:00"),
-        arrivalTime=normalize_time_hhmmss(extracted_transport_data.get("arrival_time") or "09:00:00"),
-        plusDays=_safe_int(extracted_transport_data.get("plus_days", 0), fallback=0),
+        departureTime=_departure_time,
+        arrivalTime=_arrival_time,
+        plusDays=_plus_days,
         durationTime=(normalize_time_hhmmss(extracted_transport_data["duration_time"])
                       if extracted_transport_data.get("duration_time") else None),
         model=extracted_transport_data.get("vehicle_model") or None,

@@ -2024,9 +2024,12 @@ routes with different prices). This is NOT multiple products - a transfer's defa
 ONCE regardless of how many guide-language tables it appears in - do not create a separate candidate per
 language. A later, deeper extraction step handles pulling every language's price for you.
 
-CRITICAL - DIRECTIONAL PAIRING: "A to B" and "B to A" are normally the SAME route sold in both directions
-at the same price - list it once as one candidate covering both directions, unless the document genuinely
-states different prices/conditions per direction (rare), in which case list them separately.
+DIRECTION: CONFIRMED REAL RULE (product owner) - "when one Transport or Transfer is being created, it
+always has to be the second one as well, for the return option." Travel Compositor stores a route as
+departure -> arrival, so both directions are separate records. List each direction as its own candidate.
+The reverse leg is added automatically afterwards if you miss it, so a route listed once is not lost -
+but do NOT deliberately fold "A to B" and "B to A" into a single candidate. Same price both ways unless
+the document says otherwise.
 
 For each distinct route+class product found, output a candidate with:
 - label: short human-readable summary, e.g. "Private Car Transfer: Mahe Central <-> Mahe Central"
@@ -2066,7 +2069,8 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
     print("🔎 Checking for multiple distinct transfer products (routes/classes) in this document...")
     transfers = _detect_items(TRANSFER_PRODUCT_DETECTION_PROMPT,
                               _with_hint(raw_text, human_hint), model,
-                              "multiple_transfers", "transfers", _route_identity)
+                              "multiple_transfers", "transfers",
+                              _directional_route_identity)
     if transfers:
         print(f"⚠️ Detected {len(transfers)} distinct transfer product(s): {[t.get('label') for t in transfers]}")
     else:
@@ -2345,9 +2349,22 @@ reading the voucher, say so in the description rather than in the location names
   person", "ChargeUnit-Pax"), or "per_service" if it's a flat price for the whole vehicle/group regardless of
   headcount within the stated range (look for wording like "per vehicle", "flat rate", "ChargeUnit-Service").
 - currency: the 3-letter currency code stated for this document/table.
-- departure_time, arrival_time: the scheduled departure/arrival clock times if stated ("HH:MM:SS" 24-hour,
-  e.g. "09:00:00"). If genuinely not stated, use "09:00:00" for both as a harmless placeholder (a human
-  reviews this before publish).
+- departure_time: the scheduled departure clock time if the document states one ("HH:MM:SS" 24-hour).
+  If it does not, use "09:00:00" as a placeholder - a human picks the real one on the review screen.
+- arrival_time: LEAVE THIS EMPTY. It is calculated from departure_time plus duration_time, so anything
+  you put here is discarded. Do not compute it yourself.
+- duration_time: ALWAYS provide this - how long the journey actually takes door to door, as "HH:MM:SS".
+  CONFIRMED REAL RULE (product owner): "we must add in Transport a Duration Time... the human shall in
+  best case only select Departure time." If the document states a duration, use it exactly. If it does
+  NOT - which is the usual case on a rate sheet - ESTIMATE it from your own knowledge of the real journey
+  between those two specific places, by the mode the document implies (private car, coach, ferry, train,
+  flight). Be realistic rather than optimistic: use the time a driver would actually take including the
+  usual stops, not a theoretical best case. Worked examples for scale: Hurghada to Luxor is about 4h,
+  Hurghada to Cairo about 6h, Marsa Alam to Hurghada about 3h, Sharm El Sheikh to Dahab about 1h30.
+  A duration of "00:00:00" is never correct for a journey between two different places.
+- duration_estimated: true when you estimated duration_time from knowledge rather than reading it in the
+  document, false when the document stated it. This is shown to the human so they know which number to
+  check, so do not mark an estimate as stated.
 - plus_days: 0 unless the document explicitly states the arrival is a later calendar day than departure
   (e.g. an overnight ferry/train) - then the number of days later.
 - duration_time: the stated total ACTIVE travel duration if given (e.g. a ferry crossing time) - "HH:MM:SS".
@@ -2407,7 +2424,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 {
   "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
   "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "",
-  "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
+  "departure_time": "09:00:00", "arrival_time": "", "plus_days": 0, "duration_time": "04:00:00",
+  "duration_estimated": true,
   "min_billable_pax": 1,
   "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
   "description": "", "company_name": "", "start_date": "", "end_date": "",
@@ -2437,8 +2455,8 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
     defaults = {
         "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
         "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "EUR",
-        "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
-  "min_billable_pax": 1,
+        "departure_time": "09:00:00", "arrival_time": "", "plus_days": 0, "duration_time": "",
+        "duration_estimated": False, "min_billable_pax": 1,
         "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
         "description": "", "company_name": "", "start_date": "", "end_date": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
