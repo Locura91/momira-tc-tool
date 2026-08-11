@@ -892,6 +892,26 @@ def _record_detection(list_key, found, flag, raw_text, depth):
     })
 
 
+def _dedupe_detected(items, key_fn):
+    """Collapse candidates that are the same product, preserving the order they came in.
+
+    Used on EVERY answer, not only on merged sections. De-duplication used to live solely in
+    the chunked path, so a model that listed the same route twice inside one answer - easy on
+    a rate sheet that repeats a route per guide language - put it in the review queue twice,
+    and a human reviewed and published the same product two times."""
+    seen, out = set(), []
+    for item in items:
+        try:
+            identity = key_fn(item)
+        except Exception:
+            identity = repr(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append(item)
+    return out
+
+
 def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, list_key: str,
                   key_fn, max_tokens: int = _DETECTION_MAX_TOKENS, _depth: int = 0,
                   _header: str = None) -> list:
@@ -921,7 +941,8 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
         #
         # The boolean was always redundant: an empty list already means "not multiple". Reading
         # only the list removes a way for the two to disagree.
-        found = [i for i in (data.get(list_key) or []) if isinstance(i, dict)]
+        found = _dedupe_detected([i for i in (data.get(list_key) or []) if isinstance(i, dict)],
+                                 key_fn)
         _record_detection(list_key, found, data.get(flag_key), raw_text, _depth)
         return found
 
@@ -938,19 +959,11 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
             "try uploading it in smaller sections."
         )
     print(f"↔️ Answer was cut off - re-reading this document in {len(parts)} sections and merging.")
-    merged, seen = [], set()
+    merged = []
     for part in parts:
-        for item in _detect_items(system_prompt, part, model, flag_key, list_key, key_fn,
-                                  max_tokens=max_tokens, _depth=_depth + 1):
-            try:
-                identity = key_fn(item)
-            except Exception:
-                identity = repr(item)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            merged.append(item)
-    return merged
+        merged.extend(_detect_items(system_prompt, part, model, flag_key, list_key, key_fn,
+                                    max_tokens=max_tokens, _depth=_depth + 1, _header=header))
+    return _dedupe_detected(merged, key_fn)
 
 
 def _with_hint(raw_text: str, human_hint: str = None) -> str:
@@ -969,6 +982,19 @@ def _with_hint(raw_text: str, human_hint: str = None) -> str:
         return raw_text
     return (f"INSTRUCTION FROM THE OPERATOR (follow this over your own judgement):\n{hint}\n\n"
             f"--- DOCUMENT ---\n{raw_text}")
+
+
+def _directional_route_identity(item: dict) -> tuple:
+    """Identity for TRANSPORT, where direction is part of the product.
+
+    A Travel Compositor transport record is departure -> arrival, so Marsa Alam -> Hurghada
+    and Hurghada -> Marsa Alam are two separate records that must both exist to sell the
+    route both ways. _route_identity sorts the pair and would collapse them into one, quietly
+    deleting every return leg."""
+    def norm(v):
+        return " ".join(str(v or "").split()).lower()
+    return (norm(item.get("service_name")), norm(item.get("departure_hint")),
+            norm(item.get("arrival_hint")))
 
 
 def _route_identity(item: dict) -> tuple:
@@ -2221,9 +2247,8 @@ CRITICAL - GUIDE LANGUAGE / OPTIONAL EXTRAS ARE NEVER SEPARATE PRODUCTS: exactly
 document may repeat the same routes once per guide language or per optional extra - this is NOT multiple
 products. List each route+class combination only ONCE.
 
-CRITICAL - DIRECTIONAL PAIRING: "A to B" and "B to A" are normally the SAME route sold in both directions at
-the same price - list it once, unless the document genuinely states different prices/conditions per
-direction.
+NOTE ON DIRECTION: unlike a Transfer, a Transport is directional - see the both-directions rule above. Do
+NOT fold "A to B" and "B to A" into a single candidate.
 
 For each distinct route+class product found, output a candidate with:
 - label: short human-readable summary, e.g. "Private Car: Praslin <-> La Digue"
@@ -2233,6 +2258,25 @@ For each distinct route+class product found, output a candidate with:
 - scope: "long_distance" when the two ends are different cities/regions a traveller would call separate
   destinations, or "local" when both ends are within one area (an airport and the hotels it serves). This
   is a LABEL to help the human filter, never a reason to leave a route out.
+
+MATCHING THE OPERATOR'S INSTRUCTION TO THE DOCUMENT'S WORDING. CONFIRMED REAL FAILURE (product owner):
+the instruction said "focus on Marsa Alam to Hurghada" and the document's row reads "RMF Airport | Hurghada",
+so nothing matched and nothing was returned. An instruction names PLACES; a rate sheet often names AIRPORTS.
+Resolve each airport to the city it serves before matching, in both directions:
+  * "RMF Airport" is Marsa Alam, "HRG Airport" is Hurghada, "SSH Airport" is Sharm El Sheikh, "CAI Airport"
+    is Cairo - and in general "<city> Airport" is that city.
+  * So "Marsa Alam to Hurghada" MATCHES the row "RMF Airport -> Hurghada". Return that row.
+  * The section heading also tells you where a block of rows departs from: rows under "Transfer Fees Marsa
+    Allam" are Marsa Alam departures even where the cell says only an airport code.
+Never return an empty list because the instruction's wording differs from the document's. If you are unsure
+whether a row is the one meant, INCLUDE it - the human unticks what they did not want, but cannot ever tick
+something you left out.
+
+BOTH DIRECTIONS ARE SEPARATE PRODUCTS FOR TRANSPORT. CONFIRMED REAL RULE (product owner): "this line stands
+always viceversa option too." A Travel Compositor transport is stored as departure -> arrival, so selling a
+route both ways needs TWO records. For every route you list, emit a second candidate with departure and
+arrival swapped, unless the document explicitly prices only one direction. Same price for both unless the
+document says otherwise.
 
 HUMAN INSTRUCTION OVERRIDES EVERYTHING ABOVE. If an instruction from the operator is given, it decides
 what to list and the rules above are only a fallback for whatever the instruction does not cover. "Only
@@ -2264,7 +2308,8 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
     print("🔎 Checking for multiple distinct transport products (routes/classes) in this document...")
     transports = _detect_items(TRANSPORT_PRODUCT_DETECTION_PROMPT,
                                _with_hint(raw_text, human_hint), model,
-                               "multiple_transports", "transports", _route_identity)
+                               "multiple_transports", "transports",
+                               _directional_route_identity)
     if transports:
         print(f"⚠️ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
     else:
