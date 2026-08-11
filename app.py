@@ -94,6 +94,7 @@ import transfer_matcher
 import transport_matcher
 import platform_store
 import service_notes
+import weekly_review
 import extraction_memory
 import bulk_notes
 import publish_advisor
@@ -2354,6 +2355,53 @@ def show_publish_error(context_label, raw_error, flow=None):
         st.code(str(raw_error))
 
 
+def render_house_rules(product_type, key_prefix):
+    """Rules that hold for EVERY supplier of this product type - the answer to "I repeat myself".
+
+    CONFIRMED REAL COMPLAINT (product owner): "The AI learning must understand basics, I repeat
+    myself too often. As I have often the same problem." The memory only ever filed a correction
+    under one supplier, so a fact about the trade - Nile cruise rates are quoted per night - had
+    to be taught again for every supplier selling one. That is not a memory that is failing; it
+    is a memory filed at the wrong level.
+
+    A rule added here is fed into every extraction of this product type, for every supplier."""
+    if not product_type:
+        return
+    try:
+        rules = extraction_memory.list_house_rules(product_type)
+    except Exception:
+        return
+    with st.expander(f"🏛️ House rules for every {product_type} supplier ({len(rules)})"):
+        st.caption("Basics that are true of the trade, not of one supplier. These go into **every** "
+                   "extraction for this product type - so a rule typed once here never needs "
+                   "repeating on the next supplier's document.")
+        for rule in rules:
+            c1, c2 = st.columns([6, 1])
+            with c1:
+                st.markdown(f"- {rule.get('text', '')}")
+            with c2:
+                if st.button("Forget", key=f"{key_prefix}_house_forget_{rule.get('key')}"):
+                    extraction_memory.forget_house_rule(product_type, rule.get("key"))
+                    st.rerun()
+
+        new_rule = st.text_area("Add a house rule", key=f"{key_prefix}_house_new", height=80,
+                                placeholder="e.g. Nile Cruise prices are quoted per night - single "
+                                            "price is nights x nightly rate, double is half of that.")
+        if st.button("➕ Add for every supplier", key=f"{key_prefix}_house_add",
+                     disabled=not new_rule.strip()):
+            if extraction_memory.add_house_rule(product_type, new_rule.strip()):
+                st.success("Added. It will be applied to every future extraction of this product type.")
+            else:
+                st.warning("That rule is already in the list, or it couldn't be saved - check the "
+                           "Memory line at the bottom of the page.")
+            st.rerun()
+
+        if not rules:
+            st.caption("None yet. The built-in pricing rules (per-night cruise maths, occupancy "
+                       "consistency) are always applied regardless of this list - add anything else "
+                       "you find yourself repeating.")
+
+
 def render_learned_instructions(supplier_id, product_type, key_prefix):
     """What the app has actually learned from this supplier's corrections, and a way to drop any.
 
@@ -2365,6 +2413,9 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
     It also puts the one rule worth knowing where it is needed: only an instruction that actually
     CHANGED something is kept, so anything typed while the AI returned no changes was never
     learned - which is exactly when a person is most likely to type it again."""
+    # House rules sit above the per-supplier list, because they are what stops a basic having to
+    # be taught supplier by supplier - see render_house_rules.
+    render_house_rules(product_type, key_prefix)
     if not (supplier_id and product_type):
         return
     try:
@@ -8412,7 +8463,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-11-price-shape"
+BUILD_VERSION = "2026-08-12-house-rules"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8426,7 +8477,7 @@ def _module_build_mismatches():
     stale = []
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
-                 "platform_store", "date_format"):
+                 "platform_store", "date_format", "weekly_review"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -8452,6 +8503,44 @@ if _stale_modules:
           "then push and let the app redeploy.")
 
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
+
+# CONFIRMED PRODUCT-OWNER REQUEST: "the integrated AI tool will ask me once a week, if it needs
+# clarification. So we can constantly improve the included databank information."
+#
+# Every question is derived from what the platform has actually observed in its own memory - a
+# correction typed on several suppliers, or one typed many times - never invented to fill the
+# slot. If it has observed nothing, it says nothing, which is what keeps the weekly prompt worth
+# reading on the week it does have something.
+if weekly_review.is_due():
+    _review_questions = weekly_review.pending_questions()
+    if not _review_questions:
+        weekly_review.mark_reviewed()          # nothing to ask; quietly reset the clock
+    else:
+        with st.container(border=True):
+            st.markdown("### 🗓️ Weekly check-in — a few things I keep needing to be told")
+            st.caption("Each of these is something you have corrected more than once. Saying **Yes** "
+                       "turns it into a house rule, applied to every future document of that type "
+                       "for every supplier — so you stop having to repeat it.")
+            for _q in _review_questions:
+                st.markdown(f"**{_q['product_type']}** — {_q['text']}")
+                st.caption(_q["why"])
+                _c1, _c2, _c3 = st.columns([1, 1, 4])
+                with _c1:
+                    if st.button("✅ Yes, always", key=f"wr_yes_{_q['id']}"):
+                        weekly_review.accept(_q)
+                        st.rerun()
+                with _c2:
+                    if st.button("✖️ No", key=f"wr_no_{_q['id']}"):
+                        weekly_review.dismiss(_q["id"])
+                        st.rerun()
+            _d1, _d2 = st.columns([1, 5])
+            with _d1:
+                if st.button("Not now", key="wr_snooze"):
+                    weekly_review.mark_reviewed()
+                    st.rerun()
+            with _d2:
+                st.caption("“Not now” hides this for another week. Nothing here touches Travel "
+                           "Compositor — it only edits what the AI is told next time.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
 # looks identical either way: it silently re-translates content already paid for and

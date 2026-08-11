@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-price-shape"
+MODULE_BUILD = "2026-08-12-house-rules"
 
 import os
 import re
@@ -324,6 +324,31 @@ Rules:
     }
   }
   If the document only gives a single arrival date per row (not a date range), use that same date for both startDate and endDate. Use the currency mentioned in the document.
+
+  ============================================================
+  PER-NIGHT PRICING - CONFIRMED HOUSE RULE (product owner), and the single most repeated
+  correction on this platform. It applies to Nile cruises above all, and to any ClosedTour whose
+  rates are quoted BY THE NIGHT rather than as a total for the trip.
+  When the document gives a per-night rate (e.g. "USD 250 per night", "250 / night / cabin"):
+      singlePrice = (number of nights on THIS tour) x (per-night rate)
+      doublePrice = (number of nights x per-night rate) / 2
+  The division is not a discount - the quoted rate buys the CABIN, and two people sharing it each
+  pay half. So a 4-night cruise at USD 250 per night is singlePrice 1000, doublePrice 500.
+  DO NOT put the per-night rate itself into the price fields. That is the mistake this rule exists
+  to stop: it under-prices the tour by the whole length of the trip, and the payload validates
+  perfectly while doing it. Multiply first, every time.
+  Use the SAME nights figure you put in the "nights" field. If the document gives per-night rates
+  but no clear night count, say so in pricing_notes rather than guessing a total.
+  Do NOT invent triplePrice or quadruplePrice by dividing by 3 or 4 - only fill those if the
+  document actually prices triple or quadruple occupancy.
+  ============================================================
+  OCCUPANCIES MUST AGREE BETWEEN PRICES AND SUPPLEMENTS - CONFIRMED HOUSE RULE (product owner):
+  "If no price in Triple or in Quadruple, there can't be any price for triple or quadruple in the
+  supplement neither - it goes hand in hand." An occupancy that is not sold cannot carry a
+  supplement, so if triplePrice is absent here, every supplement's triple amount must be absent
+  too, and the same for quadruple. This is checked automatically before publishing, but extract
+  it correctly in the first place rather than relying on that.
+  ============================================================
   IMPORTANT - occupancy/group-size-tiered pricing tables (columns like "1", "2", "3-5", "6-8", "9-14", "15-up" showing per-person price by TOTAL group size, not room-sharing): this schema only has 4 slots (single/double/triple/quadruple) tied to room-sharing, so a table with more than 4 tiers CANNOT be fully represented. Map tiers onto slots by closest fit: the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, the tier containing "4" (or the next one up) -> quadruplePrice, "1" -> singlePrice (omit if the source says N/A for 1 pax). Any tier beyond quadruple (e.g. "9-14", "15-up") CANNOT be included in price_list - instead, describe exactly what was approximated and what had to be dropped (with the real numbers) in the pricing_notes field, so a human can review before publishing. Never silently lose pricing information without flagging it there.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into the price object of ONE SINGLE price_list entry - NEVER create multiple separate entries that share the same or overlapping startDate/endDate just to hold different occupancy tiers. Travel Compositor ADDS TOGETHER the prices from any entries with overlapping dates within one option, so multiple rows for the same period would silently produce a wrong, inflated total price. Only create a NEW entry when the dates genuinely change (e.g. a different season).
 - pricing_notes: leave empty UNLESS you had to approximate or drop something while fitting an occupancy/group-size pricing table into the 4-slot Distribution schema (see above) - in that case, explain exactly what was mapped where and what was dropped, including the real numbers, so the human can catch and adjust it.

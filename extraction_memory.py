@@ -43,7 +43,7 @@ value is wrong — not bad data reaching Travel Compositor.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-price-shape"
+MODULE_BUILD = "2026-08-12-house-rules"
 
 import re
 from datetime import datetime, timezone
@@ -413,24 +413,67 @@ def forget_instruction(supplier_id: str, product_type: str, key: str) -> bool:
     return platform_store.set(_INSTRUCTION_NAMESPACE, _key(str(supplier_id), product_type), row)
 
 
+# HOUSE RULES: a rule that is true of the TRADE, not of one supplier.
+#
+# CONFIRMED REAL COMPLAINT (product owner): "The AI learning must understand basics, I repeat
+# myself too often. As I have often the same problem." The cause was the SHAPE of the memory
+# rather than its contents: everything learned was filed under one supplier and one product type,
+# so "Nile Cruise prices are quoted per night" had to be taught again for every supplier who
+# sells a Nile cruise. A rule about how the trade quotes prices is not a fact about one company,
+# and filing it as one guarantees repetition.
+#
+# House rules are fed into EVERY extraction of that product type, for every supplier, on top of
+# whatever that supplier has taught individually.
+HOUSE_SCOPE = "__house__"
+_MAX_HOUSE_RULES_FED = 12
+
+
+def list_house_rules(product_type: str) -> List[Dict[str, Any]]:
+    """Rules that apply to every supplier for this product type."""
+    return list_instructions(HOUSE_SCOPE, product_type)
+
+
+def add_house_rule(product_type: str, text: str) -> bool:
+    """Promote a rule to house level. Recorded with a synthetic changed-field so it passes the
+    same "only real rules are kept" gate that supplier instructions go through."""
+    return record_instruction(HOUSE_SCOPE, product_type, text, ["__house_rule__"])
+
+
+def forget_house_rule(product_type: str, key: str) -> bool:
+    return forget_instruction(HOUSE_SCOPE, product_type, key)
+
+
 def instruction_guidance(supplier_id: str, product_type: str) -> str:
     """Past instructions, as a block to put in front of the next extraction.
 
-    Framed as guidance rather than as facts: the document always wins. A corrective that was
-    right for last season's rate sheet must not overwrite what this one plainly says, so the
-    wording tells the model to apply them only where they still fit."""
+    Two layers, in this order: HOUSE RULES (true of every supplier for this product type), then
+    THIS SUPPLIER'S own quirks. Both are framed as guidance rather than fact, because the
+    document always wins - a corrective that was right for last season's rate sheet must not
+    overwrite what this one plainly says."""
+    blocks = []
+
+    house = list_house_rules(product_type)[:_MAX_HOUSE_RULES_FED]
+    if house and str(supplier_id) != HOUSE_SCOPE:
+        blocks.append(
+            "HOUSE RULES - these hold for EVERY supplier of this product type, and the operator "
+            "has had to state them more than once. Apply them unless this document plainly "
+            "contradicts them:\n"
+            + "\n".join(f"- {e['text']}" for e in house))
+
     entries = list_instructions(supplier_id, product_type)[:_MAX_INSTRUCTIONS_FED]
-    if not entries:
-        return ""
-    lines = []
-    for e in entries:
-        times = int(e.get("count", 0))
-        suffix = f" (said {times}x)" if times > 1 else ""
-        lines.append(f"- {e['text']}{suffix}")
-    return ("THINGS A HUMAN HAS PREVIOUSLY HAD TO CORRECT ON THIS SUPPLIER'S DOCUMENTS. These are "
+    if entries:
+        lines = []
+        for e in entries:
+            times = int(e.get("count", 0))
+            suffix = f" (said {times}x)" if times > 1 else ""
+            lines.append(f"- {e['text']}{suffix}")
+        blocks.append(
+            "THINGS A HUMAN HAS PREVIOUSLY HAD TO CORRECT ON THIS SUPPLIER'S DOCUMENTS. These are "
             "notes from the operator about how THIS supplier writes things, collected from earlier "
             "corrections. Apply them where they still fit this document, and ignore any that "
             "plainly do not - the document in front of you always wins:\n" + "\n".join(lines))
+
+    return "\n\n".join(blocks)
 
 
 def list_all_instructions() -> List[Dict[str, Any]]:

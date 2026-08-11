@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-price-shape"
+MODULE_BUILD = "2026-08-12-house-rules"
 
 import math
 import datetime
@@ -499,6 +499,90 @@ def coerce_price_list_shape(rows, currency="EUR"):
     return out, notes
 
 
+def sold_occupancies(price_list):
+    """Which occupancies this tour actually sells, read from its own price list."""
+    sold = set()
+    for row in (price_list or []):
+        price = row.get("price") if isinstance(row, dict) else None
+        if not isinstance(price, dict):
+            continue
+        for key in _MONEY_KEYS:
+            block = price.get(key)
+            amount = block.get("amount") if isinstance(block, dict) else block
+            if amount not in (None, ""):
+                sold.add(key)
+    return sold
+
+
+_SUPPLEMENT_OCCUPANCY_FIELDS = {
+    "singlePrice": "single_price", "doublePrice": "double_price",
+    "triplePrice": "triple_price", "quadruplePrice": "quadruple_price",
+}
+
+
+def strip_unsold_supplement_occupancies(supplements, price_list):
+    """Zero any supplement occupancy the tour does not actually sell.
+
+    CONFIRMED HOUSE RULE (product owner): "If no price in Triple or in Quadruple, there can't be
+    any price for triple or quadruple in the supplement neither - it goes hand in hand."
+
+    Enforced in code rather than left to the extraction prompt, because it is a consistency rule
+    BETWEEN two separate parts of the payload, and a model has no reliable way to hold both in
+    view at once. The failure it prevents is quiet: a triple supplement on a tour with no triple
+    rate is not rejected by the API - it sits there attached to an occupancy that was never sold.
+
+    Returns (supplements, notes). The notes name every amount removed, so nothing disappears
+    without the human being told which supplement and which occupancy."""
+    sold = sold_occupancies(price_list)
+    if not sold:
+        # No prices at all yet: there is nothing to be consistent WITH, and stripping here would
+        # empty every supplement on a half-filled screen.
+        return list(supplements or []), []
+
+    out, notes = [], []
+    for supplement in (supplements or []):
+        if not isinstance(supplement, dict):
+            continue
+        row = dict(supplement)
+        for money_key, field in _SUPPLEMENT_OCCUPANCY_FIELDS.items():
+            if money_key in sold:
+                continue
+            value = row.get(field)
+            try:
+                has_value = value not in (None, "") and float(value) != 0
+            except (TypeError, ValueError):
+                has_value = False
+            if has_value:
+                occupancy = field.replace("_price", "")
+                notes.append(f"'{row.get('name') or 'unnamed supplement'}' had a {occupancy} "
+                             f"amount ({value}), but this tour sells no {occupancy} rate — removed")
+            row[field] = 0
+        out.append(row)
+    return out, notes
+
+
+def per_night_occupancy_prices(nights, per_night_rate):
+    """Single and double totals from a per-night rate.
+
+    CONFIRMED HOUSE RULE (product owner): "for ClosedTours Nile Cruises, the prices are generally
+    per night. Single price = Number of ClosedTour nights x Cost per night. Double price =
+    (Number of ClosedTour nights x Cost per night)/2 (as two people share the costs)."
+
+    The halving is not a discount: the quoted rate buys the cabin, and two people sharing it each
+    pay half of it. Triple and quadruple are deliberately NOT derived the same way - an occupancy
+    that the document does not price is not sold, and inventing it by dividing by three would
+    create a bookable rate nobody agreed to."""
+    try:
+        nights = int(nights)
+        rate = float(per_night_rate)
+    except (TypeError, ValueError):
+        return None, None
+    if nights <= 0 or rate <= 0:
+        return None, None
+    single = round(nights * rate, 2)
+    return single, round(single / 2, 2)
+
+
 def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12):
     """The child age band to publish, given whatever the document stated.
 
@@ -867,7 +951,14 @@ def build_closed_tour_payloads(
         # SupplementVO structure (per-occupancy amounts are read straight from
         # the extracted/human-edited data - see build_supplement_vos()'s own
         # docstring/BASIS RULE reference for the math).
-        supplements_list = build_supplement_vos(extracted_dmc_data.get("supplements", []))
+        # HOUSE RULE, enforced here rather than trusted to the extraction: an occupancy this
+        # tour does not sell cannot carry a supplement - see
+        # strip_unsold_supplement_occupancies. Applied against the SAME price list that is about
+        # to be published, so the two can never disagree.
+        _consistent_supplements, _supplement_notes = strip_unsold_supplement_occupancies(
+            extracted_dmc_data.get("supplements", []),
+            normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency))
+        supplements_list = build_supplement_vos(_consistent_supplements)
 
         # CONFIRMED REAL RULE (human feedback): cancellation used to be
         # hardcoded to a flat 30-days/100%-refund default for every tour
@@ -976,6 +1067,8 @@ def build_closed_tour_payloads(
         "main_tour_code": main_tour_code_guess,
         "main_tour_payload": main_tour_payload,
         "main_tour_error": main_tour_error,
+        # Occupancies removed for consistency with the price list - named, never silent.
+        "supplement_occupancy_notes": _supplement_notes,
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
