@@ -1723,9 +1723,9 @@ Extract:
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
   GUIDE LANGUAGE RULE (same principle as tours): if a base/standard guide language is mentioned (usually
   English), make sure it's explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are
-  available (e.g. "German/French on request"), do NOT list them here - add each as its own supplement
-  instead (see below) so guests clearly see the option, e.g. {"name": "German-speaking guide (upon
-  request)", "adult_price": 0 unless a price is stated, "children_price": 0, "infant_price": 0}.
+  available (e.g. "German/French on request"), do NOT list them here - add each to extra_cost_options
+  instead (see below), with group "Guide language", so each becomes its own Modality. TICKETS HAVE NO
+  SUPPLEMENTS AT ALL - never put a guide language, or any other extra cost, in a supplements list.
   DUAL-LANGUAGE GUIDE RULE: this is a DIFFERENT case from the one above - if the source lists TWO (or
   more) languages joined by "/" or "or" as EQUAL standard options for the guiding/transfer service (e.g.
   "licenced English/German-speaking guiding service", "English or German speaking guide"), that is NOT a
@@ -1798,78 +1798,36 @@ Extract:
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
-- supplements: ONLY genuinely simple, ALWAYS-AVAILABLE, independently-stackable optional add-ons (e.g.
-  "Add English audio guide - $5", "Extra photo package - $15").
+- supplements: ALWAYS an empty list. CONFIRMED PRODUCT-OWNER RULE: **a Ticket has no supplements at all.**
+  Every extra cost belongs in extra_cost_options below and becomes its own Modality. Never put anything
+  here, whatever the document calls it.
+- extra_cost_options: every EXTRA COST this same ticket can carry - the things that make the identical
+  experience cost more. Each one becomes its own Ticket Modality downstream, priced at the base price PLUS
+  this extra, so extract the EXTRA ON TOP, not the total.
+  {"name": "clear customer-facing label, e.g. 'German-speaking guide'",
+   "group": "the set of MUTUALLY EXCLUSIVE alternatives this belongs to, e.g. 'Guide language' - or \"\" if
+     it is independently choosable alongside anything else, e.g. a lunch upgrade",
+   "adult_price": <the EXTRA per adult, on top of the base>, "children_price": <the EXTRA per child>,
+   "infant_price": <the EXTRA per infant, usually 0>}
+  GROUP IS LOAD-BEARING. Options sharing a group can never be booked together (a booking has ONE guide
+  language), so give every guide language the same group "Guide language". Give an independent add-on an
+  empty group. Getting this wrong produces a sellable "English AND German guide" product, or blocks a
+  genuinely valid combination.
+  CRITICAL - EXTRA, NOT TOTAL: if the base (English) adult price is 40 and the German-guide price is 50,
+  output adult_price: 10. The app adds the base itself. Outputting 50 would sell that modality at 90.
+  CRITICAL - SEPARATE FULL PRICE TABLES: a very common real case is a document with a complete price table
+  per guide language (an "English Speaking Guide" table, then a "German Speaking Guide" table with its own
+  numbers). Take the FIRST/primary language's table as base_adult_price/base_children_price/
+  base_infant_price, then for every other language output the DIFFERENCE per passenger type here. If the
+  difference is not constant across the table (e.g. it varies by group size), still output your best single
+  figure AND explain the variation with real numbers in pricing_notes so a human can correct it.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
-  CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
-  never add these as a supplement or anywhere else in the extracted data, even though they're technically
-  optional and priced. This is a deliberate exclusion, not an oversight.
-  CONFIRMED REAL CONSTRAINTS - Ticket
-  Supplements are structurally different from ClosedTour ones:
-  (1) There is NO "on request" concept for Ticket supplements at all - never describe one as needing
-      special confirmation/availability check, since the schema has no field for that.
-  (2) Supplements are independently stackable - the customer can tick ANY combination of them, and
-      their prices simply ADD UP. NEVER create two or more supplements that are meant to be mutually
-      EXCLUSIVE alternatives (e.g. two different "peak season surcharge" options, or "Option A" vs
-      "Option B" pricing) - a customer could select both by mistake and get double-charged. If the
-      source describes alternative/exclusive options, or anything needing on-request handling, this
-      must become a SEPARATE MODALITY instead - flag this clearly in pricing_notes, explaining what
-      the separate modality should be (e.g. "Create a second Modality 'Deluxe with private guide' for
-      this on-request option - it cannot be a supplement").
-  (3) Peak season/holiday surcharges - CONFIRMED RULE: this ONLY applies if the source ITSELF explicitly
-      mentions a peak season/holiday/seasonal surcharge somewhere - NEVER invent or add one that isn't
-      actually mentioned; if the source says nothing about a seasonal surcharge, don't create one "just in
-      case". When (and ONLY when) the source DOES mention one, ALWAYS model it as a supplement with a real
-      travel_start_date/travel_end_date, whether the surcharge is whole-trip/percentage-based (e.g. "20%
-      higher during Christmas") or per-night/per-component (e.g. "USD 11 per person per night surcharge
-      during peak season"). Never leave the date range empty for one of these - if the source only names a
-      season/holiday without exact dates, use your best real-world date range for that period and note the
-      assumption in pricing_notes. This supplement OVERLAYS the normal modality price - it's an ADDITIONAL
-      charge for bookings that fall inside that date range, not a replacement/alternative price.
-      CONFIRMED BASIS RULE (same principle as ClosedTour, adapted to Tickets' schema):
-      - "per person" (the default/normal case for Tickets - adult_price/children_price/infant_price are
-        ALREADY inherently per-person-of-that-type by definition; Travel Compositor charges each booked
-        adult/child/infant that amount automatically): just use the stated per-person amounts as-is - no
-        multiplication needed, and there's no separate per_pax-style flag to set for Tickets.
-      - "per night" - e.g. "USD 11 per person per night surcharge during peak season": Ticket supplements
-        have no native "per night" concept either, so pre-calculate the TOTAL by multiplying the per-night
-        rate by the actual number of nights/units the surcharge period overlaps with THIS ticket's own
-        duration (capped at the ticket's own length, exactly like the ClosedTour tour-length cap above -
-        never just the surcharge period's full length). Same CRITICAL SELF-CHECK as ClosedTour above:
-        verify you multiplied rate x nights/units and did not just copy the per-night rate as the total.
-        The per-person part is already handled by the adult/children/infant price fields themselves - only
-        the nights dimension needs your manual multiplication.
-      - "per stay" / a flat one-time amount not tied to passenger type: Ticket supplements have NO flat/
-        one-time option in this schema (every field is inherently per-passenger-type) - if the source
-        genuinely describes a flat per-booking surcharge, put your best per-person estimate in each of
-        adult_price/children_price/infant_price and clearly flag in pricing_notes that the source
-        described a flat per-booking charge that had to be approximated as per-person, so a human can
-        review and adjust if needed.
-      - Whole-trip/percentage surcharges: pre-calculate an actual currency amount where possible (e.g. 20%
-        of the base adult/child/infant prices) and put that resulting number in the price fields as
-        normal. If a percentage genuinely can't be converted to a safe real amount, still create the
-        supplement with your best estimate and flag it in pricing_notes.
-      These always apply uniformly and don't compete with anything else, so they're safe as supplements
-      even though (2) above forbids mutually-exclusive alternative supplements.
-      CRITICAL - CONFIRMED RULE: the "name" must stay a clean, customer-facing label ONLY - e.g.
-      "Christmas/New Year Surcharge" or "Peak Season Surcharge" - and must NEVER include the price,
-      percentage, or the calculation (no "(20% of base price)", no "(2 nights x $11 = $22)", no dollar
-      amounts of any kind in the name). The customer sees this name directly and must not be shown that
-      price breakdown. The actual numbers still go in the adult_price/children_price/infant_price fields
-      as always (that's what makes the surcharge real) - only put the calculation itself (the math you
-      did, so a human can double-check it before publishing) in pricing_notes, never in the name. This
-      does NOT apply to normal optional supplements - only to peak-season/holiday surcharges.
-  (4) CRITICAL - a common real case: if the source has SEPARATE FULL PRICE TABLES per guide language
-      (e.g. "English Speaking Guide" table with its own prices, then a separate "German Speaking Guide"
-      table with DIFFERENT prices), each language is its OWN distinct product with its own real price -
-      NEVER model different guide languages as a supplement (that would just add a small fee on top of
-      one base price, which is wrong - each language has its own genuinely different full price). Extract
-      the PRIMARY/first language's table as the main base_adult_price/base_children_price/base_infant_price,
-      then list every OTHER language found with its own prices clearly in pricing_notes (e.g. "Also
-      available: German Speaking Guide - Adult 91, Superior 100; French Speaking Guide - Adult 92..."),
-      so a human can create each additional language as its own separate Modality.
-  Each supplement: {"name": "label", "adult_price": number, "children_price": number,
-  "infant_price": number, "travel_start_date": "YYYY-MM-DD", "travel_end_date": "YYYY-MM-DD"}. Empty list if none.
+  CO2 offset contribution", "Carbon footprint compensation") - never add these here or anywhere else. This
+  is a deliberate exclusion, not an oversight.
+  PEAK SEASON IS NOT AN EXTRA COST OPTION: a peak-season/holiday surcharge is a date-restricted price
+  change, not a product variant a customer chooses. Never put one here - describe it in pricing_notes with
+  its dates and amount so a human can add a dated price row for it.
+  Empty list if the document prices no extras at all - never invent one.
 - occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used (this is
   separate from the default Distribution mode). If the source has a group-size-tiered price table
   (columns like "1", "2", "3-5", "6-8"), extract it here instead of forcing it into base_adult_price.
@@ -1922,7 +1880,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "child_age_min": 2, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
-  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "",
+  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [],
+  "extra_cost_options": [], "pricing_notes": "",
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
 }"""
 
@@ -1993,7 +1952,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
-        "infant_taxes_amount": 0, "supplements": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
+        "infant_taxes_amount": 0, "supplements": [], "extra_cost_options": [], "pricing_notes": "", "stop_sales": [], "image_urls": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
     }
@@ -2046,7 +2005,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
   "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
-  "time_tables": [], "supplements": [], "pricing_notes": ""
+  "time_tables": [], "supplements": [], "extra_cost_options": [], "pricing_notes": ""
 }"""
 
 
@@ -2063,7 +2022,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "time_tables": [],
-        "supplements": [], "pricing_notes": "", "stop_sales": [],
+        "supplements": [], "extra_cost_options": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
@@ -2242,10 +2201,28 @@ Extract:
   across occupancy tiers. Do not include the base/default language itself here.
 - mandatory_supplements: ONLY genuinely mandatory, unconditional (never optional, never dependent on which
   specific pickup point within a zone was used) surcharges automatically applied to every booking on this
-  route - list of {"name": "...", "amount": <number>, "notes": "..."}. This should be RARE - if a mandatory-
-  sounding fee only applies to a subset of pickups within a broader zone/area (e.g. a harbor-only permit
-  fee on a route that also serves airport pickups), do NOT put it here - put a plain-English note about it
-  in location_notes instead, since this schema cannot apply a fee conditionally by location.
+  route - most commonly a NIGHT SURCHARGE. Anything the client can choose (a child seat, a booster) is
+  NOT a supplement - it belongs in additional_services. List of:
+  {"name": "clear customer-facing label, e.g. 'Night Surcharge' - never put the price or the % in the name",
+   "amount": <number>,
+   "type": "PERCENT" or "ABSOLUTE",
+   "start_time": "HH:MM" or "", "end_time": "HH:MM" or "",
+   "start_date": "YYYY-MM-DD" or "", "end_date": "YYYY-MM-DD" or "",
+   "notes": "..."}
+  CRITICAL - PERCENTAGES ARE NEVER PRE-CALCULATED. If the source says "50% extra between 22:00 and
+  08:00", output amount: 50 with type: "PERCENT" - do NOT work out what 50% of the fare is and put a
+  currency figure there. Travel Compositor applies the percentage to the base price itself, so a
+  pre-calculated figure would be right for one group size and wrong for every other one.
+  TIME WINDOW: convert the source's wording to 24-hour HH:MM ("10pm to 8am" -> start_time "22:00",
+  end_time "08:00"). A window that crosses midnight is normal and correct - write it exactly that way
+  round, and never split it into two entries.  If the source states no hours at all, leave both empty.
+  DATES: only fill start_date/end_date if the surcharge itself is restricted to a date range (e.g. a
+  Christmas-only surcharge). A permanent night surcharge has NO dates of its own - leave both empty and
+  it will inherit the transfer's own validity window.
+  If a mandatory-sounding fee only applies to a subset of pickups within a broader zone/area (e.g. a
+  harbor-only permit fee on a route that also serves airport pickups), do NOT put it here - put a
+  plain-English note about it in location_notes instead, since this schema cannot apply a fee
+  conditionally by location.
 - location_notes: informational text about location-conditional costs that shouldn't be applied to the
   price directly (e.g. "Harbor pickup incurs an additional permit fee - not included in the price above
   since most clients depart from the airport"), plus any approximation caveats from the fields above.
@@ -2689,9 +2666,15 @@ Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - 
   {"name": "" (short human label, e.g. "10% Discount when staying 3+ nights", "Resort Fee"),
    "type": "PERCENT" | "ABSOLUTE" | "STAY_TO_PAY" (offers only),
    "apply": one of "LODGING" | "MEAL" | "LODGING_AND_MEAL" | "PER_NIGHT" | "PER_NIGHT_PERSON" | "PER_STAY" |
-     "PER_STAY_PERSON" - pick whichever single value best matches how the document phrases it (e.g. a flat
-     per-night-per-person resort fee -> "PER_NIGHT_PERSON"; a straightforward room-rate percentage discount ->
-     "LODGING"),
+     "PER_STAY_PERSON" - pick the single value the document ACTUALLY states (e.g. a fee explicitly worded
+     "per person per night" -> "PER_NIGHT_PERSON"; a straightforward room-rate percentage discount ->
+     "LODGING").
+     CRITICAL - FOR SUPPLEMENTS ONLY: if the document does not make the basis explicit, output "" (empty
+     string). Do NOT fall back to a sensible-looking value. "Per person" on its own is genuinely ambiguous
+     - it can mean once per person for the whole stay or once per person per night, and those differ by the
+     entire length of the stay - so a human picks it. An empty string here is the correct, expected answer
+     whenever the document is vague, and it costs nothing; a guess costs the client money on every booking.
+     Offers are different: for an OFFER, pick your best match rather than leaving it empty.
    "value": <percentage or absolute amount, matching "type">, "child_value": <same, for children, if stated>,
    "stay": <int, only for STAY_TO_PAY, e.g. 7 for "stay 7">, "pay": <int, only for STAY_TO_PAY, e.g. 6 for "pay 6">,
    "release_days": null, "minimum_stay": null, "maximum_stay": null,

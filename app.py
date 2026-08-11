@@ -72,6 +72,8 @@ from builder import (transport_company_name as builder_transport_company_name,
                      start_date_or_today as builder_start_date_or_today)
 from builder import derive_arrival_from_duration, build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
 from builder import build_transport_payloads
+from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
+from builder import build_ticket_modality_combinations
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
@@ -1558,6 +1560,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                   "split by how many people share the room, these 4 columns hold the resulting per-person "
                   "amount for each occupancy. For a normal per-person add-on, just fill 'Price (per "
                   "person)' - the 4 occupancy columns default to matching it.")
+        st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+                  "supplement is often genuinely optional, so these two boxes are the difference between "
+                  "an add-on the client chooses and a charge they cannot avoid - the AI's guess is a "
+                  "starting point, not a decision. House rule: ClosedTour supplements are never "
+                  "refundable, and the app always publishes them that way.")
         if midx > 0:
             st.caption("💡 Pre-filled below with whatever was entered for Modality 1's supplements, as a "
                       "starting point - edit or remove any that don't actually apply to this Modality.")
@@ -2325,6 +2332,82 @@ def show_publish_error(context_label, raw_error, flow=None):
 
     with st.expander("🔧 Technical details"):
         st.code(str(raw_error))
+
+
+TICKET_EXTRA_COST_COLS = ["Name", "Group (alternatives share one)", "Adult extra", "Child extra", "Infant extra"]
+
+
+def render_ticket_extra_costs(data, key_prefix, base_code="", base_name=""):
+    """The Ticket answer to 'this costs more if...' - one Modality per combination, no supplements.
+
+    CONFIRMED PRODUCT-OWNER RULE: a Ticket has no supplements. If the same ticket costs more with a
+    German-speaking guide, that is a second Modality at base + surcharge, not a fee bolted onto the
+    first one. Confirmed follow-up: with several extras, generate EVERY combination.
+
+    GROUP is what makes "every combination" safe. Extras sharing a group are alternatives that can
+    never be booked together (a booking has one guide language), so each group contributes at most
+    one option. Leave the group empty for something independently choosable, like a lunch upgrade.
+    """
+    st.markdown("**Extra costs → Modalities**")
+    st.caption("A Ticket has no supplements. Every extra cost below becomes its own Modality, priced "
+              "at the base price **plus** that extra — so enter the EXTRA, not the total. If the "
+              "base (English guide) adult price is 40 and German costs 50, the extra is 10.")
+    st.caption("**Group**: extras sharing a group are alternatives and are never combined — give every "
+              "guide language the group `Guide language`. Leave the group empty for an add-on that can "
+              "go with anything (a lunch upgrade). Every valid combination is generated below.")
+
+    rows = [
+        {"Name": o.get("name", ""), "Group (alternatives share one)": o.get("group", ""),
+         "Adult extra": _safe_float(o.get("adult_price", 0)),
+         "Child extra": _safe_float(o.get("children_price", 0)),
+         "Infant extra": _safe_float(o.get("infant_price", 0))}
+        for o in (data.get("extra_cost_options") or [])
+    ]
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=TICKET_EXTRA_COST_COLS)
+
+    def _save(edited_df, data=data):
+        out = []
+        for _, row in edited_df.iterrows():
+            name = _safe_cell_str(row.get("Name")).strip()
+            if not name:
+                continue
+            out.append({
+                "name": name,
+                "group": _safe_cell_str(row.get("Group (alternatives share one)")).strip(),
+                "adult_price": _safe_float(row.get("Adult extra")),
+                "children_price": _safe_float(row.get("Child extra")),
+                "infant_price": _safe_float(row.get("Infant extra")),
+            })
+        data["extra_cost_options"] = out
+
+    editable_table("Extra costs", df, f"{key_prefix}_extra_costs", on_save=_save)
+
+    legacy = [s.get("name") or "(unnamed)" for s in (data.get("supplements") or []) if isinstance(s, dict)]
+    if legacy:
+        st.warning("⚠️ This draft still carries Ticket supplement(s) — " + ", ".join(legacy) + " — from "
+                  "before the rule changed. They will NOT be published. Re-enter them above as extra "
+                  "costs so each becomes a real Modality with its own full price.")
+
+    combos = build_ticket_modality_combinations(
+        {"adult": data.get("base_adult_price", 0), "children": data.get("base_children_price", 0),
+         "infant": data.get("base_infant_price", 0)},
+        data.get("extra_cost_options") or [], base_code=base_code, base_name=base_name)
+    data["generated_modalities"] = combos
+
+    if len(combos) > 1:
+        st.markdown(f"**{len(combos)} Modalities will be created:**")
+        st.dataframe(pd.DataFrame([
+            {"Code": c["code"], "Name": c["name"], "Adult": c["adult_price"],
+             "Child": c["children_price"], "Infant": c["infant_price"],
+             "Extras": ", ".join(c["extras"]) or "— base —"} for c in combos
+        ]), width="stretch", hide_index=True)
+        if combos[0].get("dropped"):
+            st.warning(f"⚠️ {combos[0]['dropped']} further combination(s) were NOT generated — the app "
+                      f"caps this at {len(combos)} Modalities per ticket. The base and the simplest "
+                      f"combinations were kept. Remove an extra cost, or create the remaining ones by hand.")
+    elif data.get("extra_cost_options"):
+        st.info("Only the base Modality is generated — every extra cost row needs a Name to count.")
+    return combos
 
 
 def get_existing_tour_names(client, supplier_id):
@@ -3977,30 +4060,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             except json.JSONDecodeError as e:
                 st.error(f"stopSales isn't valid JSON: {e}")
 
-        st.markdown(f"**Optional Add-ons (Supplements) - {current['label'] or current['ticket_code']}**")
-        st.caption("⚠️ Ticket Supplements are always independently stackable - a customer can tick ANY "
-                  "combination, and prices simply add up. For anything that should be an ALTERNATIVE (only "
-                  "one of several choices), or different guide languages with their own full price table, "
-                  "use a separate Modality instead below, never a supplement.")
-        mt_supp_rows = [
-            {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
-             "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
-            for s in data.get("supplements", [])
-        ]
-        mt_supp_df = pd.DataFrame(mt_supp_rows) if mt_supp_rows else pd.DataFrame(columns=["Name", "Adult", "Child", "Infant", "Start", "End"])
-        def _save_mt_supplements(edf, data=data):
-            new_supp = []
-            for _, r in edf.iterrows():
-                name = _safe_cell_str(r.get("Name")).strip()
-                if not name:
-                    continue
-                new_supp.append({
-                    "name": name, "adult_price": _safe_float(r.get("Adult")),
-                    "children_price": _safe_float(r.get("Child")), "infant_price": _safe_float(r.get("Infant")),
-                    "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
-                })
-            data["supplements"] = new_supp
-        editable_table(f"Supplements - {current['label'] or current['ticket_code']}", mt_supp_df, f"mt_supplements_{idx}", on_save=_save_mt_supplements)
+        render_ticket_extra_costs(data, f"mt_{idx}",
+                                  base_code=current.get("modality_code") or current.get("ticket_code") or "",
+                                  base_name=data.get("ticket_name") or current.get("label") or "")
 
         st.markdown(f"**➕ Additional Modalities for {current['label'] or current['ticket_code']} (optional)**")
         st.caption("Add more variants of THIS ticket now (e.g. one per guide language) - all get created "
@@ -4863,7 +4925,7 @@ def render_ticket_flow(client):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
                     tk_field_to_table_key = {
-                        "supplements": "_editing_table_tk_supplements",
+                        "extra_cost_options": "_editing_table_tk_extra_costs",
                         "includes": "_editing_table_tk_includes",
                         "excludes": "_editing_table_tk_excludes",
                         "meeting_points": "_editing_table_tk_meeting_points",
@@ -5077,35 +5139,10 @@ def render_ticket_flow(client):
                 st.session_state.tk_extra_modalities.append({"code": "", "hint": "", "data": None})
                 st.rerun()
 
-        st.subheader("Optional Add-ons (Supplements)")
-        st.caption("⚠️ Ticket Supplements are always independently stackable - a customer can tick ANY "
-                  "combination, and prices simply add up. Only use this for simple add-ons everyone can "
-                  "combine freely (e.g. 'Audio guide - $5'). There's no 'on request' option here either. "
-                  "For anything that should be an ALTERNATIVE (only one of several choices) or needs "
-                  "special/on-request handling, create it as a SEPARATE Modality instead (Action 2: Add "
-                  "new Modality to existing Ticket) - never model it as a supplement. **This includes "
-                  "different guide languages** - if the source shows separate full price tables per "
-                  "language (English/German/French/etc.), each one is its own Modality with its own real "
-                  "price, never a small add-on fee.")
-        supp_rows = [
-            {"Name": s.get("name", ""), "Adult": s.get("adult_price", 0), "Child": s.get("children_price", 0),
-             "Infant": s.get("infant_price", 0), "Start": s.get("travel_start_date", ""), "End": s.get("travel_end_date", "")}
-            for s in data.get("supplements", [])
-        ]
-        supp_df = pd.DataFrame(supp_rows) if supp_rows else pd.DataFrame(columns=["Name", "Adult", "Child", "Infant", "Start", "End"])
-        def _save_tk_supplements(edf, data=data):
-            new_supp = []
-            for _, r in edf.iterrows():
-                name = _safe_cell_str(r.get("Name")).strip()
-                if not name:
-                    continue
-                new_supp.append({
-                    "name": name, "adult_price": _safe_float(r.get("Adult")),
-                    "children_price": _safe_float(r.get("Child")), "infant_price": _safe_float(r.get("Infant")),
-                    "travel_start_date": _safe_cell_str(r.get("Start")).strip(), "travel_end_date": _safe_cell_str(r.get("End")).strip(),
-                })
-            data["supplements"] = new_supp
-        editable_table("Supplements", supp_df, "tk_supplements", on_save=_save_tk_supplements)
+        st.subheader("Extra costs")
+        render_ticket_extra_costs(data, "tk",
+                                  base_code=st.session_state.get("tk_cfg_modality_code", "") or "",
+                                  base_name=data.get("ticket_name") or "")
 
         if price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
@@ -5133,7 +5170,7 @@ def render_ticket_flow(client):
                     for field_name, new_value in result["changes"].items():
                         data[field_name] = new_value
                     tk_field_to_table_key2 = {
-                        "supplements": "_editing_table_tk_supplements",
+                        "extra_cost_options": "_editing_table_tk_extra_costs",
                         "occupancy_prices": "_editing_table_tk_occupancy",
                         "time_tables": "_editing_table_tk_timetables",
                     }
@@ -5989,24 +6026,50 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         st.caption("Never put a location-conditional cost here (e.g. a harbor-only pickup fee on a route "
                   "that also serves airport pickups) - that belongs in the location note below instead, "
                   "since this schema can't apply a charge conditionally by pickup point.")
-        supp_df = pd.DataFrame(data.get("mandatory_supplements") or [{"name": "", "amount": 0.0, "notes": ""}])
-        for col in ["name", "amount", "notes"]:
+        st.caption("**type** is PERCENT or ABSOLUTE. For a percentage, put the percentage itself in "
+                  "**amount** (50 for a 50% night surcharge) - Travel Compositor applies it to the base "
+                  "price, so it must never be converted into a currency figure here. **start_time / "
+                  "end_time** are 24-hour and may cross midnight (22:00 → 08:00 is correct as written). "
+                  "Leave **start_date / end_date** empty unless the surcharge itself is seasonal - empty "
+                  "means it inherits this transfer's own validity window.")
+        _supp_cols = ["name", "amount", "type", "start_time", "end_time", "start_date", "end_date", "notes"]
+        supp_df = pd.DataFrame(data.get("mandatory_supplements") or [
+            {"name": "", "amount": 0.0, "type": "ABSOLUTE", "start_time": "", "end_time": "",
+             "start_date": "", "end_date": "", "notes": ""}])
+        for col in _supp_cols:
             if col not in supp_df.columns:
-                supp_df[col] = None
+                supp_df[col] = "" if col not in ("amount",) else 0.0
+        supp_df = supp_df[_supp_cols]
 
         def _save_supplements(edited_df):
-            rows = []
+            rows, bad_type = [], False
             for _, row in edited_df.iterrows():
                 if not (row.get("name") or "").strip():
+                    continue
+                raw_type = str(row.get("type") or "ABSOLUTE").strip().upper()
+                if raw_type not in ("PERCENT", "ABSOLUTE"):
+                    # Never silently coerce: a supplement meant as 50% that quietly becomes
+                    # ABSOLUTE would charge 50 currency units instead of half the fare.
+                    bad_type = True
                     continue
                 rows.append({
                     "name": str(row.get("name") or "").strip(),
                     "amount": _safe_float(row.get("amount"), fallback=0.0),
+                    "type": raw_type,
+                    "start_time": str(row.get("start_time") or "").strip(),
+                    "end_time": str(row.get("end_time") or "").strip(),
+                    "start_date": str(row.get("start_date") or "").strip(),
+                    "end_date": str(row.get("end_date") or "").strip(),
                     "notes": str(row.get("notes") or ""),
                 })
             data["mandatory_supplements"] = rows
+            st.session_state[f"_xtf_supp_bad_type_{idx}"] = bad_type
 
         editable_table("Mandatory supplements", supp_df, f"xtf_supp_{idx}", on_save=_save_supplements)
+        if st.session_state.get(f"_xtf_supp_bad_type_{idx}"):
+            st.warning("⚠️ A supplement row was skipped because its **type** wasn't PERCENT or ABSOLUTE. "
+                      "It was left out rather than guessed - a 50% surcharge saved as ABSOLUTE would "
+                      "charge 50 in currency instead of half the fare.")
 
         st.markdown("#### Notes, validity & cancellation")
         editable_field("Location note (e.g. a harbor-only pickup fee) — goes to Voucher Remarks, never applied to price",
@@ -7365,15 +7428,21 @@ def render_hotel_flow(client):
 
     # ---- Supplements ----
     st.markdown("#### Supplements (extra charges)")
-    st.caption("Same shape as Offers, but type is only PERCENT or ABSOLUTE.")
+    st.caption("Same shape as Offers, but type is only PERCENT or ABSOLUTE. A hotel supplement is never "
+              "optional - it is always an extra charge the client pays.")
+    st.caption("⚠️ **apply must be filled in by you.** The AI leaves it blank whenever the document doesn't "
+              "state the basis outright, because 'per person' can mean once for the whole stay "
+              "(PER_STAY_PERSON) or once per person per night (PER_NIGHT_PERSON) - on a 7-night stay those "
+              "differ sevenfold. One of: "
+              + ", ".join(HOTEL_APPLY_VALUES) + ". A supplement left blank will not publish.")
     supp_df = pd.DataFrame([
-        {"name": s.get("name", ""), "type": s.get("type", "ABSOLUTE"), "apply": s.get("apply", "LODGING"),
+        {"name": s.get("name", ""), "type": s.get("type", "ABSOLUTE"), "apply": s.get("apply", ""),
          "value": _safe_float(s.get("value")), "child_value": _safe_float(s.get("child_value")),
          "travel_start": _hp_first_window(s.get("travel_windows"), "start"),
          "travel_end": _hp_first_window(s.get("travel_windows"), "end"),
          "rooms": _hp_names_to_str(s.get("room_names"))}
         for s in (data.get("supplements") or [])
-    ] or [{"name": "", "type": "ABSOLUTE", "apply": "LODGING", "value": 0.0, "child_value": 0.0,
+    ] or [{"name": "", "type": "ABSOLUTE", "apply": "", "value": 0.0, "child_value": 0.0,
            "travel_start": "", "travel_end": "", "rooms": ""}])
 
     def _hp_save_supplements(edited_df):
@@ -7385,7 +7454,10 @@ def render_hotel_flow(client):
             rows.append({
                 "name": name,
                 "type": str(row.get("type") or "ABSOLUTE").strip().upper(),
-                "apply": str(row.get("apply") or "LODGING").strip().upper(),
+                # NO DEFAULT, deliberately: an unfilled basis stays unfilled all the way to the
+                # builder, which refuses to publish it. Defaulting here would reinstate exactly
+                # the guess this rule exists to prevent.
+                "apply": str(row.get("apply") or "").strip().upper(),
                 "value": _safe_float(row.get("value"), fallback=0.0),
                 "child_value": _safe_float(row.get("child_value"), fallback=0.0),
                 "travel_windows": _hp_window_list(row.get("travel_start"), row.get("travel_end")),
@@ -7394,6 +7466,11 @@ def render_hotel_flow(client):
         data["supplements"] = rows
 
     editable_table("Supplements", supp_df, "hp_supplements", on_save=_hp_save_supplements)
+    _missing_apply = [s.get("name") or "(unnamed)" for s in (data.get("supplements") or [])
+                      if str(s.get("apply") or "").strip().upper() not in HOTEL_APPLY_VALUES]
+    if _missing_apply:
+        st.warning("⚠️ These supplements still have no **apply** basis and will not publish until one is "
+                  "chosen: " + ", ".join(_missing_apply) + ". Pick from: " + ", ".join(HOTEL_APPLY_VALUES) + ".")
 
     # ---- Rates / seasons / prices ----
     st.markdown("#### Rates, seasons & prices")
@@ -8162,7 +8239,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-11-blank-occupancy-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-11-supplement-rules — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -9330,6 +9407,11 @@ if st.session_state.extracted:
                   "use a separate Modality instead (Publish Action 2).")
         st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
                   "supplement only applies during a specific date range (e.g. a seasonal excursion).")
+        st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+                  "supplement is often genuinely optional, so these two boxes are the difference between "
+                  "an add-on the client chooses and a charge they cannot avoid - the AI's guess is a "
+                  "starting point, not a decision. House rule: ClosedTour supplements are never "
+                  "refundable, and the app always publishes them that way.")
 
         default_supplements = data.get("supplements") or []
         supp_df_rows = [

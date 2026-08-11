@@ -184,6 +184,69 @@ def normalize_price_list(rows, currency):
     return out
 
 
+_TRANSFER_MAX_END_DATE = "2049-12-31"   # the house "runs indefinitely" date, as used for inventory
+
+
+def normalize_supplement_time(value):
+    """HH:MM for a supplement's time window, or None. Accepts '10pm', '22', '22:00', '22:00:00'."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(am|pm)?$", text)
+    if not m:
+        return None
+    hour, minute, meridiem = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if hour == 24:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_end_date=""):
+    """Mandatory transfer surcharges, as PERCENT or ABSOLUTE, scoped to a time window.
+
+    CONFIRMED PRODUCT-OWNER RULES:
+      - A transfer supplement is never optional. Optional extras (a child seat) are
+        additionalServices, and this function is not where they go.
+      - A percentage is sent AS a percentage. Travel Compositor applies "50%" to the base price
+        itself, so the app sends amount=50 with type=PERCENT. Pre-calculating 50% into a currency
+        figure would freeze the surcharge at whichever occupancy happened to be used for the
+        arithmetic and mis-charge every other group size - that is the whole reason this is a
+        percentage in the source document.
+      - When the document states no dates for the surcharge, it inherits the TRANSFER's own
+        validity window (falling back to today -> 2049-12-31), because a night surcharge is a
+        property of the route for as long as the route is sold, not a separate season.
+      - The time window may legitimately wrap past midnight (22:00 -> 08:00). That is stored as
+        given; it is Travel Compositor's job to interpret it, and "fixing" it by splitting it into
+        two windows would double the surcharge for anyone travelling across midnight."""
+    out = []
+    for s in (supplements or []):
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name") or "").strip()
+        amount = _safe_float(s.get("amount", 0))
+        raw_type = str(s.get("type") or "").strip().upper()
+        is_percent = raw_type in ("PERCENT", "PERCENTAGE", "%") or bool(s.get("is_percentage"))
+        if not name or amount == 0:
+            continue
+        out.append(TransferSupplementVO(
+            name=name,
+            type="PERCENT" if is_percent else "ABSOLUTE",
+            amount=amount,
+            startDate=(s.get("start_date") or transfer_start_date
+                       or start_date_or_today(None)) or None,
+            endDate=(s.get("end_date") or transfer_end_date or _TRANSFER_MAX_END_DATE) or None,
+            startTime=normalize_supplement_time(s.get("start_time")),
+            endTime=normalize_supplement_time(s.get("end_time")),
+        ))
+    return out
+
+
 def _cancellation_ranges_from_tiers(tiers):
     """
     Converts AI-extracted cancellation_policy_tiers (the SOURCE's own stated
@@ -382,6 +445,11 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
             modalityCodes=modality_codes,
             mandatory=bool(s.get("mandatory", False)),
             onRequest=bool(s.get("on_request", False)),
+            # HOUSE RULE (product owner, confirmed): a ClosedTour supplement is NEVER
+            # refundable. The schema defaults this to True, so leaving it unset was quietly
+            # publishing every optional excursion and upgrade as refundable - the opposite of
+            # the commercial terms. Set explicitly rather than relying on any default.
+            refundable=False,
             free=(price_val == 0),
             travelWindows=travel_windows,
         ))
@@ -889,22 +957,18 @@ def build_ticket_payloads(
         # batch/app. It's now caught below (via `or ""`  defensive coercion
         # plus this try block), and reported as a per-item error instead.
 
-        # Convert supplements (ticket-specific shape: per-passenger-type + dates).
-        # NOTE: `.get(key, "")` only applies "" when the key is ABSENT - a blank
-        # data_editor row upstream can leave an explicit `None` here (the exact
-        # class of bug already fixed for time_tables above), which used to crash
-        # this construction OUTSIDE any try/except entirely, before this
-        # function's own try block was even reached. `or ""` guards both cases.
+        # CONFIRMED PRODUCT-OWNER RULE: **a Ticket has no supplements.** Every extra cost is its
+        # own Modality, priced base + extra - see build_ticket_modality_combinations(). This list
+        # is therefore always empty, and stays in the payload only because the field exists on the
+        # wire. Anything still sitting in extracted_ticket_data["supplements"] (an older saved
+        # draft, or a model that ignored the prompt) is deliberately DROPPED rather than published:
+        # a supplement is a small fee bolted onto one price, which is exactly the wrong shape for
+        # an extra that has its own full price.
         supplements_list = []
-        for s in extracted_ticket_data.get("supplements", []):
-            supplements_list.append(TicketSupplementVO(
-                adultPriceSupplement=_safe_float(s.get("adult_price", 0)),
-                childrenPriceSupplement=_safe_float(s.get("children_price", 0)),
-                infantPriceSupplement=_safe_float(s.get("infant_price", 0)),
-                startDate=s.get("travel_start_date") or "",
-                endDate=s.get("travel_end_date") or "",
-                translations={"EN": TicketSupplementTranslation(name=s.get("name", ""))},
-            ))
+        _ignored_ticket_supplements = [
+            str((s or {}).get("name") or "").strip()
+            for s in (extracted_ticket_data.get("supplements") or []) if isinstance(s, dict)
+        ]
 
         # CONFIRMED REAL RULE (human feedback): cancellation used to be
         # hardcoded to a flat 30-days/100%-refund default for every ticket
@@ -1070,6 +1134,8 @@ def build_ticket_payloads(
         "main_ticket_error": main_ticket_error,
         "ticket_option_payload": ticket_option_payload,
         "ticket_option_error": ticket_option_error,
+        # Named out loud rather than dropped in silence - see the supplements block above.
+        "ignored_ticket_supplements": [n for n in _ignored_ticket_supplements if n],
         "geolocation_resolved": geoloc.get("valid", False),
         "geolocation_source": geoloc.get("source"),
         "geolocation_name": geoloc.get("name"),
@@ -1373,10 +1439,11 @@ def build_transfer_payload(
             ))
 
         # MANDATORY, unconditional surcharges only (confirmed rule) - see location_notes
-        # handling above for why a location-conditional fee never ends up here.
-        supplements = [
-            TransferSupplementVO(name=s.get("name") or "", amount=_safe_float(s.get("amount", 0)))
-            for s in (extracted_transfer_data.get("mandatory_supplements") or []) if isinstance(s, dict)
+        # handling above for why a location-conditional fee never ends up here. Built after the
+        # effective date window is known, further down, so a supplement with no stated dates can
+        # inherit the transfer's own validity rather than being left open-ended.
+        raw_transfer_supplements = [
+            s for s in (extracted_transfer_data.get("mandatory_supplements") or []) if isinstance(s, dict)
         ]
 
         # CONFIRMED REAL RULE (product owner decision, refined after real usage): a fresh
@@ -1395,6 +1462,9 @@ def build_transfer_payload(
             effective_end_date = extracted_transfer_data.get("end_date") or ""
             effective_images = []
             effective_properties = [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
+
+        supplements = build_transfer_supplement_vos(
+            raw_transfer_supplements, effective_start_date, effective_end_date)
 
         transfer_kwargs = dict(
             active=True,
@@ -1687,6 +1757,100 @@ _PLACE_SHORT_CODE = {
     "port ghalib": "PTG", "abu simbel": "ABS", "alexandria": "HBE", "taba": "TCP",
     "dahab": "DHB", "nuweiba": "NUW", "ain sokhna": "SOK",
 }
+
+
+_TICKET_MAX_MODALITIES = 24
+_TICKET_EXTRA_TOKEN_LEN = 4
+
+
+def _ticket_extra_token(name):
+    """A short uppercase token for a modality code - no '-', '+', '/' or '\\'.
+
+    CONFIRMED API CONSTRAINT: those characters break Travel Compositor's URL lookups and the
+    publish is rejected, so option tokens are simply run together (the same convention the live
+    transport options LUXHRG1 / LUXHRG29 use)."""
+    words = re.findall(r"[A-Za-z0-9]+", str(name or ""))
+    if not words:
+        return "X"
+    if len(words) == 1:
+        return words[0][:_TICKET_EXTRA_TOKEN_LEN].upper()
+    return "".join(w[0] for w in words)[:_TICKET_EXTRA_TOKEN_LEN].upper()
+
+
+def build_ticket_modality_combinations(base_prices, extra_options, base_code="", base_name="",
+                                        max_modalities=_TICKET_MAX_MODALITIES):
+    """Every bookable combination of a ticket's extra costs, as Modalities.
+
+    CONFIRMED PRODUCT-OWNER RULE: **Tickets do not have supplements.** Every extra cost is its own
+    Modality, priced at the base price PLUS that extra - so a ticket with a base (English guide)
+    rate and a German-guide surcharge becomes two Modalities, at base and base+surcharge, not one
+    Modality with a supplement bolted on. Confirmed follow-up: when a ticket has SEVERAL extras,
+    generate EVERY combination, with the app doing the addition.
+
+    GROUPS ARE WHAT KEEP THIS SANE. Options sharing a `group` are mutually exclusive alternatives
+    (you cannot have an English guide and a German guide on the same booking), so each group
+    contributes at most one option to a combination. Options in different groups combine freely.
+    Without groups, "every combination" would generate an English+German modality, which is not a
+    product anyone can sell.
+
+    The all-base combination is always first and always carries the base code/name unchanged, so
+    updating an existing ticket never renames or re-codes the modality already live.
+
+    Returns a list of dicts: code, name, adult_price, children_price, infant_price, extras
+    (the option names chosen), is_base, plus a `dropped` count on the result of any cap applied.
+    """
+    base_adult = _safe_float((base_prices or {}).get("adult", 0))
+    base_child = _safe_float((base_prices or {}).get("children", 0))
+    base_infant = _safe_float((base_prices or {}).get("infant", 0))
+
+    groups, order = {}, []
+    for opt in (extra_options or []):
+        if not isinstance(opt, dict):
+            continue
+        name = str(opt.get("name") or "").strip()
+        if not name:
+            continue
+        # An option with no group is independently choosable, so it gets a group of its own
+        # rather than being lumped in with every other ungrouped extra (which would wrongly
+        # make a lunch upgrade and a photo package mutually exclusive).
+        group = str(opt.get("group") or "").strip() or f"__solo__{name}"
+        if group not in groups:
+            groups[group] = []
+            order.append(group)
+        groups[group].append(opt)
+
+    combos = [{"extras": [], "adult": base_adult, "children": base_child, "infant": base_infant}]
+    for group in order:
+        grown = []
+        for combo in combos:
+            grown.append(combo)                       # this group not chosen
+            for opt in groups[group]:
+                grown.append({
+                    "extras": combo["extras"] + [str(opt.get("name")).strip()],
+                    "adult": combo["adult"] + _safe_float(opt.get("adult_price", 0)),
+                    "children": combo["children"] + _safe_float(opt.get("children_price", 0)),
+                    "infant": combo["infant"] + _safe_float(opt.get("infant_price", 0)),
+                })
+        combos = grown
+
+    # Fewest extras first, so the base and the simple single-extra products lead the list and
+    # are the ones that survive if the cap bites.
+    combos.sort(key=lambda c: (len(c["extras"]), c["extras"]))
+    dropped = max(0, len(combos) - max(1, int(max_modalities)))
+    combos = combos[:max(1, int(max_modalities))]
+
+    out = []
+    for combo in combos:
+        is_base = not combo["extras"]
+        code = base_code if is_base else (
+            (base_code or "TKT") + "".join(_ticket_extra_token(e) for e in combo["extras"]))
+        name = base_name if is_base else f"{base_name} ({', '.join(combo['extras'])})".strip()
+        out.append({
+            "code": code, "name": name, "extras": list(combo["extras"]), "is_base": is_base,
+            "adult_price": round(combo["adult"], 2), "children_price": round(combo["children"], 2),
+            "infant_price": round(combo["infant"], 2), "dropped": dropped,
+        })
+    return out
 
 
 def place_short_code(name: str) -> str:
@@ -2118,14 +2282,19 @@ def _map_meal_plan_type(hint):
 _APPLY_TYPE_VALUES = ["LODGING", "MEAL", "LODGING_AND_MEAL", "PER_NIGHT", "PER_NIGHT_PERSON", "PER_STAY", "PER_STAY_PERSON"]
 
 
-def _map_apply_type(hint):
+def _map_apply_type(hint, default="LODGING"):
     """Validates/normalizes an Offer/Supplement 'apply' value against the confirmed 7-value enum
     (mixing what-it-applies-to and how-it's-calculated into one flat field - see
-    ContractHotelOffersVO's docstring), defaulting to LODGING (the most common case - a
-    straightforward room-rate discount/charge) when extraction doesn't cleanly match one of the
-    7 values."""
+    ContractHotelOffersVO's docstring).
+
+    OFFERS default to LODGING (the most common case - a straightforward room-rate discount).
+    SUPPLEMENTS pass default=None instead: CONFIRMED PRODUCT-OWNER RULE - the basis of a hotel
+    supplement is never guessed. "Per person" alone could mean once per person for the stay or
+    once per person per night, and those differ by a factor of the whole stay length; a wrong
+    guess overcharges the client on every booking. Unrecognised input returns None so the caller
+    can stop and ask a human rather than publishing a plausible-looking number."""
     text = (hint or "").strip().upper().replace(" ", "_").replace("-", "_")
-    return text if text in _APPLY_TYPE_VALUES else "LODGING"
+    return text if text in _APPLY_TYPE_VALUES else default
 
 
 def _map_offer_type(hint):
@@ -2385,13 +2554,16 @@ def resolve_room_provider_codes(hotel_response_rooms):
     return result
 
 
-def _build_offer_or_supplement_common_kwargs(item_data):
+def _build_offer_or_supplement_common_kwargs(item_data, apply_default="LODGING"):
     """Shared field-building for Offers and Supplements - they're structurally identical except
-    Offers have an extra type value (STAY_TO_PAY) plus stay/pay fields, added by the caller."""
+    Offers have an extra type value (STAY_TO_PAY) plus stay/pay fields, added by the caller.
+
+    apply_default=None (used for Supplements) makes an unrecognised basis come back as None
+    instead of silently becoming LODGING - see _map_apply_type."""
     windows_travel = [w for w in (item_data or {}).get("travel_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
     windows_booking = [w for w in (item_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
     return dict(
-        apply=_map_apply_type((item_data or {}).get("apply")),
+        apply=_map_apply_type((item_data or {}).get("apply"), default=apply_default),
         releaseDays=(item_data or {}).get("release_days"),
         minimumStay=(item_data or {}).get("minimum_stay"),
         maximumStay=(item_data or {}).get("maximum_stay"),
@@ -2471,8 +2643,23 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
             continue
 
         room_codes = [room_name_to_provider_code.get(rn) for rn in (supp_data or {}).get("room_names") or []]
-        kwargs = _build_offer_or_supplement_common_kwargs({**(supp_data or {}), "room_provider_codes": room_codes})
+        kwargs = _build_offer_or_supplement_common_kwargs(
+            {**(supp_data or {}), "room_provider_codes": room_codes}, apply_default=None)
         kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
+
+        # CONFIRMED PRODUCT-OWNER RULE: never guess a supplement's basis. Stop here with a
+        # readable message instead of publishing a charge whose per-night/per-stay meaning
+        # nobody actually chose - the two readings differ by the whole length of the stay.
+        if not kwargs.get("apply"):
+            results.append({
+                "supplement_payload": None, "action": "create", "matched_provider_code": None,
+                "supplement_error": (
+                    f"Supplement '{supp_name or '(unnamed)'}' has no charging basis. Pick one of "
+                    f"{', '.join(_APPLY_TYPE_VALUES)} on the review screen - the app will not guess "
+                    f"it, because 'per person' can mean once for the whole stay or once per night, "
+                    f"and the wrong one overcharges every booking."),
+            })
+            continue
 
         supp_error = None
         supp_payload = None

@@ -495,15 +495,28 @@ class TransferSupplementVO(BaseModel):
     a broader zone (e.g. a harbor-only pickup fee) - this schema can only condition a supplement on a
     date/time window (startDate/endDate/startTime/endTime), not on location, so a location-conditional
     fee applied here would incorrectly charge every booking on the route, including the common case
-    (e.g. airport pickup) that shouldn't be charged it. Real examples always show this empty - the
-    `type` enum's real values are unconfirmed, "AMOUNT" is a placeholder default pending confirmation."""
+    (e.g. airport pickup) that shouldn't be charged it.
+
+    type: PERCENT / ABSOLUTE. CONFIRMED PRODUCT-OWNER RULE: a transfer supplement can be expressed
+    either way, and for a percentage Travel Compositor applies it to the base price ITSELF - the app
+    sends amount=50 with type=PERCENT for "50% night surcharge" and must NEVER pre-calculate 50% into
+    a currency figure. Pre-calculating would freeze the surcharge at one occupancy's price and then
+    silently under- or over-charge every other group size.
+
+    NOT YET VERIFIED AGAINST A LIVE TRANSFER: every real GET example seen so far has this list empty,
+    so the enum's exact spelling is taken from the Hotel supplement enum (the only place Travel
+    Compositor spells it out). Worth confirming on one test transfer before relying on it.
+
+    TIME WINDOW: startTime/endTime carry the surcharge's hours (e.g. 22:00 -> 08:00 for a night
+    surcharge) and MAY legitimately wrap past midnight. startDate/endDate carry its validity, which
+    defaults to the parent transfer's own validity window when the document states no dates."""
     active: bool = True
     name: str = ""
     startDate: Optional[str] = None
     endDate: Optional[str] = None
     startTime: Optional[str] = None
     endTime: Optional[str] = None
-    type: str = "AMOUNT"
+    type: str = "ABSOLUTE"  # PERCENT / ABSOLUTE
     amount: float = 0.0
 
 
