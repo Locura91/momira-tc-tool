@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-house-rules"
+MODULE_BUILD = "2026-08-12-table-grid"
 
 import os
 import re
@@ -48,6 +48,32 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 If there is only one tour, set "multiple_variants": false and "variants": [] ."""
 
 EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data from a DMC (Destination Management Company) supplier document for Momira Travel.
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
 
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
@@ -334,6 +360,16 @@ Rules:
       doublePrice = (number of nights x per-night rate) / 2
   The division is not a discount - the quoted rate buys the CABIN, and two people sharing it each
   pay half. So a 4-night cruise at USD 250 per night is singlePrice 1000, doublePrice 500.
+  READ THE ROW LABEL BEFORE DIVIDING - this is where the rule is most often misapplied. Halve
+  only a rate quoted for the WHOLE unit ("per suite", "per cabin", "per room", or unqualified).
+  A row already labelled PER PERSON is per person already:
+      "Single Luxury Cabin - $565"                 -> singlePrice = nights x 565
+      "Per person in Double Luxury Cabin - $353"   -> doublePrice = nights x 353, NOT halved
+      "Per Junior Suite 333 - $1,059" (per suite)  -> singlePrice = nights x 1059,
+                                                      doublePrice = (nights x 1059) / 2
+  Halving a figure that was already per person under-charges by half, on every booking, and
+  nothing downstream can detect it. When the label is ambiguous, say which reading you used in
+  pricing_notes rather than choosing in silence.
   DO NOT put the per-night rate itself into the price fields. That is the mistake this rule exists
   to stop: it under-prices the tour by the whole length of the trip, and the payload validates
   perfectly while doing it. Multiply first, every time.
@@ -1519,6 +1555,32 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
 
 OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel Compositor
 
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
+
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
 never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
@@ -1579,6 +1641,32 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 
 
 MODALITY_EXTRACTION_SYSTEM_PROMPT = """You are extracting PRICING/SCHEDULE data for ONE SPECIFIC Modality
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
 
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
@@ -1844,6 +1932,32 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 # ============================================================================
 
 TICKET_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TICKET
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
 
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
@@ -2140,6 +2254,32 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
 
 TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel
 
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
+
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
 never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
@@ -2304,6 +2444,32 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
 
 
 TRANSFER_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSFER
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
 
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
@@ -2605,6 +2771,32 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
 
 TRANSPORT_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSPORT
 
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
+
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
 never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
@@ -2795,6 +2987,32 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
 # ==========================================
 
 HOTEL_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor HOTEL contract
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one. Use the table above to know what each
+                                 column means. This is common: Word often stores one visual
+                                 table as two, with all the headings in the first and all the
+                                 numbers in the second.
+TO READ A SEASON GRID: work out from the header rows which COLUMN RANGE each season occupies
+(e.g. Normal = C2-C3, High = C4-C5), then take each price from the cell covering that same
+range. Never match a price to a season by counting values left to right - merged cells make the
+count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
+then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
+price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
+gaps between them are other seasons, and merging would sell the high season at the normal rate.
+Do not drop the later ones either; missing periods are the most common failure on these sheets.
 
 READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,

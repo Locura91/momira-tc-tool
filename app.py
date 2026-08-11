@@ -82,6 +82,7 @@ from date_format import to_iso_date as _iso, to_display_date as _disp, DISPLAY_H
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
+from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
 import ai_extractor as ai_extractor_module
@@ -778,7 +779,11 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -1092,7 +1097,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         remaining_budget = 12 - len(doc_raw_images)
                         embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
                         if embedded_images:
@@ -3820,7 +3829,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         remaining_budget = 12 - len(doc_raw_images)
                         embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
                         if embedded_images:
@@ -4838,7 +4851,11 @@ def render_ticket_flow(client):
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                         tmp.write(uploaded.getbuffer())
                         tmp_path = tmp.name
-                    combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                    _doc_text = extract_raw_text(tmp_path)
+                    _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                    if _scan_warning:
+                        st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                    combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                     remaining_budget = 12 - len(doc_raw_images)
                     embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
                     if embedded_images:
@@ -5956,7 +5973,11 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -6613,7 +6634,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -7428,7 +7453,11 @@ def render_hotel_flow(client):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(uploaded.getbuffer())
                             tmp_path = tmp.name
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -8463,7 +8492,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-house-rules"
+BUILD_VERSION = "2026-08-12-table-grid"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8477,7 +8506,7 @@ def _module_build_mismatches():
     stale = []
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
-                 "platform_store", "date_format", "weekly_review"):
+                 "platform_store", "date_format", "weekly_review", "document_reader"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -8501,6 +8530,13 @@ if _stale_modules:
                     for name, found in _stale_modules)
         + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
           "then push and let the app redeploy.")
+
+# A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
+# screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
+# been handed a blank page. See document_reader.scanned_document_warning.
+for _scan_msg in st.session_state.get("_scanned_doc_warnings", []) or []:
+    st.error("🖼️ " + _scan_msg)
+st.session_state["_scanned_doc_warnings"] = []
 
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
@@ -9169,7 +9205,11 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
-                combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{extract_raw_text(tmp_path)}")
+                _doc_text = extract_raw_text(tmp_path)
+                _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                if _scan_warning:
+                    st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
 
                 remaining_budget = 12 - len(doc_raw_images)
                 embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
