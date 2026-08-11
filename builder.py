@@ -119,6 +119,71 @@ def _safe_supplement_price(value, fallback=0.0):
     return _safe_float(value, fallback)
 
 
+_MONEY_KEYS = ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice")
+
+
+def _money_or_none(value, currency):
+    """A MoneyVO-shaped dict, or None when the occupancy simply isn't sold.
+
+    CONFIRMED REAL CRASH (product owner, ASW-6): "12 validation errors ...
+    priceList.0.price.triplePrice.amount Field required [input_value={}]". The schema types
+    these as Optional[MoneyVO], which permits None but NOT an empty object - and an empty
+    object is exactly what a blank Triple/Quadruple column produces. So a perfectly ordinary
+    two-occupancy tour could not be published at all, and the error named a pydantic path
+    rather than the empty column that caused it.
+
+    ABSENT AND ZERO ARE DIFFERENT and must stay that way: {} means this tour does not sell
+    triple occupancy, and None is how the API says so. {"amount": 0} means it IS sold, at no
+    extra charge, and dropping that to None would silently stop it being sellable."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"amount": float(value), "currency": currency}
+    if not isinstance(value, dict):
+        return None
+    if not value:
+        return None
+    amount = value.get("amount")
+    if amount in (None, ""):
+        return None
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
+    return {"amount": amount, "currency": (value.get("currency") or currency or "EUR")}
+
+
+def normalize_price_list(rows, currency):
+    """Make a price list safe to validate, without changing what it says.
+
+    Every occupancy that is priced keeps its number; every one that is blank becomes None
+    rather than {}. Rows with no usable price at all are dropped, since a season row that
+    prices nothing cannot be published and would only produce the same error later."""
+    out = []
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        price = row.get("price")
+        price = dict(price) if isinstance(price, dict) else {}
+        cleaned = {}
+        for key in _MONEY_KEYS:
+            money = _money_or_none(price.get(key), currency)
+            if money is not None:
+                cleaned[key] = money
+        for extra in ("tripleChildPercentageDiscount", "quadrupleChildPercentageDiscount"):
+            if price.get(extra) not in (None, ""):
+                try:
+                    cleaned[extra] = float(price[extra])
+                except (TypeError, ValueError):
+                    pass
+        if not any(k in cleaned for k in _MONEY_KEYS):
+            continue
+        row["price"] = cleaned
+        out.append(row)
+    return out
+
+
 def _cancellation_ranges_from_tiers(tiers):
     """
     Converts AI-extracted cancellation_policy_tiers (the SOURCE's own stated
@@ -683,7 +748,9 @@ def build_closed_tour_payloads(
             code=pre_config.modality_code,
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=combined_stop_sales,
-            priceList=sorted(extracted_dmc_data.get("price_list", []), key=lambda p: p.get("startDate", "")),
+            priceList=sorted(
+                normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency),
+                key=lambda p: p.get("startDate", "")),
             translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
             quantityPerDay=99,

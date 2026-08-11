@@ -2189,6 +2189,90 @@ def _publish_error_guidance(error_text, flow=None):
     return None
 
 
+# Pydantic validation errors name the SCHEMA's own field path, e.g.
+# "priceList.0.price.triplePrice.amount". That is exactly the information a human
+# needs - which row, which column - but written in a language nobody in this office
+# speaks. CONFIRMED REAL COMPLAINT (product owner, ASW-6): the screen said "review/edit
+# that field" without ever naming the field. The two maps below turn the path back into
+# the words that appear on the actual editing screen.
+_VALIDATION_SECTION_LABELS = {
+    "pricelist": "Pricing row", "prices": "Pricing row", "supplements": "Supplement",
+    "stopsales": "Stop sales row", "cancellationranges": "Cancellation rule",
+    "modalities": "Modality", "options": "Modality", "datasheets": "Datasheet",
+    "pricesbyoccupancy": "Occupancy price", "inventory": "Inventory row",
+}
+_VALIDATION_FIELD_LABELS = {
+    "singleprice": "the Single price", "doubleprice": "the Double price",
+    "tripleprice": "the Triple price", "quadrupleprice": "the Quadruple price",
+    "baseadultprice": "the Adult price", "basechildrenprice": "the Child price",
+    "baseinfantprice": "the Infant price", "adultpricesupplement": "the Adult supplement",
+    "startdate": "the Start date", "enddate": "the End date", "starttime": "the Start time",
+    "amount": "the amount", "currency": "the currency", "price": "the price",
+    "name": "the Name", "description": "the Description", "code": "the Code",
+}
+_PYDANTIC_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_\[\]]+)+$")
+
+
+def _describe_validation_path(path):
+    """'priceList.0.price.triplePrice.amount' -> 'Pricing row 1 - the Triple price'."""
+    parts = [p for p in str(path).split(".") if p]
+    where, field = None, None
+    for i, part in enumerate(parts):
+        low = part.lower()
+        if low in _VALIDATION_SECTION_LABELS:
+            label = _VALIDATION_SECTION_LABELS[low]
+            nxt = parts[i + 1] if i + 1 < len(parts) else ""
+            where = f"{label} {int(nxt) + 1}" if nxt.isdigit() else label
+        elif low in _VALIDATION_FIELD_LABELS and low not in ("amount", "currency", "price"):
+            field = _VALIDATION_FIELD_LABELS[low]
+    if field is None:
+        for part in reversed(parts):
+            low = part.lower()
+            if low in _VALIDATION_FIELD_LABELS:
+                field = _VALIDATION_FIELD_LABELS[low]
+                break
+    if field is None and parts:
+        field = f"'{parts[-1]}'"
+    return f"{where} - {field}" if where else field
+
+
+def humanise_validation_error(raw_error, limit=6):
+    """Plain-English lines for a pydantic validation error, or [] if it isn't one.
+
+    Deliberately DEDUPLICATES: one blank Triple column produces two pydantic errors
+    (.amount and .currency), and one empty column deserves one sentence, not two."""
+    text = str(raw_error or "")
+    if "validation error" not in text.lower():
+        return []
+    lines = text.splitlines()
+    seen, out, hidden = set(), [], 0
+    for i, line in enumerate(lines):
+        candidate = line.strip()
+        if not candidate or not _PYDANTIC_PATH_RE.match(candidate):
+            continue
+        detail = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        low = detail.lower()
+        if "field required" in low or "missing" in low or "none is not an allowed value" in low:
+            problem = "was left blank - enter a number, or clear that whole column if it isn't sold"
+        elif "not a valid" in low or "should be a valid" in low or "type_error" in low:
+            problem = "isn't a valid value - check what was typed there"
+        elif detail:
+            problem = detail.split("[")[0].strip().rstrip(".").lower() or "was rejected"
+        else:
+            problem = "was rejected"
+        described = _describe_validation_path(candidate)
+        if described in seen:
+            continue          # same field, second complaint (.amount then .currency)
+        seen.add(described)
+        if len(out) < limit:
+            out.append(f"{described} {problem}.")
+        else:
+            hidden += 1       # only DISTINCT fields we didn't have room for
+    if hidden:
+        out.append(f"_(…and {hidden} more field(s) — the technical details below list every one.)_")
+    return out
+
+
 def show_publish_error(context_label, raw_error, flow=None):
     """
     Shows a simple, human-readable error summary by default - extracted from
@@ -2219,7 +2303,14 @@ def show_publish_error(context_label, raw_error, flow=None):
     except Exception:
         pass
 
-    if extracted_detail:
+    field_lines = humanise_validation_error(raw_error)
+
+    if field_lines:
+        # A validation error already knows exactly which field is wrong. Say so, instead of
+        # showing a pydantic path and telling the human to go and find it themselves.
+        st.error(f"❌ Couldn't {context_label}. These fields need attention:\n\n"
+                 + "\n".join(f"- {line}" for line in field_lines))
+    elif extracted_detail:
         st.error(f"❌ Couldn't {context_label}: {extracted_detail}")
     else:
         st.error(f"❌ Couldn't {context_label}.")
@@ -8071,7 +8162,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-learn-from-corrections — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-11-blank-occupancy-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
