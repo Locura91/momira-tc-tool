@@ -2,6 +2,7 @@ import os
 import time
 import json
 import difflib
+import re
 import requests
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
@@ -930,6 +931,64 @@ class TravelCompositorAPI:
         print(f"📥 Cached {len(self._transport_base_cache)} transport base(s).")
         return self._transport_base_cache
 
+    # An airport stands for the city or resort area it serves. CONFIRMED REAL RULE (product
+    # owner): "if the document says from airport (like RMF Airport) to Hurghada, this can also
+    # be a Transport from Marsa Alam to Hurghada - airport to another city also means city to
+    # city." Rate sheets name the airport; Travel Compositor's transport bases are named after
+    # places, so "RMF Airport" resolves to nothing while "Marsa Alam" resolves fine. Without
+    # this fallback every route in an airport-origin rate sheet fails to resolve and cannot be
+    # published at all.
+    #
+    # Codes are listed only where the document's own shorthand would otherwise be unreadable -
+    # the generic rules below (drop "Airport", "International", "Intl") handle the far more
+    # common "Hurghada Airport" -> "Hurghada" case on their own, for any destination anywhere.
+    _AIRPORT_CITY = {
+        "hrg": "Hurghada", "rmf": "Marsa Alam", "ssh": "Sharm El Sheikh", "cai": "Cairo",
+        "lxr": "Luxor", "asw": "Aswan", "sph": "Sohag", "atz": "Assiut", "hbe": "Alexandria",
+        "mub": "Marsa Matruh", "abs": "Abu Simbel", "tcp": "Taba", "sez": "Mahe",
+        "prI": "Praslin", "dxb": "Dubai", "auh": "Abu Dhabi",
+    }
+
+    @classmethod
+    def _place_alternates(cls, query: str) -> List[str]:
+        """Other names the same place might be listed under, best guess first.
+
+        Deliberately conservative, because a wrong alternate resolves to a REAL but WRONG
+        transport base and publishes a route between the wrong two places - a failure that
+        looks like success. Two rules only:
+
+          * an explicit IATA code mapping ("RMF" -> "Marsa Alam"), which is a fact, not a guess;
+          * dropping a trailing "Airport"/"International Airport", which is string surgery and
+            so is applied ONLY when the word actually trails ("Hurghada Airport" -> "Hurghada").
+            A place genuinely called "Airport Road" keeps its name - stripping there would
+            leave "Road", which substring-matches almost anything.
+
+        Bare codes are never returned as alternates: "RMF" is not a place name, and three
+        letters substring-match far too easily."""
+        raw = (query or "").strip()
+        low = raw.lower()
+        if not low:
+            return []
+        out = []
+
+        tokens = re.split(r"[\s/,()\-]+", low)
+        tokens = [t for t in tokens if t]
+        for token in tokens:
+            city = cls._AIRPORT_CITY.get(token)
+            if city and city not in out:
+                out.append(city)
+
+        # "<place> airport", "<place> international airport", "<place> intl. airport"
+        trailing = re.match(r"^(?P<place>.+?)[\s,\-]+(international\s+|intl\.?\s+|domestic\s+)?"
+                            r"(airport|airfield|aeropuerto)\s*$", low)
+        if trailing:
+            place = trailing.group("place").strip(" -/,()")
+            if len(place) >= 4 and place not in cls._AIRPORT_CITY:
+                original = raw[:len(place)].strip(" -/,()") or place
+                if original.lower() != low and original not in out:
+                    out.append(original)
+        return [o for o in out if o and len(o) >= 4]
+
     def resolve_transport_base(self, query_term: str) -> Dict[str, Any]:
         """
         Resolves a place name or a real transport-base code to a Transport
@@ -992,6 +1051,25 @@ class TravelCompositorAPI:
             best = substring_matches[0]
             print(f"✅ RESOLVED (substring name): '{clean_query}' -> {best.get('code')} ({best.get('name')})")
             return _to_result(best, "substring_name")
+
+        # 3. Airport -> the city it serves. See _place_alternates.
+        for alternate in self._place_alternates(clean_query):
+            alt_lower = alternate.lower()
+            for base in bases:
+                if (base.get("name") or "").strip().lower() == alt_lower:
+                    print(f"✅ RESOLVED (airport -> city): '{clean_query}' -> '{alternate}' -> "
+                          f"{base.get('code')} ({base.get('name')})")
+                    result = _to_result(base, "airport_city")
+                    result["resolved_via"] = alternate
+                    return result
+            partials = [b for b in bases if alt_lower in (b.get("name") or "").lower()]
+            if partials:
+                best = partials[0]
+                print(f"✅ RESOLVED (airport -> city, partial): '{clean_query}' -> '{alternate}' -> "
+                      f"{best.get('code')} ({best.get('name')})")
+                result = _to_result(best, "airport_city_substring")
+                result["resolved_via"] = alternate
+                return result
 
         print(f"⚠️ Transport base '{clean_query}' not found anywhere. Flagging as invalid.")
         return {"code": None, "name": clean_query, "type": None, "latitude": None, "longitude": None,

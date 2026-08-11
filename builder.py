@@ -241,7 +241,7 @@ def _locked_on_update(existing_snapshot, field, fallback, label=""):
     maxOccupancy on a live transfer invalidates bookings already taken against it.
 
     Returns (value, was_inherited) so a caller can say on screen where the value came from -
-    an inherited value that looks like a chosen one is its own trap."""
+    an inherited value that looks like a chosen one is its own kind of trap."""
     if not existing_snapshot:
         return fallback, False
     current = existing_snapshot.get(field)
@@ -912,40 +912,6 @@ def build_ticket_payloads(
     ticket_option_payload = None
     ticket_option_error = None
     try:
-        # ---- ENFORCE 9-PAX SYSTEM CAP ----
-        SYSTEM_MAX_PAX = 9
-        user_max = pre_config.max_passengers
-        # Clamp max_passengers to system cap (never exceed 9)
-        max_passengers = min(user_max, SYSTEM_MAX_PAX)
-        if max_passengers != user_max:
-            extracted_ticket_data["pricing_notes"] = (
-                extracted_ticket_data.get("pricing_notes", "") +
-                f" The max passenger count was reduced to {SYSTEM_MAX_PAX} (system limit)."
-            ).strip()
-
-        # ---- Filter occupancy_prices (if used) ----
-        selected_price_type = extracted_ticket_data.get("price_type") or "OCCUPANCY"
-        if selected_price_type == "OCCUPANCY":
-            raw_occupancy = extracted_ticket_data.get("occupancy_prices") or []
-            filtered_occupancy = []
-            dropped_occupancy = []
-            for o in raw_occupancy:
-                occ = _safe_int(o.get("occupancy", 1), fallback=1)
-                if occ <= SYSTEM_MAX_PAX:
-                    filtered_occupancy.append({
-                        "occupancy": occ,
-                        "amount": _safe_float(o.get("amount", 0))
-                    })
-                else:
-                    dropped_occupancy.append(occ)
-            if dropped_occupancy:
-                extracted_ticket_data["pricing_notes"] = (
-                    extracted_ticket_data.get("pricing_notes", "") +
-                    f" Dropped occupancy tiers for group sizes > {SYSTEM_MAX_PAX}: {dropped_occupancy}."
-                ).strip()
-            extracted_ticket_data["occupancy_prices"] = filtered_occupancy
-
-        # ---- Now build the option with the enforced cap ----
         # Pricing is 3 mutually-exclusive modes (DISTRIBUTION/OCCUPANCY/SERVICE).
         # The API doesn't ignore the fields belonging to the two UNSELECTED
         # modes - it validates/stores whatever is sent. Historically all three
@@ -1010,7 +976,7 @@ def build_ticket_payloads(
             baseServicePrice=base_service_price,
             occupancyPrices=occupancy_prices,
             priceType=selected_price_type,
-            maxPassengers=max_passengers,  # Use the clamped value
+            maxPassengers=pre_config.max_passengers,
             minPassengers=pre_config.min_passengers,
             # Confirmed by product owner: infant = 0-2, child = 2-12,
             # internationally standard, same for Tickets and ClosedTours -
@@ -1451,6 +1417,54 @@ def _map_transport_type(type_hint: str, service_name: str) -> str:
     return "CAR"
 
 
+def _add_minimum_charge_bracket(brackets_sorted, price_per_pax, min_billable_pax=None,
+                                max_cap=_MAX_OCCUPANCY_PAX):
+    """Make a solo traveller sellable on a per-person rate that has a minimum party size.
+
+    CONFIRMED REAL RULE (product owner): "Private Transfer p.p. valid for (Min.2 pax) in
+    Vehicle" means "1 Pax must get an own Modality for the Transport and gets a surcharge, so
+    that one pax pays the price as for 2 pax."
+
+    Why it has to be synthesised rather than left to the document: the rate sheet prices ONE
+    thing, a per-person rate valid from two people up. Travel Compositor sells per occupancy
+    bracket, so if the lowest bracket starts at 2 the product simply cannot be booked by one
+    person - it silently disappears from search for every solo enquiry, which is lost revenue
+    nobody sees. Publishing the per-person rate down to 1 instead would be worse: it would
+    sell a private vehicle at half what the supplier charges, and the loss is real money.
+
+    So a 1..(minimum-1) bracket is added, priced at the per-person rate TIMES the minimum -
+    one person pays the two-person total. This is not a guess: a real Aswan-Hurghada transport
+    already in Travel Compositor carries exactly this shape, a narrow 1-pax bracket at 180
+    against a 2-9 pax bracket at 90 per person.
+
+    Only ever applies to PER-PERSON pricing. A per-vehicle rate has no such problem - the
+    vehicle costs the same whoever is in it - and doubling it there would overcharge."""
+    if not price_per_pax or not brackets_sorted:
+        return brackets_sorted
+    lowest = brackets_sorted[0]
+    lowest_min = _safe_int(lowest.get("min_occupancy", 1), fallback=1)
+    minimum = _safe_int(min_billable_pax, fallback=0) or lowest_min
+    # Nothing to do when one person can already book, and never invent a bracket above the cap.
+    if minimum <= 1 or lowest_min <= 1 or minimum > max_cap:
+        return brackets_sorted
+    unit_price = _safe_float(lowest.get("price", 0))
+    if unit_price <= 0:
+        return brackets_sorted
+    solo = {
+        "min_occupancy": 1,
+        "max_occupancy": max(1, minimum - 1),
+        # Per person, and this bracket holds one person - so the per-person figure IS the
+        # minimum-party total.
+        "price": round(unit_price * minimum, 2),
+        "child_price": (round(_safe_float(lowest.get("child_price")) * minimum, 2)
+                        if lowest.get("child_price") is not None else None),
+        "infant_price": (round(_safe_float(lowest.get("infant_price")) * minimum, 2)
+                         if lowest.get("infant_price") is not None else None),
+        "synthesized_minimum_charge": True,
+    }
+    return [solo] + list(brackets_sorted)
+
+
 def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax, max_cap=_MAX_OCCUPANCY_PAX):
     """
     Transport-specific counterpart to _extend_tiers_for_multi_vehicle_pricing (see that
@@ -1592,6 +1606,8 @@ def build_transport_payloads(
         )
         brackets.append(b)
     brackets_sorted = sorted(brackets, key=lambda x: x["min_occupancy"])
+    brackets_sorted = _add_minimum_charge_bracket(
+        brackets_sorted, price_per_pax, extracted_transport_data.get("min_billable_pax"))
     brackets_sorted = _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax)
 
     # CONFIRMED (via real data): unlike Transfer (which always writes every tier explicitly, so
@@ -1781,8 +1797,15 @@ def build_transport_payloads(
         "arrival_name": arrival_name,
         "departure_base_resolved": departure_base.get("valid", False),
         "departure_base_match_type": departure_base.get("match_type"),
+        # Which name actually matched, when it wasn't the one in the document. An airport
+        # resolved via its city ("RMF Airport" -> "Marsa Alam") is a substitution a human
+        # should see rather than discover later on a published route.
+        "departure_base_resolved_via": departure_base.get("resolved_via"),
+        "departure_base_name": departure_base.get("name"),
         "arrival_base_resolved": arrival_base.get("valid", False),
         "arrival_base_match_type": arrival_base.get("match_type"),
+        "arrival_base_resolved_via": arrival_base.get("resolved_via"),
+        "arrival_base_name": arrival_base.get("name"),
         "existing_transport_id": existing_transport_id,
         "option_actions": option_actions,
         "options_to_deactivate": options_to_deactivate,

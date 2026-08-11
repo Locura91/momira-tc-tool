@@ -2172,6 +2172,17 @@ conclusion merely because every row starts at an airport.
 A DISTINCT transport product is one specific ROUTE (a departure location to an arrival location) at one
 specific SERVICE/CLASS/TIER (e.g. "Private Car", "Car + Ferry Combined", "Economy").
 
+CRITICAL - AN AIRPORT STANDS FOR THE CITY IT SERVES. CONFIRMED REAL RULE (product owner): "if the
+document says from airport (like RMF Airport) to Hurghada, this can also be a Transport from Marsa Alam
+to Hurghada - airport to another city also means city to city." So read an airport as its city or resort
+area, and then apply the local-vs-long-distance test to the CITIES, not to the words on the page:
+  * "RMF Airport to Hurghada" = Marsa Alam to Hurghada = two different cities = TRANSPORT.
+  * "HRG Airport to Luxor" = Hurghada to Luxor = TRANSPORT.
+  * "HRG Airport to Sahl Hashish" = both within the Hurghada area = a local TRANSFER.
+Name the CITY or resort area in departure_hint/arrival_hint (e.g. "Marsa Alam", not "RMF Airport"), and
+keep the airport wording in the label if it helps a human recognise the row. Travel Compositor's transport
+bases are named after places, not airport codes, so a city name is what actually resolves.
+
 CRITICAL - GUIDE LANGUAGE / OPTIONAL EXTRAS ARE NEVER SEPARATE PRODUCTS: exactly as with Transfers, a
 document may repeat the same routes once per guide language or per optional extra - this is NOT multiple
 products. List each route+class combination only ONCE.
@@ -2238,6 +2249,12 @@ route/service described elsewhere in the document.
 
 Extract:
 - service_name: the service/tier name exactly as the document states it, e.g. "Private Car", "Car + Ferry Combined".
+AN AIRPORT STANDS FOR THE CITY IT SERVES (confirmed real rule, product owner): a row reading
+"RMF Airport to Hurghada" is the city-to-city connection Marsa Alam to Hurghada. Put the CITY or resort-area
+name in departure_name/arrival_name ("Marsa Alam", "Hurghada"), because Travel Compositor's transport bases
+are named after places and an airport code resolves to nothing. If the airport itself matters to a human
+reading the voucher, say so in the description rather than in the location names.
+
 - departure_name, arrival_name: the departure and arrival location names, exactly as stated (e.g. "Praslin", "La Digue").
 - transport_type_hint: any transport mode mentioned, e.g. "Car", "Car and Public Ferry", "Flight", "Train", "Coach". Empty if not stated.
 - vehicle_model: a specific vehicle/aircraft/train model if genuinely stated (e.g. "Mercedes Vito", "Toyota Avanza"). Empty if not stated - do NOT invent one.
@@ -2255,6 +2272,13 @@ Extract:
   IMPORTANT: this is NOT necessarily the same as arrival_time minus departure_time (a multi-leg journey can
   have significant waiting time between legs that duration_time does not include) - only fill this from an
   explicitly stated duration, never compute it from the two clock times. Leave empty if not stated.
+- min_billable_pax: the SMALLEST number of passengers a per-person rate may be charged for, when the
+  document states a minimum party size - e.g. "Private Transfer p.p. valid for (Min.2 pax) in Vehicle"
+  means min_billable_pax = 2. CONFIRMED REAL RULE (product owner): a solo traveller must still be able
+  to book, paying the two-person total - that becomes its own occupancy bracket automatically, so do NOT
+  invent a 1-pax row yourself. Just report the minimum the document states. Use 1 (or leave it out) when
+  the document states no minimum, and NEVER set it for a per-vehicle/flat rate, where the price does not
+  depend on headcount at all.
 - occupancy_brackets: a list of {"min_occupancy": <integer>, "max_occupancy": <integer>, "price": <number>,
   "child_price": <number or null>, "infant_price": <number or null>}. Each entry is the ACTUAL FINAL price
   a party of that size pays - as literally stated by the document (e.g. "1-2 Pax: EUR 102 per person" ->
@@ -2302,6 +2326,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
   "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "",
   "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
+  "min_billable_pax": 1,
   "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
   "description": "", "company_name": "", "start_date": "", "end_date": "",
   "cancellation_policy_tiers": [], "cancellation_policy_text": ""
@@ -2331,6 +2356,7 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
         "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
         "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "EUR",
         "departure_time": "09:00:00", "arrival_time": "09:00:00", "plus_days": 0, "duration_time": "",
+  "min_billable_pax": 1,
         "occupancy_brackets": [], "child_infant_rule_text": "", "additional_notes": "",
         "description": "", "company_name": "", "start_date": "", "end_date": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",

@@ -2931,6 +2931,53 @@ def _clear_batch_widget_state(prefixes, keep=None):
             st.session_state.pop(key, None)
 
 
+# When detection comes back empty, this is the instruction the "detect again" button sends.
+# Deliberately blunt: the operator has looked at the document and said these ARE transports,
+# so the model's own Transfer-vs-Transport judgement is the thing being overruled.
+FORCE_ALL_ROUTES_HINT = (
+    "Treat EVERY route in this document as a product of the type being uploaded, including "
+    "short local airport-to-hotel routes. Do not exclude any route on the grounds that it "
+    "looks like a local transfer rather than a long-distance connection - that decision has "
+    "already been made by the operator. List every distinct route and service-class "
+    "combination the document prices, one candidate each."
+)
+
+
+def render_empty_detection_retry(raw_text, noun, key_prefix, detect_fn, on_candidates):
+    """Offer a second run when detection found nothing, instead of leaving a blank box.
+
+    CONFIRMED REAL DEAD END (product owner, on a real transfer rate sheet uploaded as
+    Transport): detection returned nothing, and the only thing on screen was an empty text
+    field. The instruction box that would have fixed it lives on the PREVIOUS screen, so
+    acting on the advice meant going back and re-uploading the document. The retry runs here,
+    against the text already extracted, so nothing is uploaded twice."""
+    st.markdown("**Try again, telling it what you can see and it can't:**")
+    instruction = st.text_area(
+        "Instruction for a second attempt", value=FORCE_ALL_ROUTES_HINT, height=110,
+        key=f"{key_prefix}_retry_hint", label_visibility="collapsed")
+    rcol1, rcol2 = st.columns([2, 3])
+    with rcol1:
+        if st.button(f"🔄 Detect {noun}s again with this instruction", type="primary",
+                     key=f"{key_prefix}_retry_btn", use_container_width=True):
+            with st.spinner(f"Reading the document again as {noun}s..."):
+                try:
+                    found = detect_fn(raw_text, human_hint=instruction)
+                except Exception as e:
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
+                    found = None
+            if found:
+                on_candidates(found)
+                _clear_batch_widget_state([f"{key_prefix}_sel_", f"{key_prefix}_label_"])
+                st.rerun()
+            elif found is not None:
+                st.error(f"Still nothing found. This document may genuinely not contain "
+                         f"{noun}s — or name one route by hand in the box below.")
+    with rcol2:
+        st.caption("This re-reads the text already extracted from your document — nothing is "
+                  "uploaded again. Edit the wording above to narrow it, e.g. *only the "
+                  "Hurghada section, private transfers only*.")
+
+
 def _swapped_label(label, dep, arr):
     """Rewrite a route label so it reads in the other direction.
 
@@ -5375,7 +5422,19 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 st.warning("**No transfer products were detected in this document.** Name the one "
                            "you want below, or go back and check the document actually contains "
                            "transfer rates.")
-                st.caption("One route per row — the closer to the document's own wording, the better.")
+                def _tf_accept(found):
+                    st.session_state.xtf_candidates = [
+                        {"label": t.get("label", ""), "service_name": t.get("service_name", ""),
+                         "departure_hint": t.get("departure_hint", ""),
+                         "arrival_hint": t.get("arrival_hint", ""), "selected": True,
+                         "is_genuine_multiple": True}
+                        for t in found]
+
+                render_empty_detection_retry(st.session_state.xtf_raw_text, "transfer", "xtf",
+                                             detect_transfer_products, _tf_accept)
+                st.markdown("---")
+                st.caption("Or name one route by hand below — the closer to the document's own "
+                          "wording, the better.")
         else:
             st.subheader(f"{len(candidates)} distinct transfer products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transfer, reviewed one at a time next. "
@@ -5979,9 +6038,20 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                            "means every route in it is a local airport-to-hotel journey, which is a "
                            "**Transfer**, not a Transport — Travel Compositor treats those as different "
                            "products. If that is the case, switch to the Transfer flow.")
-                st.caption("If the document DOES contain a long-distance route (a different city or "
-                          "region at each end), name it in the box below and it will be extracted. "
-                          "One route per row.")
+                st.caption("If these ARE the products you want — you may be selling these routes as "
+                          "Transports deliberately — say so below and it will list them all.")
+
+                def _tp_accept(found):
+                    st.session_state.xtp_candidates = [
+                        {"label": t.get("label", ""), "service_name": t.get("service_name", ""),
+                         "departure_hint": t.get("departure_hint", ""),
+                         "arrival_hint": t.get("arrival_hint", ""), "selected": True}
+                        for t in found]
+
+                render_empty_detection_retry(st.session_state.xtp_raw_text, "transport", "xtp",
+                                             detect_transport_products, _tp_accept)
+                st.markdown("---")
+                st.caption("Or name one route by hand below. One route per row.")
         else:
             st.subheader(f"{len(candidates)} distinct transport products detected - choose which to review")
             st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
@@ -6306,7 +6376,19 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 st.warning(f"⚠️ Departure and/or arrival couldn't be resolved to a real Travel Compositor "
                           f"Transport Base (departure: {build_result.get('departure_base_match_type')}, "
                           f"arrival: {build_result.get('arrival_base_match_type')}) - fix the names above "
-                          f"before publishing.")
+                          f"before publishing. Transport Bases are named after PLACES, so an airport code "
+                          f"on its own often won't match - try the city it serves (e.g. 'Marsa Alam' "
+                          f"rather than 'RMF Airport').")
+            else:
+                # An airport that resolved via its city is a substitution, and a substitution a
+                # human hasn't seen is one they find out about from a published route. Say it here.
+                for _side in ("departure", "arrival"):
+                    _via = build_result.get(f"{_side}_base_resolved_via")
+                    if _via:
+                        st.info(f"ℹ️ The {_side} was read as an airport and matched on the city it "
+                                f"serves — **{_via}** → Transport Base "
+                                f"**{build_result.get(f'{_side}_base_name')}**. Check that is the right "
+                                f"place before publishing.")
             if not dates_ok:
                 st.warning("⚠️ Start date and/or end date is blank - enter the document's real validity range "
                           "before publishing; Travel Compositor requires both.")
@@ -7391,7 +7473,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-transport-detection — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-min-pax-surcharge — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
