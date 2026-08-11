@@ -74,6 +74,7 @@ from builder import (build_hotel_contract_payload, resolve_room_provider_codes, 
 from document_reader import extract_raw_text, extract_images
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
+import ai_extractor as ai_extractor_module
 from web_extractor import get_page_text, get_page_image_bytes
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
@@ -2943,6 +2944,30 @@ FORCE_ALL_ROUTES_HINT = (
 )
 
 
+def render_detection_diagnosis(noun):
+    """Say what the last detection run actually did.
+
+    An empty result has several very different causes - the document never reached the AI, the
+    AI read it and returned nothing, or it returned candidates that were then discarded - and
+    on screen they were identical. That ambiguity cost a real afternoon: a run that HAD found
+    the routes and thrown them away looked exactly like one that found none."""
+    info = getattr(ai_extractor_module, "LAST_DETECTION", None) or {}
+    if not info:
+        return
+    with st.expander("🔬 What the AI actually did", expanded=False):
+        st.caption(
+            f"It read **{info.get('document_chars', 0):,} characters** of your document in "
+            f"**{info.get('sections_read', 0)} pass(es)** and returned "
+            f"**{info.get('count', 0)} {noun} candidate(s)**."
+        )
+        if not info.get("document_chars"):
+            st.error("The document reached the AI empty - the file may not have converted to "
+                     "text. Try exporting it again, or paste the rates in as text.")
+        elif not info.get("count"):
+            st.caption("The document was read in full, so this is the AI's judgement rather than "
+                      "a technical failure. The instruction below overrules it.")
+
+
 def render_empty_detection_retry(raw_text, noun, key_prefix, detect_fn, on_candidates):
     """Offer a second run when detection found nothing, instead of leaving a blank box.
 
@@ -5430,6 +5455,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                          "is_genuine_multiple": True}
                         for t in found]
 
+                render_detection_diagnosis("transfer")
                 render_empty_detection_retry(st.session_state.xtf_raw_text, "transfer", "xtf",
                                              detect_transfer_products, _tf_accept)
                 st.markdown("---")
@@ -6048,6 +6074,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                          "arrival_hint": t.get("arrival_hint", ""), "selected": True}
                         for t in found]
 
+                render_detection_diagnosis("transport")
                 render_empty_detection_retry(st.session_state.xtp_raw_text, "transport", "xtp",
                                              detect_transport_products, _tp_accept)
                 st.markdown("---")
@@ -7473,7 +7500,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-min-pax-surcharge — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-trust-the-list — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform

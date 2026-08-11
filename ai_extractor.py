@@ -877,6 +877,21 @@ def _split_for_detection(text: str, parts: int = 2, header: str = "") -> list:
     return out
 
 
+# What the last detection actually returned, so an empty result can be explained on screen
+# rather than leaving an operator guessing whether the document, the prompt or the tool failed.
+LAST_DETECTION = {}
+
+
+def _record_detection(list_key, found, flag, raw_text, depth):
+    LAST_DETECTION.update({
+        "list_key": list_key,
+        "count": LAST_DETECTION.get("count", 0) + len(found),
+        "flag": flag,
+        "document_chars": max(LAST_DETECTION.get("document_chars", 0), len(raw_text or "")),
+        "sections_read": LAST_DETECTION.get("sections_read", 0) + 1,
+    })
+
+
 def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, list_key: str,
                   key_fn, max_tokens: int = _DETECTION_MAX_TOKENS, _depth: int = 0,
                   _header: str = None) -> list:
@@ -885,6 +900,11 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
     key_fn(item) -> a hashable identity used to de-duplicate across sections. Sections
     deliberately overlap in context, and a route table can straddle a split, so the same
     candidate genuinely can come back twice - de-duplicating is not optional."""
+    if _depth == 0:
+        # Reset HERE, not on the success path: a top-level call that truncates never reaches
+        # the success path, so the previous run's counts survived and the diagnosis reported
+        # the wrong document. A diagnostic that lies is worse than none.
+        LAST_DETECTION.clear()
     try:
         data, stop_reason = _call_claude_with_stop(system_prompt, raw_text, model, max_tokens)
     except Exception:
@@ -892,7 +912,18 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
             raise
         stop_reason, data = "max_tokens", None      # treat a hard failure like truncation
     if data is not None and stop_reason != "max_tokens":
-        return list(data.get(list_key) or []) if data.get(flag_key) else []
+        # TRUST THE LIST, NOT THE FLAG. CONFIRMED REAL FAILURE (product owner, on a real
+        # transfer rate sheet uploaded as Transport): the model returned the routes it had
+        # found AND set the boolean to false - reasoning, not unreasonably, that a document
+        # headed "Transfer Fees" does not describe "multiple transports" - and this line then
+        # threw the whole list away. On screen that is indistinguishable from the AI finding
+        # nothing at all, so no instruction the operator typed could ever fix it.
+        #
+        # The boolean was always redundant: an empty list already means "not multiple". Reading
+        # only the list removes a way for the two to disagree.
+        found = [i for i in (data.get(list_key) or []) if isinstance(i, dict)]
+        _record_detection(list_key, found, data.get(flag_key), raw_text, _depth)
+        return found
 
     if _depth >= _DETECTION_MAX_DEPTH:
         raise RuntimeError(
@@ -2157,17 +2188,20 @@ car route between two towns, a car+ferry combined journey, a scheduled flight or
 are typically the same style/layout as Transfer rate sheets - very often they ARE a transfer rate sheet that
 happens to also contain a few long-distance routes.
 
-CRITICAL - HOW TO TELL A TRANSPORT FROM A TRANSFER, because getting this wrong returns nothing at all:
-what matters is WHERE THE ROUTE GOES, not whether an airport is involved. A route is a TRANSPORT when the
-two ends are different cities, regions or resort areas that a traveller would think of as separate
-destinations - "Hurghada Airport to Luxor", "Hurghada Airport to Cairo", "Sharm to Dahab". It is a TRANSFER
-only when both ends are within ONE local area - an airport and the hotels it serves, a harbour and the
-resort beside it ("Hurghada Airport to Hurghada", "HRG Airport to Sahl Hashish").
+CRITICAL - LIST EVERY ROUTE. DO NOT DECIDE WHETHER SOMETHING IS "REALLY" A TRANSFER.
+CONFIRMED REAL RULE (product owner): "a Transfer can also be a Transport." Whether a given route is sold
+as a Transfer or as a Transport is a commercial decision the operator has already made before uploading
+this document - it is not something to infer from the route's length, and the same route is legitimately
+sold as both. A human ticks the ones they want on the next screen, so a route you leave out is simply
+unavailable to them, while a route you include costs them one click to remove.
 
-So a rate sheet whose rows all start at an airport still contains TRANSPORTS: list the long-distance rows
-and leave out the local ones. An airport at one end NEVER disqualifies a route. If a document contains no
-long-distance routes at all, return "multiple_transports": false with an empty list - but do not reach that
-conclusion merely because every row starts at an airport.
+So: list EVERY distinct route-and-class combination the document prices. Never omit one on the grounds
+that it looks like a short local hop, that the document is titled "Transfer", or that an airport is at one
+end. Returning an empty list when the document plainly contains priced routes is the single worst outcome
+here, because it leaves the operator with nothing to choose from and no way to tell why.
+
+The only thing the local-vs-long-distance distinction is still used for is the "scope" field below, which
+is advice to the human, not a filter you apply yourself.
 
 A DISTINCT transport product is one specific ROUTE (a departure location to an arrival location) at one
 specific SERVICE/CLASS/TIER (e.g. "Private Car", "Car + Ferry Combined", "Economy").
@@ -2194,8 +2228,11 @@ direction.
 For each distinct route+class product found, output a candidate with:
 - label: short human-readable summary, e.g. "Private Car: Praslin <-> La Digue"
 - service_name: exactly as the document names this service/tier
-- departure_hint: the departure location name(s) as stated in the document
-- arrival_hint: the arrival location name(s) as stated in the document
+- departure_hint: the CITY or resort-area name for the departure (see the airport rule above)
+- arrival_hint: the CITY or resort-area name for the arrival
+- scope: "long_distance" when the two ends are different cities/regions a traveller would call separate
+  destinations, or "local" when both ends are within one area (an airport and the hotels it serves). This
+  is a LABEL to help the human filter, never a reason to leave a route out.
 
 HUMAN INSTRUCTION OVERRIDES EVERYTHING ABOVE. If an instruction from the operator is given, it decides
 what to list and the rules above are only a fallback for whatever the instruction does not cover. "Only
@@ -2209,7 +2246,7 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 {
   "multiple_transports": true or false,
   "transports": [
-    {"label": "...", "service_name": "...", "departure_hint": "...", "arrival_hint": "..."}
+    {"label": "...", "service_name": "...", "departure_hint": "...", "arrival_hint": "...", "scope": "long_distance"}
   ]
 }
 If there is genuinely only one distinct transport product in the whole document, set "multiple_transports": false
