@@ -2101,6 +2101,23 @@ told to contact the DMC/supplier directly. Silently drop/omit any such text wher
 If a human hint above names a specific route/service, extract ONLY that one product and ignore every other
 route/service described elsewhere in the document.
 
+FINDING THE HINTED ROUTE IN THE DOCUMENT. CONFIRMED REAL FAILURE (product owner): the hint read
+"Private Transfer - Marsa Alam to El Quseir" while the document's row reads "RMF Airport | El Quseir |
+20 | 30", and every extracted field came back empty. The hint names PLACES; a rate sheet often names
+AIRPORTS or abbreviations, and a section heading may be the only place the departure city is written.
+  * Resolve airports to their cities in BOTH directions before matching: "RMF Airport" is Marsa Alam,
+    "HRG Airport" is Hurghada, "SSH Airport" is Sharm El Sheikh, "CAI Airport" is Cairo, and in general
+    "<city> Airport" is that city. So the hint "Marsa Alam to El Quseir" MATCHES the row
+    "RMF Airport | El Quseir".
+  * Rows under a heading like "Transfer Fees Marsa Allam" depart from Marsa Alam even where the cell
+    shows only an airport code.
+  * The hint may also be reversed relative to the document - a return leg. "El Quseir to Marsa Alam"
+    matches the same row; use that row's prices and simply swap departure and arrival.
+  * If you cannot find an exact match, use the CLOSEST row and extract it. RETURNING EMPTY FIELDS IS
+    NEVER CORRECT for a document that prices this route - a blank form tells the operator nothing about
+    what went wrong, and they cannot correct a value that is not there. Extract your best reading and let
+    the human fix it on the review screen.
+
 Extract:
 - service_name: the service/tier name exactly as the document states it, e.g. "Private Car Transfer", "Standard".
 - departure_name, arrival_name: the departure and arrival point/area names, exactly as stated (e.g. "Mahe
@@ -2357,6 +2374,23 @@ to contact the DMC/supplier directly. Silently drop/omit any such text wherever 
 If a human hint above names a specific route/service, extract ONLY that one product and ignore every other
 route/service described elsewhere in the document.
 
+FINDING THE HINTED ROUTE IN THE DOCUMENT. CONFIRMED REAL FAILURE (product owner): the hint read
+"Private Transfer - Marsa Alam to El Quseir" while the document's row reads "RMF Airport | El Quseir |
+20 | 30", and every extracted field came back empty. The hint names PLACES; a rate sheet often names
+AIRPORTS or abbreviations, and a section heading may be the only place the departure city is written.
+  * Resolve airports to their cities in BOTH directions before matching: "RMF Airport" is Marsa Alam,
+    "HRG Airport" is Hurghada, "SSH Airport" is Sharm El Sheikh, "CAI Airport" is Cairo, and in general
+    "<city> Airport" is that city. So the hint "Marsa Alam to El Quseir" MATCHES the row
+    "RMF Airport | El Quseir".
+  * Rows under a heading like "Transfer Fees Marsa Allam" depart from Marsa Alam even where the cell
+    shows only an airport code.
+  * The hint may also be reversed relative to the document - a return leg. "El Quseir to Marsa Alam"
+    matches the same row; use that row's prices and simply swap departure and arrival.
+  * If you cannot find an exact match, use the CLOSEST row and extract it. RETURNING EMPTY FIELDS IS
+    NEVER CORRECT for a document that prices this route - a blank form tells the operator nothing about
+    what went wrong, and they cannot correct a value that is not there. Extract your best reading and let
+    the human fix it on the review screen.
+
 Extract:
 - service_name: the service/tier name exactly as the document states it, e.g. "Private Car", "Car + Ferry Combined".
 AN AIRPORT STANDS FOR THE CITY IT SERVES (confirmed real rule, product owner): a row reading
@@ -2391,10 +2425,6 @@ reading the voucher, say so in the description rather than in the location names
   check, so do not mark an estimate as stated.
 - plus_days: 0 unless the document explicitly states the arrival is a later calendar day than departure
   (e.g. an overnight ferry/train) - then the number of days later.
-- duration_time: the stated total ACTIVE travel duration if given (e.g. a ferry crossing time) - "HH:MM:SS".
-  IMPORTANT: this is NOT necessarily the same as arrival_time minus departure_time (a multi-leg journey can
-  have significant waiting time between legs that duration_time does not include) - only fill this from an
-  explicitly stated duration, never compute it from the two clock times. Leave empty if not stated.
 - min_billable_pax: the SMALLEST number of passengers a per-person rate may be charged for, when the
   document states a minimum party size - e.g. "Private Transfer p.p. valid for (Min.2 pax) in Vehicle"
   means min_billable_pax = 2. CONFIRMED REAL RULE (product owner): a solo traveller must still be able
