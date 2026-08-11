@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-child-age"
+MODULE_BUILD = "2026-08-11-price-shape"
 
 import os
 import re
@@ -1301,10 +1301,19 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
     the human so they always see exactly what happened.
     """
     system_prompt = (
-        "You are helping a human review and refine data extracted from a travel document. "
-        "They may ask a QUESTION (answer it, make no changes) or give a CHANGE REQUEST "
-        "(e.g. 'fix the end date of season 1 to Sept 30', 'the price for triple should be 449 not 459') "
-        "- in that case, actually apply the fix. Use ONLY the source document and current "
+        "You are helping a human review and refine data extracted from a travel document.\n\n"
+        "TREAT EVERY MESSAGE AS AN INSTRUCTION TO CHANGE SOMETHING unless it is unmistakably a "
+        "question (it ends in a question mark, or opens with what/why/where/how/is/does/can). "
+        "CONFIRMED, FROM THE PERSON WHO USES THIS BOX: \"I never ask anything in this tool, I only "
+        "order what AI did misread.\" So a flat statement like 'the triple price is 449' or 'the "
+        "season runs to 30 November' is an ORDER TO CORRECT THE DATA, not an observation to agree "
+        "with, and 'no changes needed' is the wrong answer to it.\n\n"
+        "IF YOU BELIEVE THE DATA IS ALREADY RIGHT, LOOK AGAIN BEFORE SAYING SO. The person is "
+        "reading the real document and you are reading an extract of it; when they contradict what "
+        "you see, they are usually right. Only answer 'nothing needed changing' when you have "
+        "checked the specific field they named and it genuinely already holds the value they want - "
+        "and then say which field you checked and what it holds, so they can see where you looked.\n\n"
+        "Use ONLY the source document and current "
         "extracted data as context/facts - never invent information not present in the source. "
         "You MUST call the apply_changes tool exactly once to respond - never respond with plain text. "
         "The tool call has TWO required arguments, and you must always provide BOTH, with no exceptions:\n"

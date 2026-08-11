@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-11-child-age"
+MODULE_BUILD = "2026-08-11-price-shape"
 
 import math
 import datetime
@@ -417,6 +417,86 @@ def _with_manual_notes(voucher_text, extracted_data):
     if not note:
         return voucher_text
     return f"{voucher_text}\n\n{note}".strip() if voucher_text else note
+
+
+_PRICE_COLUMN_ALIASES = {
+    "singleprice": "singlePrice", "single": "singlePrice", "sgl": "singlePrice",
+    "doubleprice": "doublePrice", "double": "doublePrice", "dbl": "doublePrice",
+    "tripleprice": "triplePrice", "triple": "triplePrice", "tpl": "triplePrice",
+    "quadrupleprice": "quadruplePrice", "quadruple": "quadruplePrice",
+    "quad": "quadruplePrice", "qdp": "quadruplePrice",
+}
+
+
+def coerce_price_list_shape(rows, currency="EUR"):
+    """Force a price list into the one shape the screens and the payload expect.
+
+    CONFIRMED REAL CRASH (product owner, ClosedTour modality): "Tell AI what to fix" returned a
+    price_list whose rows carried `price` as a bare number rather than the nested per-occupancy
+    object, and the pricing table died on `price.get(...)` with an AttributeError - taking the
+    whole screen down and pointing at a line of display code that was not at fault.
+
+    THE REAL DEFECT WAS UPSTREAM: apply_clarification merges whatever the model returns straight
+    into the working data, with nothing checking the shape. Any field can come back malformed;
+    price_list is simply the one that gets rendered into a table immediately afterwards. So this
+    runs at BOTH ends - when a clarification is merged, and again when the table is built - and
+    it never raises, because a screen that cannot draw itself is worse than a row that needs
+    fixing by hand.
+
+    Returns (rows, notes). `notes` names anything that could not be read confidently, so the
+    human is told rather than left with a quietly emptied row.
+    """
+    out, notes = [], []
+    for index, row in enumerate(rows or []):
+        label = f"row {index + 1}"
+        if not isinstance(row, dict):
+            notes.append(f"{label} was not a price row at all and was dropped")
+            continue
+        entry = {k: v for k, v in row.items() if k not in ("price",)}
+        prices = {}
+
+        raw = row.get("price")
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                canon = _PRICE_COLUMN_ALIASES.get(str(key).strip().lower())
+                if not canon:
+                    continue
+                if isinstance(value, dict):
+                    amount = value.get("amount")
+                    row_currency = value.get("currency") or currency
+                else:
+                    amount, row_currency = value, currency
+                if amount in (None, ""):
+                    continue
+                try:
+                    prices[canon] = {"amount": float(amount), "currency": row_currency}
+                except (TypeError, ValueError):
+                    notes.append(f"{label}'s {canon} was not a number and was left blank")
+        elif raw not in (None, ""):
+            # A bare number. It could mean per person, or the double rate, or a total - and
+            # each reading bills a different amount. Refusing to guess: the dates survive so
+            # the row stays visible and editable, and the note says exactly what to do.
+            notes.append(f"{label} had a single unlabelled price ({raw}) with no occupancy - "
+                         f"enter it under the right column")
+
+        # A very common alternative shape: the occupancies sitting on the row itself.
+        for key, value in row.items():
+            canon = _PRICE_COLUMN_ALIASES.get(str(key).strip().lower())
+            if not canon or canon in prices or value in (None, ""):
+                continue
+            if isinstance(value, dict):
+                value = value.get("amount")
+            try:
+                prices[canon] = {"amount": float(value), "currency": currency}
+                entry.pop(key, None)
+            except (TypeError, ValueError):
+                pass
+
+        entry["price"] = prices
+        entry["startDate"] = str(entry.get("startDate") or "")
+        entry["endDate"] = str(entry.get("endDate") or "")
+        out.append(entry)
+    return out, notes
 
 
 def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12):

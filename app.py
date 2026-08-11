@@ -74,6 +74,7 @@ from builder import derive_arrival_from_duration, build_closed_tour_payloads, bu
 from builder import build_transport_payloads
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
+from builder import coerce_price_list_shape
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
@@ -182,7 +183,7 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
     for any additional modalities being created in the same batch.
     """
     default_price_list = sorted(
-        target_data.get("price_list") or [{
+        coerce_price_list_shape(target_data.get("price_list"), currency)[0] or [{
             "name": "Example row - edit or delete", "startDate": "2027-01-01", "endDate": "2027-12-31",
             "price": {"singlePrice": {"amount": 0, "currency": currency}, "doublePrice": {"amount": 0, "currency": currency}}
         }],
@@ -192,10 +193,15 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
 
     price_df_rows = []
     for entry in default_price_list:
-        price = entry.get("price", {}) or {}
+        price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
         def _amt(key, price=price):
             block = price.get(key)
-            return block.get("amount") if isinstance(block, dict) else None
+            if isinstance(block, dict):
+                block = block.get("amount")
+            try:
+                return float(block) if block not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
         price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
                               "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                               "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
@@ -878,17 +884,22 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         render_stop_sales_editor(data, f"mm_{idx}")
 
         default_price_list = sorted(
-            data.get("price_list") or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
+            coerce_price_list_shape(data.get("price_list"), currency)[0] or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
                                         "price": {"singlePrice": {"amount": 0, "currency": currency},
                                                  "doublePrice": {"amount": 0, "currency": currency}}}],
             key=lambda e: e.get("startDate", "")
         )
         price_df_rows = []
         for entry in default_price_list:
-            price = entry.get("price", {}) or {}
+            price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
             def _amt(key, price=price):
                 block = price.get(key)
-                return block.get("amount") if isinstance(block, dict) else None
+                if isinstance(block, dict):
+                    block = block.get("amount")
+                try:
+                    return float(block) if block not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
             price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
                                   "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                                   "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
@@ -923,8 +934,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 st.session_state[f"mm_clarify_result_{idx}"] = result
                 remember_clarification(clarify_supplier_id(), "ClosedTour", mm_clarify_q, result)
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                     if "price_list" in result["changes"]:
                         st.session_state[f"_editing_table_mm_pricing_{idx}"] = False
                     if "operational_days" in result["changes"]:
@@ -1330,8 +1340,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.session_state["mct_clarify_result_main"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_clarify_q, result)
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                 st.rerun()
         if st.session_state.get("mct_clarify_result_main"):
             r = st.session_state["mct_clarify_result_main"]
@@ -1525,17 +1534,22 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         render_stop_sales_editor(data, f"mct_mod_{midx}")
 
         default_price_list = sorted(
-            data.get("price_list") or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
+            coerce_price_list_shape(data.get("price_list"), currency)[0] or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
                                         "price": {"singlePrice": {"amount": 0, "currency": currency},
                                                  "doublePrice": {"amount": 0, "currency": currency}}}],
             key=lambda e: e.get("startDate", "")
         )
         price_df_rows = []
         for entry in default_price_list:
-            price = entry.get("price", {}) or {}
+            price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
             def _amt(key, price=price):
                 block = price.get(key)
-                return block.get("amount") if isinstance(block, dict) else None
+                if isinstance(block, dict):
+                    block = block.get("amount")
+                try:
+                    return float(block) if block not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
             price_df_rows.append({"Name": entry.get("name", ""), "Start Date": _disp(entry.get("startDate", "")),
                                   "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                                   "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
@@ -1645,8 +1659,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 st.session_state[f"mct_mod_clarify_result_{midx}"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_mod_clarify_q, result)
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                     # Reset the affected widgets' state so they immediately reflect the
                     # AI's change instead of showing stale previously-typed/edited values -
                     # same fix applied to the main tour info's own clarify box.
@@ -2430,6 +2443,28 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
                    f"minimum if the document states one (e.g. \"children from 7 years\" → 7).")
 
 
+def apply_clarify_changes(data, result, currency="EUR"):
+    """Merge what the AI returned into the working data, WITHOUT trusting its shape.
+
+    CONFIRMED REAL CRASH (product owner, ClosedTour modality): a clarification came back with a
+    price_list whose rows held `price` as a bare number instead of the per-occupancy object. It
+    was merged straight in, and the pricing table then died on `price.get(...)` - an
+    AttributeError that took the whole screen down and pointed at display code that was not at
+    fault. The bad shape entered here; it only became visible three screens later.
+
+    So the shape is checked at the door. Anything that cannot be read confidently is reported
+    back to the human rather than dropped in silence - see coerce_price_list_shape."""
+    notes = []
+    for field_name, new_value in (result.get("changes") or {}).items():
+        if field_name == "price_list":
+            new_value, price_notes = coerce_price_list_shape(new_value, currency)
+            notes.extend(price_notes)
+        data[field_name] = new_value
+    if notes:
+        result["shape_notes"] = notes
+    return notes
+
+
 def render_clarify_result(result, review_hint="review above before continuing"):
     """Show what "Tell AI what to fix" actually did - never just what it said it did.
 
@@ -2451,6 +2486,10 @@ def render_clarify_result(result, review_hint="review above before continuing"):
         if result.get("recovered_after_empty_claim"):
             st.caption("(It first replied without actually returning the changes; it was asked "
                        "again and this time it did.)")
+        # Anything the shape check could not read confidently. Shown rather than swallowed: a
+        # price that quietly failed to land looks identical to one that was never sent.
+        for note in result.get("shape_notes") or []:
+            st.warning(f"⚠️ Pricing: {note}.")
         if summary:
             st.info(summary)
         return
@@ -2462,8 +2501,15 @@ def render_clarify_result(result, review_hint="review above before continuing"):
                    "\"the Normal season runs 01-10-2026 to 30-11-2026 at 1450 per person double\"), "
                    "or edit the table directly.")
     else:
-        st.warning("⚠️ **Nothing was changed** — this was treated as a question, not an edit. If you "
-                   "wanted something changed, say which field and what it should become.")
+        # CONFIRMED REAL COMPLAINT (product owner): "I never ask anything in this tool, I only
+        # order what AI did misread." So "treated as a question" was both wrong and unhelpful -
+        # it blamed the wording of an instruction that was perfectly clear, when what actually
+        # happened is that the AI judged nothing needed changing.
+        st.warning("⚠️ **Nothing was changed.** The AI judged the data was already correct, so your "
+                   "instruction had no effect. Read its reasoning below — if it disagrees with what "
+                   "the document actually says, name the field and the exact value it should hold "
+                   "(e.g. \"the Normal season ends 30/11/2026, not 30/10/2026\"), or edit the table "
+                   "directly.")
     if summary:
         st.info(summary)
 
@@ -4269,8 +4315,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.session_state[f"mt_clarify_result_{idx}"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "Ticket", mt_clarify_q, result)
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                     if "operational_days" in result["changes"]:
                         st.session_state.pop(f"mt_op_days_{idx}", None)
                 st.rerun()
@@ -5055,8 +5100,7 @@ def render_ticket_flow(client):
                 st.session_state.tk_clarify_result = result
                 remember_clarification(clarify_supplier_id(supplier_id), "Ticket", tk_clarify_q, result)
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                     tk_field_to_table_key = {
                         "extra_cost_options": "_editing_table_tk_extra_costs",
                         "includes": "_editing_table_tk_includes",
@@ -5299,8 +5343,7 @@ def render_ticket_flow(client):
                 remember_clarification(clarify_supplier_id(), "Ticket", tk_clarify_q2, result)
                 st.session_state.tk_clarify_result_pricing = result
                 if result.get("changes"):
-                    for field_name, new_value in result["changes"].items():
-                        data[field_name] = new_value
+                    apply_clarify_changes(data, result, currency)
                     tk_field_to_table_key2 = {
                         "extra_cost_options": "_editing_table_tk_extra_costs",
                         "occupancy_prices": "_editing_table_tk_occupancy",
@@ -8369,7 +8412,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-11-child-age"
+BUILD_VERSION = "2026-08-11-price-shape"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9419,7 +9462,7 @@ if st.session_state.extracted:
                   f"simplified or dropped.")
 
     default_price_list = sorted(
-        data.get("price_list") or [{
+        coerce_price_list_shape(data.get("price_list"), currency)[0] or [{
             "name": "Example row - edit or delete",
             "startDate": "2027-01-01",
             "endDate": "2027-12-31",
@@ -9434,10 +9477,15 @@ if st.session_state.extracted:
 
     price_df_rows = []
     for entry in default_price_list:
-        price = entry.get("price", {}) or {}
-        def _amt(key):
+        price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
+        def _amt(key, price=price):
             block = price.get(key)
-            return block.get("amount") if isinstance(block, dict) else None
+            if isinstance(block, dict):
+                block = block.get("amount")
+            try:
+                return float(block) if block not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
         price_df_rows.append({
             "Name": entry.get("name", ""),
             "Start Date": _disp(entry.get("startDate", "")),
@@ -9637,8 +9685,7 @@ if st.session_state.extracted:
             remember_clarification(clarify_supplier_id(), "ClosedTour", clarify_question, result)
             st.session_state.clarify_result = result
             if result.get("changes"):
-                for field_name, new_value in result["changes"].items():
-                    data[field_name] = new_value
+                apply_clarify_changes(data, result, currency)
                 # Force any affected table out of edit mode so it re-renders
                 # fresh from the new data, rather than potentially showing a
                 # stale cached data_editor state from before the AI change.
