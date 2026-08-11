@@ -6471,6 +6471,38 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         if build_result.get("transport_error"):
             st.error(f"⚠️ This transport can't be built yet: {build_result['transport_error']}")
         else:
+            # CONFIRMED REAL RULE (product owner): "one transport can have more than one
+            # modality - one for 1 pax and one for 2 to 9 pax." Each occupancy bracket IS a
+            # Modality/Option in Travel Compositor, so the thing being published is a list of
+            # modalities, not one product with a price. That was only visible by opening a raw
+            # JSON payload, which is the wrong place to check money: shown as a table here so
+            # the 1-pax surcharge can be verified at a glance before anything goes live.
+            st.markdown(f"#### Modalities to publish ({len(option_actions)})")
+            _base = _safe_float(build_result["transport_payload"].get("baseAdultPrice"), fallback=0.0)
+            _per_pax = bool(build_result["transport_payload"].get("pricePerPax"))
+            _rows = []
+            for a in option_actions:
+                _sup = 0.0
+                for _pr in (a.get("option_payload", {}).get("prices") or []):
+                    if isinstance(_pr, dict):
+                        _sup = _safe_float(_pr.get("adultPriceSupplement"), fallback=0.0)
+                _unit = round(_base + _sup, 2)
+                _lo = _safe_int(a.get("min_occupancy", 1), fallback=1)
+                _rows.append({
+                    "Modality code": a.get("code"),
+                    "Passengers": f"{a.get('min_occupancy')}–{a.get('max_occupancy')}",
+                    ("Price per person" if _per_pax else "Price per vehicle"): _unit,
+                    f"Total at {_lo} pax": round(_unit * _lo, 2) if _per_pax else _unit,
+                    "New or update": a.get("action", "").upper(),
+                })
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+            if any(a.get("min_occupancy") == 1 and a.get("max_occupancy") == 1
+                   for a in option_actions) and _per_pax:
+                st.caption("The 1-pax modality carries the minimum-party surcharge: a solo traveller "
+                          "pays the same total as the smallest party the supplier will sell to.")
+            st.caption("Each row becomes its own Modality in Travel Compositor. A booking is priced "
+                      "by whichever modality covers the party size.")
+
             with st.expander("🔎 Preview payloads"):
                 st.markdown("**Transport (parent record)**")
                 st.json(build_result["transport_payload"])
@@ -7584,7 +7616,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-duration-time — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-modality-table — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
