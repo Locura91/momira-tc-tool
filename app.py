@@ -90,6 +90,7 @@ import service_notes
 import extraction_memory
 import bulk_notes
 import publish_advisor
+import price_refresh
 # The Translation Sync tool, merged in from the standalone momira-translation-sync
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
@@ -7763,6 +7764,218 @@ def render_manual_information_flow(client):
                     st.rerun()
 
 
+def render_price_refresh_flow(client):
+    """Update the prices of transports that already exist, from a new rate sheet.
+
+    CONFIRMED REAL DESIGN (product owner): "would the app be better if TRANSPORTS are only
+    being updated instead of created... the AI can suggest which price for which Transport,
+    the only interaction is that the human could click Yes if the new updated price is correct
+    or NO if it is incorrect." He was right, and the reason is worth recording: the list of
+    products here comes from Travel Compositor, which is a fact, instead of from an AI reading
+    a document, which is a judgement - and it was that judgement that kept coming back empty.
+    Nothing here resolves a location, estimates a duration, names anything, or creates
+    anything. Only numbers move."""
+    st.header("💶 Refresh prices from a rate sheet")
+    st.caption("For a rate sheet covering transports that already exist. The list of routes comes "
+              "from Travel Compositor, not from the document — the document is only asked what "
+              "each one now costs. Nothing is created and nothing but prices changes.")
+
+    if st.session_state.suppliers_cache is None:
+        with st.spinner("Loading supplier list…"):
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception as e:
+                st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.session_state.suppliers_cache = []
+    momira = [x for x in (st.session_state.suppliers_cache or [])
+              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_")]
+    supplier_id = None
+    if momira:
+        options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
+                   for x in momira}
+        supplier_id = options[st.selectbox("Supplier", list(options.keys()), key="pr_supplier")]
+    else:
+        st.error("Could not load the supplier list from Travel Compositor.")
+        with st.expander("⚠️ Emergency manual entry"):
+            supplier_id = st.text_input("Supplier ID (numeric)", key="pr_supplier_manual").strip()
+
+    st.subheader("1 — The new rate sheet")
+    url = st.text_input("Rate sheet URL (optional)", key="pr_url")
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx"],
+                             accept_multiple_files=True, key="pr_files")
+    hint = st.text_input("Instruction (optional)", key="pr_hint",
+                         placeholder="e.g. only the Hurghada section, private transfers only")
+
+    if st.button("🔍 Read prices for this supplier's transports", type="primary",
+                 disabled=not supplier_id, key="pr_read"):
+        raw_parts = []
+        if url:
+            page_text, page_err = _fetch_url_text_safe(url)
+            if page_text is not None:
+                raw_parts.append(page_text)
+            else:
+                st.warning(f"⚠️ Couldn't fetch that URL: {page_err}.")
+        for uploaded in (files or []):
+            suffix = os.path.splitext(uploaded.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded.getbuffer())
+                tmp_path = tmp.name
+            raw_parts.append(extract_raw_text(tmp_path))
+            os.remove(tmp_path)
+        if not raw_parts:
+            st.error("No document to read — upload a rate sheet or give a URL.")
+        else:
+            raw_text = "\n\n".join(raw_parts)
+            bar = st.progress(0.0, text="Reading this supplier's transports from Travel Compositor…")
+
+            def _tick(done, total, name):
+                bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
+
+            routes, err = price_refresh.load_supplier_transports(client, supplier_id, progress=_tick)
+            bar.empty()
+            if err:
+                st.error(f"Couldn't read this supplier's transports: {err}")
+            elif not routes:
+                st.warning("This supplier has no transports yet. Create them with **Upload & Update "
+                           "Products → Transport** first; this flow only updates what already exists.")
+            else:
+                with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
+                    try:
+                        findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
+                    except Exception as e:
+                        st.error(f"Couldn't read the document: {friendly_error_message(e)}")
+                        findings = None
+                if findings is not None:
+                    st.session_state.pr_routes = routes
+                    st.session_state.pr_proposals = price_refresh.build_proposals(routes, findings)
+                    st.session_state.pr_raw_text = raw_text
+                    st.session_state.pop("pr_result", None)
+        st.rerun()
+
+    proposals = st.session_state.get("pr_proposals")
+    if not proposals:
+        return
+
+    changed = [p for p in proposals if p["status"] == "changed"]
+    unchanged = [p for p in proposals if p["status"] == "unchanged"]
+    absent = [p for p in proposals if p["status"] == "not_in_document"]
+
+    st.subheader("2 — Check the new prices")
+    st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
+              f"{len(absent)} not found in it.")
+
+    # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
+    # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a
+    # single click, which is the one way "accept all" could do damage.
+    acol1, acol2 = st.columns([1, 4])
+    with acol1:
+        if st.button("✅ Accept all", key="pr_accept_all", use_container_width=True):
+            for p in proposals:
+                p["accepted"] = p["status"] == "changed"
+            st.rerun()
+    with acol2:
+        if st.button("Clear all", key="pr_clear_all"):
+            for p in proposals:
+                p["accepted"] = False
+            st.rerun()
+
+    for p in changed:
+        route = p["route"]
+        finding = p["finding"]
+        head = f"**{route.get('name') or route.get('id')}**"
+        cols = st.columns([1, 6])
+        with cols[0]:
+            p["accepted"] = st.checkbox("Yes", value=p["accepted"], key=f"pr_ok_{p['index']}")
+        with cols[1]:
+            st.markdown(head + "  ·  " + "  ·  ".join(
+                f"{c['min_pax']}–{c['max_pax']} pax: **{c['old']} → {c['new']}** "
+                f"{route.get('currency') or ''}" for c in p["changes"]))
+            bits = []
+            if finding.get("matched_row"):
+                bits.append(f"from the row *“{finding['matched_row']}”*")
+            if finding.get("confidence") and finding["confidence"] != "high":
+                bits.append(f"**{finding['confidence']} confidence**")
+            if finding.get("note"):
+                bits.append(finding["note"])
+            if p.get("currency_changed"):
+                bits.append(f"⚠️ the document says **{finding['currency']}** but this transport is "
+                            f"**{route.get('currency')}** — the price is applied as-is, not converted")
+            if bits:
+                st.caption("  ·  ".join(bits))
+
+    if unchanged:
+        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
+            for p in unchanged:
+                st.write(f"- {p['route'].get('name')}")
+    if absent:
+        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
+            st.caption("The document may price these under a wording nobody matched, or the supplier "
+                      "may have dropped them. Pick the row's price yourself to update one anyway.")
+            for p in absent:
+                route = p["route"]
+                mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
+                with mcol1:
+                    st.write(f"**{route.get('name')}**")
+                    st.caption(", ".join(f"{o['min_pax']}–{o['max_pax']} pax now {o['unit_price']}"
+                                         for o in route["options"] if not o.get("fetch_failed")))
+                with mcol2:
+                    typed = st.number_input(
+                        "New price per person/vehicle", min_value=0.0, step=1.0, value=0.0,
+                        key=f"pr_manual_{p['index']}",
+                        help="The base bracket's new price. The solo bracket is recalculated "
+                             "from it using the same minimum-party rule.")
+                with mcol3:
+                    st.write("")
+                    if st.button("Use", key=f"pr_use_{p['index']}", disabled=typed <= 0):
+                        widest = max((o for o in route["options"] if not o.get("fetch_failed")),
+                                     key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]),
+                                     default=None)
+                        if widest:
+                            manual = {"found": True, "minimum_pax": widest["min_pax"],
+                                      "confidence": "high", "note": "price entered by hand",
+                                      "matched_row": "entered by hand", "currency": "",
+                                      "brackets": [{"min_pax": widest["min_pax"],
+                                                    "max_pax": widest["max_pax"],
+                                                    "price": float(typed),
+                                                    "child_price": None, "infant_price": None}]}
+                            rebuilt = price_refresh.build_proposals(
+                                st.session_state.pr_routes, {p["index"]: manual})
+                            st.session_state.pr_proposals[p["index"]] = rebuilt[p["index"]]
+                            st.rerun()
+
+    st.subheader("3 — Apply")
+    accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    st.warning(f"This changes prices on **{len(accepted)} live transport(s)** for supplier "
+               f"{supplier_id}. Nothing else about them is touched.")
+    if st.button(f"🚀 Update {len(accepted)} transport(s)", type="primary",
+                 disabled=not accepted, key="pr_apply"):
+        bar = st.progress(0.0, text="Updating…")
+
+        def _tick2(done, total, name):
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
+
+        st.session_state.pr_result = price_refresh.apply_proposals(
+            client, supplier_id, proposals, progress=_tick2)
+        bar.empty()
+        st.rerun()
+
+    result = st.session_state.get("pr_result")
+    if result:
+        if result["updated"]:
+            st.success(f"✅ {len(result['updated'])} transport(s) repriced.")
+            for u in result["updated"]:
+                st.write(f"- {u['name']}: " + ", ".join(
+                    f"{c['min_pax']}–{c['max_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
+        if result["failed"]:
+            st.error(f"❌ {len(result['failed'])} failed:")
+            for f in result["failed"]:
+                st.write(f"- **{f.get('name')}**: {f.get('detail')}")
+        if st.button("🆕 Start again", key="pr_new"):
+            for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
 st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
@@ -7788,7 +8001,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-seed-known-fields — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-price-refresh — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
@@ -7900,6 +8113,9 @@ TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 # where a person looks when they have something to record about a supplier, even though
 # nothing is being uploaded.
 MANUAL_INFO_CHOICE = "Adding manual information"
+# Update-only price refresh. A Step 1 destination rather than a product type, because the
+# product list comes from Travel Compositor rather than from the document.
+PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -8002,7 +8218,7 @@ if st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
     pt_choice = st.radio("Choose one:",
                           ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel",
-                           MANUAL_INFO_CHOICE],
+                           MANUAL_INFO_CHOICE, PRICE_REFRESH_CHOICE],
                           key="pt_choice_radio")
     st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
               "**Ticket** = single-destination excursion/activity, no overnight, passenger-type pricing. "
@@ -8014,10 +8230,17 @@ if st.session_state.product_type is None:
               "rate seasons. "
               "**Adding manual information** = no document at all: write something you know about a "
               "supplier — a moved pickup point, changed cancellation terms — and it is attached "
-              "automatically to every future upload of that product type.")
+              "automatically to every future upload of that product type. "
+              "**Refresh prices** = a new rate sheet for transports that already exist: it lists "
+              "them from Travel Compositor, finds each one's new price in the document, and you "
+              "accept or reject each change. Nothing is created.")
     if st.button("➡️ Continue", type="primary"):
         st.session_state.product_type = pt_choice
         st.rerun()
+    st.stop()
+
+if st.session_state.product_type == PRICE_REFRESH_CHOICE:
+    render_price_refresh_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:
