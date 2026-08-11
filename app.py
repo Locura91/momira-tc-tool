@@ -8238,8 +8238,45 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
+BUILD_VERSION = "2026-08-11-blocklist-fix"
+
+# Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
+# here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
+# otherwise close to undiagnosable: Streamlit renders the traceback's line numbers against the
+# file currently on disk, so a stale module produces a traceback pointing at source that has
+# nothing to do with the error. CONFIRMED REAL INCIDENT: an outreach crash reported line 199 of
+# outreach_tool.py while quoting a line of code from a completely different function, because
+# app.py had been pushed and outreach_tool.py had not.
+def _module_build_mismatches():
+    import importlib
+    stale = []
+    for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
+                 "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
+                 "platform_store"):
+        try:
+            mod = importlib.import_module(name)
+        except Exception:
+            continue
+        found = getattr(mod, "MODULE_BUILD", None)
+        if found != BUILD_VERSION:
+            stale.append((name, found or "(no build stamp)"))
+    return stale
+
+
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-11-blocklist-fix — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+
+_stale_modules = _module_build_mismatches()
+if _stale_modules:
+    st.error(
+        "🚨 **Partial deploy — some files on the server are older than this one.** Errors from "
+        "these will point at the wrong lines, because the traceback is drawn against whatever is "
+        "on disk now:\n\n"
+        + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
+                    for name, found in _stale_modules)
+        + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
+          "then push and let the app redeploy.")
+
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform

@@ -38,6 +38,12 @@ nothing: the button states the exact recipient count, and a single confirmation
 sits next to it. One click, no ceremony, but not something you can trigger by
 misreading a screen.
 """
+
+# Stamped on every delivery. app.py compares this against its own build string and says
+# so on screen when they differ - a partial push (one file committed, another not) used to
+# surface only as a traceback whose line numbers pointed at unrelated code.
+MODULE_BUILD = "2026-08-11-blocklist-fix"
+
 import csv
 import io
 import os

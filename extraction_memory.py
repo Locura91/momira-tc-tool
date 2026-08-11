@@ -39,6 +39,12 @@ a rule; two is a pattern. Everything applied is marked on screen and a human sti
 it before publishing, so the failure mode of a bad lesson is a person noticing a pre-filled
 value is wrong — not bad data reaching Travel Compositor.
 """
+
+# Stamped on every delivery. app.py compares this against its own build string and says
+# so on screen when they differ - a partial push (one file committed, another not) used to
+# surface only as a traceback whose line numbers pointed at unrelated code.
+MODULE_BUILD = "2026-08-11-blocklist-fix"
+
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple

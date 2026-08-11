@@ -31,6 +31,12 @@ So a modality's real price is base + its own supplement. Changing prices means r
 both together, which is why this module owns that arithmetic rather than leaving it to a
 caller - see rebuild_prices().
 """
+
+# Stamped on every delivery. app.py compares this against its own build string and says
+# so on screen when they differ - a partial push (one file committed, another not) used to
+# surface only as a traceback whose line numbers pointed at unrelated code.
+MODULE_BUILD = "2026-08-11-blocklist-fix"
+
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
