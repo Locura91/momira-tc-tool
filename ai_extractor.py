@@ -2408,8 +2408,11 @@ reading the voucher, say so in the description rather than in the location names
   service_name (e.g. "Car with Driver (Hotel to Hotel)", "Hotel-to-Hotel Land & Ferry Transfer"). Empty if
   service_name already covers it.
 - start_date, end_date: the REAL validity/season date range this document states for this rate (YYYY-MM-DD).
-  Always use what THIS document actually states, never a fixed/hardcoded default. Leave both empty if the
-  document gives no date range at all.
+  Always use what THIS document actually states - a title like "from 1st August 2026 till 31st July 2027"
+  IS the range and must be used. CONFIRMED REAL RULE (product owner): "start date of the Transfer,
+  Transport, Ticket can always be the day on the document, and if not stated, it is today." So when the
+  document states no start date, leave start_date EMPTY and the tool fills in today - do not invent one.
+  Leave end_date empty when the document states no end.
 - cancellation_policy_tiers: whenever the document states its OWN specific cancellation-fee schedule, extract
   EVERY tier as {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the
   cancellation FEE percentage, exactly as stated - a fee/charge percentage, NOT a refund percentage>}. Use

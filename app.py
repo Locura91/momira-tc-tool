@@ -86,6 +86,7 @@ import platform_store
 import service_notes
 import extraction_memory
 import bulk_notes
+import publish_advisor
 # The Translation Sync tool, merged in from the standalone momira-translation-sync
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
@@ -6478,6 +6479,29 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # JSON payload, which is the wrong place to check money: shown as a table here so
             # the 1-pax surcharge can be verified at a glance before anything goes live.
             st.markdown(f"#### Modalities to publish ({len(option_actions)})")
+            # CONFIRMED REAL RULE (product owner): "the human shall manually add this field."
+            # The generated name follows the house pattern, but only a person knows whether
+            # this particular run carries a guide or is door to door - so it is editable per
+            # modality, and the edit is what gets published. EN only: every other language is
+            # filled in by Travel Compositor's own translation tooling, never by this tool.
+            data.setdefault("modality_names", {})
+            with st.expander("✏️ Modality names (English only — edit before publishing)",
+                             expanded=False):
+                st.caption("This is the name a person sees against each passenger range. The "
+                          "suggestion follows your house pattern; change any of it. Only "
+                          "English is sent — other languages come from Travel Compositor.")
+                for _a in option_actions:
+                    _key = f"{_a.get('min_occupancy')}-{_a.get('max_occupancy')}"
+                    _suggested = ((_a.get("option_payload") or {}).get("translations") or {}) \
+                        .get("EN", {}).get("name", "")
+                    _typed = st.text_input(
+                        f"{_key} pax  ·  code `{_a.get('code')}`",
+                        value=data["modality_names"].get(_key, _suggested),
+                        key=f"xtp_modname_{idx}_{_key}")
+                    if _typed.strip() and _typed.strip() != _suggested:
+                        data["modality_names"][_key] = _typed.strip()
+                    else:
+                        data["modality_names"].pop(_key, None)
             _base = _safe_float(build_result["transport_payload"].get("baseAdultPrice"), fallback=0.0)
             _per_pax = bool(build_result["transport_payload"].get("pricePerPax"))
             _rows = []
@@ -6502,6 +6526,23 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                           "pays the same total as the smallest party the supplier will sell to.")
             st.caption("Each row becomes its own Modality in Travel Compositor. A booking is priced "
                       "by whichever modality covers the party size.")
+
+            # A second reading before anything goes live. Deliberately on demand rather than
+            # automatic: it costs an AI call per press, and an advisor that runs on every
+            # keystroke becomes noise people scroll past.
+            acol1, acol2 = st.columns([2, 5])
+            with acol1:
+                if st.button("🧠 Ask for a second opinion", key=f"xtp_advice_{idx}",
+                             use_container_width=True):
+                    with st.spinner("Reading it back…"):
+                        current["advice"] = publish_advisor.advise_transport(data, build_result)
+                    st.rerun()
+            with acol2:
+                st.caption("Checks the price against the route, the duration against the real "
+                          "journey, and the wording against your house style. Advice only — it "
+                          "never blocks publishing.")
+            if current.get("advice"):
+                publish_advisor.render_advice(current["advice"])
 
             with st.expander("🔎 Preview payloads"):
                 st.markdown("**Transport (parent record)**")
@@ -7616,7 +7657,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 st.title("Momira Travel Platform")
-st.caption("Build version: 2026-08-09-modality-table — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption("Build version: 2026-08-09-modality-names — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform

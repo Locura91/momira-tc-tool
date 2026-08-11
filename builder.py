@@ -1,4 +1,5 @@
 import math
+import datetime
 import re
 from typing import Dict, Any, List
 from pydantic import ValidationError
@@ -968,7 +969,7 @@ def build_ticket_payloads(
             onRequest=pre_config.on_request,
             disallowInfant=bool(extracted_ticket_data.get("disallow_infant", False)),
             disallowAdult=bool(extracted_ticket_data.get("disallow_adult", False)),
-            startDate=extracted_ticket_data.get("start_date") or "",
+            startDate=start_date_or_today(extracted_ticket_data.get("start_date")),
             endDate=extracted_ticket_data.get("end_date") or "",
             baseAdultPrice=base_adult_price,
             baseChildrenPrice=base_children_price,
@@ -1323,7 +1324,7 @@ def build_transfer_payload(
             effective_images = existing_transfer_snapshot.get("images") or []
             effective_properties = existing_transfer_snapshot.get("properties") or [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
         else:
-            effective_start_date = extracted_transfer_data.get("start_date") or ""
+            effective_start_date = start_date_or_today(extracted_transfer_data.get("start_date"))
             effective_end_date = extracted_transfer_data.get("end_date") or ""
             effective_images = []
             effective_properties = [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
@@ -1395,14 +1396,83 @@ def build_transfer_payload(
 # for an update.
 # ==========================================
 
+# CONFIRMED REAL RULE (product owner): "Transport Type would be either: Car (for private),
+# Van (for shuttle) or Combined (if Transfer + Train or Transfer and Boat, e.g. island to
+# island)." The SERVICE CLASS decides it, not the vehicle words in the text - a shuttle is a
+# VAN even when the row also says "car". Ordered most-specific first, and the private/shuttle
+# rules sit above the generic vehicle keywords so they cannot be overridden by them.
 _TRANSPORT_TYPE_KEYWORDS = [
+    ("COMBINED", ["combined", "car and ferry", "car + ferry", "multi-leg", "multi leg",
+                  "and ferry", "and boat", "and train", "+ train", "+ boat", "+ ferry",
+                  "island to island", "island-to-island"]),
     ("PLANE", ["flight", "plane", "airline", "airplane", "aircraft"]),
-    ("COMBINED", ["combined", "car and ferry", "car + ferry", "multi-leg", "multi leg", "and ferry"]),
+    ("VAN", ["shuttle", "seat in coach", "seat-in-coach", "sic ", "shared"]),
+    ("CAR", ["private", "limousine", "individual"]),
     ("TRAIN", ["train", "rail"]),
-    ("BUS", ["bus", "coach"]),
     ("FERRY", ["ferry", "boat"]),
-    ("CAR", ["car", "sedan", "private car", "van", "minivan"]),
+    ("BUS", ["bus", "coach"]),
+    ("VAN", ["van", "minivan", "minibus"]),
+    ("CAR", ["car", "sedan"]),
 ]
+
+
+def start_date_or_today(stated):
+    """CONFIRMED REAL RULE (product owner): "start date of the Transfer, Transport, Ticket can
+    always be the day on the document, and if not stated, it is today."
+
+    Filled here rather than by the AI so it cannot be invented: a hallucinated start date in
+    the future makes a product silently unbookable until it arrives, and one in the past is
+    equally invisible in a different way. Today is a fact this code has."""
+    stated = (stated or "").strip()
+    return stated or datetime.date.today().isoformat()
+
+
+def round_duration_up_to_hour(duration_time):
+    """Round a journey duration UP to the next whole hour.
+
+    CONFIRMED REAL RULE (product owner): "the time shall be rounded up to full hour." Up, never
+    nearest: a transport that claims to arrive earlier than it can is a customer standing at a
+    meeting point that is not there yet. An exact whole hour is left alone."""
+    normalized = normalize_time_hhmmss(duration_time or "")
+    if not normalized:
+        return ""
+    try:
+        hh, mm, ss = (int(x) for x in normalized.split(":"))
+    except (ValueError, AttributeError):
+        return normalized
+    if mm or ss:
+        hh += 1
+    return f"{hh:02d}:00:00"
+
+
+def transport_description(service_name, departure_name, arrival_name):
+    """The house one-sentence description.
+
+    CONFIRMED REAL TEMPLATE (product owner): "[Transport style like Private, or Shuttle].
+    Transfer between [ORIGIN] and your booked accommodation in [DESTINATION]." Built here
+    rather than asked of the AI: it is a fixed sentence with two names in it, and a model
+    writing it freshly each time produces forty slightly different sentences across one
+    rate sheet."""
+    style = (service_name or "").strip()
+    # "Tranfer" (sic) is how the real rate sheet spells it, so the pattern tolerates the
+    # missing s rather than leaving the word in the middle of the sentence.
+    style = re.sub(r"(?i)\btra?ns?fers?\b", "", style)
+    style = re.sub(r"(?i)\btransports?\b", "", style)
+    style = re.sub(r"\s{2,}", " ", style).strip(" -–—,")
+    style = style or "Transfer"
+    origin = (departure_name or "").strip() or "the pick-up point"
+    destination = (arrival_name or "").strip() or "your destination"
+    return (f"{style}. Transfer between {origin} and your booked accommodation "
+            f"in {destination}.")
+
+
+def transport_display_name(departure_name, arrival_name):
+    """CONFIRMED REAL TEMPLATE (product owner): name is "DEPARTURE - ARRIVAL"."""
+    dep = (departure_name or "").strip()
+    arr = (arrival_name or "").strip()
+    if dep and arr:
+        return f"{dep} - {arr}"
+    return dep or arr or ""
 
 
 def _map_transport_type(type_hint: str, service_name: str) -> str:
@@ -1529,22 +1599,46 @@ def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_
     return extended
 
 
+# Places whose short code is not simply the first three letters. The generic rule below
+# ("first three letters, uppercase") gets Luxor -> LUX and Aswan -> ASW right on its own;
+# these are the ones where the operator's own codes use the airport/IATA form instead.
+_PLACE_SHORT_CODE = {
+    "hurghada": "HRG", "marsa alam": "RMF", "sharm el sheikh": "SSH", "sharm": "SSH",
+    "cairo": "CAI", "el gouna": "EGN", "elgouna": "EGN", "makadi bay": "MKD",
+    "soma bay": "SOM", "sahl hashish": "SHH", "safaga": "SFG", "el quseir": "QSR",
+    "port ghalib": "PTG", "abu simbel": "ABS", "alexandria": "HBE", "taba": "TCP",
+    "dahab": "DHB", "nuweiba": "NUW", "ain sokhna": "SOK",
+}
+
+
+def place_short_code(name: str) -> str:
+    """A short, readable code for a place, for building modality codes.
+
+    CONFIRMED REAL CONVENTION (product owner, from live options LUXHRG1 / LUXHRG29): the code
+    is the two places' short codes run together with the pax range, e.g. Luxor + Hurghada +
+    "1". Known places use the operator's own form - Hurghada is HRG, not HUR - and anything
+    else falls back to its first three letters, which is what makes this work for a
+    destination nobody has listed yet."""
+    clean = re.sub(r"(?i)\b(international|intl\.?|airport|city|port)\b", " ", name or "")
+    clean = " ".join(clean.split()).strip()
+    mapped = _PLACE_SHORT_CODE.get(clean.lower())
+    if mapped:
+        return mapped
+    letters = re.sub(r"[^A-Za-z]", "", clean).upper()
+    return letters[:3] or "XXX"
+
+
 def _generate_transport_option_code(departure_name: str, arrival_name: str, min_occ: int, max_occ: int) -> str:
-    """
-    Generates a code for a freshly-created bracket/option. CONFIRMED (via 4 real option
-    examples on the same transport): real option codes are NOT predictable or derivable from the
-    route or bracket - seen as short abbreviations ("ASWHRG"), route-name-plus-bracket
-    concatenations ("PraslinLaDigue12"), and even the transport's own full name repeated
-    verbatim - there is no "correct" convention to replicate. This generates its own readable,
-    deterministic code (route initials + bracket range) purely for our own future
-    re-identification convenience - see transport_matcher.match_bracket_to_existing_option() for
-    why matching on UPDATE never actually relies on this code being predictable or stable.
-    """
-    def _slug(name):
-        return re.sub(r"[^A-Za-z0-9]", "", (name or "")).upper()[:10]
-    route_slug = f"{_slug(departure_name)}{_slug(arrival_name)}" or "TRANSPORT"
-    bracket_slug = f"{min_occ}" if min_occ == max_occ else f"{min_occ}-{max_occ}"
-    return f"{route_slug}-{bracket_slug}"
+    """A modality code in the operator's own style: LUXHRG1, LUXHRG29.
+
+    CONFIRMED against real live options on TRANSPORT-415750. Two different routes could in
+    principle abbreviate to the same pair; that is tolerable because matching an existing
+    option on UPDATE never relies on this code - see
+    transport_matcher.match_bracket_to_existing_option() - so a collision costs readability,
+    never correctness."""
+    route = f"{place_short_code(departure_name)}{place_short_code(arrival_name)}"
+    bracket = f"{min_occ}" if min_occ == max_occ else f"{min_occ}{max_occ}"
+    return f"{route}{bracket}"
 
 
 def build_transport_payloads(
@@ -1659,22 +1753,41 @@ def build_transport_payloads(
     base_child_price = _safe_float(base_bracket.get("child_price")) if base_bracket and base_bracket.get("child_price") is not None else 0.0
     base_infant_price = _safe_float(base_bracket.get("infant_price")) if base_bracket and base_bracket.get("infant_price") is not None else 0.0
 
-    transport_name = extracted_transport_data.get("service_name") or f"{departure_name} - {arrival_name}".strip(" -")
+    # House naming: "DEPARTURE - ARRIVAL" (confirmed product-owner template). The service class
+    # lives in the description and in the modality codes, not in the product name, so two
+    # classes on one route do not produce two products with the same name.
+    transport_name = transport_display_name(departure_name, arrival_name) or \
+        extracted_transport_data.get("service_name") or ""
 
     # CONFIRMED (via real Swagger): ContractTransportDataSheetVO only has name/description - no
     # dedicated voucherRemarks-style field the way ClosedTour/Ticket/Transfer have. The
     # cancellation text still needs to reach customer-facing text somewhere (same universal rule
     # - see _cancellation_voucher_text's docstring), so it's appended to description instead.
-    description_text = extracted_transport_data.get("description") or ""
+    # The house one-sentence description, unless a human has edited it on the review screen.
+    # `description_is_custom` is set there; without it, re-rendering would silently overwrite
+    # an edit with the template again.
+    description_text = (extracted_transport_data.get("description") or "").strip()
+    if not extracted_transport_data.get("description_is_custom"):
+        description_text = transport_description(
+            extracted_transport_data.get("service_name"), departure_name, arrival_name)
     full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
+    # CONFIRMED from the real live record: the EN description is HTML ("<p>...</p>"), not plain
+    # text. Sent as plain text it renders as one unbroken run wherever Travel Compositor
+    # expects markup.
+    if full_description and "<" not in full_description:
+        full_description = "".join(f"<p>{para.strip()}</p>"
+                                   for para in full_description.split("\n\n") if para.strip())
     datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
 
     # Arrival is DERIVED from departure + duration whenever a duration is known, rather than
     # taken from whatever is sitting in arrival_time. Both used to default to 09:00, which
     # published every long-distance route as instantaneous.
     _departure_time = normalize_time_hhmmss(extracted_transport_data.get("departure_time") or "09:00:00")
-    _derived_arrival, _derived_plus_days = derive_arrival_from_duration(
-        _departure_time, extracted_transport_data.get("duration_time"))
+    # Rounded UP to the full hour before anything is derived from it, so the published arrival
+    # and the duration always agree.
+    _duration = round_duration_up_to_hour(extracted_transport_data.get("duration_time"))
+    extracted_transport_data["duration_time"] = _duration
+    _derived_arrival, _derived_plus_days = derive_arrival_from_duration(_departure_time, _duration)
     _arrival_time = _derived_arrival or normalize_time_hhmmss(
         extracted_transport_data.get("arrival_time") or "09:00:00")
     _plus_days = (_derived_plus_days if _derived_arrival is not None
@@ -1700,7 +1813,7 @@ def build_transport_payloads(
         effective_end_date = existing_transport_snapshot.get("endDate") or extracted_transport_data.get("end_date") or ""
         effective_images = existing_transport_snapshot.get("images") or []
     else:
-        effective_start_date = extracted_transport_data.get("start_date") or ""
+        effective_start_date = start_date_or_today(extracted_transport_data.get("start_date"))
         effective_end_date = extracted_transport_data.get("end_date") or ""
         effective_images = []
 
@@ -1781,19 +1894,42 @@ def build_transport_payloads(
             code = _generate_transport_option_code(departure_name, arrival_name, min_occ, max_occ)
             action = "create"
 
+        # CONFIRMED against a real live option (TRANSPORT-415750): the modality name names the
+        # SERVICE CLASS and the pax range, not the route - "Private Transfer - 1 Pax - Door to
+        # Door (no Guide)". The route is already the product's own name, so repeating it here
+        # made every modality read "Luxor - Hurghada - 1 Pax" and pushed the one thing that
+        # distinguishes the modalities to the end.
         bracket_label = f"{min_occ} Pax" if min_occ == max_occ else f"{min_occ} to {max_occ} Pax"
-        option_name = f"{transport_name} - {bracket_label}"
+        _class = (extracted_transport_data.get("service_name") or "").strip() or "Transfer"
+        _guide = "with Guide" if "guide" in _class.lower() else "no Guide"
+        option_name = f"{_class} - {bracket_label} - Door to Door ({_guide})"
+        # A human can override it per modality on the review screen. CONFIRMED REAL RULE
+        # (product owner): "the human shall manually add this field." The generated name is a
+        # starting point, not the answer - only a person knows whether this particular run
+        # carries a guide, or is door-to-door, or is something the pattern has no word for.
+        _override = (extracted_transport_data.get("modality_names") or {}).get(
+            f"{min_occ}-{max_occ}")
+        if isinstance(_override, str) and _override.strip():
+            option_name = _override.strip()
 
         option_error = None
         option_payload = None
         try:
             option = ContractTransportOptionVO(
                 code=code,
+                # CONFIRMED from the real live options: one piece per passenger. Previously
+                # left unset because no example had ever shown them populated.
+                baggageAllowance="1",
+                baggageAllowanceType="PC",
                 minPassengers=min_occ,
                 maxPassengers=max_occ,
                 prices=prices,
+                # quantity 0 = unlimited (CONFIRMED product owner). One live record had 99 on
+                # one modality and 0 on another; that difference was not meaningful, so every
+                # modality of a transport gets the same unlimited allocation.
                 inventories=[ContractTransportOptionInventoryVO(
-                    inventoryDate=LocalDateRangeVO(start=effective_start_date or extracted_transport_data.get("start_date") or "")
+                    inventoryDate=LocalDateRangeVO(start=effective_start_date or extracted_transport_data.get("start_date") or ""),
+                    quantity=0,
                 )],
                 translations={"EN": TransportDataSheetVO(name=option_name)},
             )
