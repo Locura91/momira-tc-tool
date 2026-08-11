@@ -618,10 +618,16 @@ def friendly_error_message(e: Exception) -> str:
         return "Couldn't connect to the AI service. Please check your internet connection and try again."
     if "authenticationerror" in lower or "401" in text or "403" in text:
         return "The AI service rejected the request (authentication problem). Please contact whoever manages this tool."
+    if "as far as the tool will go" in lower or "no paragraph breaks" in lower:
+        # Detection already retried in sections and still couldn't fit - saying "try again"
+        # here would be false advice, because the automatic retry has already been spent.
+        return text
     if "cut off" in lower or "token limit" in lower or "max_tokens" in lower:
         return ("The AI's answer was too long and got cut off before it finished (this document/tour "
-                "produced more text than the AI is allowed to send back in one go). Try again - if it keeps "
-                "happening on this same document, splitting it into smaller sections usually fixes it.")
+                "produced more text than the AI is allowed to send back in one go). Detection retries "
+                "automatically by reading the document in sections, so this usually means the EXTRACTION "
+                "step (not detection) overflowed on one very large product. Try again - if it keeps "
+                "happening on this same document, splitting it into smaller sections fixes it.")
     if "wasn't valid json" in lower or ("json" in lower and ("decode" in lower or "parse" in lower)):
         return "The AI's response couldn't be understood. Please try again - if it keeps happening, try rephrasing your request."
 
@@ -775,6 +781,158 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
     return data
 
 
+# ----------------------------------------------------------------------
+# Detection with automatic chunking
+#
+# CONFIRMED REAL FAILURE (product owner, on a live transfer rate sheet): "Detection failed:
+# The AI's answer was too long and got cut off before it finished." Detection listed every
+# distinct route x class in a document, capped at 1024-2048 output tokens, and a real
+# supplier tariff covering dozens of routes simply produces more candidates than that fits.
+# The document was fine; the ceiling was too low. The app's advice was to split the document
+# by hand, which is work a person should never have to do on the tool's behalf.
+#
+# Two fixes, in order:
+#   1. A far higher ceiling, because a detection candidate is only a few dozen tokens and
+#      the old limits were arbitrary rather than considered.
+#   2. If it STILL truncates, split the document and detect per section automatically, then
+#      merge and de-duplicate. Each section carries the document's opening lines with it,
+#      because currency, class names and validity dates usually sit in a header that a naive
+#      split would strip from every section but the first.
+_DETECTION_MAX_TOKENS = 8192
+_DETECTION_MAX_DEPTH = 5          # full doc -> halves -> ... -> thirty-seconds
+_DETECTION_HEADER_CHARS = 700
+
+
+def _call_claude_with_stop(system_prompt: str, user_content: str, model: str,
+                           max_tokens: int, input_schema: dict = None) -> tuple:
+    """Like _call_claude, but hands the stop_reason back instead of raising on truncation,
+    so a caller can react to it (chunk and retry) rather than surfacing a dead end."""
+    client = _get_anthropic_client()
+    return _stream_claude_tool_call(client, model, max_tokens, system_prompt, user_content,
+                                    input_schema=input_schema)
+
+
+_CONTINUATION_MARKER = "[Continued from earlier in the same document."
+
+
+def _document_header(text: str) -> str:
+    """The document's opening block only - its title, currency line, validity dates.
+
+    CONFIRMED REAL BUG (caught by test, 2026-08-09): this used to be "the first 700
+    characters", which on a dense rate sheet is not a header at all but eighteen actual
+    route rows. Every section then carried those rows along, so each split ADDED content
+    instead of removing it and the recursion never converged - a document that was merely
+    large came back as "still cut off after splitting as far as the tool will go". Taking
+    the first paragraph and nothing else keeps the context without dragging the body with
+    it."""
+    if text.startswith(_CONTINUATION_MARKER):
+        # Already a section: its header block sits after the marker line.
+        text = text.split("[Section:]", 1)[0]
+        text = text.split("\n", 1)[-1]
+    first = text.split("\n\n", 1)[0]
+    return first[:_DETECTION_HEADER_CHARS]
+
+
+def _split_for_detection(text: str, parts: int = 2, header: str = "") -> list:
+    """Split on paragraph boundaries into roughly equal sections, each after the first
+    prefixed with the document's header so per-section context (currency, class names,
+    validity dates) survives a split."""
+    # Split the BODY, not the body plus the context prefix. CONFIRMED REAL BUG (caught by
+    # test): the prefix sits at the start, so measuring the halfway point across it made the
+    # first section absorb the prefix plus only a sliver of content and the second keep the
+    # rest. Each level then shed a little instead of halving, and a document that needed
+    # four splits ran out of depth and reported itself as un-splittable.
+    body = text
+    if text.startswith(_CONTINUATION_MARKER) and "[Section:]\n" in text:
+        body = text.split("[Section:]\n", 1)[1]
+    blocks = body.split("\n\n")
+    if len(blocks) < parts:
+        blocks = body.split("\n")
+    if len(blocks) < parts:
+        return [text]
+    target = max(1, len(body) // parts)
+    chunks, current, size = [], [], 0
+    for block in blocks:
+        current.append(block)
+        size += len(block) + 2
+        if size >= target and len(chunks) < parts - 1:
+            chunks.append("\n\n".join(current))
+            current, size = [], 0
+    if current:
+        chunks.append("\n\n".join(current))
+    chunks = [c for c in chunks if c.strip()]
+    if len(chunks) < 2:
+        return chunks or [text]
+    out = []
+    for chunk in chunks:
+        prefix = ""
+        # No identity check on the first chunk: for a whole document it already CONTAINS
+        # the header block, so the "not in chunk" test correctly skips it - while for a
+        # section being split again the prefix was stripped above, so its first chunk
+        # genuinely needs the header back.
+        if header.strip() and header.strip() not in chunk:
+            prefix = (f"{_CONTINUATION_MARKER} Opening lines repeated for context:]\n"
+                      f"{header}\n\n[Section:]\n")
+        out.append(prefix + chunk)
+    return out
+
+
+def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, list_key: str,
+                  key_fn, max_tokens: int = _DETECTION_MAX_TOKENS, _depth: int = 0,
+                  _header: str = None) -> list:
+    """Run a detection prompt, and if the answer is cut off, split the document and merge.
+
+    key_fn(item) -> a hashable identity used to de-duplicate across sections. Sections
+    deliberately overlap in context, and a route table can straddle a split, so the same
+    candidate genuinely can come back twice - de-duplicating is not optional."""
+    try:
+        data, stop_reason = _call_claude_with_stop(system_prompt, raw_text, model, max_tokens)
+    except Exception:
+        if _depth >= _DETECTION_MAX_DEPTH:
+            raise
+        stop_reason, data = "max_tokens", None      # treat a hard failure like truncation
+    if data is not None and stop_reason != "max_tokens":
+        return list(data.get(list_key) or []) if data.get(flag_key) else []
+
+    if _depth >= _DETECTION_MAX_DEPTH:
+        raise RuntimeError(
+            "Claude's answer was still cut off after splitting this document as far as the tool "
+            "will go. This document is unusually large - try uploading it in sections."
+        )
+    header = _document_header(raw_text) if _header is None else _header
+    parts = _split_for_detection(raw_text, parts=2, header=header)
+    if len(parts) < 2:
+        raise RuntimeError(
+            "Claude's answer was cut off and this document has no paragraph breaks to split on - "
+            "try uploading it in smaller sections."
+        )
+    print(f"↔️ Answer was cut off - re-reading this document in {len(parts)} sections and merging.")
+    merged, seen = [], set()
+    for part in parts:
+        for item in _detect_items(system_prompt, part, model, flag_key, list_key, key_fn,
+                                  max_tokens=max_tokens, _depth=_depth + 1):
+            try:
+                identity = key_fn(item)
+            except Exception:
+                identity = repr(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(item)
+    return merged
+
+
+def _route_identity(item: dict) -> tuple:
+    """Two routes are the same product if they are the same class between the same two
+    places - in EITHER direction. The detection prompts already say A->B and B->A are one
+    product; sorting the pair is what makes that hold when the two directions were found in
+    different sections of the document and never seen side by side."""
+    def norm(v):
+        return " ".join(str(v or "").split()).lower()
+    ends = tuple(sorted((norm(item.get("departure_hint")), norm(item.get("arrival_hint")))))
+    return (norm(item.get("service_name")), ends)
+
+
 MODALITY_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page describes pricing for
 MULTIPLE distinct room/cabin/ticket categories (e.g. "Standard Cabin", "Deluxe Cabin", "Suite" each with
 their own price table) for what is otherwise the SAME single tour/ticket product.
@@ -816,8 +974,9 @@ def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") ->
     one is found, or a list of {"label": ..., "suggested_code": ...} dicts.
     """
     print("🔎 Checking for multiple pricing categories/modalities in this content...")
-    result = _call_claude(MODALITY_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
-    modalities = result.get("modalities", []) if result.get("multiple_modalities") else []
+    modalities = _detect_items(
+        MODALITY_DETECTION_PROMPT, raw_text, model, "multiple_modalities", "modalities",
+        lambda m: " ".join(str(m.get("suggested_code") or m.get("label") or "").split()).lower())
     if modalities:
         print(f"⚠️ Detected {len(modalities)} distinct modalities: {[m.get('label') for m in modalities]}")
     else:
@@ -940,8 +1099,9 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     SEVERAL), so it's worth the extra cost/latency of the stronger model.
     """
     print("🔎 Checking for multiple tour variants in this content...")
-    result = _call_claude(VARIANT_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
-    variants = result.get("variants", []) if result.get("multiple_variants") else []
+    variants = _detect_items(
+        VARIANT_DETECTION_PROMPT, raw_text, model, "multiple_variants", "variants",
+        lambda v: " ".join(str(v.get("label") or "").split()).lower())
     if variants:
         print(f"⚠️ Detected {len(variants)} distinct tour variants: {[v.get('label') for v in variants]}")
     else:
@@ -1641,8 +1801,9 @@ def detect_ticket_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     {"label": ...} dicts if genuinely multiple are found.
     """
     print("🔎 Checking for multiple excursions/tickets in this content...")
-    result = _call_claude(TICKET_VARIANT_DETECTION_PROMPT, raw_text, model, max_tokens=1024)
-    excursions = result.get("excursions", []) if result.get("multiple_excursions") else []
+    excursions = _detect_items(
+        TICKET_VARIANT_DETECTION_PROMPT, raw_text, model, "multiple_excursions", "excursions",
+        lambda e: " ".join(str(e.get("label") or "").split()).lower())
     if excursions:
         print(f"⚠️ Detected {len(excursions)} distinct excursions: {[e.get('label') for e in excursions]}")
     else:
@@ -1819,8 +1980,8 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5") -> l
     contract for the existing batch/queue review UI pattern.
     """
     print("🔎 Checking for multiple distinct transfer products (routes/classes) in this document...")
-    result = _call_claude(TRANSFER_PRODUCT_DETECTION_PROMPT, raw_text, model, max_tokens=2048)
-    transfers = result.get("transfers", []) if result.get("multiple_transfers") else []
+    transfers = _detect_items(TRANSFER_PRODUCT_DETECTION_PROMPT, raw_text, model,
+                              "multiple_transfers", "transfers", _route_identity)
     if transfers:
         print(f"⚠️ Detected {len(transfers)} distinct transfer product(s): {[t.get('label') for t in transfers]}")
     else:
@@ -2004,8 +2165,8 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5") -> 
     or a list of {"label", "service_name", "departure_hint", "arrival_hint"} dicts.
     """
     print("🔎 Checking for multiple distinct transport products (routes/classes) in this document...")
-    result = _call_claude(TRANSPORT_PRODUCT_DETECTION_PROMPT, raw_text, model, max_tokens=2048)
-    transports = result.get("transports", []) if result.get("multiple_transports") else []
+    transports = _detect_items(TRANSPORT_PRODUCT_DETECTION_PROMPT, raw_text, model,
+                               "multiple_transports", "transports", _route_identity)
     if transports:
         print(f"⚠️ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
     else:
@@ -2314,8 +2475,8 @@ If there is genuinely only one hotel property described in the whole document (t
 case - most documents describe just one property's rooms/rates/offers), set "multiple_hotels": false and
 "hotels": [] ."""
     print("🔎 Checking for multiple distinct hotel properties in this document...")
-    result = _call_claude(prompt, raw_text, model, max_tokens=1024)
-    hotels = result.get("hotels", []) if result.get("multiple_hotels") else []
+    hotels = _detect_items(prompt, raw_text, model, "multiple_hotels", "hotels",
+                           lambda h: " ".join(str(h.get("hotelname_hint") or h.get("label") or "").split()).lower())
     if hotels:
         print(f"⚠️ Detected {len(hotels)} distinct hotel propert(ies): {[h.get('label') for h in hotels]}")
     else:
