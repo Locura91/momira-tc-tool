@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-name-fallback-to-detected-variant"
+MODULE_BUILD = "2026-08-12-ticket-main-info-modality-split"
 
 import os
 import re
@@ -2511,6 +2511,439 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         data["voucher_remarks"] = data["cancellation_policy_text"]
 
     return data
+
+
+TICKET_MAIN_INFO_SYSTEM_PROMPT = """You are extracting ONLY the MAIN TICKET information for a Travel
+Compositor TICKET (an excursion/activity - single destination, no overnight stay) from a DMC supplier
+document. Pricing and Modality data (base prices, occupancy tables, extra costs, seasonal supplements,
+operational days, time slots) are extracted SEPARATELY by another step - do NOT try to find or report
+pricing information here, and do NOT let a confusing/complex price table distract you from the fields
+below, which are about the excursion itself, not what it costs. This is DIFFERENT from a multi-day tour:
+no itinerary, no day-by-day description, no room-occupancy pricing. Translate ALL content to English
+regardless of source language.
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
+and the two readings differ by a month with nothing to show for it. ALWAYS OUTPUT YYYY-MM-DD.
+
+CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
+directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up time",
+"Contact us to confirm timing", "Call the supplier to reconfirm your booking"). Momira Travel is the tour
+operator the client actually deals with - the client must NEVER be told to contact the DMC/supplier
+directly, since that DMC is Momira's backend supplier, not the client-facing operator. This applies
+EVERYWHERE such an instruction could appear - description, includes/excludes, meeting points, anywhere -
+silently drop/omit it entirely rather than including, paraphrasing, or softening it. This is a deliberate
+exclusion, not an oversight.
+
+Extract:
+- ticket_name: the excursion/activity name - keep close to the source, don't invent a fancier title.
+  NEVER LEAVE THIS EMPTY. A blank name is never an acceptable answer - a human reviewing this cannot
+  publish a ticket with no name, and every real document names what it's selling somewhere (a heading, a
+  title, a header/footer, the filename-like text at the top of a rate sheet, or a phrase repeated across
+  the price tables like "Full Day X Excursion"). If there is genuinely no single obvious title anywhere,
+  build a short, factual, non-invented name from what IS stated - the activity/city plus what's actually
+  described (e.g. "Half Day City Tour" from a document about a half-day tour of a named city, "Private
+  Airport Transfer" from a transfer document with no other name) - never a generic placeholder like
+  "Excursion" or "Ticket" alone, and never leave it as an empty string under any circumstances.
+- description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
+  natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
+  a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
+  actually present in the source - never invent details, ratings, superlatives, or claims that aren't
+  there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
+  true. Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+  NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
+  with no marketing copy still states enough real facts to write from - the activity itself, the city,
+  what's included, the duration, the schedule, the meeting point. Build 1-2 honest paragraphs from
+  whatever real facts the source DOES give rather than returning an empty string - the rule above against
+  inventing details means never adding a fact that isn't there, not leaving the field blank when facts
+  exist to write from. Only if the source is so minimal that even a single true sentence cannot be
+  written (essentially never in practice) should this be short rather than empty.
+  PRE-ARRIVAL ADVISORY: if the source mentions an important advisory affecting the whole booking that the
+  traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
+  beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
+  standalone paragraph at the VERY END of the description - after the normal descriptive paragraphs, so
+  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "⚠️") and NO
+  "Important:" label or other bold prefix - those have caused downstream coding/encoding issues, so the
+  paragraph must contain nothing but the advisory sentence itself, e.g. <p>...</p>. Only add it if the
+  source genuinely contains such an advisory - never invent one.
+- city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
+  will be resolved to real coordinates separately, so use the exact place name as commonly known.
+- includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
+  GUIDE LANGUAGE RULE: if a base/standard guide language is mentioned (usually English), make sure it's
+  explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are available on request
+  (e.g. "German/French on request"), do NOT list them here - the separate Modality/Pricing step turns
+  each into its own Modality. DUAL-LANGUAGE GUIDE RULE: if the source lists TWO (or more) languages joined
+  by "/" or "or" as EQUAL standard options (e.g. "licenced English/German-speaking guiding service"), that
+  is NOT a base-language-plus-on-request-extra - keep the includes entry as the source states it. In this
+  case the description ALSO MUST clearly state, in plain words, that the tour/transfer can run in EITHER
+  English OR German - work one clear sentence to that effect into the description.
+- excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
+  fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
+  place name so it can be properly located. If the source only says pickup is from the guest's own
+  hotel/accommodation (varies per guest, no fixed place - e.g. "Pick up from Accommodation") OR gives
+  no meeting point at all, use exactly {"description": "Hotel Lobby", "variable_location": true} as the
+  default - this matches the standard default used across all products, so it doesn't get incorrectly
+  geocoded as if it were one specific fixed location.
+- meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
+- duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
+  (NOT how many days a pass is valid for). Use 0/"HOURS" if unclear.
+- activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
+- is_private: true if the source describes this as a PRIVATE experience (e.g. "private tour", "private
+  transfers", "private guide", "exclusively for your group") as opposed to a joint/shared/group/public
+  one (e.g. "joint public tour", "shared transfer", "group tour"). If the source doesn't specify either
+  way, default to false rather than guessing.
+- release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
+  mentioned anywhere in the source (e.g. "must be booked at least 45 days before", "release period: 60
+  days", "reservations required 30 days in advance"). DIFFERENT from a cancellation policy - do NOT
+  include cancellation deadlines here, only booking/reservation/release deadlines. Convert weeks/months to
+  days (e.g. "6 weeks" -> 42, "2 months" -> 60). If the source mentions MORE THAN ONE such deadline,
+  include ALL of them as separate integers. Empty list if nothing like this is mentioned anywhere.
+- cancellation_policy_tiers: whenever the source states its OWN specific cancellation-fee policy - usually
+  a tiered schedule like "From 91 days or more before arrival, 25% ... From 90 to 61 days before arrival,
+  50% ... From 60 to 46 days, 75% ... From 45 days to the day of check-in, 100%" - extract EVERY tier as
+  {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the cancellation
+  FEE percentage for this tier, exactly as the source states it - this is a fee/charge percentage, NOT a
+  refund percentage>}. Use the LOWER bound of each day-range as "days" (e.g. "90 to 61 days before
+  arrival" -> days=61, "60 to 46 days" -> days=46, "45 days to the day of check-in" -> days=0, "91 days or
+  more" -> days=91). If the source states NO specific cancellation policy anywhere, return an EMPTY list.
+- cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy out as a
+  short, clear, human-readable plain-text summary suitable for both internal notes and a customer-facing
+  voucher - one line per tier. Leave this field empty whenever cancellation_policy_tiers is empty.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+  "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
+  "activity_type": "", "is_private": false,
+  "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
+}"""
+
+
+def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
+    """Extraction for a new Ticket's MAIN info only (name/description/city/includes/excludes/meeting
+    points/duration/cancellation policy) - deliberately excludes pricing/Modality fields, which are
+    extracted separately by extract_ticket_modality_data(). CONFIRMED PRODUCT-OWNER REQUEST: "The App
+    must first detect the main Information of the Ticket and only after the first step, the App must
+    detect the Modality" - splitting the two extractions keeps a complex pricing table from crowding
+    out (or getting confused with) the main info in the SAME AI call, which was the likely cause of a
+    real production bug where ticket_name/description came back empty on a multi-excursion document
+    with heavy seasonal price tables."""
+    user_content = raw_text
+    prefix_parts = []
+    if variant_hint:
+        # Same reasoning as extract_ticket_data's identical block - a multi-excursion document needs
+        # to be told exactly which heading/section to read, or near-identical boilerplate wording
+        # across excursions can make the model unsure which paragraph belongs to which excursion.
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE distinct excursions/tickets, each under its "
+            f"own heading. Extract ONLY the following one, and completely ignore any other excursion "
+            f"mentioned elsewhere in the text: {variant_hint}\n"
+            f"HOW TO FIND IT: locate the heading in the source that matches \"{variant_hint}\" (or is "
+            f"clearly the same excursion, allowing for minor wording differences), then use ONLY the "
+            f"description paragraph and details that appear DIRECTLY UNDER THAT HEADING - stop at the "
+            f"next heading. Several excursions in a document like this can share nearly identical "
+            f"boilerplate wording (the same descriptive sentences, the same \"Inclusions\"/\"Good to "
+            f"know\" bullet points) - do not let that similarity make you unsure which text belongs to "
+            f"\"{variant_hint}\" specifically. Its own paragraph exists somewhere in the source; find it "
+            f"by heading position, not by trying to write a generic summary instead."
+        )
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(TICKET_MAIN_INFO_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
+
+    defaults = {
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
+        "activity_type": None, "is_private": False,
+        "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+
+    # Same safety net as extract_ticket_data used to run inline - kept here since this is now the
+    # function actually responsible for ticket_name/description.
+    missing_required = [f for f in ("ticket_name", "description") if not (data.get(f) or "").strip()]
+    if missing_required:
+        retry_content = (
+            user_content
+            + f"\n\nIMPORTANT CORRECTION NEEDED: your previous extraction left "
+              f"{' and '.join(missing_required)} empty. Neither may ever be blank - look again at "
+              f"the ENTIRE source above and build a real value for each from whatever facts it "
+              f"actually contains (a title, heading, or the activity/city/duration described), "
+              f"per the rules already given for these fields. Do not invent facts that aren't in "
+              f"the source, but do not return an empty string either - every real document has "
+              f"enough in it to write from."
+        )
+        retry_data = _call_claude(TICKET_MAIN_INFO_SYSTEM_PROMPT, retry_content, model, max_tokens=8192)
+        for field in missing_required:
+            new_value = (retry_data.get(field) or "").strip()
+            if new_value:
+                data[field] = new_value
+
+    # CONFIRMED REAL BUG (product owner, real document): even the retry above isn't a guarantee - a
+    # multi-excursion PDF came back with ticket_name empty on BOTH attempts even though the review
+    # screen's own header already showed the correct name, because that header is built from
+    # variant_hint (a SEPARATE, already-confirmed-correct AI call, detect_ticket_variants), not from
+    # this function's own output. Deterministic, code-level fallback - not a third AI attempt.
+    if not (data.get("ticket_name") or "").strip() and variant_hint:
+        data["ticket_name"] = variant_hint.strip()
+
+    if not (data.get("description") or "").strip():
+        _desc_name = (data.get("ticket_name") or variant_hint or "This excursion").strip()
+        _desc_city = (data.get("city") or "").strip()
+        _desc_bits = _desc_name
+        if _desc_city:
+            _desc_bits += f" takes place in {_desc_city}."
+        else:
+            _desc_bits += "."
+        data["description"] = f"<p>{_desc_bits}</p>"
+
+    data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
+
+    if data.get("cancellation_policy_text") and not data.get("voucher_remarks"):
+        data["voucher_remarks"] = data["cancellation_policy_text"]
+
+    return data
+
+
+TICKET_MODALITY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule/Modality data for a Travel
+Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
+extract ticket name, description, city, meeting points, includes/excludes, or cancellation policy (those
+were already captured separately, in an earlier step). The source is a rate/pricing table for an
+excursion that has already been identified.
+
+HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
+which price sits under which heading. The notation is:
+  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
+  "R3:"                          the row number
+  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 «C2»"               a single cell in column 2
+  "·"                            a genuinely empty cell
+  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
+                                 immediately above it, and its columns line up with that table's
+                                 headers one for one.
+"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
+                               resolved for you: each line gives one column's full path from the
+                               top heading down through the sub-headings, its dates, and every
+                               value in it labelled with the row it came from.
+TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
+work out which COLUMN RANGE each season occupies, then take each price from the cell covering that
+same range. Never match a price to a season by counting values left to right - merged cells make
+the count wrong.
+STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
+listed on consecutive rows under the same heading. Every one of those is its own entry, all
+carrying that season's SAME prices. Do not merge them into one long range. Do not drop the later
+ones either; missing periods are the most common failure on these sheets.
+
+READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
+A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
+never 4 March. ALWAYS OUTPUT YYYY-MM-DD.
+
+Extract:
+- base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
+  CRITICAL RULE for base_children_price specifically: if children are allowed (not disallow_children) but
+  the source gives only ONE price with no distinct child rate, set base_children_price EQUAL to
+  base_adult_price - NOT 0. A price of 0 specifically means "this passenger type travels free", so only
+  use 0 if the source EXPLICITLY says children are free/complimentary, or if disallow_children is true.
+  base_infant_price commonly IS genuinely 0 by convention - only set it non-zero if the source states an
+  actual infant price. If pricing is genuinely absent/blank in the source, leave base_adult_price (and
+  therefore base_children_price too) as 0 - do NOT invent numbers - and mention this in pricing_notes.
+- child_age_min, child_age_max: the age range that counts as "child" pricing, AND/OR any stated age
+  eligibility restriction (e.g. "children must be at least 12"). Both kinds of language should populate
+  these fields. Actively look anywhere in the source (a "Good to know" section counts, not just a
+  pricing table), else 2/12 as the standard default.
+- disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
+  type isn't allowed (rare) - otherwise all false.
+- operational_days: list of uppercase weekday names this is available. Actively search the ENTIRE source
+  for weekday schedule information - phrases like "operated ... as following schedules:", "departs on",
+  "available every", or a bare list of weekday names all count. Only fall back to all 7 days if the
+  source is GENUINELY silent about which days it runs.
+  MULTI-LANGUAGE SCHEDULE RULE: if the source gives a SEPARATE weekday schedule per guide language, and a
+  human hint below names a specific language/focus for THIS modality, use that language's exact days -
+  never a union, never all 7 by default. If no hint narrows it down, use the base/standard language's
+  schedule and note any other languages' differing days in schedule_notes.
+- schedule_notes: if operational days are NOT YET DETERMINED (e.g. "TBD by Operations"), say so plainly.
+  Also use this field for the multi-language schedule discrepancy note described above. Empty otherwise.
+- time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
+  gives specific time slots - empty list if not applicable.
+- start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
+  source gives no clear range, use a wide default like today's year to 3 years out.
+- adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
+- extra_cost_options: every EXTRA COST this same ticket can carry - the things that make the identical
+  experience cost more. Each one becomes its own Ticket Modality downstream, priced at the base price PLUS
+  this extra, so extract the EXTRA ON TOP, not the total.
+  {"name": "clear customer-facing label, e.g. 'German-speaking guide'",
+   "group": "the set of MUTUALLY EXCLUSIVE alternatives this belongs to, e.g. 'Guide language' - or \"\" if
+     it is independently choosable alongside anything else, e.g. a lunch upgrade",
+   "adult_price": <the EXTRA per adult, on top of the base>, "children_price": <the EXTRA per child>,
+   "infant_price": <the EXTRA per infant, usually 0>}
+  GROUP IS LOAD-BEARING. Options sharing a group can never be booked together (a booking has ONE guide
+  language), so give every guide language the same group "Guide language". Give an independent add-on an
+  empty group.
+  CRITICAL - EXTRA, NOT TOTAL: if the base (English) adult price is 40 and the German-guide price is 50,
+  output adult_price: 10. The app adds the base itself.
+  CRITICAL - SEPARATE FULL PRICE TABLES: a very common real case is a document with a complete price table
+  per guide language. Take the FIRST/primary language's table as base_adult_price/base_children_price/
+  base_infant_price, then for every other language output the DIFFERENCE per passenger type here.
+  CONFIRMED PRODUCT-OWNER RULE - FLAT PER-GROUP LANGUAGE SURCHARGE (not per-person): some documents instead
+  give ONE flat per-day surcharge for the whole group for a foreign-language guide (e.g. "German: $47" - a
+  flat add-on, not a per-adult price). Orient the conversion around 2 PAX specifically: output
+  adult_price = <the flat surcharge> / 2 for that language, and say so in pricing_notes.
+  CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely.
+  PEAK SEASON IS NOT AN EXTRA COST OPTION: a peak-season/holiday surcharge is a date-restricted price
+  change, not a product variant a customer chooses. Put it in modality_supplements below instead.
+  Empty list if the document prices no extras at all - never invent one.
+- modality_supplements: every DATED price change to THIS Modality that is NOT a customer choice - the same
+  experience simply costs more during a specific window (a seasonal price table, a holiday surcharge).
+  Genuinely different product variants are NEVER put here - those stay in extra_cost_options above.
+  {"name": "clear label, e.g. 'High Season' or 'Tet Holiday Surcharge'",
+   "adult_price_supplement": <the EXTRA per adult on top of base_adult_price during this window>,
+   "children_price_supplement": <the EXTRA per child>, "infant_price_supplement": <usually 0>,
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+  HOW TO FILL THIS FROM A SEASONAL PRICE TABLE: take the LOWEST-priced season as base_adult_price/
+  base_children_price/base_infant_price above. For every OTHER season, output one entry here per
+  passenger type with that season's price MINUS the base price. If a season is valid for SEVERAL separate
+  non-contiguous date ranges, output ONE ENTRY PER DATE RANGE, all sharing that same price delta.
+  HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if stated as a PERCENTAGE, compute the actual
+  currency delta and output it here with the holiday's own dates - explain the calculation in
+  pricing_notes. If the holiday's dates are not stated, do NOT invent dates - leave it out and describe it
+  in pricing_notes instead.
+  Empty list if the document shows no seasonal/dated price variation at all - never invent one.
+- occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used. If the
+  source has a group-size-tiered price table (columns like "1", "2", "3-5", "6-8"), extract it here
+  instead of forcing it into base_adult_price. Each entry is {"occupancy": exact integer headcount,
+  "amount": price for that exact headcount} - EXPAND a range into one entry per exact number. Infants are
+  always free and excluded from occupancy counts.
+  NOTE: real documents commonly show "N/A" for the solo/1-pax column. If missing, do NOT invent one - just
+  mention in pricing_notes that a solo/1-pax price is missing.
+  CONFIRMED REAL SYSTEM LIMIT: 9 is the maximum bookable headcount - NEVER output an entry with occupancy
+  above 9. If the source priced groups above 9, say so in pricing_notes but do not put it in occupancy_prices.
+  SEAT-IN-COACH (SIC) COLUMN: some occupancy-band price tables carry an extra "SIC"/"Seat in Coach" column
+  alongside the private/per-vehicle occupancy bands. If that column has a real price, it is a DIFFERENT
+  pricing shape (a per-adult Distribution price) and becomes its OWN separate Modality - do NOT fold it
+  into occupancy_prices. State it clearly in pricing_notes with the exact SIC price found.
+- pricing_notes: leave empty UNLESS something had to be approximated - explain what, with real numbers
+  where available, so a human can review.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+  "child_age_min": 2, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
+  "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
+  "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
+  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0,
+  "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
+  "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": []
+}"""
+
+
+def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None,
+                                  modality_hint: str = None, human_hint: str = None) -> dict:
+    """Extraction for a Ticket's FIRST/base Modality (pricing/schedule fields only) - the counterpart to
+    extract_ticket_main_info() above. CONFIRMED PRODUCT-OWNER REQUEST: main info and Modality must be
+    detected as two separate steps/calls, not blended into one. modality_hint optionally narrows which
+    pricing category to read when this ticket has more than one (see detect_ticket_modalities) - same
+    role as variant_hint plays for picking the right excursion in a multi-excursion document."""
+    user_content = raw_text
+    prefix_parts = []
+    if variant_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE distinct excursions/tickets, each under its "
+            f"own heading. Extract pricing ONLY for the following one, and completely ignore any other "
+            f"excursion mentioned elsewhere in the text: {variant_hint}\n"
+            f"HOW TO FIND IT: locate the heading in the source that matches \"{variant_hint}\" (or is "
+            f"clearly the same excursion, allowing for minor wording differences), then use ONLY the "
+            f"price tables and details that appear DIRECTLY UNDER THAT HEADING - stop at the next heading."
+        )
+    if modality_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This excursion has MORE THAN ONE pricing category/Modality. Extract pricing "
+            f"ONLY for this specific one, ignoring any other pricing category's rows/columns/tables: "
+            f"{modality_hint}"
+        )
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
+
+    data = _call_claude(TICKET_MODALITY_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
+
+    defaults = {
+        "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
+        "child_age_min": 2, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
+        "disallow_infant": False,
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
+        "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0,
+        "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
+        "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
+        "supplements": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    return data
+
+
+TICKET_MODALITY_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page prices MORE
+THAN ONE distinct Modality (pricing category) for what is otherwise the SAME single excursion/ticket -
+e.g. a complete separate price table per guide language ("English Speaking Guide" table, then a "German
+Speaking Guide" table), or per service tier ("Private" vs "Seat-in-Coach"), where a human would want each
+one created as its OWN Modality with its own dedicated extraction pass, rather than one one blended call
+trying to average or approximate across all of them at once.
+
+Only count it as multiple Modalities if they are genuinely separate, fully-priced categories - not just a
+single price table with a few optional extras or a seasonal surcharge (those stay as extra_cost_options /
+modality_supplements on ONE Modality, handled elsewhere).
+
+CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
+API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself. NEVER
+include: parenthetical/explanatory text, numbers describing pax/occupancy/min-max requirements, the word
+"people"/"pax"/"person", periods, or slashes. Correct: "Standard", "Deluxe", "German". Wrong: "Standard
+English min. 2 people", "German Speaking Guide (on request)".
+
+Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
+{
+  "multiple_modalities": true or false,
+  "modalities": [
+    {"label": "short human-readable label, e.g. 'German Speaking Guide'", "suggested_code": "e.g. 'German' - ONLY the core category name, no / + - characters, no extra words"}
+  ]
+}
+If there's only one pricing category (or pricing is a single flat table with optional extras), set
+"multiple_modalities": false and "modalities": [] ."""
+
+
+def detect_ticket_modalities(raw_text: str, variant_hint: str = None, model: str = HAIKU_MODEL) -> list:
+    """
+    Checks whether THIS excursion (optionally narrowed by variant_hint on a multi-excursion document)
+    is priced as multiple distinct Modalities (e.g. one full price table per guide language) that
+    should each get their own dedicated extraction call, rather than one call trying to cover all of
+    them. CONFIRMED PRODUCT-OWNER REQUEST: "if the ticket has detected another Modality, the app must
+    call for each modality separately." Mirrors detect_multiple_modalities (ClosedTour) exactly.
+    """
+    print("🔎 Checking for multiple pricing Modalities for this ticket...")
+    content = raw_text
+    if variant_hint:
+        content = (
+            f"IMPORTANT: only consider the section of this document under the heading for "
+            f"\"{variant_hint}\" - ignore any other excursion's pricing entirely.\n\n--- Source content ---\n{raw_text}"
+        )
+    modalities = _detect_items(
+        TICKET_MODALITY_DETECTION_PROMPT, content, model, "multiple_modalities", "modalities",
+        lambda m: " ".join(str(m.get("suggested_code") or m.get("label") or "").split()).lower())
+    if modalities:
+        print(f"⚠️ Detected {len(modalities)} distinct ticket Modalities: {[m.get('label') for m in modalities]}")
+    else:
+        print("✅ Only one pricing Modality detected.")
+    return modalities
 
 
 TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel

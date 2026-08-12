@@ -84,7 +84,7 @@ from builder import (build_hotel_contract_payload, resolve_room_provider_codes, 
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
-from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data
+from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data, extract_ticket_main_info, extract_ticket_modality_data, detect_ticket_modalities
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
 import ai_extractor as ai_extractor_module
 # Shared Streamlit building blocks used by all five product-type flows (ClosedTour, Ticket,
@@ -3320,12 +3320,26 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         return
 
     # ------------------------------------------------------------------
-    # PHASE 3: review each selected ticket individually, one at a time
+    # PHASE 3: review each selected ticket individually, one at a time.
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-12): "The App must first detect the main
+    # Information of the Ticket and only after the first step, the App must detect the
+    # Modality of the chosen Ticket... we must separate main information from the modality."
+    # This is now two real steps (current["step"] == "main" then "modality"), each backed by
+    # its OWN separate AI call (extract_ticket_main_info then extract_ticket_modality_data) -
+    # previously a single extract_ticket_data() call tried to read the name/description AND
+    # a complex pricing table at once, which is the likely cause of a real bug where
+    # ticket_name/description came back empty on a multi-excursion document with heavy
+    # seasonal price tables (the pricing table crowded out the main-info reading). A second,
+    # related product-owner request - "if the ticket has detected another Modality, the app
+    # must call for each modality separately" - is handled by detect_ticket_modalities()
+    # auto-populating extra_modalities (each still fetched via its OWN extract call, same
+    # already-confirmed-working mechanism a human uses when adding a Modality manually below).
     # ------------------------------------------------------------------
     if st.session_state.mt_phase == "reviewing":
         idx = st.session_state.mt_queue_index
         queue = st.session_state.mt_queue
         current = queue[idx]
+        current.setdefault("step", "main")
 
         st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: **{current['label'] or current['ticket_code']}** (code: {current['ticket_code']})")
         st.progress(idx / len(queue))
@@ -3337,189 +3351,268 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
                 st.rerun()
 
+        # Same fix as the ClosedTour batch flow: only pass a variant_hint when this
+        # label came from a REAL AI-detected excursion (is_genuine_variant) - the
+        # human-typed "Ticket Name" (single-excursion case) is just a display label,
+        # not a real variant present in the source, and passing it as a filter caused
+        # the AI to find no match and return an empty extraction. Used by BOTH the
+        # main-info call and the modality call below, so both stay focused on the
+        # same excursion in a multi-excursion document.
+        variant_hint = current["label"] if current.get("is_genuine_variant") else None
+
         if current["data"] is None:
-            # Same fix as the ClosedTour batch flow: only pass a variant_hint when this
-            # label came from a REAL AI-detected excursion (is_genuine_variant) - the
-            # human-typed "Ticket Name" (single-excursion case) is just a display label,
-            # not a real variant present in the source, and passing it as a filter caused
-            # the AI to find no match and return an empty extraction.
-            variant_hint = current["label"] if current.get("is_genuine_variant") else None
-            with st.spinner(f"Extracting details{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
+            with st.spinner(f"Extracting main ticket info{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
                 # Same crash-prevention as the ClosedTour batch flow - never leave a
                 # call that can genuinely fail (rate limit, network hiccup) unguarded.
                 try:
-                    current["data"] = extract_ticket_data(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                    current["data"] = extract_ticket_main_info(st.session_state.mt_raw_text, variant_hint=variant_hint)
                     current["data"]["image_urls"] = [FALLBACK_IMAGE]
                 except Exception as e:
-                    st.error(f"⚠️ Couldn't extract details for this excursion: {friendly_error_message(e)}")
+                    st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key=f"mt_retry_extract_{idx}"):
                         st.rerun()
                     return
 
         data = current["data"]
 
-        editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
-        editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
-        # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes back
-        # blank (see extract_ticket_data's safety net), but this is the last line of defense -
-        # a ticket can never publish with no name/description, so flag it plainly rather than
-        # let a still-empty field slip through to publish unnoticed.
-        if not (data.get("ticket_name") or "").strip():
-            st.error("🚫 Ticket name is empty - fill it in above before continuing.")
-        if not (data.get("description") or "").strip():
-            st.error("🚫 Description is empty - fill it in above before continuing.")
-        render_cancellation_policy_editor(data, f"mt_{idx}")
-        editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
-        editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
-        # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
-        # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
-        # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
-        # can add anything a document doesn't say straight into the real field instead of a
-        # side note that only gets appended to Voucher Remarks at publish time.
+        # ==================================================================
+        # STEP A: MAIN TICKET INFO - name, description, city, includes/excludes,
+        # meeting points, duration, cancellation policy, images. No pricing here.
+        # ==================================================================
+        if current["step"] == "main":
+            st.caption("**Step 1 of 2: Main ticket info.** Pricing/Modality comes next, as its own step.")
 
-        render_skip_item_button(
-            current['label'] or current['ticket_code'], queue, idx,
-            "mt_queue", "mt_queue_index",
-            ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
-             "mt_doc_raw_images", "mt_hosted_image_candidates"],
-            button_key=f"mt_skip_{idx}",
-            widget_state_prefixes=["mt_"] + SHARED_WIDGET_STATE_PREFIXES
-        )
+            editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
+            editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
+            # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes back
+            # blank (see extract_ticket_main_info's safety net), but this is the last line of
+            # defense - a ticket can never publish with no name/description, so flag it plainly
+            # rather than let a still-empty field slip through to publish unnoticed.
+            if not (data.get("ticket_name") or "").strip():
+                st.error("🚫 Ticket name is empty - fill it in above before continuing.")
+            if not (data.get("description") or "").strip():
+                st.error("🚫 Description is empty - fill it in above before continuing.")
+            render_cancellation_policy_editor(data, f"mt_{idx}")
+            editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
+            editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
+            # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
+            # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
+            # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
+            # can add anything a document doesn't say straight into the real field instead of a
+            # side note that only gets appended to Voucher Remarks at publish time.
 
-        editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
-
-        # ------------------------------------------------------------------
-        # Geolocation resolve + human confirm - REQUIRED before this ticket
-        # can be confirmed. Without this, an unresolved/wrong city silently
-        # fails at publish time with a raw "GeolocationVO validation error"
-        # and no way to fix it from inside the batch flow.
-        # ------------------------------------------------------------------
-        st.markdown(f"**📍 Location for {current['label'] or current['ticket_code']}**")
-        mt_city = data.get("city", "")
-        if data.get("manual_latitude") is not None and data.get("manual_longitude") is not None:
-            mt_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
-                      "display_name": mt_city, "valid": True}
-        else:
-            mt_geo = geocode(mt_city)  # cached in geocoding_client - cheap to call every rerun
-
-        if mt_geo.get("valid"):
-            mt_lat, mt_lng = mt_geo["latitude"], mt_geo["longitude"]
-            mt_maps_link = f"https://www.google.com/maps?q={mt_lat},{mt_lng}"
-            st.markdown(
-                f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
-                f"border-radius:4px;'>📍 Resolved: <strong>{mt_geo.get('display_name') or mt_city}</strong>"
-                f"<br>Coordinates: {mt_lat:.6f}, {mt_lng:.6f} — "
-                f"<a href='{mt_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
-                unsafe_allow_html=True
-            )
-            st.caption("Geocoding data © OpenStreetMap contributors")
-        else:
-            st.markdown(
-                "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
-                "location. Search below or enter coordinates manually.</div>",
-                unsafe_allow_html=True
+            render_skip_item_button(
+                current['label'] or current['ticket_code'], queue, idx,
+                "mt_queue", "mt_queue_index",
+                ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
+                 "mt_doc_raw_images", "mt_hosted_image_candidates"],
+                button_key=f"mt_skip_{idx}",
+                widget_state_prefixes=["mt_"] + SHARED_WIDGET_STATE_PREFIXES
             )
 
-        with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
-            mt_geo_query = st.text_input("Search for a location", value=mt_city, key=f"mt_geo_query_{idx}")
-            if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
-                with st.spinner("Searching..."):
-                    current["geo_search_results"] = geocode_search(mt_geo_query, limit=5)
-            if current.get("geo_search_results"):
-                for gi, candidate in enumerate(current["geo_search_results"]):
-                    ggcol1, ggcol2 = st.columns([4, 1])
-                    with ggcol1:
-                        st.write(f"**{candidate['display_name']}**")
-                        st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
-                    with ggcol2:
-                        if st.button("Use this", key=f"mt_geo_pick_{idx}_{gi}"):
-                            data["manual_latitude"] = candidate["latitude"]
-                            data["manual_longitude"] = candidate["longitude"]
-                            current["geo_confirmed"] = False
-                            current["geo_search_results"] = None
-                            st.rerun()
+            editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
 
-            st.markdown("**Or enter coordinates manually:**")
-            mgcol1, mgcol2 = st.columns(2)
-            with mgcol1:
-                mt_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mt_geo_manlat_{idx}", placeholder="e.g. 27.394900")
-            with mgcol2:
-                mt_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mt_geo_manlng_{idx}", placeholder="e.g. 33.678400")
-            if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
-                data["manual_latitude"] = mt_man_lat
-                data["manual_longitude"] = mt_man_lng
-                current["geo_confirmed"] = False
+            # ------------------------------------------------------------------
+            # Geolocation resolve + human confirm - REQUIRED before this ticket
+            # can move on to the Modality/Pricing step. Without this, an unresolved/wrong
+            # city silently fails at publish time with a raw "GeolocationVO validation
+            # error" and no way to fix it from inside the batch flow.
+            # ------------------------------------------------------------------
+            st.markdown(f"**📍 Location for {current['label'] or current['ticket_code']}**")
+            mt_city = data.get("city", "")
+            if data.get("manual_latitude") is not None and data.get("manual_longitude") is not None:
+                mt_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
+                          "display_name": mt_city, "valid": True}
+            else:
+                mt_geo = geocode(mt_city)  # cached in geocoding_client - cheap to call every rerun
+
+            if mt_geo.get("valid"):
+                mt_lat, mt_lng = mt_geo["latitude"], mt_geo["longitude"]
+                mt_maps_link = f"https://www.google.com/maps?q={mt_lat},{mt_lng}"
+                st.markdown(
+                    f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
+                    f"border-radius:4px;'>📍 Resolved: <strong>{mt_geo.get('display_name') or mt_city}</strong>"
+                    f"<br>Coordinates: {mt_lat:.6f}, {mt_lng:.6f} — "
+                    f"<a href='{mt_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
+                    unsafe_allow_html=True
+                )
+                st.caption("Geocoding data © OpenStreetMap contributors")
+            else:
+                st.markdown(
+                    "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
+                    "location. Search below or enter coordinates manually.</div>",
+                    unsafe_allow_html=True
+                )
+
+            with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
+                mt_geo_query = st.text_input("Search for a location", value=mt_city, key=f"mt_geo_query_{idx}")
+                if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
+                    with st.spinner("Searching..."):
+                        current["geo_search_results"] = geocode_search(mt_geo_query, limit=5)
+                if current.get("geo_search_results"):
+                    for gi, candidate in enumerate(current["geo_search_results"]):
+                        ggcol1, ggcol2 = st.columns([4, 1])
+                        with ggcol1:
+                            st.write(f"**{candidate['display_name']}**")
+                            st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                        with ggcol2:
+                            if st.button("Use this", key=f"mt_geo_pick_{idx}_{gi}"):
+                                data["manual_latitude"] = candidate["latitude"]
+                                data["manual_longitude"] = candidate["longitude"]
+                                current["geo_confirmed"] = False
+                                current["geo_search_results"] = None
+                                st.rerun()
+
+                st.markdown("**Or enter coordinates manually:**")
+                mgcol1, mgcol2 = st.columns(2)
+                with mgcol1:
+                    mt_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mt_geo_manlat_{idx}", placeholder="e.g. 27.394900")
+                with mgcol2:
+                    mt_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mt_geo_manlng_{idx}", placeholder="e.g. 33.678400")
+                if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
+                    data["manual_latitude"] = mt_man_lat
+                    data["manual_longitude"] = mt_man_lng
+                    current["geo_confirmed"] = False
+                    st.rerun()
+
+            current["geo_confirmed"] = st.checkbox(
+                "✅ I've checked this location and it's correct for this ticket",
+                value=current.get("geo_confirmed", False), key=f"mt_geo_confirm_{idx}",
+                disabled=not mt_geo.get("valid")
+            )
+            if not mt_geo.get("valid"):
+                st.info("👆 Resolve the location above before this ticket can be confirmed.")
+            elif not current["geo_confirmed"]:
+                st.info("👆 Please check the location above and confirm it's correct.")
+
+            st.markdown(f"**Images for {current['label'] or current['ticket_code']}**")
+            if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
+                st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
+                          "image below (Travel Compositor requires at least one image per Ticket).")
+            else:
+                st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
+
+            def _mt_add_url_images():
+                selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(
+                bool(st.session_state.get("mt_hosted_image_candidates")),
+                f"🖼️ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
+                f"mt_found_{idx}_closed", _mt_add_url_images
+            )
+
+            def _mt_add_doc_image():
+                added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
+                if added:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + [added]
+                    return 1
+                return 0
+
+            render_closable_image_section(
+                bool(st.session_state.get("mt_doc_raw_images")),
+                f"📥 Images needing hosting ({len(st.session_state.get('mt_doc_raw_images') or [])})",
+                f"mt_doc_{idx}_closed", _mt_add_doc_image
+            )
+
+            mt_default_query = current["label"] or data.get("ticket_name", "") or data.get("city", "")
+
+            def _mt_add_pexels():
+                selected = render_stock_photo_picker("Pexels", search_images, mt_default_query, f"mt_pexels_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mt_pexels_{idx}_closed", _mt_add_pexels)
+
+            def _mt_add_pixabay():
+                selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
+
+            editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}")
+
+            inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
+            def _save_mt_includes(edf, data=data):
+                data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
+            editable_table("Includes", inc_df, f"mt_includes_{idx}", on_save=_save_mt_includes)
+
+            exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
+            def _save_mt_excludes(edf, data=data):
+                data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
+            editable_table("Excludes", exc_df, f"mt_excludes_{idx}", on_save=_save_mt_excludes)
+
+            mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
+            mp_df = pd.DataFrame(mp_default)
+            def _save_mt_mp(edf, data=data):
+                data["meeting_points"] = [
+                    {"description": str(r.get("Description") or "").strip(), "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
+                    for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
+                ]
+            editable_table("Meeting Points", mp_df, f"mt_mp_{idx}", on_save=_save_mt_mp)
+
+            name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
+            ready_for_modality = name_and_description_valid and mt_geo.get("valid") and current.get("geo_confirmed")
+
+            if st.button("➡️ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mt_continue_modality_{idx}"):
+                with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''} - this is a separate AI call from the main info above..."):
+                    try:
+                        modality_data = extract_ticket_modality_data(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                    except Exception as e:
+                        st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
+                        return
+                    data.update(modality_data)
+                # CONFIRMED PRODUCT-OWNER REQUEST: "if the ticket has detected another Modality,
+                # the app must call for each modality separately." Auto-detect any OTHER pricing
+                # category described for this same excursion (e.g. a full second price table for
+                # a different guide language) and queue it as its own extra Modality - each one
+                # still gets its OWN dedicated extraction call (below, same mechanism a human uses
+                # when adding a Modality manually), never blended into this one.
+                if "extra_modalities" not in current:
+                    current["extra_modalities"] = []
+                if not current.get("modalities_auto_detected"):
+                    try:
+                        detected_mods = detect_ticket_modalities(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                    except Exception:
+                        detected_mods = []  # best-effort - human can still add Modalities manually below
+                    existing_codes = {(m.get("code") or "").strip().lower() for m in current["extra_modalities"]}
+                    for m in detected_mods:
+                        label = (m.get("label") or "").strip()
+                        raw_code = (m.get("suggested_code") or label or "").strip()
+                        clean_code = "".join(c for c in raw_code if c not in "/\\+-.")
+                        if clean_code and clean_code.strip().lower() not in existing_codes:
+                            current["extra_modalities"].append(
+                                {"code": clean_code, "hint": label, "data": None, "auto_detected": True})
+                            existing_codes.add(clean_code.strip().lower())
+                    current["modalities_auto_detected"] = True
+                current["step"] = "modality"
                 st.rerun()
+            if not ready_for_modality:
+                st.info("Fill in Ticket name/Description and confirm the location above before continuing to Modality/Pricing.")
+            return
 
-        current["geo_confirmed"] = st.checkbox(
-            "✅ I've checked this location and it's correct for this ticket",
-            value=current.get("geo_confirmed", False), key=f"mt_geo_confirm_{idx}",
-            disabled=not mt_geo.get("valid")
-        )
-        if not mt_geo.get("valid"):
-            st.info("👆 Resolve the location above before this ticket can be confirmed.")
-        elif not current["geo_confirmed"]:
-            st.info("👆 Please check the location above and confirm it's correct.")
-
-        st.markdown(f"**Images for {current['label'] or current['ticket_code']}**")
-        if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
-            st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
-                      "image below (Travel Compositor requires at least one image per Ticket).")
-        else:
-            st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
-
-        def _mt_add_url_images():
-            selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
-            if selected:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + selected
-                return len(selected)
-            return 0
-
-        render_closable_image_section(
-            bool(st.session_state.get("mt_hosted_image_candidates")),
-            f"🖼️ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
-            f"mt_found_{idx}_closed", _mt_add_url_images
-        )
-
-        def _mt_add_doc_image():
-            added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
-            if added:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + [added]
-                return 1
-            return 0
-
-        render_closable_image_section(
-            bool(st.session_state.get("mt_doc_raw_images")),
-            f"📥 Images needing hosting ({len(st.session_state.get('mt_doc_raw_images') or [])})",
-            f"mt_doc_{idx}_closed", _mt_add_doc_image
-        )
-
-        mt_default_query = current["label"] or data.get("ticket_name", "") or data.get("city", "")
-
-        def _mt_add_pexels():
-            selected = render_stock_photo_picker("Pexels", search_images, mt_default_query, f"mt_pexels_{idx}")
-            if selected:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + selected
-                return len(selected)
-            return 0
-
-        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mt_pexels_{idx}_closed", _mt_add_pexels)
-
-        def _mt_add_pixabay():
-            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
-            if selected:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + selected
-                return len(selected)
-            return 0
-
-        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
-
-        editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}")
+        # ==================================================================
+        # STEP B: MODALITY / PRICING - base price, occupancy, extra costs,
+        # seasonal supplements, operational days, time slots, stop sales.
+        # Reached only after Step A's main info is confirmed.
+        # ==================================================================
+        st.caption(f"**Step 2 of 2: Modality/Pricing for {current['label'] or current['ticket_code']}.**")
+        if st.button("🔙 Back to main info", key=f"mt_back_to_main_{idx}"):
+            current["step"] = "main"
+            st.rerun()
 
         acol1, acol2 = st.columns(2)
         with acol1:
@@ -3528,25 +3621,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         with acol2:
             data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
                                                      value=int(data.get("child_age_max", 12) or 12), key=f"mt_max_child_age_{idx}")
-
-        inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
-        def _save_mt_includes(edf, data=data):
-            data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
-        editable_table("Includes", inc_df, f"mt_includes_{idx}", on_save=_save_mt_includes)
-
-        exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
-        def _save_mt_excludes(edf, data=data):
-            data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
-        editable_table("Excludes", exc_df, f"mt_excludes_{idx}", on_save=_save_mt_excludes)
-
-        mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
-        mp_df = pd.DataFrame(mp_default)
-        def _save_mt_mp(edf, data=data):
-            data["meeting_points"] = [
-                {"description": str(r.get("Description") or "").strip(), "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
-                for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
-            ]
-        editable_table("Meeting Points", mp_df, f"mt_mp_{idx}", on_save=_save_mt_mp)
 
         st.markdown("**Start Time(s)**")
         tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
@@ -3679,7 +3753,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                   "together with this ticket's single deactivation, so you don't need to manually reactivate "
                   "it afterward. Common case: different guide languages must each be their own Modality, "
                   "never a supplement. Operational Days, Stop Sales and Start Time(s) are each Modality's "
-                  "own, not shared across the ticket.")
+                  "own, not shared across the ticket. Rows marked 🤖 below were auto-detected from your "
+                  "document as a separate priced Modality and extracted with their own dedicated AI call - "
+                  "review them like any other.")
         st.caption(f"⚠️ **Every Modality on this Ticket must use the same Pricing Mode** "
                   f"(currently **{mt_price_type}**, set above) - Travel Compositor has never accepted a "
                   f"Ticket where one Modality is Distribution and another is Occupancy or Service. "
@@ -3688,7 +3764,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             current["extra_modalities"] = []
 
         for j, mod in enumerate(current["extra_modalities"]):
-            st.markdown(f"*Modality {j + 2}*")
+            mod_title = f"*Modality {j + 2}*" + (" 🤖 auto-detected" if mod.get("auto_detected") else "")
+            st.markdown(mod_title)
             mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
             with mcol1:
                 mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"mt_extramod_code_{idx}_{j}")
@@ -3711,9 +3788,24 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
                 st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
 
+            # CONFIRMED PRODUCT-OWNER REQUEST: an auto-detected Modality is extracted
+            # automatically the first time it's shown - a human never has to remember to click
+            # a button for a Modality the AI itself found - but still gets its own SEPARATE
+            # extraction call (never blended with the base Modality or any other extra one).
+            if mod["data"] is None and mod.get("auto_detected") and mod.get("code"):
+                with st.spinner(f"Extracting pricing for '{mod['hint'] or mod['code']}' - its own separate AI call..."):
+                    try:
+                        mod["data"] = extract_ticket_modality_data(
+                            st.session_state.mt_raw_text, variant_hint=variant_hint, modality_hint=mod["hint"])
+                        mod["data"]["price_type"] = mt_price_type
+                    except Exception as e:
+                        st.warning(f"⚠️ Couldn't auto-extract pricing for '{mod['hint'] or mod['code']}': "
+                                  f"{friendly_error_message(e)} - use the button below to retry.")
+
             if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mt_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
                 with st.spinner("Extracting..."):
-                    mod["data"] = extract_ticket_option_only_data(st.session_state.mt_raw_text, human_hint=mod["hint"])
+                    mod["data"] = extract_ticket_modality_data(
+                        st.session_state.mt_raw_text, variant_hint=variant_hint, modality_hint=mod["hint"])
                     # CONFIRMED REAL BUG (product owner report, real production failure): this used
                     # to hard-code every extra Modality to DISTRIBUTION regardless of what the BASE
                     # Modality actually used - "if more than one modality created in Ticket, the
@@ -3849,7 +3941,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
-        can_continue = price_valid and mt_geo.get("valid") and current.get("geo_confirmed") and name_and_description_valid
+        # Geolocation was already required and confirmed back in Step A (main info) before this
+        # step could even be reached - no need to recheck mt_geo here (it isn't in scope).
+        can_continue = price_valid and name_and_description_valid
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
@@ -8032,7 +8126,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-ticket-name-fallback-to-detected-variant"
+BUILD_VERSION = "2026-08-12-ticket-main-info-modality-split"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
