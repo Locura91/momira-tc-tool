@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-clarify-generated-modalities-fix"
+MODULE_BUILD = "2026-08-12-reliability-audit-fixes"
 
 import os
 import re
@@ -1500,23 +1500,32 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         if "changes" not in result or not isinstance(result["changes"], dict):
             result["changes"] = {}
 
-        # THIRD SAFETY NET: "generated_modalities" is derived (see the exclusion above) and gets
-        # silently recomputed away on the next render however it arrives here, so a model that
-        # writes it anyway (ignoring the system prompt) must not be allowed to report success on
-        # it - drop it and steer the summary, rather than let the caller show a green checkmark
-        # for an edit that is about to vanish.
-        if "generated_modalities" in result["changes"]:
-            del result["changes"]["generated_modalities"]
-            if "extra_cost_options" in result["changes"]:
-                note = ("(Note: the Modality list shown is computed automatically from the base price "
-                        "and Extra Costs - I edited Extra Costs to make this change take effect, rather "
-                        "than the list itself.)")
-            else:
-                note = ("⚠️ This was NOT applied: the Modality list shown is computed automatically from "
-                        "the base price and Extra Costs, and cannot be edited directly. Please retry, "
-                        "naming the specific Extra Cost option to add/remove/change (e.g. "
-                        "\"delete the French-speaking guide option\").")
-            result["summary"] = ((result.get("summary") or "").strip() + "\n\n" + note).strip()
+        def _strip_generated_modalities(result):
+            """THIRD SAFETY NET: "generated_modalities" is derived (see the exclusion above) and
+            gets silently recomputed away on the next render however it arrives here, so a model
+            that writes it anyway (ignoring the system prompt) must not be allowed to report
+            success on it - drop it and steer the summary, rather than let the caller show a
+            green checkmark for an edit that is about to vanish.
+
+            CONFIRMED REAL BUG THIS FIXES: this used to run only once, before the retry below -
+            if stripping generated_modalities was what EMPTIED changes in the first place, the
+            retry fires and its result is assigned straight into result["changes"] with no
+            re-check, so a generated_modalities key the retry reintroduces slipped through
+            unfiltered. Called after every place changes is set, including the retry."""
+            if "generated_modalities" in result["changes"]:
+                del result["changes"]["generated_modalities"]
+                if "extra_cost_options" in result["changes"]:
+                    note = ("(Note: the Modality list shown is computed automatically from the base "
+                            "price and Extra Costs - I edited Extra Costs to make this change take "
+                            "effect, rather than the list itself.)")
+                else:
+                    note = ("⚠️ This was NOT applied: the Modality list shown is computed automatically "
+                            "from the base price and Extra Costs, and cannot be edited directly. Please "
+                            "retry, naming the specific Extra Cost option to add/remove/change (e.g. "
+                            "\"delete the French-speaking guide option\").")
+                result["summary"] = ((result.get("summary") or "").strip() + "\n\n" + note).strip()
+
+        _strip_generated_modalities(result)
 
         # SECOND SAFETY NET, and the more damaging of the two.
         #
@@ -1552,6 +1561,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
                 result["summary"] = ((retry.get("summary") or "").strip()
                                      or result.get("summary", ""))
                 result["recovered_after_empty_claim"] = True
+                _strip_generated_modalities(result)
             else:
                 # Still nothing to apply. Keep the CORRECTED wording where there is one, so the
                 # human reads "nothing was changed" rather than the original false report.
@@ -1982,7 +1992,16 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }
-    defaults.update(data)
+    # CONFIRMED REAL BUG: this used to be defaults.update(data), which is NOT None-safe - any
+    # field Claude returns as JSON null OVERWRITES the safe default instead of falling back to
+    # it (every other extract_* function in this file instead uses the "or is None" guard
+    # below). Since the tool schema handed to the API has no type constraints, a stray null for
+    # e.g. itinerary_destinations crashes downstream at len(None), or a None silently reaches
+    # builder.py's payload math where a real default was expected.
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    defaults = data
 
     # Deterministic double-check of the Nights-vs-Days naming rule (see
     # _fix_days_count_in_tour_name's docstring) - catches the AI copying a

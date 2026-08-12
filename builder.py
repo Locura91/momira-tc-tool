@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-modality-supplements"
+MODULE_BUILD = "2026-08-12-reliability-audit-fixes"
 
 import math
 import datetime
@@ -1416,11 +1416,18 @@ def build_ticket_payloads(
             maxPassengers=pre_config.max_passengers,
             minPassengers=pre_config.min_passengers,
             # Confirmed by product owner: infant = 0-2, child = 2-12,
-            # internationally standard, same for Tickets and ClosedTours -
-            # previously this defaulted to 6/12 here (unify with ClosedTour's
-            # 2/12 default below, see HumanPreConfig in schemas.py).
-            childAgeMin=extracted_ticket_data.get("child_age_min") if extracted_ticket_data.get("child_age_min") is not None else 2,
-            childAgeMax=extracted_ticket_data.get("child_age_max") if extracted_ticket_data.get("child_age_max") is not None else 12,
+            # internationally standard, same for Tickets and ClosedTours.
+            #
+            # CONFIRMED REAL BUG: this used to be a bare "if not None else default" passthrough,
+            # skipping resolve_child_age_band's inversion repair that ClosedTour already gets
+            # (see line ~1060 above). A document saying "children accepted from age 14" with no
+            # stated ceiling extracts as child_age_min=14, child_age_max=None - the passthrough
+            # published childAgeMin=14, childAgeMax=12, an INVERTED band that (per
+            # resolve_child_age_band's own docstring) bills every child as an infant, for the
+            # exact same kind of source statement ClosedTour already handles correctly.
+            **dict(zip(("childAgeMin", "childAgeMax"), resolve_child_age_band(
+                extracted_ticket_data.get("child_age_min"), extracted_ticket_data.get("child_age_max"),
+                2, 12))),
             languages=extracted_ticket_data.get("languages") or ["EN"],
             timeTables=time_tables_list,
             duration=_safe_float(extracted_ticket_data.get("duration", 0)),
@@ -1675,7 +1682,24 @@ def build_transfer_payload(
         # every stated tier explicitly here, and use the smallest occupancy's rate as the
         # top-level basePrice (a visible, editable default).
         base_price = _safe_float(tiers_sorted[0].get("price", 0)) if tiers_sorted else 0.0
-        min_occupancy = _safe_int(extracted_transfer_data.get("min_occupancy", 1), fallback=1) or 1
+
+        # CONFIRMED REAL RULE (product owner, same rule _locked_on_update's docstring already
+        # states): "it also never has to be asked for the min and max passenger" on an UPDATE -
+        # those were fixed when the service was created. This used to be computed purely from
+        # extracted_transfer_data on every call, update included, so a partial/simplified rate
+        # sheet (e.g. one that only prices up to 4 pax) could silently SHRINK a live transfer's
+        # maxOccupancy below what real bookings already taken against it require - exactly the
+        # failure _locked_on_update's own docstring warns about ("shrinking maxOccupancy on a
+        # live transfer invalidates bookings already taken against it").
+        min_occupancy, _min_occ_inherited = _locked_on_update(
+            existing_transfer_snapshot, "minOccupancy",
+            _safe_int(extracted_transfer_data.get("min_occupancy", 1), fallback=1) or 1)
+        max_occupancy_fallback = min(
+            _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1,
+            _MAX_OCCUPANCY_PAX,
+        )
+        max_occupancy, _max_occ_inherited = _locked_on_update(
+            existing_transfer_snapshot, "maxOccupancy", max_occupancy_fallback)
 
         # CONFIRMED REAL RULE (product owner): a per-vehicle rate sheet that only describes a
         # single (smaller) vehicle must still price every occupancy up to the 9-pax system cap -
@@ -1683,11 +1707,6 @@ def build_transfer_payload(
         # max_occupancy is capped below, since this genuinely extends real bookable coverage up
         # to 9 pax (via multiple vehicles), not just a display default.
         tiers_sorted = _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax)
-
-        max_occupancy = min(
-            _safe_int(extracted_transfer_data.get("max_occupancy", 4), fallback=4) or 1,
-            _MAX_OCCUPANCY_PAX,
-        )
         if not price_by_pax and tiers_sorted:
             # Multi-vehicle synthesis means this route is now genuinely bookable up to the full
             # system cap, even though the source document's own stated max_occupancy was for a

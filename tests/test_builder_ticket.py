@@ -144,6 +144,18 @@ def test_child_age_defaults_to_2_and_12(fake_api_client):
     assert option["childAgeMax"] == 12
 
 
+def test_child_age_minimum_with_no_stated_ceiling_does_not_invert(fake_api_client):
+    """CONFIRMED REAL BUG: a document saying "children accepted from age 14" with no stated
+    ceiling used to publish childAgeMin=14/childAgeMax=12 - an inverted band that bills every
+    child as an infant. ClosedTour already repairs this via resolve_child_age_band; Ticket
+    must behave the same way for the identical kind of source statement."""
+    data = minimal_ticket_data(child_age_min=14)
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["childAgeMin"] == 14
+    assert option["childAgeMax"] >= 14
+
+
 def test_modality_code_with_a_slash_is_rejected_by_the_schema_before_building(fake_api_client):
     """This is a pydantic validator on the pre_config itself (schemas.py), not builder.py -
     confirming it fires means a bad code can never even reach build_ticket_payloads."""

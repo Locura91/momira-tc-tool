@@ -470,6 +470,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 remember_clarification(clarify_supplier_id(), "ClosedTour", mm_clarify_q, result)
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    reset_stale_editable_field_widgets(result["changes"], key_suffix=f"_{idx}")
                     if "price_list" in result["changes"]:
                         st.session_state[f"_editing_table_mm_pricing_{idx}"] = False
                     if "operational_days" in result["changes"]:
@@ -886,8 +887,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_clarify_q, result)
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    # CONFIRMED REAL BUG: this used to reset ONLY the Supplements table's
+                    # edit-mode flag - every plain field above it (tour_name, description,
+                    # hotels_text, included, excluded, meeting_point, policy_remarks, nights)
+                    # could go stale the same way Stop Sales once did, if a human had one open
+                    # (or later reopened it) after the AI changed it. The itinerary destinations
+                    # table needed the same table-key reset the other tables already got.
+                    reset_stale_editable_field_widgets(result["changes"], key_suffix="_main")
                     if "supplements" in result["changes"]:
                         st.session_state["_editing_table_mct_main_supplements"] = False
+                    if "itinerary_destinations" in result["changes"]:
+                        st.session_state["_editing_table_mct_destinations_main"] = False
                 st.rerun()
         if st.session_state.get("mct_clarify_result_main"):
             r = st.session_state["mct_clarify_result_main"]
@@ -1169,6 +1179,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     # Reset the affected widgets' state so they immediately reflect the
                     # AI's change instead of showing stale previously-typed/edited values -
                     # same fix applied to the main tour info's own clarify box.
+                    reset_stale_editable_field_widgets(result["changes"], key_suffix=f"_{midx}")
                     if "price_list" in result["changes"]:
                         st.session_state[f"_editing_table_mct_mod_pricing_{midx}"] = False
                     if "supplements" in result["changes"]:
@@ -1795,6 +1806,30 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
 
 # SUPPLEMENT_COLUMNS / render_closedtour_supplements / render_child_age_band - moved to
 # ui_components.py, same reason as the blocks above.
+
+
+def reset_stale_editable_field_widgets(changed_fields, key_suffix=""):
+    """CONFIRMED REAL BUG CLASS (found across ClosedTour and Ticket): every "Tell AI what to
+    fix" handler already resets the edit-mode flag for TABLE fields it might have touched
+    (via a hand-maintained field->table-key dict), but plain single-value fields rendered
+    with editable_field() (Ticket name, Description, Voucher Remarks, City, ClosedTour
+    Meeting point, etc.) were never covered by that pattern anywhere in the app. If a human
+    has one of those fields open for editing (or later reopens it) after an AI clarify wrote
+    a new value into the same field, editable_field's own fixed widget key
+    (`_widgetval_{field_key}{key_suffix}`) keeps showing the OLD text - Streamlit widgets
+    ignore a freshly-computed value= once session_state already holds an entry for that key,
+    exactly like editable_field's own docstring already warns about for the per-item-loop
+    case. Hitting Save on that stale box then re-writes the old value straight back over the
+    AI's fix, with the success banner still claiming it worked.
+
+    Call this with result["changes"] after every apply_clarify_changes(), passing whatever
+    key_suffix that screen's editable_field() calls use (e.g. f"_{idx}" in a batch loop, or
+    "_main"/"" for a single-item screen). Safe to call for fields that were never rendered
+    via editable_field at all (table fields, internal-only fields) - it only clears session
+    keys that were never set, which is a no-op."""
+    for field_name in changed_fields:
+        st.session_state[f"_editing_{field_name}{key_suffix}"] = False
+        st.session_state.pop(f"_widgetval_{field_name}{key_suffix}", None)
 
 
 def apply_clarify_changes(data, result, currency="EUR"):
@@ -3775,11 +3810,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         "time_tables": f"_editing_table_mt_timetables_{idx}",
                         "stop_sales": f"_editing_table_mt_{idx}_stop_sales",
                         "modality_supplements": f"_editing_table_mt_{idx}_modality_supplements",
+                        # CONFIRMED REAL GAP: this box can return an occupancy_prices change
+                        # (nothing scopes apply_clarification's output to "fields rendered above
+                        # this box") but the reset for it was missing here, unlike the pricing
+                        # box below - a corrected occupancy row could go stale the same way
+                        # Stop Sales once did.
+                        "occupancy_prices": f"_editing_table_mt_occupancy_{idx}",
                     }
                     for field_name in result["changes"]:
                         table_key = mt_field_to_table_key.get(field_name)
                         if table_key:
                             st.session_state[table_key] = False
+                    # Plain text/number fields (Ticket name, Description, Condition, Voucher
+                    # Remarks, City, Duration) were never covered by the table-key reset above -
+                    # see reset_stale_editable_field_widgets' docstring for why they can go
+                    # stale the same way.
+                    reset_stale_editable_field_widgets(result["changes"], key_suffix=f"_{idx}")
                     if "operational_days" in result["changes"]:
                         st.session_state.pop(f"mt_op_days_{idx}", None)
                 st.rerun()
@@ -4623,11 +4669,19 @@ def render_ticket_flow(client):
                         # edit-mode flag the same way as every other table field here.
                         "stop_sales": "_editing_table_tk_stop_sales",
                         "modality_supplements": "_editing_table_tk_modality_supplements",
+                        # CONFIRMED REAL GAP: this box (unlike the pricing box below) can also
+                        # return an occupancy_prices correction, but its reset dict never
+                        # included the key for it.
+                        "occupancy_prices": "_editing_table_tk_occupancy",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key.get(field_name)
                         if table_key:
                             st.session_state[table_key] = False
+                    # Plain text/number fields (Ticket name, Description, City, Condition,
+                    # Voucher Remarks, Duration) - see reset_stale_editable_field_widgets'
+                    # docstring for why these need the same treatment as table fields.
+                    reset_stale_editable_field_widgets(result["changes"])
                     if "operational_days" in result["changes"]:
                         st.session_state.pop("tk_op_days", None)
                 st.rerun()
@@ -4941,6 +4995,7 @@ def render_ticket_flow(client):
                         table_key = tk_field_to_table_key2.get(field_name)
                         if table_key:
                             st.session_state[table_key] = False
+                    reset_stale_editable_field_widgets(result["changes"])
                     if "operational_days" in result["changes"]:
                         st.session_state.pop("tk_op_days", None)
                 st.rerun()
@@ -7961,7 +8016,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-clarify-send-disabled-hint"
+BUILD_VERSION = "2026-08-12-reliability-audit-fixes"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9300,6 +9355,10 @@ if st.session_state.extracted:
                     table_key = field_to_table_key.get(field_name)
                     if table_key:
                         st.session_state[table_key] = False
+                # Plain text/number fields (Tour name, Hotels, Included, Excluded, Meeting
+                # point, Policy remarks, Nights) - see reset_stale_editable_field_widgets'
+                # docstring for why these need the same treatment as table fields.
+                reset_stale_editable_field_widgets(result["changes"])
             st.rerun()
     if st.session_state.get("clarify_result"):
         r = st.session_state.clarify_result
