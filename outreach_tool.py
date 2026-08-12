@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-tests"
+MODULE_BUILD = "2026-08-12-blocklist"
 
 import csv
 import io
@@ -443,7 +443,41 @@ def _render_review_and_send():
 
         # ---- Optional: Show current blocklist ----
         with st.expander("🔍 Show current blocklist"):
+            # ---- Manual add: for a known-bad domain that never showed up in a search
+            # result, so there's nothing to tick in the "unticked suppliers" flow above.
+            # add_domain_to_blocklist() already normalizes a bare domain or a full URL
+            # and rejects anything it can't extract a domain from - reuse that instead of
+            # re-validating the format here, so the UI and the search filter never disagree
+            # on what counts as a valid domain (see outreach_memory.py's docstring).
+            ac1, ac2 = st.columns([4, 1])
+            with ac1:
+                new_domain = st.text_input(
+                    "Add a domain to block", placeholder="e.g. example.com or https://example.com/path",
+                    key="or_new_block_domain", label_visibility="collapsed")
+            with ac2:
+                add_clicked = st.button("➕ Add", key="or_add_block_domain")
+            if add_clicked:
+                typed = new_domain.strip()
+                extracted = om.extract_domain(typed)
+                if not extracted:
+                    st.session_state["or_block_result"] = (
+                        f"⚠️ Could not extract a domain from `{typed}` — enter a bare domain "
+                        f"(example.com) or a full URL.")
+                elif extracted in om.get_blocklist():
+                    st.session_state["or_block_result"] = f"`{extracted}` is already blocked."
+                elif om.add_domain_to_blocklist(typed):
+                    st.session_state["or_block_result"] = (
+                        f"✅ Blocked `{extracted}`. Future searches skip it.")
+                else:
+                    st.session_state["or_block_result"] = (
+                        f"⚠️ `{extracted}` was NOT saved — check the Memory line at the bottom "
+                        f"of the page before relying on this.")
+                st.rerun()
+
             blocked = om.get_blocklist()
+            if blocked:
+                st.caption(f"⚠️ {len(blocked)} domain(s) are currently blocked and will never appear "
+                           f"in search results for anyone.")
             if not blocked:
                 st.caption("No domains blocked yet.")
             else:
