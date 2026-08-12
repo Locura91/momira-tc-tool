@@ -91,6 +91,7 @@ import ai_extractor as ai_extractor_module
 # Transfer, Transport, Hotel) - see ui_components.py's module docstring.
 from ui_components import (
     editable_table, editable_field, render_stop_sales_editor, render_cancellation_policy_editor,
+    render_ticket_modality_supplements_editor,
     render_seasonal_price_editor, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band,
@@ -460,6 +461,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         st.caption("Ask a question, or tell it to fix something (e.g. 'the price should be x3 for 3 "
                   "nights, not the per-night rate'). Applies real changes when you ask for them.")
         mm_clarify_q = st.text_input("Your message", key=f"mm_clarify_input_{idx}")
+        if not mm_clarify_q.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not mm_clarify_q.strip(), key=f"mm_clarify_send_{idx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mm_raw_text, data, mm_clarify_q)
@@ -874,6 +877,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown("**🤖 Tell AI what to fix**")
         mct_clarify_q = st.text_input("Your message", key="mct_clarify_input_main")
+        if not mct_clarify_q.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not mct_clarify_q.strip(), key="mct_clarify_send_main"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
@@ -1152,6 +1157,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown(f"**🤖 Tell AI what to fix - {mod['code']}**")
         mct_mod_clarify_q = st.text_input("Your message", key=f"mct_mod_clarify_input_{midx}")
+        if not mct_mod_clarify_q.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not mct_mod_clarify_q.strip(), key=f"mct_mod_clarify_send_{midx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_mod_clarify_q)
@@ -3321,7 +3328,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         render_cancellation_policy_editor(data, f"mt_{idx}")
         editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
         editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
-        service_notes.render_notes_editor(supplier_id, "Ticket", data, key_suffix=f"_{idx}")
+        # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
+        # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
+        # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
+        # can add anything a document doesn't say straight into the real field instead of a
+        # side note that only gets appended to Voucher Remarks at publish time.
 
         render_skip_item_button(
             current['label'] or current['ticket_code'], queue, idx,
@@ -3520,9 +3531,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             key=f"mt_price_type_{idx}"
         )
         data["price_type"] = mt_price_type
-        if mt_price_type != "DISTRIBUTION":
-            st.warning("⚠️ UNCONFIRMED whether Travel Compositor's API accepts this pricing mode for "
-                      "Tickets - test carefully with a real publish before relying on it.")
+        # CONFIRMED (product owner, real publish): all three pricing modes (Distribution,
+        # Occupancy, Service) work fine for Tickets via the API - the "unconfirmed" caution that
+        # used to show for Service here is gone, it was no longer accurate.
 
         if mt_price_type == "DISTRIBUTION":
             pcol1, pcol2, pcol3 = st.columns(3)
@@ -3611,6 +3622,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # on demand, so it can never go stale like the always-live text_area did.
         render_stop_sales_editor(data, f"mt_{idx}")
 
+        # CORRECTED 2026-08-12 (product owner): a Ticket Modality DOES have its own dated
+        # supplements (a seasonal price row, a holiday guide surcharge) - only the main Ticket
+        # record has none. See render_ticket_modality_supplements_editor's docstring.
+        render_ticket_modality_supplements_editor(data, f"mt_{idx}")
+
         render_ticket_extra_costs(data, f"mt_{idx}",
                                   base_code=current.get("modality_code") or current.get("ticket_code") or "",
                                   base_name=data.get("ticket_name") or current.get("label") or "")
@@ -3621,6 +3637,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                   "it afterward. Common case: different guide languages must each be their own Modality, "
                   "never a supplement. Operational Days, Stop Sales and Start Time(s) are each Modality's "
                   "own, not shared across the ticket.")
+        st.caption(f"⚠️ **Every Modality on this Ticket must use the same Pricing Mode** "
+                  f"(currently **{mt_price_type}**, set above) - Travel Compositor has never accepted a "
+                  f"Ticket where one Modality is Distribution and another is Occupancy or Service. "
+                  f"Extra Modalities below are extracted and priced in {mt_price_type} to match.")
         if "extra_modalities" not in current:
             current["extra_modalities"] = []
 
@@ -3651,21 +3671,50 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mt_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
                 with st.spinner("Extracting..."):
                     mod["data"] = extract_ticket_option_only_data(st.session_state.mt_raw_text, human_hint=mod["hint"])
-                    # This quick-add UI only shows Adult/Child/Infant fields (Distribution), same as the
-                    # main batch pricing above - force it explicitly so the extraction default (Occupancy,
-                    # see Feature 3) doesn't leave these prices getting zeroed out by builder.py's
-                    # per-mode zeroing (Bug 2 fix).
-                    mod["data"]["price_type"] = "DISTRIBUTION"
+                    # CONFIRMED REAL BUG (product owner report, real production failure): this used
+                    # to hard-code every extra Modality to DISTRIBUTION regardless of what the BASE
+                    # Modality actually used - "if more than one modality created in Ticket, the
+                    # other modalities must also be same structure as first with Service,
+                    # Distribution or Occupancy... it has never worked" otherwise. Inherit the base
+                    # Modality's own price_type instead, so every Modality created together in this
+                    # batch is structurally consistent - see the single-Ticket flow's identical fix.
+                    mod["data"]["price_type"] = mt_price_type
                     st.rerun()
 
             if mod["data"]:
-                epcol1, epcol2, epcol3 = st.columns(3)
-                with epcol1:
-                    mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"mt_extramod_adult_{idx}_{j}")
-                with epcol2:
-                    mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"mt_extramod_child_{idx}_{j}")
-                with epcol3:
-                    mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"mt_extramod_infant_{idx}_{j}")
+                mod["data"]["price_type"] = mt_price_type  # keep in sync if the base mode is changed afterward
+                if mt_price_type == "DISTRIBUTION":
+                    epcol1, epcol2, epcol3 = st.columns(3)
+                    with epcol1:
+                        mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"mt_extramod_adult_{idx}_{j}")
+                    with epcol2:
+                        mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"mt_extramod_child_{idx}_{j}")
+                    with epcol3:
+                        mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"mt_extramod_infant_{idx}_{j}")
+                elif mt_price_type == "SERVICE":
+                    mod["data"]["base_service_price"] = st.number_input(
+                        "Total Service Price (flat, regardless of group size)", min_value=0.0,
+                        value=float(mod["data"].get("base_service_price", 0) or 0), key=f"mt_extramod_service_{idx}_{j}")
+                elif mt_price_type == "OCCUPANCY":
+                    _mt_extramod_dropped = [o for o in mod["data"].get("occupancy_prices", [])
+                                            if _safe_int(o.get("occupancy", 1), fallback=1) > mt_occ_cap]
+                    if _mt_extramod_dropped:
+                        mod["data"]["occupancy_prices"] = [
+                            o for o in mod["data"].get("occupancy_prices", [])
+                            if _safe_int(o.get("occupancy", 1), fallback=1) <= mt_occ_cap]
+                        st.caption(f"ℹ️ Dropped {len(_mt_extramod_dropped)} occupancy row(s) above "
+                                  f"{mt_occ_cap} pax (this Ticket's Max Passengers).")
+                    _mt_extramod_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
+                                             for o in mod["data"].get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
+                    _mt_extramod_occ_df = pd.DataFrame(_mt_extramod_occ_rows)
+                    def _save_mt_extramod_occupancy(edf, mod=mod, mt_occ_cap=mt_occ_cap):
+                        mod["data"]["occupancy_prices"] = [
+                            {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
+                            for _, r in edf.iterrows()
+                            if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= mt_occ_cap
+                        ]
+                    editable_table(f"Occupancy Price Tiers - {mod['code']}", _mt_extramod_occ_df,
+                                   f"mt_extramod_occupancy_{idx}_{j}", on_save=_save_mt_extramod_occupancy)
                 edcol1, edcol2 = st.columns(2)
                 with edcol1:
                     mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", data.get("start_date", ""))), key=f"mt_extramod_start_{idx}_{j}"))
@@ -3685,6 +3734,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
                     default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"mt_extramod_days_{idx}_{j}")
                 render_stop_sales_editor(mod["data"], f"mt_extramod_{idx}_{j}")
+                render_ticket_modality_supplements_editor(mod["data"], f"mt_extramod_{idx}_{j}")
             else:
                 st.info("Click 'Extract pricing' above to get started for this modality.")
             st.divider()
@@ -3695,6 +3745,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
+        if not mt_clarify_q.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mt_raw_text, data, mt_clarify_q)
@@ -3722,6 +3774,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         "meeting_points": f"_editing_table_mt_mp_{idx}",
                         "time_tables": f"_editing_table_mt_timetables_{idx}",
                         "stop_sales": f"_editing_table_mt_{idx}_stop_sales",
+                        "modality_supplements": f"_editing_table_mt_{idx}_modality_supplements",
                     }
                     for field_name in result["changes"]:
                         table_key = mt_field_to_table_key.get(field_name)
@@ -4429,7 +4482,8 @@ def render_ticket_flow(client):
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
                 editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80)
-                service_notes.render_notes_editor(supplier_id, "Ticket", data, key_suffix="_legacy")
+                # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): Manual Notes removed here too, same
+                # reasoning as the batch flow above - every field is directly editable now.
 
                 if data.get("is_private") and "private" not in (modality_code or "").lower():
                     st.info(f"💡 This excursion is described as **PRIVATE** in the source - a genuine "
@@ -4549,6 +4603,8 @@ def render_ticket_flow(client):
 
         st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
+        if not tk_clarify_q.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not tk_clarify_q.strip(), key="tk_clarify_send"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q)
@@ -4566,6 +4622,7 @@ def render_ticket_flow(client):
                         # call site above) rather than a raw always-live text_area - reset its
                         # edit-mode flag the same way as every other table field here.
                         "stop_sales": "_editing_table_tk_stop_sales",
+                        "modality_supplements": "_editing_table_tk_modality_supplements",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key.get(field_name)
@@ -4599,6 +4656,7 @@ def render_ticket_flow(client):
         # what to fix" and wasn't an easy way to add one by hand either. render_stop_sales_editor
         # is the same friendly Start/End Date table already used for ClosedTour.
         render_stop_sales_editor(data, "tk")
+        render_ticket_modality_supplements_editor(data, "tk")
 
         num_days = len(data.get("operational_days", []))
         num_stops = len(data.get("stop_sales", []))
@@ -4637,11 +4695,10 @@ def render_ticket_flow(client):
             key="tk_price_type"
         )
         data["price_type"] = price_type
-        if price_type != "DISTRIBUTION":
-            st.warning("⚠️ UNCONFIRMED whether Travel Compositor's API accepts this pricing mode for "
-                      "Tickets - ClosedTours are confirmed to only work via Distribution through the API "
-                      "(Occupancy there only works through their own admin UI, not the API). Test this "
-                      "carefully with a real publish before relying on it.")
+        # CONFIRMED (product owner, real publish): all three pricing modes (Distribution,
+        # Occupancy, Service) work fine for Tickets via the API (that caution still genuinely
+        # applies to ClosedTours - see sync_closed_tour.py / the ClosedTour flow, unaffected by
+        # this) - the "unconfirmed" warning that used to show for Service here is gone.
 
         if price_type == "DISTRIBUTION":
             pcol1, pcol2, pcol3 = st.columns(3)
@@ -4731,11 +4788,14 @@ def render_ticket_flow(client):
             st.subheader("➕ Add more Modalities to create right away (optional)")
             st.caption("Add more ticket variants now (e.g. different guide languages or vehicle classes) - "
                       "all get created together with a SINGLE deactivation at the end, so you don't need to "
-                      "manually reactivate the Ticket in Travel Compositor between each one. Uses Distribution "
-                      "pricing (Adult/Child/Infant) only - use the normal single-Ticket flow afterward for "
-                      "Occupancy or Service pricing on a specific one. Operational Days, Stop Sales and Start "
-                      "Time(s) are each Modality's own - Travel Compositor stores them per Modality, not per "
-                      "Ticket, so e.g. a German-guide variant can run on different days than the base one.")
+                      "manually reactivate the Ticket in Travel Compositor between each one. Operational "
+                      "Days, Stop Sales and Start Time(s) are each Modality's own - Travel Compositor stores "
+                      "them per Modality, not per Ticket, so e.g. a German-guide variant can run on "
+                      "different days than the base one.")
+            st.caption(f"⚠️ **Every Modality on this Ticket must use the same Pricing Mode** "
+                      f"(currently **{price_type}**, set above) - Travel Compositor has never accepted a "
+                      f"Ticket where one Modality is Distribution and another is Occupancy or Service. "
+                      f"Extra Modalities below are extracted and priced in {price_type} to match.")
             if "tk_extra_modalities" not in st.session_state:
                 st.session_state.tk_extra_modalities = []
 
@@ -4765,20 +4825,50 @@ def render_ticket_flow(client):
                 if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"tk_extramod_extract_{i}", disabled=not mod["code"]):
                     with st.spinner("Extracting..."):
                         mod["data"] = extract_ticket_option_only_data(st.session_state.tk_raw_preview, human_hint=mod["hint"])
-                        # This quick-add UI only shows Adult/Child/Infant fields (Distribution) - force it
-                        # explicitly so the extraction default (Occupancy, see Feature 3) doesn't leave
-                        # these prices getting zeroed out by builder.py's per-mode zeroing (Bug 2 fix).
-                        mod["data"]["price_type"] = "DISTRIBUTION"
+                        # CONFIRMED REAL BUG (product owner report, real production failure): this
+                        # used to hard-code every extra Modality to DISTRIBUTION regardless of what
+                        # the BASE Modality actually used - "if more than one modality created in
+                        # Ticket, the other modalities must also be same structure as first with
+                        # Service, Distribution or Occupancy... it has never worked" otherwise.
+                        # Inherit the base Modality's own price_type instead, so every Modality
+                        # created together in this batch is structurally consistent.
+                        mod["data"]["price_type"] = price_type
                         st.rerun()
 
                 if mod["data"]:
-                    pcol1, pcol2, pcol3 = st.columns(3)
-                    with pcol1:
-                        mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"tk_extramod_adult_{i}")
-                    with pcol2:
-                        mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"tk_extramod_child_{i}")
-                    with pcol3:
-                        mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"tk_extramod_infant_{i}")
+                    mod["data"]["price_type"] = price_type  # keep in sync if the base mode is changed afterward
+                    if price_type == "DISTRIBUTION":
+                        pcol1, pcol2, pcol3 = st.columns(3)
+                        with pcol1:
+                            mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"tk_extramod_adult_{i}")
+                        with pcol2:
+                            mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"tk_extramod_child_{i}")
+                        with pcol3:
+                            mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"tk_extramod_infant_{i}")
+                    elif price_type == "SERVICE":
+                        mod["data"]["base_service_price"] = st.number_input(
+                            "Total Service Price (flat, regardless of group size)", min_value=0.0,
+                            value=float(mod["data"].get("base_service_price", 0) or 0), key=f"tk_extramod_service_{i}")
+                    elif price_type == "OCCUPANCY":
+                        _tk_extramod_dropped = [o for o in mod["data"].get("occupancy_prices", [])
+                                                if _safe_int(o.get("occupancy", 1), fallback=1) > tk_occ_cap]
+                        if _tk_extramod_dropped:
+                            mod["data"]["occupancy_prices"] = [
+                                o for o in mod["data"].get("occupancy_prices", [])
+                                if _safe_int(o.get("occupancy", 1), fallback=1) <= tk_occ_cap]
+                            st.caption(f"ℹ️ Dropped {len(_tk_extramod_dropped)} occupancy row(s) above "
+                                      f"{tk_occ_cap} pax (this Ticket's Max Passengers).")
+                        _tk_extramod_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
+                                                 for o in mod["data"].get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
+                        _tk_extramod_occ_df = pd.DataFrame(_tk_extramod_occ_rows)
+                        def _save_tk_extramod_occupancy(edf, mod=mod, tk_occ_cap=tk_occ_cap):
+                            mod["data"]["occupancy_prices"] = [
+                                {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
+                                for _, r in edf.iterrows()
+                                if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= tk_occ_cap
+                            ]
+                        editable_table(f"Occupancy Price Tiers - {mod['code']}", _tk_extramod_occ_df,
+                                       f"tk_extramod_occupancy_{i}", on_save=_save_tk_extramod_occupancy)
                     dcol1x, dcol2x = st.columns(2)
                     with dcol1x:
                         mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", "")), key=f"tk_extramod_start_{i}"))
@@ -4800,6 +4890,7 @@ def render_ticket_flow(client):
                         f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
                         default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"tk_extramod_days_{i}")
                     render_stop_sales_editor(mod["data"], f"tk_extramod_{i}")
+                    render_ticket_modality_supplements_editor(mod["data"], f"tk_extramod_{i}")
                 else:
                     st.info("Click 'Extract pricing' above to get started for this modality.")
                 st.divider()
@@ -4830,6 +4921,8 @@ def render_ticket_flow(client):
                   "shows exactly what changed so you can double-check.")
         tk_clarify_q2 = st.text_input("Your message", key="tk_clarify_input_pricing",
                                       placeholder="e.g. 'Fix the adult price to 89' or 'Is the child price for under 12?'")
+        if not tk_clarify_q2.strip():
+            st.caption("Type a message above first — Send stays disabled until there's something to send.")
         if st.button("Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q2)
@@ -4842,6 +4935,7 @@ def render_ticket_flow(client):
                         "occupancy_prices": "_editing_table_tk_occupancy",
                         "time_tables": "_editing_table_tk_timetables",
                         "stop_sales": "_editing_table_tk_stop_sales",
+                        "modality_supplements": "_editing_table_tk_modality_supplements",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key2.get(field_name)
@@ -7867,7 +7961,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-ticket-occupancy-stopsales-fix"
+BUILD_VERSION = "2026-08-12-clarify-send-disabled-hint"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9184,6 +9278,8 @@ if st.session_state.extracted:
               "what changed so you can double-check.")
     clarify_question = st.text_input("Your message", key="clarify_question_input",
                                      placeholder="e.g. 'Fix season 1's end date to Sept 30' or 'Does this include the Junior Suite?'")
+    if not clarify_question.strip():
+        st.caption("Type a message above first — Send stays disabled until there's something to send.")
     if st.button("Send", disabled=not clarify_question.strip()):
         with st.spinner("Thinking..."):
             result = apply_clarification(st.session_state.raw_preview, data, clarify_question)

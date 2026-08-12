@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-occupancy-stopsales-fix"
+MODULE_BUILD = "2026-08-12-ticket-modality-supplements"
 
 import re
 import math
@@ -240,6 +240,62 @@ def render_stop_sales_editor(data, key_prefix, help_text=None):
             data["stop_sales"] = new_stops
 
         editable_table("Blocked date ranges", stop_df, f"{key_prefix}_stop_sales", on_save=_save_stop_sales)
+
+
+def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
+    """
+    Friendly Name/Start/End/Adult/Child/Infant table for a Ticket Modality's
+    modality_supplements (ContractTicketModalityVO.supplements - a DATED
+    price change to this specific Modality, e.g. a High Season price row or
+    a Tet Holiday guide surcharge).
+
+    CORRECTED 2026-08-12 (product owner): "Main Ticket information has no
+    supplement, Modality of a Ticket has their own supplement." An earlier
+    version of this app treated Tickets as having no supplements at all -
+    that was too broad. A genuinely different product a customer CHOOSES
+    (a foreign-language guide, a Seat-in-Coach option) still becomes its own
+    Modality via Extra Costs above, unchanged - this editor is only for a
+    dated price bump on THIS Modality, never a product choice.
+
+    Each row needs both a Start and End Date (TicketSupplementVO has no
+    undated fallback) - a row missing either is silently dropped rather than
+    published, since an undated Ticket supplement can't be told apart from a
+    permanent price rise.
+    """
+    with st.expander(f"Seasonal / Holiday Supplements ({len(data.get('modality_supplements') or [])} dated price change(s))"):
+        if help_text:
+            st.caption(help_text)
+        st.caption("Each row adds an EXTRA amount on top of this Modality's base price during that date "
+                  "range only - e.g. a High Season row, or a holiday guide surcharge. For a genuinely "
+                  "different product a customer chooses between (another guide language, Seat-in-Coach), "
+                  "use Extra Costs above instead - this is only for the same product costing more on "
+                  "certain dates.")
+        supp_rows = [
+            {"Name": s.get("name", ""), "Start Date": _disp(s.get("start_date", "")), "End Date": _disp(s.get("end_date", "")),
+             "Adult Extra": s.get("adult_price_supplement", 0), "Child Extra": s.get("children_price_supplement", 0),
+             "Infant Extra": s.get("infant_price_supplement", 0)}
+            for s in (data.get("modality_supplements") or []) if isinstance(s, dict)
+        ]
+        supp_df = pd.DataFrame(supp_rows) if supp_rows else pd.DataFrame(
+            columns=["Name", "Start Date", "End Date", "Adult Extra", "Child Extra", "Infant Extra"])
+
+        def _save_modality_supplements(edited_df, data=data):
+            new_supplements = []
+            for _, row in edited_df.iterrows():
+                start = _iso(_safe_cell_str(row.get("Start Date")))
+                end = _iso(_safe_cell_str(row.get("End Date")))
+                if not start or not end:
+                    continue
+                new_supplements.append({
+                    "name": _safe_cell_str(row.get("Name")).strip() or "Seasonal surcharge",
+                    "start_date": start, "end_date": end,
+                    "adult_price_supplement": _safe_float(row.get("Adult Extra")),
+                    "children_price_supplement": _safe_float(row.get("Child Extra")),
+                    "infant_price_supplement": _safe_float(row.get("Infant Extra")),
+                })
+            data["modality_supplements"] = new_supplements
+
+        editable_table("Dated price changes", supp_df, f"{key_prefix}_modality_supplements", on_save=_save_modality_supplements)
 
 
 def render_cancellation_policy_editor(data, key_prefix, help_text=None):

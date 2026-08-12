@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-occupancy-stopsales-fix"
+MODULE_BUILD = "2026-08-12-ticket-modality-supplements"
 
 import math
 import datetime
@@ -685,6 +685,46 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     return supplements_list
 
 
+def build_ticket_supplement_vos(supplements: List[Dict[str, Any]]) -> List[TicketSupplementVO]:
+    """
+    Converts the app's internal flat Ticket-Modality supplement dicts (name/
+    adult_price_supplement/children_price_supplement/infant_price_supplement/
+    start_date/end_date) into the real TicketSupplementVO wire shape.
+
+    CORRECTED 2026-08-12 (product owner): an earlier version of this codebase
+    treated Tickets as having no supplements at all - wrong. The main Ticket
+    record has none, but ContractTicketModalityVO DOES carry its own
+    `supplements: List[TicketSupplementVO]`, confirmed against the real
+    schema. This is the mechanism for a DATED price change that is not a
+    customer choice - a seasonal price table where the same excursion costs
+    more in high season, or a holiday/peak-date surcharge (e.g. a Tet Holiday
+    guide-language surcharge) - as opposed to a genuinely different product
+    variant (a foreign-language guide, a Seat-in-Coach option), which still
+    becomes its own Modality via the existing extra-costs mechanism, unchanged.
+
+    Every entry requires startDate/endDate (TicketSupplementVO has no
+    optional-date fallback like ClosedTour's SupplementVO) - an entry with
+    either date missing is skipped rather than published with an empty/
+    always-on date, since an undated Ticket supplement can't be told apart
+    from a permanent price increase.
+    """
+    supplements_list = []
+    for s in (supplements or []):
+        start = (s.get("start_date") or "").strip()
+        end = (s.get("end_date") or "").strip()
+        if not start or not end:
+            continue
+        supplements_list.append(TicketSupplementVO(
+            adultPriceSupplement=_safe_float(s.get("adult_price_supplement", 0)),
+            childrenPriceSupplement=_safe_float(s.get("children_price_supplement", 0)),
+            infantPriceSupplement=_safe_float(s.get("infant_price_supplement", 0)),
+            startDate=start,
+            endDate=end,
+            translations={"EN": TicketSupplementTranslation(name=s.get("name") or "Seasonal surcharge")},
+        ))
+    return supplements_list
+
+
 def normalize_time_hhmmss(value: str) -> str:
     """
     CONFIRMED via a real API error: Travel Compositor's startTime/endTime
@@ -1199,14 +1239,20 @@ def build_ticket_payloads(
         # batch/app. It's now caught below (via `or ""`  defensive coercion
         # plus this try block), and reported as a per-item error instead.
 
-        # CONFIRMED PRODUCT-OWNER RULE: **a Ticket has no supplements.** Every extra cost is its
-        # own Modality, priced base + extra - see build_ticket_modality_combinations(). This list
-        # is therefore always empty, and stays in the payload only because the field exists on the
-        # wire. Anything still sitting in extracted_ticket_data["supplements"] (an older saved
-        # draft, or a model that ignored the prompt) is deliberately DROPPED rather than published:
-        # a supplement is a small fee bolted onto one price, which is exactly the wrong shape for
-        # an extra that has its own full price.
-        supplements_list = []
+        # CORRECTED 2026-08-12 (product owner): "Main Ticket information has no supplement, Modality
+        # of a Ticket has their own supplement." An earlier version of this code treated Tickets as
+        # having NO supplements at all, which was too broad - the main Ticket record has none, but
+        # each Modality (ContractTicketModalityVO) has its own dated supplements list, confirmed
+        # against the real schema. A genuinely different product variant (a foreign-language guide,
+        # a Seat-in-Coach option) still becomes its own Modality via
+        # build_ticket_modality_combinations() - that part is unchanged. This field is for a DATED
+        # price change that is not a customer choice - a seasonal price table or a holiday surcharge -
+        # see build_ticket_supplement_vos()'s docstring.
+        supplements_list = build_ticket_supplement_vos(extracted_ticket_data.get("modality_supplements"))
+
+        # The OLD "supplements" key is legacy - anything still sitting there (an older saved draft,
+        # or a model that ignored the prompt and used the wrong field) is deliberately DROPPED rather
+        # than published, since its shape (no dates, per-passenger amount only) was never real.
         _ignored_ticket_supplements = [
             str((s or {}).get("name") or "").strip()
             for s in (extracted_ticket_data.get("supplements") or []) if isinstance(s, dict)

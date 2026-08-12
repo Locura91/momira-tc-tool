@@ -5,7 +5,7 @@ without ever calling out to the real geocoder (geocode() in geocoding_client.py)
 build_ticket_payloads' own geolocation branch for why a manual override skips it entirely.
 """
 from schemas import TicketHumanPreConfig
-from builder import build_ticket_payloads
+from builder import build_ticket_payloads, build_ticket_supplement_vos
 
 
 def make_pre_config(**overrides):
@@ -151,6 +151,56 @@ def test_modality_code_with_a_slash_is_rejected_by_the_schema_before_building(fa
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         make_pre_config(modality_code="BAD/CODE")
+
+
+# CORRECTED 2026-08-12 (product owner): "Main Ticket information has no supplement, Modality of
+# a Ticket has their own supplement." The main Ticket record still has none (see the
+# ignored_ticket_supplements test above, unchanged), but each Modality now carries its own
+# dated modality_supplements - a seasonal price row or a holiday surcharge, as opposed to a
+# genuinely different product a customer chooses (still its own Modality, unchanged).
+
+def test_build_ticket_supplement_vos_converts_dated_entries():
+    result = build_ticket_supplement_vos([
+        {"name": "High Season", "adult_price_supplement": 15, "children_price_supplement": 5,
+         "infant_price_supplement": 0, "start_date": "2027-01-01", "end_date": "2027-02-28"},
+    ])
+    assert len(result) == 1
+    vo = result[0]
+    assert vo.adultPriceSupplement == 15.0
+    assert vo.childrenPriceSupplement == 5.0
+    assert vo.startDate == "2027-01-01"
+    assert vo.endDate == "2027-02-28"
+    assert vo.translations["EN"].name == "High Season"
+
+
+def test_build_ticket_supplement_vos_drops_entries_missing_either_date():
+    """TicketSupplementVO has no undated fallback (unlike ClosedTour's SupplementVO) - an
+    entry that can't be told apart from a permanent price rise must not publish."""
+    result = build_ticket_supplement_vos([
+        {"name": "No start", "adult_price_supplement": 10, "end_date": "2027-02-28"},
+        {"name": "No end", "adult_price_supplement": 10, "start_date": "2027-01-01"},
+        {"name": "Fully dated", "adult_price_supplement": 10, "start_date": "2027-01-01", "end_date": "2027-02-28"},
+    ])
+    assert len(result) == 1
+    assert result[0].translations["EN"].name == "Fully dated"
+
+
+def test_ticket_modality_supplements_reach_the_real_payload(fake_api_client):
+    """The whole point: a dated seasonal/holiday supplement extracted onto THIS Modality must
+    actually reach ContractTicketModalityVO.supplements on the wire, not be dropped like the
+    old (too-broad) "Tickets have no supplements" rule used to force."""
+    data = minimal_ticket_data(modality_supplements=[
+        {"name": "Tet Holiday Surcharge", "adult_price_supplement": 47, "children_price_supplement": 47,
+         "infant_price_supplement": 0, "start_date": "2027-02-05", "end_date": "2027-02-09"},
+    ])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert len(option["supplements"]) == 1
+    supp = option["supplements"][0]
+    assert supp["adultPriceSupplement"] == 47.0
+    assert supp["startDate"] == "2027-02-05"
+    assert supp["endDate"] == "2027-02-09"
+    assert supp["translations"]["EN"]["name"] == "Tet Holiday Surcharge"
 
 
 def test_a_stray_none_string_in_time_tables_is_filtered_not_sent_to_the_api(fake_api_client):
