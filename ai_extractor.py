@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-name-description-never-empty"
+MODULE_BUILD = "2026-08-12-ticket-name-fallback-to-detected-variant"
 
 import os
 import re
@@ -2465,6 +2465,41 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
             new_value = (retry_data.get(field) or "").strip()
             if new_value:
                 data[field] = new_value
+
+    # CONFIRMED REAL BUG (product owner, real document): the retry above still isn't a
+    # guarantee - a real multi-excursion PDF (several near-identical Asian Trails excursions
+    # bundled in one document) came back with ticket_name empty on BOTH the first extraction
+    # AND the retry, even though the review screen's own header already showed the correct
+    # name ("Half Day Walking in Hoi An Ancient Town") - because that header is built from
+    # variant_hint, a SEPARATE, already-confirmed-correct AI call (detect_ticket_variants),
+    # not from this function's own output. As the product owner put it: "Ticket name cannot
+    # be empty, as it is usually the Ticket name, which has been detected already." This is a
+    # deterministic, code-level fallback - not a third AI attempt - so it can never fail the
+    # same way the first two did: if variant_hint exists (this extraction was already told
+    # exactly which excursion to find), a still-blank ticket_name always falls back to it.
+    if not (data.get("ticket_name") or "").strip() and variant_hint:
+        data["ticket_name"] = variant_hint.strip()
+
+    # description has no equally reliable known-correct source to fall back to, but SOME
+    # honest, non-empty text beats a blank field a human might publish without noticing -
+    # built only from values this function already has in hand (name/city/duration), never
+    # invented facts.
+    if not (data.get("description") or "").strip():
+        _desc_name = (data.get("ticket_name") or variant_hint or "This excursion").strip()
+        _desc_city = (data.get("city") or "").strip()
+        _desc_bits = _desc_name
+        if _desc_city:
+            _desc_bits += f" takes place in {_desc_city}."
+        else:
+            _desc_bits += "."
+        data["description"] = f"<p>{_desc_bits}</p>"
+        data["pricing_notes"] = (
+            (data.get("pricing_notes") or "").strip()
+            + ("\n\n" if data.get("pricing_notes") else "")
+            + "AI could not extract a real description from the source even after retrying - the "
+              "text above is a placeholder built from the name/city only. Please write a proper "
+              "description from the document."
+        ).strip()
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
