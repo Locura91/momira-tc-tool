@@ -75,6 +75,7 @@ from builder import build_transport_payloads
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
 from builder import coerce_price_list_shape
+from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
@@ -3541,13 +3542,30 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                       "infants are always free and excluded automatically. If your source shows a range "
                       "like '3-5' at one price, add ONE row per exact number (3, 4, and 5) all with that "
                       "same price - use the button below to auto-expand a range for you.")
+            # Same rule and reasoning as the single-Ticket flow's Occupancy block - see the
+            # "CONFIRMED REAL SYSTEM LIMIT" / "CONFIRMED REAL BUG" comments there. CAPPED
+            # AGAINST THIS TICKET'S OWN max_passengers, not just the flat 9: a real publish
+            # failed with "Number of passengers in occupancy is greater than max passengers
+            # allowed in the contract" because max_passengers can be set below 9, and an
+            # occupancy row above IT (even if <= 9) is exactly as unbookable.
+            mt_occ_cap = min(MAX_OCCUPANCY_PAX, _safe_int(max_passengers, fallback=MAX_OCCUPANCY_PAX))
+            _mt_dropped_occ = [o for o in data.get("occupancy_prices", [])
+                               if _safe_int(o.get("occupancy", 1), fallback=1) > mt_occ_cap]
+            if _mt_dropped_occ:
+                data["occupancy_prices"] = [o for o in data.get("occupancy_prices", [])
+                                            if _safe_int(o.get("occupancy", 1), fallback=1) <= mt_occ_cap]
+                st.caption(f"ℹ️ Dropped {len(_mt_dropped_occ)} occupancy row(s) above {mt_occ_cap} pax - "
+                          f"this Ticket's Max Passengers is {max_passengers} "
+                          f"({'the platform-wide 9-pax limit' if mt_occ_cap == MAX_OCCUPANCY_PAX else 'set below the platform-wide 9-pax limit'}), "
+                          f"and Travel Compositor rejects occupancy rows above it.")
             mt_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
                           for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
             mt_occ_df = pd.DataFrame(mt_occ_rows)
-            def _save_mt_occupancy(edf, data=data):
+            def _save_mt_occupancy(edf, data=data, mt_occ_cap=mt_occ_cap):
                 data["occupancy_prices"] = [
                     {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
                     for _, r in edf.iterrows()
+                    if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= mt_occ_cap
                 ]
             editable_table("Occupancy Price Tiers", mt_occ_df, f"mt_occupancy_{idx}", on_save=_save_mt_occupancy)
 
@@ -3561,14 +3579,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             with st.expander("🔢 Auto-expand a range (e.g. '3-5' at one price) into individual rows"):
                 mrcol1, mrcol2, mrcol3 = st.columns(3)
                 with mrcol1:
-                    mt_range_start = st.number_input("From", min_value=1, value=1, key=f"mt_occ_range_start_{idx}")
+                    mt_range_start = st.number_input("From", min_value=1, max_value=mt_occ_cap, value=1, key=f"mt_occ_range_start_{idx}")
                 with mrcol2:
-                    mt_range_end = st.number_input("To", min_value=1, value=1, key=f"mt_occ_range_end_{idx}")
+                    mt_range_end = st.number_input("To", min_value=1, max_value=mt_occ_cap, value=1, key=f"mt_occ_range_end_{idx}")
                 with mrcol3:
                     mt_range_price = st.number_input("Price (same for all)", min_value=0.0, value=0.0, key=f"mt_occ_range_price_{idx}")
+                st.caption(f"Capped at {mt_occ_cap} pax - this Ticket's Max Passengers ({max_passengers}).")
                 if st.button("➕ Add this range as individual rows", key=f"mt_occ_range_add_{idx}") and mt_range_end >= mt_range_start:
                     mt_existing = list(data.get("occupancy_prices", []))
-                    for n in range(int(mt_range_start), int(mt_range_end) + 1):
+                    for n in range(int(mt_range_start), min(int(mt_range_end), mt_occ_cap) + 1):
                         mt_existing.append({"occupancy": n, "amount": mt_range_price})
                     data["occupancy_prices"] = mt_existing
                     st.rerun()
@@ -3581,14 +3600,16 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
-        with st.expander(f"Stop Sales - {current['label'] or current['ticket_code']}"):
-            mt_ss_json = st.text_area(
-                "stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key=f"mt_stops_{idx}"
-            )
-            try:
-                data["stop_sales"] = json.loads(mt_ss_json)
-            except json.JSONDecodeError as e:
-                st.error(f"stopSales isn't valid JSON: {e}")
+        # CONFIRMED REAL BUG (product owner report): "Applied changes to: stop_sales" via
+        # "Tell AI what to fix" reported success but the box never actually updated - the raw
+        # JSON st.text_area below was keyed on a fixed key, so it kept showing/re-saving its
+        # own stale cached text every rerun and silently overwrote whatever the clarify had
+        # just written into `data`. Also, hand-typing a JSON array was never an "easy way to
+        # add a stop sale manually" (second half of the same report) - replaced with the same
+        # friendly Start/End Date table already used for ClosedTour (render_stop_sales_editor,
+        # ui_components.py), which defaults to read-only display and only opens a live editor
+        # on demand, so it can never go stale like the always-live text_area did.
+        render_stop_sales_editor(data, f"mt_{idx}")
 
         render_ticket_extra_costs(data, f"mt_{idx}",
                                   base_code=current.get("modality_code") or current.get("ticket_code") or "",
@@ -3663,14 +3684,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 mod["data"]["operational_days"] = st.multiselect(
                     f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
                     default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"mt_extramod_days_{idx}_{j}")
-                with st.expander(f"Stop Sales - {mod['code']}"):
-                    mt_ss_json_extra = st.text_area(
-                        "stopSales (JSON array)", json.dumps(mod["data"].get("stop_sales", []), indent=2),
-                        key=f"mt_extramod_stops_{idx}_{j}")
-                    try:
-                        mod["data"]["stop_sales"] = json.loads(mt_ss_json_extra)
-                    except json.JSONDecodeError as e:
-                        st.error(f"stopSales isn't valid JSON: {e}")
+                render_stop_sales_editor(mod["data"], f"mt_extramod_{idx}_{j}")
             else:
                 st.info("Click 'Extract pricing' above to get started for this modality.")
             st.divider()
@@ -3688,6 +3702,31 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 remember_clarification(clarify_supplier_id(supplier_id), "Ticket", mt_clarify_q, result)
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    # CONFIRMED REAL BUG (product owner report): "Applied changes to: stop_sales"
+                    # showed success, but the Stop Sales box never actually changed. Cause: the
+                    # Stop Sales editor used to be a raw st.text_area on a fixed key - a
+                    # Streamlit widget with a fixed key ignores a freshly computed value= after
+                    # its first render (same class of bug documented throughout this file, e.g.
+                    # _clear_batch_widget_state's docstring). So even though apply_clarify_changes
+                    # correctly wrote the new stop_sales into `data`, the STALE widget immediately
+                    # overwrote it right back on the very next render - the fix was applied and
+                    # instantly undone. Stop Sales is now render_stop_sales_editor (an
+                    # editable_table, see the caption above), which is READ-ONLY by default and
+                    # only goes stale if a human had it open in live-edit mode at the exact moment
+                    # they clarified - resetting its edit-mode flag below covers even that case,
+                    # same as every other editable_table field this per-item review renders.
+                    mt_field_to_table_key = {
+                        "extra_cost_options": f"_editing_table_mt_{idx}_extra_costs",
+                        "includes": f"_editing_table_mt_includes_{idx}",
+                        "excludes": f"_editing_table_mt_excludes_{idx}",
+                        "meeting_points": f"_editing_table_mt_mp_{idx}",
+                        "time_tables": f"_editing_table_mt_timetables_{idx}",
+                        "stop_sales": f"_editing_table_mt_{idx}_stop_sales",
+                    }
+                    for field_name in result["changes"]:
+                        table_key = mt_field_to_table_key.get(field_name)
+                        if table_key:
+                            st.session_state[table_key] = False
                     if "operational_days" in result["changes"]:
                         st.session_state.pop(f"mt_op_days_{idx}", None)
                 st.rerun()
@@ -3833,13 +3872,53 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             for fi_idx, fi in enumerate(list(st.session_state.mt_failed_items)):
                 with st.expander(f"🔧 {fi['ticket_code']} (created as `{fi['real_code']}`) — {fi['label']}", expanded=True):
                     fdata = fi["data"]
-                    fcol1, fcol2, fcol3 = st.columns(3)
-                    with fcol1:
-                        fdata["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(fdata.get("base_adult_price", 0) or 0), key=f"mtf_adult_{fi_idx}")
-                    with fcol2:
-                        fdata["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(fdata.get("base_children_price", 0) or 0), key=f"mtf_child_{fi_idx}")
-                    with fcol3:
-                        fdata["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(fdata.get("base_infant_price", 0) or 0), key=f"mtf_infant_{fi_idx}")
+
+                    # CONFIRMED REAL BUG (product owner report, real API rejection):
+                    # "Number of passengers in occupancy is greater than max passengers allowed
+                    # in the contract" - this box used to ALWAYS show Adult/Child/Infant price
+                    # fields regardless of what price_type the ticket actually used, so a
+                    # ticket priced by Occupancy had no way to even SEE its occupancy rows here,
+                    # let alone fix the one that exceeded Max Passengers - the human's only
+                    # option was starting the whole batch over. Mirror the same price-type-aware
+                    # pricing block (and the same Max Passengers cap) used in the main per-item
+                    # review above, so whatever actually caused the rejection is editable here.
+                    mtf_price_type = fdata.get("price_type") or "DISTRIBUTION"
+                    st.caption(f"Pricing mode: **{mtf_price_type}** · Max Passengers for this batch: **{max_passengers}**")
+                    if mtf_price_type == "DISTRIBUTION":
+                        fcol1, fcol2, fcol3 = st.columns(3)
+                        with fcol1:
+                            fdata["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(fdata.get("base_adult_price", 0) or 0), key=f"mtf_adult_{fi_idx}")
+                        with fcol2:
+                            fdata["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(fdata.get("base_children_price", 0) or 0), key=f"mtf_child_{fi_idx}")
+                        with fcol3:
+                            fdata["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(fdata.get("base_infant_price", 0) or 0), key=f"mtf_infant_{fi_idx}")
+                    elif mtf_price_type == "SERVICE":
+                        fdata["base_service_price"] = st.number_input(
+                            "Total Service Price (flat, regardless of group size)", min_value=0.0,
+                            value=float(fdata.get("base_service_price", 0) or 0), key=f"mtf_service_{fi_idx}")
+                    elif mtf_price_type == "OCCUPANCY":
+                        mtf_occ_cap = min(MAX_OCCUPANCY_PAX, _safe_int(max_passengers, fallback=MAX_OCCUPANCY_PAX))
+                        _mtf_dropped = [o for o in fdata.get("occupancy_prices", [])
+                                       if _safe_int(o.get("occupancy", 1), fallback=1) > mtf_occ_cap]
+                        if _mtf_dropped:
+                            fdata["occupancy_prices"] = [o for o in fdata.get("occupancy_prices", [])
+                                                         if _safe_int(o.get("occupancy", 1), fallback=1) <= mtf_occ_cap]
+                            st.caption(f"ℹ️ Dropped {len(_mtf_dropped)} occupancy row(s) above {mtf_occ_cap} pax "
+                                      f"(this batch's Max Passengers) - this is almost certainly what the "
+                                      f"real API just rejected.")
+                        mtf_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
+                                       for o in fdata.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
+                        mtf_occ_df = pd.DataFrame(mtf_occ_rows)
+                        def _save_mtf_occupancy(edf, fdata=fdata, mtf_occ_cap=mtf_occ_cap):
+                            fdata["occupancy_prices"] = [
+                                {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
+                                for _, r in edf.iterrows()
+                                if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= mtf_occ_cap
+                            ]
+                        editable_table("Occupancy Price Tiers", mtf_occ_df, f"mtf_occupancy_{fi_idx}", on_save=_save_mtf_occupancy)
+                        st.caption(f"Rows above {mtf_occ_cap} pax will be dropped automatically - Travel "
+                                  f"Compositor can't book more than this batch's Max Passengers ({max_passengers}).")
+
                     ftt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in fdata.get("time_tables", [])]) if fdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
                     def _save_mtf_tt(edf, fdata=fdata):
                         fdata["time_tables"] = _clean_time_table_rows(edf)
@@ -4483,6 +4562,10 @@ def render_ticket_flow(client):
                         "excludes": "_editing_table_tk_excludes",
                         "meeting_points": "_editing_table_tk_meeting_points",
                         "time_tables": "_editing_table_tk_timetables",
+                        # Stop Sales is now render_stop_sales_editor (an editable_table, see its
+                        # call site above) rather than a raw always-live text_area - reset its
+                        # edit-mode flag the same way as every other table field here.
+                        "stop_sales": "_editing_table_tk_stop_sales",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key.get(field_name)
@@ -4490,8 +4573,6 @@ def render_ticket_flow(client):
                             st.session_state[table_key] = False
                     if "operational_days" in result["changes"]:
                         st.session_state.pop("tk_op_days", None)
-                    if "stop_sales" in result["changes"]:
-                        st.session_state.pop("tk_stop_sales", None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
@@ -4513,12 +4594,11 @@ def render_ticket_flow(client):
             st.info(f"🔎 {data['schedule_notes']}")
         data["operational_days"] = st.multiselect("Operational Days", ALL_WEEKDAYS,
                                                    default=data.get("operational_days", ALL_WEEKDAYS), key="tk_op_days")
-        with st.expander("Stop Sales"):
-            ss_json = st.text_area("stopSales (JSON array)", json.dumps(data.get("stop_sales", []), indent=2), key="tk_stop_sales")
-            try:
-                data["stop_sales"] = json.loads(ss_json)
-            except json.JSONDecodeError as e:
-                st.error(f"stopSales isn't valid JSON: {e}")
+        # Same fix and reasoning as the multi-Ticket batch flow's Stop Sales editor (see the
+        # "CONFIRMED REAL BUG" comment there): the raw JSON text_area went stale under "Tell AI
+        # what to fix" and wasn't an easy way to add one by hand either. render_stop_sales_editor
+        # is the same friendly Start/End Date table already used for ClosedTour.
+        render_stop_sales_editor(data, "tk")
 
         num_days = len(data.get("operational_days", []))
         num_stops = len(data.get("stop_sales", []))
@@ -4584,13 +4664,35 @@ def render_ticket_flow(client):
                       "infants are always free and excluded automatically. If your source shows a range "
                       "like '3-5' at one price, add ONE row per exact number (3, 4, and 5) all with that "
                       "same price - use the button below to auto-expand a range for you.")
+            # CONFIRMED REAL SYSTEM LIMIT (product owner, same rule already enforced for Transfer/
+            # Transport in builder.py's _MAX_OCCUPANCY_PAX): "we have the max of 9 People available,
+            # so when a price is seen for 10 or more pax, we can ignore that - for all services."
+            # Tickets never got this applied, so a document with a "9-14 pax" style column produced
+            # occupancy rows nobody could ever book. Drop them here (with a visible note) rather than
+            # silently building a table a human then has to notice and clean up by hand.
+            #
+            # CAPPED AGAINST THIS TICKET'S OWN max_passengers, not just the flat 9: a real publish
+            # failed with "Number of passengers in occupancy is greater than max passengers allowed
+            # in the contract" because Max Passengers (Step 3) can be set below 9, and Travel
+            # Compositor rejects an occupancy row above ITS ceiling just as it would above 9.
+            tk_occ_cap = min(MAX_OCCUPANCY_PAX, _safe_int(max_passengers, fallback=MAX_OCCUPANCY_PAX))
+            _tk_dropped_occ = [o for o in data.get("occupancy_prices", [])
+                               if _safe_int(o.get("occupancy", 1), fallback=1) > tk_occ_cap]
+            if _tk_dropped_occ:
+                data["occupancy_prices"] = [o for o in data.get("occupancy_prices", [])
+                                            if _safe_int(o.get("occupancy", 1), fallback=1) <= tk_occ_cap]
+                st.caption(f"ℹ️ Dropped {len(_tk_dropped_occ)} occupancy row(s) above {tk_occ_cap} pax - "
+                          f"this Ticket's Max Passengers is {max_passengers} "
+                          f"({'the platform-wide 9-pax limit' if tk_occ_cap == MAX_OCCUPANCY_PAX else 'set below the platform-wide 9-pax limit'}), "
+                          f"and Travel Compositor rejects occupancy rows above it.")
             occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
                        for o in data.get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
             occ_df = pd.DataFrame(occ_rows)
-            def _save_occupancy(edf, data=data):
+            def _save_occupancy(edf, data=data, tk_occ_cap=tk_occ_cap):
                 data["occupancy_prices"] = [
                     {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
                     for _, r in edf.iterrows()
+                    if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= tk_occ_cap
                 ]
             editable_table("Occupancy Price Tiers", occ_df, "tk_occupancy", on_save=_save_occupancy)
 
@@ -4604,14 +4706,15 @@ def render_ticket_flow(client):
             with st.expander("🔢 Auto-expand a range (e.g. '3-5' at one price) into individual rows"):
                 rcol1, rcol2, rcol3 = st.columns(3)
                 with rcol1:
-                    range_start = st.number_input("From", min_value=1, value=1, key="tk_occ_range_start")
+                    range_start = st.number_input("From", min_value=1, max_value=tk_occ_cap, value=1, key="tk_occ_range_start")
                 with rcol2:
-                    range_end = st.number_input("To", min_value=1, value=1, key="tk_occ_range_end")
+                    range_end = st.number_input("To", min_value=1, max_value=tk_occ_cap, value=1, key="tk_occ_range_end")
                 with rcol3:
                     range_price = st.number_input("Price (same for all)", min_value=0.0, value=0.0, key="tk_occ_range_price")
+                st.caption(f"Capped at {tk_occ_cap} pax - this Ticket's Max Passengers ({max_passengers}).")
                 if st.button("➕ Add this range as individual rows", key="tk_occ_range_add") and range_end >= range_start:
                     existing = list(data.get("occupancy_prices", []))
-                    for n in range(int(range_start), int(range_end) + 1):
+                    for n in range(int(range_start), min(int(range_end), tk_occ_cap) + 1):
                         existing.append({"occupancy": n, "amount": range_price})
                     data["occupancy_prices"] = existing
                     st.rerun()
@@ -4696,14 +4799,7 @@ def render_ticket_flow(client):
                     mod["data"]["operational_days"] = st.multiselect(
                         f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
                         default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"tk_extramod_days_{i}")
-                    with st.expander(f"Stop Sales - {mod['code']}"):
-                        ss_json_extra = st.text_area(
-                            "stopSales (JSON array)", json.dumps(mod["data"].get("stop_sales", []), indent=2),
-                            key=f"tk_extramod_stops_{i}")
-                        try:
-                            mod["data"]["stop_sales"] = json.loads(ss_json_extra)
-                        except json.JSONDecodeError as e:
-                            st.error(f"stopSales isn't valid JSON: {e}")
+                    render_stop_sales_editor(mod["data"], f"tk_extramod_{i}")
                 else:
                     st.info("Click 'Extract pricing' above to get started for this modality.")
                 st.divider()
@@ -4745,6 +4841,7 @@ def render_ticket_flow(client):
                         "extra_cost_options": "_editing_table_tk_extra_costs",
                         "occupancy_prices": "_editing_table_tk_occupancy",
                         "time_tables": "_editing_table_tk_timetables",
+                        "stop_sales": "_editing_table_tk_stop_sales",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key2.get(field_name)
@@ -4752,8 +4849,6 @@ def render_ticket_flow(client):
                             st.session_state[table_key] = False
                     if "operational_days" in result["changes"]:
                         st.session_state.pop("tk_op_days", None)
-                    if "stop_sales" in result["changes"]:
-                        st.session_state.pop("tk_stop_sales", None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
@@ -7772,7 +7867,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-ticket-extra-modalities"
+BUILD_VERSION = "2026-08-12-ticket-occupancy-stopsales-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

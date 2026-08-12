@@ -96,6 +96,47 @@ def test_occupancy_pricing_zeroes_the_other_two_modes(fake_api_client):
     assert option["baseServicePrice"] == 0.0
 
 
+def test_occupancy_prices_above_9_pax_are_dropped(fake_api_client):
+    """CONFIRMED REAL SYSTEM LIMIT (product owner): Travel Compositor can't book more than 9
+    people on any product - the same rule already enforced for Transfer/Transport via
+    _MAX_OCCUPANCY_PAX. A source rate sheet with a "9-14 pax" style column used to sail
+    straight through into occupancyPrices with entries nobody could ever book; the fix must
+    silently drop anything above 9 rather than publish it."""
+    data = minimal_ticket_data(price_type="OCCUPANCY", occupancy_prices=[
+        {"occupancy": 2, "amount": 40},
+        {"occupancy": 9, "amount": 15},
+        {"occupancy": 10, "amount": 14},
+        {"occupancy": 14, "amount": 12},
+    ])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [
+        {"occupancy": 2, "amount": 40.0},
+        {"occupancy": 9, "amount": 15.0},
+    ]
+
+
+def test_occupancy_prices_are_capped_at_this_tickets_own_max_passengers(fake_api_client):
+    """CONFIRMED REAL BUG (production failure, real API response): "Number of passengers in
+    occupancy is greater than max passengers allowed in the contract". The flat 9-pax system
+    limit isn't the real ceiling - THIS TICKET'S max_passengers is, and it can be set below 9
+    (Step 3's Max Passengers selector goes down to 2). An occupancy row above max_passengers
+    must be dropped even when it's still <= 9, or Travel Compositor rejects the whole option."""
+    data = minimal_ticket_data(price_type="OCCUPANCY", occupancy_prices=[
+        {"occupancy": 2, "amount": 40},
+        {"occupancy": 4, "amount": 25},
+        {"occupancy": 6, "amount": 18},
+        {"occupancy": 9, "amount": 15},
+    ])
+    result = build_ticket_payloads(make_pre_config(max_passengers=4), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [
+        {"occupancy": 2, "amount": 40.0},
+        {"occupancy": 4, "amount": 25.0},
+    ]
+    assert option["maxPassengers"] == 4
+
+
 def test_child_age_defaults_to_2_and_12(fake_api_client):
     result = build_ticket_payloads(make_pre_config(), minimal_ticket_data(), fake_api_client)
     option = result["ticket_option_payload"]

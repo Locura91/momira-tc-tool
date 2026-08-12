@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-extra-modalities"
+MODULE_BUILD = "2026-08-12-ticket-occupancy-stopsales-fix"
 
 import os
 import re
@@ -2176,6 +2176,11 @@ Extract:
   If the source has no 1-pax price, do NOT invent one - just extract what's given, and mention in
   pricing_notes that a solo/1-pax price is missing and needs to be manually confirmed, since it can't be
   safely assumed from the other rows.
+  CONFIRMED REAL SYSTEM LIMIT: 9 is the maximum bookable headcount - Travel Compositor cannot sell a
+  Ticket to more than 9 people. NEVER output an entry with occupancy above 9, even if the source's table
+  goes further (e.g. a "9-14" or "10+" column) - stop expanding a range at 9 and drop any exact-headcount
+  column beyond it entirely. If the source priced groups above 9, say so in pricing_notes with the real
+  numbers so a human can see what was there, but do not put it in occupancy_prices.
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
   table forced onto adult/child/infant categories, pricing was genuinely absent from the source, a
   peak-season surcharge amount/date range had to be estimated, or an alternative/on-request option needs

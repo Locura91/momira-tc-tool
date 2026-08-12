@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ticket-extra-modalities"
+MODULE_BUILD = "2026-08-12-ticket-occupancy-stopsales-fix"
 
 import math
 import datetime
@@ -1303,9 +1303,26 @@ def build_ticket_payloads(
         # Each row can carry the same NaN-from-a-blank-data_editor-cell risk
         # as any other numeric UI field (see _safe_float's docstring) - sanitize
         # every entry rather than trusting the list as passed through.
+        #
+        # CONFIRMED REAL SYSTEM LIMIT (product owner, same rule as _MAX_OCCUPANCY_PAX above -
+        # "we have the max of 9 People available, so when a price is seen for 10 or more pax,
+        # we can ignore that - for all services"): app.py already drops occupancy rows above
+        # this cap in its own UI, but that only covers the interactive path. Enforcing it again
+        # here means a stale saved draft, an "update_option" pre-fill straight from Travel
+        # Compositor's live data, or any future caller of this function can never publish an
+        # unbookable 10+ pax tier even if the UI-level filter is ever bypassed or forgotten.
+        #
+        # CONFIRMED REAL BUG (production failure, real API response): "Number of passengers
+        # in occupancy is greater than max passengers allowed in the contract" - the real
+        # ceiling is THIS TICKET'S OWN maxPassengers (a human-set value that can be as low as
+        # 2), not the flat system-wide 9. 9 is only the upper bound of the upper bound. Cap
+        # against whichever is actually lower so a ticket configured for e.g. max 6 passengers
+        # can never carry a 7-9 pax occupancy row that Travel Compositor would reject outright.
+        effective_occupancy_cap = min(_MAX_OCCUPANCY_PAX, _safe_int(pre_config.max_passengers, fallback=_MAX_OCCUPANCY_PAX))
         occupancy_prices = [
             {"occupancy": _safe_int(o.get("occupancy", 1), fallback=1), "amount": _safe_float(o.get("amount", 0))}
             for o in (extracted_ticket_data.get("occupancy_prices") or []) if isinstance(o, dict)
+            and _safe_int(o.get("occupancy", 1), fallback=1) <= effective_occupancy_cap
         ]
         if selected_price_type != "DISTRIBUTION":
             # baseAdultPrice is REQUIRED on ContractTicketModalityVO regardless
