@@ -264,7 +264,7 @@ _LIST_LINE_PATTERN = re.compile(r"^\s*[-*]\s+")
 
 def plain_text_to_html(text: Optional[str]) -> str:
     """Turns the plain text an operator actually edits into a reasonably nice HTML
-    email at send time, so there's only ever ONE body to write - no separate HTML
+    email at send time, so there's only EVER one body to write - no separate HTML
     source that can silently drift out of sync. Blank-line-separated blocks become
     paragraphs; a block whose every line starts with "-" or "*" becomes a bulleted
     list; single newlines inside a paragraph become <br/>."""
@@ -466,6 +466,9 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
     return results
 
 
+# ============================================================================
+# DEFAULT TEMPLATE — rewritten to be neutral (Team, info@momira.de)
+# ============================================================================
 DEFAULT_TEMPLATE = {
     "subject": "Partnership Opportunity with Momira Travel – Portfolio Expansion & Integration",
     "textBody": """Dear [SupplierName] Team,
@@ -482,14 +485,14 @@ To fast-track the integration of your product within our platform, could you ple
 - Emergency Contact Phone Number (for operational support)
 - Bank Account Details (wire transfer/banking information for payments)
 
-We are excited about the prospect of working together and bringing a steady flow of travelers your way. In case you have any questions, please feel free to reach out at any time - I am more than happy to assist. I am also very open to a call if you prefer to discuss the setup directly.
+We are excited about the prospect of working together and bringing a steady flow of travelers your way. In case you have any questions, please feel free to reach out at any time - we are more than happy to assist. We are also very open to a call if you prefer to discuss the setup directly.
 
 Thank you for your time and prompt assistance. We look forward to hearing from you.
 
 Liebe Grüße / Best regards,
-Christian Hitzl
+Momira Travel Team
 
-Mail: christian@momira.de
+Email: info@momira.de
 
 Momira Travel GmbH
 Edisonstraße 23, 74076 Heilbronn
