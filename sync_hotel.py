@@ -376,10 +376,21 @@ def sync_hotel(api, translator, store: StateStore,
                                   target_languages, dry_run=dry_run, force=force)
     results = {"main": main_result, "rooms": [], "supplements": [], "offers": []}
 
+    # CONFIRMED REAL BUG (found writing the transactional-state test suite): room_results/
+    # supp_results/offer_results used to be declared ONLY inside their own "if rooms:"/
+    # "if supplements:"/"if offers:" block below, but the PUT success/failure handling
+    # further down references all three unconditionally. A hotel with rooms but no
+    # supplements or offers (a completely ordinary shape) crashed with UnboundLocalError
+    # the moment any_updated was True - not just on a failed PUT, on a SUCCESSFUL one too -
+    # which is a worse outcome than the "silently marks something done" bug this test suite
+    # was written to guard against: a hard crash here can abort the whole batch instead of
+    # just skipping the one entity. Declared up front so they always exist, empty when that
+    # category has nothing to sync.
+    room_results, supp_results, offer_results = [], [], []
+
     # ---- Rooms ----
     rooms = hotel_entry.get("rooms", [])
     if rooms:
-        room_results = []
         for room in rooms:
             room_result = sync_room(api, translator, store, supplier_id, hotel_entry, room,
                                     target_languages, dry_run=dry_run, force=force)
@@ -389,7 +400,6 @@ def sync_hotel(api, translator, store: StateStore,
     # ---- Supplements ----
     supplements = hotel_entry.get("supplements", [])
     if supplements:
-        supp_results = []
         for supp in supplements:
             supp_result = sync_supplement(api, translator, store, supplier_id, hotel_entry, supp,
                                           target_languages, dry_run=dry_run, force=force)
@@ -399,7 +409,6 @@ def sync_hotel(api, translator, store: StateStore,
     # ---- Offers ----
     offers = hotel_entry.get("offers", [])
     if offers:
-        offer_results = []
         for offer in offers:
             offer_result = sync_offer(api, translator, store, supplier_id, hotel_entry, offer,
                                       target_languages, dry_run=dry_run, force=force)
