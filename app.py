@@ -3360,6 +3360,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
         editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
+        # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes back
+        # blank (see extract_ticket_data's safety net), but this is the last line of defense -
+        # a ticket can never publish with no name/description, so flag it plainly rather than
+        # let a still-empty field slip through to publish unnoticed.
+        if not (data.get("ticket_name") or "").strip():
+            st.error("🚫 Ticket name is empty - fill it in above before continuing.")
+        if not (data.get("description") or "").strip():
+            st.error("🚫 Description is empty - fill it in above before continuing.")
         render_cancellation_policy_editor(data, f"mt_{idx}")
         editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
         editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
@@ -3840,7 +3848,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             price_valid = bool(data.get("occupancy_prices")) and any(o.get("amount", 0) for o in data.get("occupancy_prices", []))
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
-        can_continue = price_valid and mt_geo.get("valid") and current.get("geo_confirmed")
+        name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
+        can_continue = price_valid and mt_geo.get("valid") and current.get("geo_confirmed") and name_and_description_valid
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
@@ -4524,6 +4533,13 @@ def render_ticket_flow(client):
                 st.subheader("Extracted Data (click ✏️ to edit)")
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
                 editable_field("Description", data, "description", widget="html_text_area", height=150)
+                # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes
+                # back blank (see extract_ticket_data's safety net), but this is the last line
+                # of defense - a ticket can never publish with no name/description.
+                if not (data.get("ticket_name") or "").strip():
+                    st.error("🚫 Ticket name is empty - fill it in above before continuing.")
+                if not (data.get("description") or "").strip():
+                    st.error("🚫 Description is empty - fill it in above before continuing.")
                 editable_field("City", data, "city", widget="text_input")
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
@@ -8016,7 +8032,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-reliability-audit-fixes"
+BUILD_VERSION = "2026-08-12-ticket-name-description-never-empty"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

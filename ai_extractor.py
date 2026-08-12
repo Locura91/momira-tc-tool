@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-reliability-audit-fixes"
+MODULE_BUILD = "2026-08-12-ticket-name-description-never-empty"
 
 import os
 import re
@@ -2097,12 +2097,27 @@ paraphrasing, or softening it. This is a deliberate exclusion, not an oversight.
 
 Extract:
 - ticket_name: the excursion/activity name - keep close to the source, don't invent a fancier title.
+  NEVER LEAVE THIS EMPTY. A blank name is never an acceptable answer - a human reviewing this cannot
+  publish a ticket with no name, and every real document names what it's selling somewhere (a heading, a
+  title, a header/footer, the filename-like text at the top of a rate sheet, or a phrase repeated across
+  the price tables like "Full Day X Excursion"). If there is genuinely no single obvious title anywhere,
+  build a short, factual, non-invented name from what IS stated - the activity/city plus what's actually
+  described (e.g. "Half Day City Tour" from a document about a half-day tour of a named city, "Private
+  Airport Transfer" from a transfer document with no other name) - never a generic placeholder like
+  "Excursion" or "Ticket" alone, and never leave it as an empty string under any circumstances.
 - description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
   natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
   a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
   actually present in the source - never invent details, ratings, superlatives, or claims that aren't
   there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
   true. Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+  NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
+  with no marketing copy still states enough real facts to write from - the activity itself, the city,
+  what's included, the duration, the schedule, the meeting point. Build 1-2 honest paragraphs from
+  whatever real facts the source DOES give rather than returning an empty string - the rule above against
+  inventing details means never adding a fact that isn't there, not leaving the field blank when facts
+  exist to write from. Only if the source is so minimal that even a single true sentence cannot be
+  written (essentially never in practice) should this be short rather than empty.
   PRE-ARRIVAL ADVISORY: if the source mentions an important advisory affecting the whole booking that the
   traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
   beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
@@ -2371,10 +2386,31 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     user_content = raw_text
     prefix_parts = []
     if variant_hint:
+        # CONFIRMED REAL PRODUCT-OWNER COMPLAINT (real document: an Asian Trails "Essential
+        # Trails" PDF bundling 4+ excursions, each under its own heading followed by its own
+        # description paragraph, price tables, and a near-IDENTICAL "Inclusions"/"Good to know"
+        # boilerplate block): ticket_name came back with the right title, but description came
+        # back empty. The likely cause - several excursions in the same document share almost
+        # the same wording ("As a former prosperous seaport during the 16th to 18th
+        # centuries..." appears near-verbatim under TWO different headings) - a simple "extract
+        # only this one" instruction doesn't tell the model HOW to keep several similar-sounding
+        # sections apart, so it's plausible it either can't tell which paragraph is really this
+        # excursion's, or gives up and returns nothing rather than risk stitching two together.
+        # Being explicit about locating the exact heading text and only using what's directly
+        # under it - even when nearby sections repeat the same sentences - gives it a concrete
+        # procedure instead of just a name to search for.
         prefix_parts.append(
-            f"IMPORTANT: This document describes MULTIPLE distinct excursions/tickets. "
-            f"Extract ONLY the following one, and completely ignore any other excursion "
-            f"mentioned elsewhere in the text: {variant_hint}"
+            f"IMPORTANT: This document describes MULTIPLE distinct excursions/tickets, each under its "
+            f"own heading. Extract ONLY the following one, and completely ignore any other excursion "
+            f"mentioned elsewhere in the text: {variant_hint}\n"
+            f"HOW TO FIND IT: locate the heading in the source that matches \"{variant_hint}\" (or is "
+            f"clearly the same excursion, allowing for minor wording differences), then use ONLY the "
+            f"description paragraph, price tables, and details that appear DIRECTLY UNDER THAT HEADING - "
+            f"stop at the next heading. Several excursions in a document like this can share nearly "
+            f"identical boilerplate wording (the same descriptive sentences, the same \"Inclusions\"/"
+            f"\"Good to know\" bullet points) - do not let that similarity make you unsure which text "
+            f"belongs to \"{variant_hint}\" specifically. Its own paragraph exists somewhere in the "
+            f"source; find it by heading position, not by trying to write a generic summary instead."
         )
     if human_hint:
         prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
@@ -2403,6 +2439,32 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
+
+    # CONFIRMED REAL PRODUCT-OWNER COMPLAINT: "if ticket name and description is empty, the AI
+    # needs to get more data from the document - it cannot show empty name and description." A
+    # human reviewing an extraction cannot publish a ticket with a blank name, and the prompt
+    # above now says never to leave either empty - but a prompt instruction is not a guarantee,
+    # so this is the same kind of safety net apply_clarification() already uses for an empty
+    # summary/changes: retry ONCE with an explicit corrective instruction naming exactly what
+    # came back blank, rather than silently handing the human an empty field to notice (or not
+    # notice) on their own.
+    missing_required = [f for f in ("ticket_name", "description") if not (data.get(f) or "").strip()]
+    if missing_required:
+        retry_content = (
+            user_content
+            + f"\n\nIMPORTANT CORRECTION NEEDED: your previous extraction left "
+              f"{' and '.join(missing_required)} empty. Neither may ever be blank - look again at "
+              f"the ENTIRE source above and build a real value for each from whatever facts it "
+              f"actually contains (a title, heading, or the activity/city/duration described), "
+              f"per the rules already given for these fields. Do not invent facts that aren't in "
+              f"the source, but do not return an empty string either - every real document has "
+              f"enough in it to write from."
+        )
+        retry_data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, retry_content, model, max_tokens=16384)
+        for field in missing_required:
+            new_value = (retry_data.get(field) or "").strip()
+            if new_value:
+                data[field] = new_value
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
