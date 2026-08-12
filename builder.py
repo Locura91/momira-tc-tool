@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-ui-components"
+MODULE_BUILD = "2026-08-12-tests"
 
 import math
 import datetime
@@ -160,9 +160,15 @@ def _money_or_none(value, currency):
     amount = value.get("amount")
     if amount in (None, ""):
         return None
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
+    # FOUND WHILE WRITING TESTS (2026-08-12): this used a bare float(amount) with no NaN/
+    # Infinity guard, unlike every other numeric coercion in this file - the exact same bug
+    # class as _safe_float's own docstring describes (NaN is truthy, so nothing here would
+    # have caught it; requests' json= serialization rejects NaN outright at publish time,
+    # producing "Out of range float values are not JSON compliant: nan" far from this
+    # function). Routed through _safe_float so a NaN/Infinity amount is treated as absent
+    # (the occupancy is dropped) rather than reaching the payload.
+    amount = _safe_float(amount, fallback=None)
+    if amount is None:
         return None
     return {"amount": amount, "currency": (value.get("currency") or currency or "EUR")}
 

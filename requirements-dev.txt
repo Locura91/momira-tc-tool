@@ -1,0 +1,6 @@
+# Test-only dependencies. Deliberately kept OUT of requirements.txt, which Streamlit Cloud
+# installs to run the live app - pytest has no reason to ship to production and would only
+# slow down every deploy for no benefit. Mocking uses the standard-library unittest.mock, so
+# no separate mocking package is needed.
+-r requirements.txt
+pytest>=8.0
