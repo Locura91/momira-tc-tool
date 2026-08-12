@@ -43,15 +43,21 @@ value is wrong — not bad data reaching Travel Compositor.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-blocklist"
+MODULE_BUILD = "2026-08-12-prune-corrections"
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import platform_store
 
 _NAMESPACE = "extraction_memory"
+
+# Where prune_old_mappings() records when it last ran, for the memory panel. Deliberately
+# separate from _NAMESPACE so a prune-meta row can never be mistaken for a supplier row by
+# anything that iterates get_namespace(_NAMESPACE) (list_learned, prune_old_mappings itself).
+_PRUNE_META_NAMESPACE = "extraction_memory_meta"
+_PRUNE_META_KEY = "last_prune"
 
 # How many separate publishes must show the same correction before it is pre-filled.
 _APPLY_AFTER = 2
@@ -325,6 +331,65 @@ def forget(supplier_id: str, product_type: str, field: str, from_key: str) -> bo
     return _save(supplier_id, product_type, row)
 
 
+def prune_old_mappings(max_age_days: int = 90) -> int:
+    """Removes mappings that haven't been seen (confirmed OR freshly recorded) in
+    max_age_days, across every supplier and product type. Returns the number removed.
+
+    INVESTIGATION BEFORE BUILDING THIS (2026-08-12): the issue that requested this also
+    proposed deleting anything with count < the confirmation threshold, on the theory that
+    those are "never applied anyway". That is true at any single moment, but the whole
+    point of an unconfirmed mapping (see record_corrections' docstring and the "observed"
+    state in render_memory_panel) is that it SITS THERE waiting for a second document to
+    confirm it into a real rule - one correction is as likely to be a typo as a pattern,
+    two is a pattern. Deleting on count alone means a correction made once today can be
+    wiped before a second contract ever arrives to confirm it, which breaks that mechanism
+    outright for any supplier whose contracts don't arrive daily. Age is the right signal
+    for "stale" instead: a mapping - confirmed or not - that nothing has hit in
+    max_age_days is either a supplier who visibly changed their format, or a one-off that
+    never recurred, and is safe to forget; if it's still true, two more documents relearn
+    it.
+
+    Deliberately manual-only (exposed as a button in render_memory_panel), not run at
+    startup or on every publish - see forget()'s docstring: deleting something the
+    platform learned must be a decision a person can see and reverse-by-re-teaching, not a
+    background job whose only visible symptom is a rule that used to fire and quietly
+    doesn't any more."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(max_age_days)))).isoformat()
+    removed = 0
+    for key, row in platform_store.get_namespace(_NAMESPACE).items():
+        if not isinstance(row, dict) or "fields" not in row:
+            continue
+        sid, _, ptype = key.partition("|")
+        fields = row.get("fields", {})
+        changed = False
+        for field in list(fields.keys()):
+            bucket = fields[field]
+            for from_key in list(bucket.keys()):
+                entry = bucket[from_key] or {}
+                # ISO-8601 UTC strings from datetime.now(timezone.utc).isoformat() sort
+                # chronologically as plain strings - same trick _prune() already relies on.
+                last_seen = entry.get("last_seen") or entry.get("first_seen") or ""
+                if last_seen < cutoff:
+                    del bucket[from_key]
+                    removed += 1
+                    changed = True
+            if not bucket:
+                fields.pop(field, None)
+        if changed:
+            _save(sid, ptype, row)
+    platform_store.set(_PRUNE_META_NAMESPACE, _PRUNE_META_KEY, {
+        "last_pruned_at": datetime.now(timezone.utc).isoformat(),
+        "removed": removed,
+        "max_age_days": int(max_age_days),
+    })
+    return removed
+
+
+def last_prune_info() -> Optional[Dict[str, Any]]:
+    """When prune_old_mappings() last ran and what it did, or None if it never has."""
+    info = platform_store.get(_PRUNE_META_NAMESPACE, _PRUNE_META_KEY)
+    return info if isinstance(info, dict) else None
+
 
 # ----------------------------------------------------------------------
 # Instructions typed into "Tell AI what to fix"
@@ -589,6 +654,28 @@ def render_memory_panel(supplier_id: Optional[str] = None) -> None:
     active = [r for r in rows if r["active"]]
     st.caption(f"{len(active)} rule(s) being applied, {len(rows) - len(active)} correction(s) "
                f"recorded but not applied.")
+
+    with st.expander("🧹 Prune old corrections", expanded=False):
+        st.caption("Removes mappings — applied or not — that haven't been recorded or "
+                   "reconfirmed in a while. Useful once a supplier has visibly changed their "
+                   "document style and an old rule would otherwise keep firing on new "
+                   "contracts. Manual on purpose: deleting something the platform learned is "
+                   "a one-way action, so it only happens when you ask for it here, never in "
+                   "the background.")
+        info = last_prune_info()
+        if info:
+            st.caption(f"Last run: {str(info.get('last_pruned_at', '?'))[:10]} — removed "
+                       f"{info.get('removed', 0)} mapping(s) older than "
+                       f"{info.get('max_age_days', '?')} day(s).")
+        else:
+            st.caption("Never run.")
+        max_age = st.number_input("Remove mappings not seen in this many days", min_value=1,
+                                  value=90, step=1, key="em_prune_max_age")
+        if st.button("🧹 Prune now", key="em_prune_button"):
+            n = prune_old_mappings(int(max_age))
+            st.success(f"Removed {n} mapping(s) not seen in {int(max_age)} day(s).")
+            st.rerun()
+
     for r in rows:
         if r["active"]:
             state = f"✅ applied (seen {r['count']}×)"
