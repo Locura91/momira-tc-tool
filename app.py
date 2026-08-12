@@ -951,7 +951,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         if st.session_state.get(f"mm_clarify_result_{idx}"):
             r = st.session_state[f"mm_clarify_result_{idx}"]
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(), "ClosedTour", "mm")
+        remember_memory_panel(clarify_supplier_id(), "ClosedTour", "mm")
 
         is_last = idx == len(queue) - 1
         btn_label = "✅ Confirm this modality & Finish Review" if is_last else "✅ Confirm this modality & Continue →"
@@ -1361,7 +1361,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if st.session_state.get("mct_clarify_result_main"):
             r = st.session_state["mct_clarify_result_main"]
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(supplier_id), "ClosedTour", "mctmain")
+        remember_memory_panel(clarify_supplier_id(supplier_id), "ClosedTour", "mctmain")
 
         ready = bool((data.get("tour_name") or "").strip()) and bool((tour["tour_code"] or "").strip())
         if st.button("✅ Confirm main tour info & Continue to Modalities", type="primary", disabled=not ready):
@@ -1648,7 +1648,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if st.session_state.get(f"mct_mod_clarify_result_{midx}"):
             r = st.session_state[f"mct_mod_clarify_result_{midx}"]
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(supplier_id), "ClosedTour", "mctmod")
+        remember_memory_panel(clarify_supplier_id(supplier_id), "ClosedTour", "mctmod")
 
         is_last = midx == len(modalities) - 1
         btn_label = "✅ Confirm this Modality & Finish Modalities" if is_last else "✅ Confirm this Modality & Continue →"
@@ -2321,6 +2321,31 @@ def show_publish_error(context_label, raw_error, flow=None):
         st.code(str(raw_error))
 
 
+def remember_memory_panel(supplier_id, product_type, key_prefix):
+    """Note that this screen has memory worth showing - rendered once, at the page bottom.
+
+    CONFIRMED PRODUCT-OWNER REQUEST: "can we put the 'What the platform remembers' on the
+    bottom." It was sitting in the middle of every review screen, between the AI's answer and
+    the buttons, pushing the actual work down the page. It is reference material - useful to
+    have, not something to read past on the way to publishing."""
+    st.session_state["_memory_panel"] = {
+        "supplier_id": supplier_id, "product_type": product_type, "key_prefix": key_prefix,
+    }
+
+
+def render_memory_panel_footer():
+    """The queued memory panel, at the very bottom of the page."""
+    panel = st.session_state.get("_memory_panel")
+    if not panel:
+        return
+    st.divider()
+    st.markdown("### 🧠 What the platform remembers")
+    st.caption("Reference: the rules being applied to this product type, and what this supplier "
+               "has taught the app. Nothing here changes until you change it.")
+    render_house_rules(panel["product_type"], panel["key_prefix"])
+    render_learned_instructions(panel["supplier_id"], panel["product_type"], panel["key_prefix"])
+
+
 def render_house_rules(product_type, key_prefix):
     """Rules that hold for EVERY supplier of this product type - the answer to "I repeat myself".
 
@@ -2379,9 +2404,6 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
     It also puts the one rule worth knowing where it is needed: only an instruction that actually
     CHANGED something is kept, so anything typed while the AI returned no changes was never
     learned - which is exactly when a person is most likely to type it again."""
-    # House rules sit above the per-supplier list, because they are what stops a basic having to
-    # be taught supplier by supplier - see render_house_rules.
-    render_house_rules(product_type, key_prefix)
     if not (supplier_id and product_type):
         return
     try:
@@ -4435,7 +4457,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if st.session_state.get(f"mt_clarify_result_{idx}"):
             r = st.session_state[f"mt_clarify_result_{idx}"]
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(supplier_id), "Ticket", "mt")
+        remember_memory_panel(clarify_supplier_id(supplier_id), "Ticket", "mt")
 
         if mt_price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
@@ -5237,7 +5259,7 @@ def render_ticket_flow(client):
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(supplier_id), "Ticket", "tk")
+        remember_memory_panel(clarify_supplier_id(supplier_id), "Ticket", "tk")
 
         st.markdown("**Start Time(s)**")
         st.caption("A Ticket can have multiple valid start times (e.g. a 09:00 and a 14:00 departure). "
@@ -5478,7 +5500,7 @@ def render_ticket_flow(client):
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
             render_clarify_result(r)
-        render_learned_instructions(clarify_supplier_id(), "Ticket", "tkp")
+        remember_memory_panel(clarify_supplier_id(), "Ticket", "tkp")
 
         if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
@@ -8541,7 +8563,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-tour-supplements"
+BUILD_VERSION = "2026-08-12-country-scope"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8555,7 +8577,7 @@ def _module_build_mismatches():
     stale = []
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
-                 "platform_store", "date_format", "weekly_review", "document_reader"):
+                 "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -9881,7 +9903,7 @@ if st.session_state.extracted:
     if st.session_state.get("clarify_result"):
         r = st.session_state.clarify_result
         render_clarify_result(r)
-    render_learned_instructions(clarify_supplier_id(), "ClosedTour", "legacy")
+    remember_memory_panel(clarify_supplier_id(), "ClosedTour", "legacy")
 
     if st.button("🔎 Resolve Destinations & Build Payload",
                 disabled=not price_list_valid):
@@ -10340,3 +10362,12 @@ if st.session_state.get("just_published_tour_code"):
                 st.session_state.prefill_existing_tour_code = prefill_tour_code
                 st.session_state.step1_confirmed = True
                 st.rerun()
+
+
+# ============================================================================
+# THE PAGE FOOTER - reference material, deliberately last.
+# Every review screen that has memory worth showing queues it via
+# remember_memory_panel(); it is rendered here, once, at the bottom, so it never
+# sits between the AI's answer and the buttons a person is trying to reach.
+# ============================================================================
+render_memory_panel_footer()

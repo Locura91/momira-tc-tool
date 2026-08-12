@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-tour-supplements"
+MODULE_BUILD = "2026-08-12-country-scope"
 
 import csv
 import io
@@ -53,6 +53,7 @@ import pandas as pd
 import outreach_discovery as od
 import outreach_email as oe
 import outreach_memory as om  # new learning module
+import outreach_scope as osc
 
 _PHASE_KEY = "or_phase"
 
@@ -63,10 +64,211 @@ def _reset_run():
             del st.session_state[key]
 
 
+
+# ============================================================================
+# SCREEN 0 — WHAT SHOULD WE EVEN BE SELLING IN THIS COUNTRY?
+# ============================================================================
+def _render_country_scope():
+    """The country's touristic map, before any supplier search.
+
+    CONFIRMED PRODUCT-OWNER REQUEST: "the first step is a complete Country search... listing the
+    most important touristic regions and... the most touristic themes according to this country.
+    The goal of the presearch must be, that the first step is showing all possible touristic
+    spots, that we as tour operator should have in our program."
+
+    A keyword search only ever reports on what you thought to ask for. Search "Nile Cruise in
+    Egypt" and you find Nile cruise operators - and never learn that you have nothing in Siwa, no
+    Suez Canal day trip and no St Catherine's. Naming the whole board first turns an invisible gap
+    into a visible tick box."""
+    st.subheader("Step 1 — What should we be selling in this country?")
+    st.caption("Before hunting for suppliers, look at the whole country: the regions worth having "
+               "in a programme, and the kinds of product it is actually known for. Tick what you "
+               "want and each combination becomes its own supplier search.")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        country = st.text_input("Country", placeholder="e.g. Egypt", key="or_scope_country")
+    with col2:
+        st.write("")
+        st.write("")
+        if st.button("⏭️ Skip — I know what I want", key="or_scope_skip", use_container_width=True):
+            st.session_state[_PHASE_KEY] = "search"
+            st.rerun()
+
+    known = osc.list_known_countries()
+    if known:
+        st.caption("Already researched: " + ", ".join(known) + " — those load instantly.")
+
+    if not country.strip():
+        st.info("Enter a country to see its map, or skip straight to a supplier search.")
+        return
+
+    cached = osc.get_cached_scope(country)
+    bcol1, bcol2 = st.columns([1, 1])
+    with bcol1:
+        research = st.button("🌍 Show me this country", type="primary", key="or_scope_go")
+    with bcol2:
+        refresh = st.button("🔄 Research again from scratch", key="or_scope_refresh",
+                            disabled=not (cached.get("places") or cached.get("themes")),
+                            help="Replaces the stored list, including anything you added by hand.")
+
+    if research or refresh:
+        with st.spinner(f"Working out what {country} has to offer..."):
+            st.session_state["or_scope"] = osc.suggest_country_scope(country, refresh=refresh)
+        st.rerun()
+
+    scope = st.session_state.get("or_scope") or cached
+    if not scope:
+        return
+    if scope.get("error"):
+        st.error(scope["error"])
+        return
+    if scope.get("from_cache"):
+        st.caption("Loaded from the platform's memory — nothing was re-researched. Use **Research "
+                   "again** if the country's programme has genuinely moved on.")
+    if scope.get("notes"):
+        st.info(scope["notes"])
+
+    places = scope.get("places") or []
+    themes = scope.get("themes") or []
+
+    pcol, tcol = st.columns(2)
+    chosen_places, chosen_themes = [], []
+    with pcol:
+        st.markdown(f"#### 📍 Places ({len(places)})")
+        st.caption("Regions and sites a programme for this country should cover.")
+        for i, place in enumerate(places):
+            name = place.get("name", "")
+            label = f"**{name}**" + (f" · {place['region']}" if place.get("region") else "")
+            if st.checkbox(label, key=f"or_scope_place_{i}_{name}"):
+                chosen_places.append(name)
+            if place.get("why"):
+                st.caption(place["why"])
+        new_place = st.text_input("Add a place it missed", key="or_scope_new_place")
+        if st.button("➕ Add place", key="or_scope_add_place", disabled=not new_place.strip()):
+            osc.add_place(country, new_place.strip())
+            st.session_state.pop("or_scope", None)
+            st.rerun()
+
+    with tcol:
+        st.markdown(f"#### 🎯 Themes ({len(themes)})")
+        st.caption("The kinds of product suppliers here actually sell.")
+        for i, theme in enumerate(themes):
+            name = theme.get("name", "")
+            label = f"**{name}**" + (f" · {theme['where']}" if theme.get("where") else "")
+            if st.checkbox(label, key=f"or_scope_theme_{i}_{name}"):
+                chosen_themes.append(name)
+            if theme.get("why"):
+                st.caption(theme["why"])
+        new_theme = st.text_input("Add a theme it missed", key="or_scope_new_theme")
+        if st.button("➕ Add theme", key="or_scope_add_theme", disabled=not new_theme.strip()):
+            osc.add_theme(country, new_theme.strip())
+            st.session_state.pop("or_scope", None)
+            st.rerun()
+
+    st.divider()
+    planned = osc.planned_searches(country, chosen_places, chosen_themes)
+    if not planned:
+        st.caption("Tick at least one place or theme to build a search list.")
+        return
+
+    # THE COUNT, BEFORE ANYTHING RUNS. Six places by five themes is thirty searches - several
+    # minutes and a lot of API calls that nobody knowingly agreed to.
+    st.markdown(f"**{len(planned)} search(es)** would run: "
+                f"{len(chosen_places) or 'any'} place(s) × {len(chosen_themes) or 'any'} theme(s).")
+    if len(planned) > 12:
+        st.warning(f"That is a lot of searching and will take a while. Consider starting with the "
+                   f"handful you most need, then coming back — the list is remembered.")
+    with st.expander("See exactly what will be searched"):
+        st.dataframe(pd.DataFrame(planned), use_container_width=True, hide_index=True)
+
+    if st.button(f"🔎 Search suppliers for these {len(planned)} combination(s)", type="primary",
+                 key="or_scope_run"):
+        st.session_state["or_queue"] = planned
+        st.session_state["or_queue_index"] = 0
+        st.session_state[_PHASE_KEY] = "search"
+        st.rerun()
+
+
 # ============================================================================
 # SCREEN 1 — SEARCH
 # ============================================================================
+def _run_queued_searches(queue):
+    """Run a scope-built list of searches and merge them into one supplier list.
+
+    Merged rather than run one at a time because the point of the country step is a single
+    picture of who exists across the whole programme. Deduplicated by domain: the same operator
+    legitimately turns up under Luxor/Nile Cruise and Aswan/Nile Cruise, and reviewing them twice
+    is how a supplier gets emailed twice."""
+    merged, seen = [], set()
+    stats = {"raw": 0, "after_prefilter": 0, "final": 0, "used_mock_provider": False}
+    progress = st.progress(0.0)
+    status = st.empty()
+    failures = []
+
+    for index, job in enumerate(queue):
+        label = " · ".join(x for x in (job.get("city"), job.get("keyword")) if x) or job["country"]
+        status.caption(f"⏳ {index + 1} of {len(queue)}: {label}")
+        try:
+            result = od.discover_suppliers(job["country"], job.get("city", ""),
+                                           job.get("keyword", "") or job["country"])
+        except Exception as e:
+            failures.append(f"{label}: {e}")
+            progress.progress((index + 1) / len(queue))
+            continue
+        for key in ("raw", "after_prefilter", "final"):
+            stats[key] += result["stats"].get(key, 0)
+        stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
+        for supplier in result["suppliers"]:
+            domain = om.extract_domain(supplier.get("website") or supplier.get("listingUrl") or "")
+            fingerprint = domain or (supplier.get("name") or "").strip().lower()
+            if fingerprint and fingerprint in seen:
+                continue
+            if fingerprint:
+                seen.add(fingerprint)
+            supplier = dict(supplier)
+            supplier["foundVia"] = label
+            merged.append(supplier)
+        progress.progress((index + 1) / len(queue))
+
+    progress.empty()
+    status.empty()
+    if failures:
+        st.warning("Some searches failed and were skipped:\n\n" +
+                   "\n".join(f"- {f}" for f in failures))
+    return {"suppliers": merged, "stats": stats}
+
+
 def _render_search():
+    # A list built on the country screen, waiting to be run.
+    queue = st.session_state.get("or_queue")
+    if queue:
+        st.subheader(f"Searching {len(queue)} place/theme combination(s)")
+        st.caption("Results are merged into one list, with duplicates removed - the same operator "
+                   "often appears under several of them.")
+        qcol1, qcol2 = st.columns([1, 1])
+        with qcol1:
+            go = st.button("▶️ Run them now", type="primary", key="or_queue_run")
+        with qcol2:
+            if st.button("⬅️ Back to the country list", key="or_queue_back"):
+                st.session_state.pop("or_queue", None)
+                st.session_state[_PHASE_KEY] = "scope"
+                st.rerun()
+        st.dataframe(pd.DataFrame(queue), use_container_width=True, hide_index=True)
+        if go:
+            result = _run_queued_searches(queue)
+            st.session_state.or_result = result
+            st.session_state.or_session = {
+                "country": queue[0]["country"],
+                "city": "",
+                "keyword": f"{len(queue)} place/theme combination(s)",
+            }
+            st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
+            st.session_state.pop("or_queue", None)
+            st.session_state[_PHASE_KEY] = "review"
+            st.rerun()
+        return
+
     st.subheader("Find suppliers")
     st.caption("Searches Google, Tripadvisor, Trustpilot, Viator and GetYourGuide for well-reviewed "
                "local operators, filters out articles, listicles, forums and booking marketplaces, then "
@@ -405,9 +607,11 @@ def render_outreach_tool():
     """Supplier discovery, vetting and outreach. Finds well-reviewed local operators,
     lets a human curate the list, and emails the approved ones."""
     if _PHASE_KEY not in st.session_state:
-        st.session_state[_PHASE_KEY] = "search"
+        st.session_state[_PHASE_KEY] = "scope"
 
-    if st.session_state[_PHASE_KEY] == "search":
+    if st.session_state[_PHASE_KEY] == "scope":
+        _render_country_scope()
+    elif st.session_state[_PHASE_KEY] == "search":
         _render_search()
     else:
         _render_review_and_send()
