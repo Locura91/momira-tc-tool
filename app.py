@@ -3598,7 +3598,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         st.caption("Add more variants of THIS ticket now (e.g. one per guide language) - all get created "
                   "together with this ticket's single deactivation, so you don't need to manually reactivate "
                   "it afterward. Common case: different guide languages must each be their own Modality, "
-                  "never a supplement.")
+                  "never a supplement. Operational Days, Stop Sales and Start Time(s) are each Modality's "
+                  "own, not shared across the ticket.")
         if "extra_modalities" not in current:
             current["extra_modalities"] = []
 
@@ -3649,6 +3650,27 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", data.get("start_date", ""))), key=f"mt_extramod_start_{idx}_{j}"))
                 with edcol2:
                     mod["data"]["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(mod["data"].get("end_date", data.get("end_date", ""))), key=f"mt_extramod_end_{idx}_{j}"))
+
+                mt_tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                def _save_mt_extramod_tt(edf, mod=mod):
+                    mod["data"]["time_tables"] = _clean_time_table_rows(edf)
+                editable_table(f"Start Time(s) - {mod['code']}", mt_tt_df_extra, f"mt_extramod_tt_{idx}_{j}", on_save=_save_mt_extramod_tt)
+
+                # Same fields, same reasoning as the single-Ticket flow's extra modalities
+                # (see "CONFIRMED REAL GAP" comment there): operationalDays/stopSales are
+                # per-Modality on the wire, and were simply never editable here before -
+                # neither was Start Time(s) (added just above), unlike the single-Ticket flow.
+                mod["data"]["operational_days"] = st.multiselect(
+                    f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
+                    default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"mt_extramod_days_{idx}_{j}")
+                with st.expander(f"Stop Sales - {mod['code']}"):
+                    mt_ss_json_extra = st.text_area(
+                        "stopSales (JSON array)", json.dumps(mod["data"].get("stop_sales", []), indent=2),
+                        key=f"mt_extramod_stops_{idx}_{j}")
+                    try:
+                        mod["data"]["stop_sales"] = json.loads(mt_ss_json_extra)
+                    except json.JSONDecodeError as e:
+                        st.error(f"stopSales isn't valid JSON: {e}")
             else:
                 st.info("Click 'Extract pricing' above to get started for this modality.")
             st.divider()
@@ -4608,7 +4630,9 @@ def render_ticket_flow(client):
                       "all get created together with a SINGLE deactivation at the end, so you don't need to "
                       "manually reactivate the Ticket in Travel Compositor between each one. Uses Distribution "
                       "pricing (Adult/Child/Infant) only - use the normal single-Ticket flow afterward for "
-                      "Occupancy or Service pricing on a specific one.")
+                      "Occupancy or Service pricing on a specific one. Operational Days, Stop Sales and Start "
+                      "Time(s) are each Modality's own - Travel Compositor stores them per Modality, not per "
+                      "Ticket, so e.g. a German-guide variant can run on different days than the base one.")
             if "tk_extra_modalities" not in st.session_state:
                 st.session_state.tk_extra_modalities = []
 
@@ -4661,6 +4685,25 @@ def render_ticket_flow(client):
                     def _save_extramod_tt(edf, mod=mod):
                         mod["data"]["time_tables"] = _clean_time_table_rows(edf)
                     editable_table(f"Start Time(s) - {mod['code']}", tt_df_extra, f"tk_extramod_tt_{i}", on_save=_save_extramod_tt)
+
+                    # CONFIRMED REAL GAP (product owner): operationalDays and stopSales are
+                    # per-Modality fields on the wire (see ContractTicketModalityVO in
+                    # build_ticket_payloads) - a modality's own schedule, not the ticket's -
+                    # but this quick-add UI only ever exposed price/dates/time, so a human
+                    # could never correct them here even though they're built straight from
+                    # this same mod["data"] dict at publish time. Defaults from extraction
+                    # (WEEKDAY_NAMES / []) still apply if left untouched.
+                    mod["data"]["operational_days"] = st.multiselect(
+                        f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
+                        default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"tk_extramod_days_{i}")
+                    with st.expander(f"Stop Sales - {mod['code']}"):
+                        ss_json_extra = st.text_area(
+                            "stopSales (JSON array)", json.dumps(mod["data"].get("stop_sales", []), indent=2),
+                            key=f"tk_extramod_stops_{i}")
+                        try:
+                            mod["data"]["stop_sales"] = json.loads(ss_json_extra)
+                        except json.JSONDecodeError as e:
+                            st.error(f"stopSales isn't valid JSON: {e}")
                 else:
                     st.info("Click 'Extract pricing' above to get started for this modality.")
                 st.divider()
@@ -7729,7 +7772,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-prune-corrections"
+BUILD_VERSION = "2026-08-12-ticket-extra-modalities"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
