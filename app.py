@@ -7884,6 +7884,58 @@ def render_manual_information_flow(client):
                     st.rerun()
 
 
+UPDATE_REFRESH_SERVICE_TYPES = ["ClosedTour", "Hotel", "Ticket", "Transfer", "Transport"]
+
+
+def render_update_refresh_flow(client):
+    """Unified 'Update/Refresh existing Service' entry point (CONFIRMED PRODUCT-OWNER REDESIGN,
+    2026-08-12): "the App must ask first which service... then which supplier. After human
+    selected which supplier... the main part of the App is either... extracting the information
+    from document and/or URL and automatically matching existing services... or... the human
+    selects which exact SERVICE... will be updated." Step 1's ClosedTour/Ticket/Hotel buttons
+    are now CREATE-ONLY (a brand-new product + first Modality, or a new Modality added to one
+    that already exists) - every other kind of update, for any of the five product types,
+    funnels through here instead: one screen instead of five different half-hidden "Update
+    existing X" options buried inside each product type's own flow.
+
+    THIS ROUND (2026-08-12) wires up Transfer and Transport for real, by reusing
+    price_refresh.py's flow - which already never creates a new record (the whole point of
+    removing Transfer/Transport from Step 1's create buttons, per the product-owner rule
+    "Transfer and Transport are not possible to automatically Import/upload"), already lists
+    EXISTING Travel Compositor products as the source of truth, and already matches a new rate
+    sheet's rows against them one by one for a human to accept or reject - exactly the
+    "extract from a document and automatically match existing services" behaviour asked for
+    here. ClosedTour, Hotel and Ticket are NOT migrated onto this screen yet - their existing
+    "Update existing..." actions inside each product type's own Step 2 still work exactly as
+    before; this screen explains that plainly rather than pretending to support them, and will
+    grow to cover them next (deliberately incremental, not a five-type rewrite done at once -
+    see the human matching/mapping mechanism transfer_matcher.py already has, which is the
+    model for what ClosedTour/Hotel/Ticket will get here too)."""
+    st.header("🔄 Update/Refresh existing Service")
+    if st.button("🔙 Back to Step 1", key="ur_back"):
+        st.session_state.product_type = None
+        st.rerun()
+
+    service = st.radio("Which service do you want to update/refresh?", UPDATE_REFRESH_SERVICE_TYPES,
+                       horizontal=True, key="ur_service_choice")
+    st.caption("**Transfer / Transport**: matches a new rate sheet's rows against your EXISTING "
+              "Travel Compositor products and updates them - nothing is ever created here. "
+              "**ClosedTour / Hotel / Ticket**: not yet available on this screen - go back to "
+              "Step 1, choose that product type directly, and use one of its 'Update existing...' "
+              "options there for now.")
+
+    if service in (price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER):
+        # Pre-select price_refresh's own internal "which product type" radio with what was
+        # already chosen just above, so the human isn't asked the same question twice.
+        st.session_state.pr_kind = service
+        render_price_refresh_flow(client)
+        return
+
+    st.info(f"Updating an existing **{service}** isn't available on this unified screen yet - "
+            f"go back to Step 1, choose **{service}**, and use its 'Update existing...' option "
+            f"there instead. This screen will cover {service} too in a future update.")
+
+
 def render_price_refresh_flow(client):
     """Update the prices of transports that already exist, from a new rate sheet.
 
@@ -8126,7 +8178,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-ticket-main-info-modality-split"
+BUILD_VERSION = "2026-08-12-unified-update-refresh-step1"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8342,8 +8394,14 @@ TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 # nothing is being uploaded.
 MANUAL_INFO_CHOICE = "Adding manual information"
 # Update-only price refresh. A Step 1 destination rather than a product type, because the
-# product list comes from Travel Compositor rather than from the document.
+# product list comes from Travel Compositor rather than from the document. Kept as the
+# constant price_refresh.py's own code compares against internally (KIND_TRANSPORT/
+# KIND_TRANSFER) - the STEP 1 button that used to say this is gone, replaced by
+# UPDATE_REFRESH_CHOICE below, which folds price refresh in as one branch among five.
 PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
+# CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): the ONE place every kind of update/refresh
+# happens now, for all five product types - see render_update_refresh_flow's docstring.
+UPDATE_REFRESH_CHOICE = "Update/Refresh existing Service"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -8441,34 +8499,43 @@ if st.session_state.active_tool == TOOL_TRANSLATE:
 
 # ======================================================================
 # UPLOAD & UPDATE - Step 1: which product type?
+# CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): "In step 1 we must ask only: Choose one:
+# ClosedTour; Ticket; Hotel; Adding manual Information to a service; Update Service/Information
+# of a service --> Transfer and Transport are not possible to automatically Import/upload."
+# Two changes from before: (1) Transfer/Transport are no longer offered as their own CREATE
+# buttons here at all - a brand-new Transfer/Transport can no longer be created through this
+# tool, only updated (see UPDATE_REFRESH_CHOICE below); (2) the old standalone "Refresh prices"
+# button is gone too, folded into that same unified Update/Refresh entry point, which now
+# covers all five product types (not just Transfer/Transport) as the ONE place any kind of
+# update happens, instead of five different half-hidden "Update existing X" options buried
+# inside each product type's own flow. Goal (verbatim): "make the tool less complex and more
+# intuitive for humans."
 # ======================================================================
 if st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
     pt_choice = st.radio("Choose one:",
-                          ["ClosedTour", "Ticket", "Transfer", "Transport", "Hotel",
-                           MANUAL_INFO_CHOICE, PRICE_REFRESH_CHOICE],
+                          ["ClosedTour", "Ticket", "Hotel",
+                           MANUAL_INFO_CHOICE, UPDATE_REFRESH_CHOICE],
                           key="pt_choice_radio")
     st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
               "**Ticket** = single-destination excursion/activity, no overnight, passenger-type pricing. "
-              "**Transfer** = short point-to-point or zone-to-zone vehicle transfer between an "
-              "airport/station/harbour and a hotel, using geolocation. "
-              "**Transport** = a connection between two Travel Compositor destinations (e.g. Aswan → "
-              "Hurghada), priced per occupancy bracket. "
               "**Hotel** = a full accommodation contract: rooms, meal plans, offers, supplements and "
-              "rate seasons. "
+              "rate seasons. Each of these three CREATES something new: either a brand-new product with "
+              "its first Modality, or a new Modality added to one that already exists. "
               "**Adding manual information** = no document at all: write something you know about a "
               "supplier — a moved pickup point, changed cancellation terms — and it is attached "
               "automatically to every future upload of that product type. "
-              "**Refresh prices** = a new rate sheet for transfers or transports that already exist: it lists "
-              "them from Travel Compositor, finds each one's new price in the document, and you "
-              "accept or reject each change. Nothing is created.")
+              "**Update/Refresh existing Service** = the one place for every other kind of update - "
+              "new prices, changed details, a new Modality on something that already exists - for "
+              "ANY of the five product types, including Transfer and Transport (which can no longer "
+              "be created fresh through this tool, only updated here).")
     if st.button("➡️ Continue", type="primary"):
         st.session_state.product_type = pt_choice
         st.rerun()
     st.stop()
 
-if st.session_state.product_type == PRICE_REFRESH_CHOICE:
-    render_price_refresh_flow(client)
+if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
+    render_update_refresh_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:
@@ -8477,14 +8544,6 @@ if st.session_state.product_type == MANUAL_INFO_CHOICE:
 
 if st.session_state.product_type == "Ticket":
     render_ticket_flow(client)
-    st.stop()
-
-if st.session_state.product_type == "Transfer":
-    render_transfer_flow(client)
-    st.stop()
-
-if st.session_state.product_type == "Transport":
-    render_transport_flow(client)
     st.stop()
 
 if st.session_state.product_type == "Hotel":
