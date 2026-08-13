@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-12-update-refresh-coded-services"
+MODULE_BUILD = "2026-08-13-single-modality-create-inclusions-fix"
 
 import os
 import re
@@ -2129,6 +2129,15 @@ Extract:
 - city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
+  FIND THE "INCLUSIONS" HEADING: many source documents have an explicit heading spelled "Inclusions",
+  "Includes", "Included", or "What's Included" (any capitalization), usually followed by a bulleted or
+  comma-separated list. Whenever such a heading exists ANYWHERE in the source you were given, you MUST
+  read every item listed under it and put each one into this field as its own string - never leave this
+  heading's content out, and never summarize/merge multiple bullet items into one string. Some documents
+  bundling several excursions state ONE such heading as a shared/general section (appearing once, not
+  repeated under each excursion) - if you were given a variant_hint for one specific excursion and the
+  source also has a document-wide "Inclusions" heading like this, that shared content still applies to
+  your excursion and must be included here too.
   GUIDE LANGUAGE RULE (same principle as tours): if a base/standard guide language is mentioned (usually
   English), make sure it's explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are
   available (e.g. "German/French on request"), do NOT list them here - add each to extra_cost_options
@@ -2570,6 +2579,19 @@ Extract:
 - city: the single city/location where this takes place (a plain place name, e.g. "Tokyo") - this
   will be resolved to real coordinates separately, so use the exact place name as commonly known.
 - includes: a LIST of plain strings (not HTML) - each a short inclusion, e.g. ["Official Voucher", "Handling Fee"]
+  FIND THE "INCLUSIONS" HEADING: many source documents have an explicit heading spelled "Inclusions",
+  "Includes", "Included", or "What's Included" (any capitalization), usually followed by a bulleted or
+  comma-separated list. Whenever such a heading exists ANYWHERE in the source you were given, you MUST
+  read every item listed under it and put each one into this field as its own string - never leave this
+  heading's content out, and never summarize/merge multiple bullet items into one string.
+  SHARED/GENERAL INCLUSIONS: some documents (especially ones bundling several excursions, like a supplier
+  rate sheet with one excursion per heading) state ONE "Inclusions" section that is shared/general and
+  applies to EVERY excursion in the document, rather than repeating it under each excursion's own
+  heading - e.g. it appears once, on its own page or at the end, not directly under any single excursion's
+  heading. If you were given a variant_hint for one specific excursion below, and the source ALSO has a
+  document-wide/shared "Inclusions" heading like this that is not specific to any other excursion, that
+  shared content STILL applies to your excursion and must be included here too - do not skip it just
+  because it isn't physically positioned under your excursion's own heading.
   GUIDE LANGUAGE RULE: if a base/standard guide language is mentioned (usually English), make sure it's
   explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are available on request
   (e.g. "German/French on request"), do NOT list them here - the separate Modality/Pricing step turns
@@ -2647,7 +2669,13 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
             f"boilerplate wording (the same descriptive sentences, the same \"Inclusions\"/\"Good to "
             f"know\" bullet points) - do not let that similarity make you unsure which text belongs to "
             f"\"{variant_hint}\" specifically. Its own paragraph exists somewhere in the source; find it "
-            f"by heading position, not by trying to write a generic summary instead."
+            f"by heading position, not by trying to write a generic summary instead.\n"
+            f"EXCEPTION for a shared/general Inclusions section: some of these documents also have ONE "
+            f"\"Inclusions\"/\"Includes\" heading that is document-wide (not repeated per excursion - e.g. "
+            f"it appears once, on its own page, not directly under \"{variant_hint}\"'s own heading). If "
+            f"you find one like that, its content still applies to \"{variant_hint}\" and MUST be read "
+            f"into the includes field - do not skip it just because it sits outside this excursion's own "
+            f"heading block."
         )
     if human_hint:
         prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")

@@ -26,6 +26,7 @@ import copy
 import math
 import tempfile
 import os
+import difflib
 import requests
 from datetime import datetime
 import streamlit as st
@@ -3405,11 +3406,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
     # previously a single extract_ticket_data() call tried to read the name/description AND
     # a complex pricing table at once, which is the likely cause of a real bug where
     # ticket_name/description came back empty on a multi-excursion document with heavy
-    # seasonal price tables (the pricing table crowded out the main-info reading). A second,
-    # related product-owner request - "if the ticket has detected another Modality, the app
-    # must call for each modality separately" - is handled by detect_ticket_modalities()
-    # auto-populating extra_modalities (each still fetched via its OWN extract call, same
-    # already-confirmed-working mechanism a human uses when adding a Modality manually below).
+    # seasonal price tables (the pricing table crowded out the main-info reading).
+    # UPDATED (2026-08-13, product-owner request): a new Ticket must only ever be CREATED with
+    # ONE Modality (extra costs are Modality-specific, so mixing Modalities during creation was
+    # causing real errors). detect_ticket_modalities() still runs to spot other Modalities in the
+    # document, but now only INFORMS the human about them - it never auto-extracts or
+    # auto-queues them for creation. Other Modalities are added afterward via "2: Add new
+    # Modality to existing Ticket".
     # ------------------------------------------------------------------
     if st.session_state.mt_phase == "reviewing":
         idx = st.session_state.mt_queue_index
@@ -3651,28 +3654,21 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
                     data.update(modality_data)
-                # CONFIRMED PRODUCT-OWNER REQUEST: "if the ticket has detected another Modality,
-                # the app must call for each modality separately." Auto-detect any OTHER pricing
-                # category described for this same excursion (e.g. a full second price table for
-                # a different guide language) and queue it as its own extra Modality - each one
-                # still gets its OWN dedicated extraction call (below, same mechanism a human uses
-                # when adding a Modality manually), never blended into this one.
-                if "extra_modalities" not in current:
-                    current["extra_modalities"] = []
+                # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
+                # ONE Modality. If the document describes other pricing categories for this same
+                # excursion (e.g. a second price table for another guide language), do NOT
+                # auto-extract or auto-queue them for creation here - just detect and INFORM the
+                # human. Other Modalities get added separately afterward, via "2: Add new Modality
+                # to existing Ticket" (reachable through Update/Refresh existing Service once this
+                # Ticket is published).
                 if not current.get("modalities_auto_detected"):
                     try:
                         detected_mods = detect_ticket_modalities(st.session_state.mt_raw_text, variant_hint=variant_hint)
                     except Exception:
-                        detected_mods = []  # best-effort - human can still add Modalities manually below
-                    existing_codes = {(m.get("code") or "").strip().lower() for m in current["extra_modalities"]}
-                    for m in detected_mods:
-                        label = (m.get("label") or "").strip()
-                        raw_code = (m.get("suggested_code") or label or "").strip()
-                        clean_code = "".join(c for c in raw_code if c not in "/\\+-.")
-                        if clean_code and clean_code.strip().lower() not in existing_codes:
-                            current["extra_modalities"].append(
-                                {"code": clean_code, "hint": label, "data": None, "auto_detected": True})
-                            existing_codes.add(clean_code.strip().lower())
+                        detected_mods = []  # best-effort - informational only
+                    current["other_modalities_detected"] = [
+                        (m.get("label") or "").strip() for m in detected_mods if (m.get("label") or "").strip()
+                    ]
                     current["modalities_auto_detected"] = True
                 current["step"] = "modality"
                 st.rerun()
@@ -3824,135 +3820,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                   base_code=current.get("modality_code") or current.get("ticket_code") or "",
                                   base_name=data.get("ticket_name") or current.get("label") or "")
 
-        st.markdown(f"**➕ Additional Modalities for {current['label'] or current['ticket_code']} (optional)**")
-        st.caption("Add more variants of THIS ticket now (e.g. one per guide language) - all get created "
-                  "together with this ticket's single deactivation, so you don't need to manually reactivate "
-                  "it afterward. Common case: different guide languages must each be their own Modality, "
-                  "never a supplement. Operational Days, Stop Sales and Start Time(s) are each Modality's "
-                  "own, not shared across the ticket. Rows marked 🤖 below were auto-detected from your "
-                  "document as a separate priced Modality and extracted with their own dedicated AI call - "
-                  "review them like any other.")
-        st.caption(f"⚠️ **Every Modality on this Ticket must use the same Pricing Mode** "
-                  f"(currently **{mt_price_type}**, set above) - Travel Compositor has never accepted a "
-                  f"Ticket where one Modality is Distribution and another is Occupancy or Service. "
-                  f"Extra Modalities below are extracted and priced in {mt_price_type} to match.")
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): a new Ticket must only ever be created
+        # with ONE Modality. Any other Modalities described in the document are surfaced here as
+        # information only - never auto-extracted or auto-created - and must be added afterward
+        # via "2: Add new Modality to existing Ticket" (Update/Refresh existing Service -> Ticket).
         if "extra_modalities" not in current:
             current["extra_modalities"] = []
-
-        for j, mod in enumerate(current["extra_modalities"]):
-            mod_title = f"*Modality {j + 2}*" + (" 🤖 auto-detected" if mod.get("auto_detected") else "")
-            st.markdown(mod_title)
-            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
-            with mcol1:
-                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"mt_extramod_code_{idx}_{j}")
-            with mcol2:
-                mod["hint"] = st.text_input("Focus Hint (e.g. 'German Speaking Guide')", value=mod["hint"], key=f"mt_extramod_hint_{idx}_{j}")
-            with mcol3:
-                st.write("")
-                if st.button("🗑️ Remove", key=f"mt_extramod_remove_{idx}_{j}"):
-                    current["extra_modalities"].pop(j)
-                    # CONFIRMED REAL BUG (internal audit): every widget below is
-                    # keyed off this positional slot j (e.g. f"mt_extramod_code_{idx}_{j}")
-                    # - removing one shifts every later extra modality down one slot,
-                    # so the item now AT that slot would otherwise inherit the
-                    # removed item's stale typed Code/Hint/prices (Streamlit widgets
-                    # with a fixed key ignore value= after first render). Clear all
-                    # of them so the next render reads fresh from the data instead.
-                    _clear_batch_widget_state(["mt_extramod_"])
-                    st.rerun()
-
-            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
-                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
-
-            # CONFIRMED PRODUCT-OWNER REQUEST: an auto-detected Modality is extracted
-            # automatically the first time it's shown - a human never has to remember to click
-            # a button for a Modality the AI itself found - but still gets its own SEPARATE
-            # extraction call (never blended with the base Modality or any other extra one).
-            if mod["data"] is None and mod.get("auto_detected") and mod.get("code"):
-                with st.spinner(f"Extracting pricing for '{mod['hint'] or mod['code']}' - its own separate AI call..."):
-                    try:
-                        mod["data"] = extract_ticket_modality_data(
-                            st.session_state.mt_raw_text, variant_hint=variant_hint, modality_hint=mod["hint"])
-                        mod["data"]["price_type"] = mt_price_type
-                    except Exception as e:
-                        st.warning(f"⚠️ Couldn't auto-extract pricing for '{mod['hint'] or mod['code']}': "
-                                  f"{friendly_error_message(e)} - use the button below to retry.")
-
-            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"mt_extramod_extract_{idx}_{j}", disabled=not mod["code"]):
-                with st.spinner("Extracting..."):
-                    mod["data"] = extract_ticket_modality_data(
-                        st.session_state.mt_raw_text, variant_hint=variant_hint, modality_hint=mod["hint"])
-                    # CONFIRMED REAL BUG (product owner report, real production failure): this used
-                    # to hard-code every extra Modality to DISTRIBUTION regardless of what the BASE
-                    # Modality actually used - "if more than one modality created in Ticket, the
-                    # other modalities must also be same structure as first with Service,
-                    # Distribution or Occupancy... it has never worked" otherwise. Inherit the base
-                    # Modality's own price_type instead, so every Modality created together in this
-                    # batch is structurally consistent - see the single-Ticket flow's identical fix.
-                    mod["data"]["price_type"] = mt_price_type
-                    st.rerun()
-
-            if mod["data"]:
-                mod["data"]["price_type"] = mt_price_type  # keep in sync if the base mode is changed afterward
-                if mt_price_type == "DISTRIBUTION":
-                    epcol1, epcol2, epcol3 = st.columns(3)
-                    with epcol1:
-                        mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"mt_extramod_adult_{idx}_{j}")
-                    with epcol2:
-                        mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"mt_extramod_child_{idx}_{j}")
-                    with epcol3:
-                        mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"mt_extramod_infant_{idx}_{j}")
-                elif mt_price_type == "SERVICE":
-                    mod["data"]["base_service_price"] = st.number_input(
-                        "Total Service Price (flat, regardless of group size)", min_value=0.0,
-                        value=float(mod["data"].get("base_service_price", 0) or 0), key=f"mt_extramod_service_{idx}_{j}")
-                elif mt_price_type == "OCCUPANCY":
-                    _mt_extramod_dropped = [o for o in mod["data"].get("occupancy_prices", [])
-                                            if _safe_int(o.get("occupancy", 1), fallback=1) > mt_occ_cap]
-                    if _mt_extramod_dropped:
-                        mod["data"]["occupancy_prices"] = [
-                            o for o in mod["data"].get("occupancy_prices", [])
-                            if _safe_int(o.get("occupancy", 1), fallback=1) <= mt_occ_cap]
-                        st.caption(f"ℹ️ Dropped {len(_mt_extramod_dropped)} occupancy row(s) above "
-                                  f"{mt_occ_cap} pax (this Ticket's Max Passengers).")
-                    _mt_extramod_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
-                                             for o in mod["data"].get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
-                    _mt_extramod_occ_df = pd.DataFrame(_mt_extramod_occ_rows)
-                    def _save_mt_extramod_occupancy(edf, mod=mod, mt_occ_cap=mt_occ_cap):
-                        mod["data"]["occupancy_prices"] = [
-                            {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
-                            for _, r in edf.iterrows()
-                            if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= mt_occ_cap
-                        ]
-                    editable_table(f"Occupancy Price Tiers - {mod['code']}", _mt_extramod_occ_df,
-                                   f"mt_extramod_occupancy_{idx}_{j}", on_save=_save_mt_extramod_occupancy)
-                edcol1, edcol2 = st.columns(2)
-                with edcol1:
-                    mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", data.get("start_date", ""))), key=f"mt_extramod_start_{idx}_{j}"))
-                with edcol2:
-                    mod["data"]["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(mod["data"].get("end_date", data.get("end_date", ""))), key=f"mt_extramod_end_{idx}_{j}"))
-
-                mt_tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
-                def _save_mt_extramod_tt(edf, mod=mod):
-                    mod["data"]["time_tables"] = _clean_time_table_rows(edf)
-                editable_table(f"Start Time(s) - {mod['code']}", mt_tt_df_extra, f"mt_extramod_tt_{idx}_{j}", on_save=_save_mt_extramod_tt)
-
-                # Same fields, same reasoning as the single-Ticket flow's extra modalities
-                # (see "CONFIRMED REAL GAP" comment there): operationalDays/stopSales are
-                # per-Modality on the wire, and were simply never editable here before -
-                # neither was Start Time(s) (added just above), unlike the single-Ticket flow.
-                mod["data"]["operational_days"] = st.multiselect(
-                    f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
-                    default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"mt_extramod_days_{idx}_{j}")
-                render_stop_sales_editor(mod["data"], f"mt_extramod_{idx}_{j}")
-                render_ticket_modality_supplements_editor(mod["data"], f"mt_extramod_{idx}_{j}")
-            else:
-                st.info("Click 'Extract pricing' above to get started for this modality.")
-            st.divider()
-
-        if st.button("➕ Add another Modality", key=f"mt_add_extramod_{idx}"):
-            current["extra_modalities"].append({"code": "", "hint": "", "data": None})
-            st.rerun()
+        _mt_other_mods = current.get("other_modalities_detected") or []
+        if _mt_other_mods:
+            _mt_other_list = "".join(f"\n- {label}" for label in _mt_other_mods)
+            st.info(
+                f"ℹ️ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
+                f"for {current['label'] or current['ticket_code']}:{_mt_other_list}\n\n"
+                f"This Ticket will be created with just its one Modality above. Add the other one(s) "
+                f"afterward via **Update/Refresh existing Service -> Ticket -> \"2: Add new Modality to "
+                f"existing Ticket\"**."
+            )
 
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
@@ -5025,119 +4908,17 @@ def render_ticket_flow(client):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
         if action == "create":
-            st.subheader("➕ Add more Modalities to create right away (optional)")
-            st.caption("Add more ticket variants now (e.g. different guide languages or vehicle classes) - "
-                      "all get created together with a SINGLE deactivation at the end, so you don't need to "
-                      "manually reactivate the Ticket in Travel Compositor between each one. Operational "
-                      "Days, Stop Sales and Start Time(s) are each Modality's own - Travel Compositor stores "
-                      "them per Modality, not per Ticket, so e.g. a German-guide variant can run on "
-                      "different days than the base one.")
-            st.caption(f"⚠️ **Every Modality on this Ticket must use the same Pricing Mode** "
-                      f"(currently **{price_type}**, set above) - Travel Compositor has never accepted a "
-                      f"Ticket where one Modality is Distribution and another is Occupancy or Service. "
-                      f"Extra Modalities below are extracted and priced in {price_type} to match.")
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): a new Ticket must only ever be
+            # created with ONE Modality - extra costs are Modality-specific, so mixing
+            # Modalities during creation was causing real errors. Extra Modalities described
+            # in the same document are no longer extractable/creatable here; they must be
+            # added afterward via "2: Add new Modality to existing Ticket".
             if "tk_extra_modalities" not in st.session_state:
                 st.session_state.tk_extra_modalities = []
-
-            for i, mod in enumerate(st.session_state.tk_extra_modalities):
-                st.markdown(f"**Modality {i + 2}**")
-                mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
-                with mcol1:
-                    mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"tk_extramod_code_{i}")
-                with mcol2:
-                    mod["hint"] = st.text_input("Focus Hint (e.g. 'German guide')", value=mod["hint"], key=f"tk_extramod_hint_{i}")
-                with mcol3:
-                    st.write("")
-                    if st.button("🗑️ Remove", key=f"tk_extramod_remove_{i}"):
-                        st.session_state.tk_extra_modalities.pop(i)
-                        # CONFIRMED REAL BUG (internal audit): every widget here is
-                        # keyed off this positional slot i (e.g. f"tk_extramod_code_{i}")
-                        # - removing one shifts every later extra modality down one
-                        # slot, so the item now AT that slot would otherwise inherit
-                        # the removed item's stale typed Code/Hint/prices (Streamlit
-                        # widgets with a fixed key ignore value= after first render).
-                        _clear_batch_widget_state(["tk_extramod_"])
-                        st.rerun()
-
-                if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
-                    st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
-
-                if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"tk_extramod_extract_{i}", disabled=not mod["code"]):
-                    with st.spinner("Extracting..."):
-                        mod["data"] = extract_ticket_option_only_data(st.session_state.tk_raw_preview, human_hint=mod["hint"])
-                        # CONFIRMED REAL BUG (product owner report, real production failure): this
-                        # used to hard-code every extra Modality to DISTRIBUTION regardless of what
-                        # the BASE Modality actually used - "if more than one modality created in
-                        # Ticket, the other modalities must also be same structure as first with
-                        # Service, Distribution or Occupancy... it has never worked" otherwise.
-                        # Inherit the base Modality's own price_type instead, so every Modality
-                        # created together in this batch is structurally consistent.
-                        mod["data"]["price_type"] = price_type
-                        st.rerun()
-
-                if mod["data"]:
-                    mod["data"]["price_type"] = price_type  # keep in sync if the base mode is changed afterward
-                    if price_type == "DISTRIBUTION":
-                        pcol1, pcol2, pcol3 = st.columns(3)
-                        with pcol1:
-                            mod["data"]["base_adult_price"] = st.number_input("Adult Price", min_value=0.0, value=float(mod["data"].get("base_adult_price", 0) or 0), key=f"tk_extramod_adult_{i}")
-                        with pcol2:
-                            mod["data"]["base_children_price"] = st.number_input("Child Price", min_value=0.0, value=float(mod["data"].get("base_children_price", 0) or 0), key=f"tk_extramod_child_{i}")
-                        with pcol3:
-                            mod["data"]["base_infant_price"] = st.number_input("Infant Price", min_value=0.0, value=float(mod["data"].get("base_infant_price", 0) or 0), key=f"tk_extramod_infant_{i}")
-                    elif price_type == "SERVICE":
-                        mod["data"]["base_service_price"] = st.number_input(
-                            "Total Service Price (flat, regardless of group size)", min_value=0.0,
-                            value=float(mod["data"].get("base_service_price", 0) or 0), key=f"tk_extramod_service_{i}")
-                    elif price_type == "OCCUPANCY":
-                        _tk_extramod_dropped = [o for o in mod["data"].get("occupancy_prices", [])
-                                                if _safe_int(o.get("occupancy", 1), fallback=1) > tk_occ_cap]
-                        if _tk_extramod_dropped:
-                            mod["data"]["occupancy_prices"] = [
-                                o for o in mod["data"].get("occupancy_prices", [])
-                                if _safe_int(o.get("occupancy", 1), fallback=1) <= tk_occ_cap]
-                            st.caption(f"ℹ️ Dropped {len(_tk_extramod_dropped)} occupancy row(s) above "
-                                      f"{tk_occ_cap} pax (this Ticket's Max Passengers).")
-                        _tk_extramod_occ_rows = [{"Occupancy (exact # pax)": o.get("occupancy", 2), "Price": o.get("amount", 0)}
-                                                 for o in mod["data"].get("occupancy_prices", [])] or [{"Occupancy (exact # pax)": 2, "Price": 0}]
-                        _tk_extramod_occ_df = pd.DataFrame(_tk_extramod_occ_rows)
-                        def _save_tk_extramod_occupancy(edf, mod=mod, tk_occ_cap=tk_occ_cap):
-                            mod["data"]["occupancy_prices"] = [
-                                {"occupancy": _safe_int(r.get("Occupancy (exact # pax)"), 2), "amount": _safe_float(r.get("Price"))}
-                                for _, r in edf.iterrows()
-                                if _safe_int(r.get("Occupancy (exact # pax)"), 2) <= tk_occ_cap
-                            ]
-                        editable_table(f"Occupancy Price Tiers - {mod['code']}", _tk_extramod_occ_df,
-                                       f"tk_extramod_occupancy_{i}", on_save=_save_tk_extramod_occupancy)
-                    dcol1x, dcol2x = st.columns(2)
-                    with dcol1x:
-                        mod["data"]["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(mod["data"].get("start_date", "")), key=f"tk_extramod_start_{i}"))
-                    with dcol2x:
-                        mod["data"]["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(mod["data"].get("end_date", "")), key=f"tk_extramod_end_{i}"))
-                    tt_df_extra = pd.DataFrame([{"Time (HH:MM)": t} for t in mod["data"].get("time_tables", [])]) if mod["data"].get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
-                    def _save_extramod_tt(edf, mod=mod):
-                        mod["data"]["time_tables"] = _clean_time_table_rows(edf)
-                    editable_table(f"Start Time(s) - {mod['code']}", tt_df_extra, f"tk_extramod_tt_{i}", on_save=_save_extramod_tt)
-
-                    # CONFIRMED REAL GAP (product owner): operationalDays and stopSales are
-                    # per-Modality fields on the wire (see ContractTicketModalityVO in
-                    # build_ticket_payloads) - a modality's own schedule, not the ticket's -
-                    # but this quick-add UI only ever exposed price/dates/time, so a human
-                    # could never correct them here even though they're built straight from
-                    # this same mod["data"] dict at publish time. Defaults from extraction
-                    # (WEEKDAY_NAMES / []) still apply if left untouched.
-                    mod["data"]["operational_days"] = st.multiselect(
-                        f"Operational Days - {mod['code']}", ALL_WEEKDAYS,
-                        default=mod["data"].get("operational_days", ALL_WEEKDAYS), key=f"tk_extramod_days_{i}")
-                    render_stop_sales_editor(mod["data"], f"tk_extramod_{i}")
-                    render_ticket_modality_supplements_editor(mod["data"], f"tk_extramod_{i}")
-                else:
-                    st.info("Click 'Extract pricing' above to get started for this modality.")
-                st.divider()
-
-            if st.button("➕ Add another Modality", key="tk_add_extramod"):
-                st.session_state.tk_extra_modalities.append({"code": "", "hint": "", "data": None})
-                st.rerun()
+            st.info("ℹ️ This Ticket will be created with just this one Modality. If your document "
+                    "describes other variants (e.g. a different guide language or vehicle class), "
+                    "add them afterward via **Update/Refresh existing Service -> Ticket -> \"2: Add "
+                    "new Modality to existing Ticket\"**.")
 
         st.subheader("Extra costs")
         render_ticket_extra_costs(data, "tk",
@@ -8055,6 +7836,60 @@ def _ur_pick_momira_supplier(client, key_prefix):
     return str(supplier_options[selected_label])
 
 
+def _ur_gather_text_optional(key_prefix):
+    """Optional 'paste a URL and/or upload document(s)' widget pair for the Update/Refresh
+    screen's matching step - same gathering logic every other flow in this app already uses
+    (URL fetch + document text extraction), just standalone here since this screen only needs
+    the combined text to SUGGEST a match, not to run a full extraction yet. Returns the
+    combined raw text, or "" if nothing was provided/fetchable."""
+    url = st.text_input("Product page URL (optional)", key=f"{key_prefix}_url")
+    files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx"],
+                             accept_multiple_files=True, key=f"{key_prefix}_files")
+    combined_parts = []
+    if url:
+        page_text, page_text_err = _fetch_url_text_safe(url)
+        if page_text is not None:
+            combined_parts.append(page_text)
+        else:
+            st.warning(f"⚠️ Couldn't fetch the URL: {page_text_err}.")
+    for uploaded in (files or []):
+        suffix = os.path.splitext(uploaded.name)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded.getbuffer())
+            tmp_path = tmp.name
+        combined_parts.append(extract_raw_text(tmp_path))
+        os.remove(tmp_path)
+    return "\n\n".join(combined_parts)
+
+
+def _suggest_coded_service_matches(raw_text, existing_items, top_n=5, min_score=0.35):
+    """Free, no-AI-call name matching for the Update/Refresh screen's ClosedTour/Hotel/Ticket
+    branch (CONFIRMED PRODUCT-OWNER REQUEST: 'automatically matching existing services from
+    this supplier with the new given information'). Scores every existing item's name against
+    every line of the pasted document/URL text with difflib, keeping each item's single best
+    line match - cheap and effective for a name that appears somewhere in the source (a title,
+    a heading, a repeated phrase in a price table), without spending an extra paid AI call just
+    to pull out a name. The human still explicitly picks/confirms afterward - this only ranks
+    candidates, same principle as transfer_matcher.py's fuzzy matching for Transfers."""
+    if not raw_text or not existing_items:
+        return []
+    # Capped - a long rate sheet scored line-by-line against every existing item's name has no
+    # real benefit past the first few hundred lines; the product name overwhelmingly appears
+    # near the top (a title/heading) or repeated in the price table itself.
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()][:400]
+    if not lines:
+        return []
+    scored = []
+    for item in existing_items:
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        best = max(difflib.SequenceMatcher(None, name.lower(), line.lower()).ratio() for line in lines)
+        scored.append({**item, "score": round(best, 3)})
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return [c for c in scored[:top_n] if c["score"] >= min_score]
+
+
 def _render_update_refresh_coded_service(client, service):
     """ClosedTour/Hotel/Ticket branch of render_update_refresh_flow - pick supplier, pick the
     exact existing service from a real list, pick what kind of update this is (skipped for
@@ -8065,6 +7900,16 @@ def _render_update_refresh_coded_service(client, service):
     supplier_id = _ur_pick_momira_supplier(client, "ur_coded")
     if not supplier_id:
         return
+
+    # Stale suggestions/picks from a different service or supplier must never carry over -
+    # e.g. a "German Day Tour" match suggested while looking at ClosedTours would be nonsense
+    # once the human switches to Hotel or a different supplier.
+    _ur_scope = f"{service}:{supplier_id}"
+    if st.session_state.get("ur_coded_scope") != _ur_scope:
+        st.session_state.ur_coded_scope = _ur_scope
+        st.session_state.pop("ur_coded_suggestions", None)
+        st.session_state.pop("ur_coded_suggested_code", None)
+        st.session_state.pop("ur_coded_pick", None)
 
     if service == "Ticket":
         existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
@@ -8080,6 +7925,40 @@ def _render_update_refresh_coded_service(client, service):
         st.warning(f"⚠️ Couldn't load the existing {service} list ({list_error}) - you can still type "
                   f"the code manually below.")
 
+    # CONFIRMED PRODUCT-OWNER REQUEST (follow-up round): "automatically matching existing
+    # services from this supplier with the new given information" - optional, since the human
+    # may not have gathered a document yet at this point (that still happens on the next
+    # screen either way). Suggestions only RANK candidates; the human always explicitly picks
+    # below, same rule transfer_matcher.py already follows for Transfers.
+    suggested_code = None
+    with st.expander(f"🔎 Have a document/URL for this {service} already? Get a suggested match"):
+        st.caption("This is only used to suggest which existing one this is - you'll still provide "
+                  "the source again on the next screen for the actual extraction.")
+        match_text = _ur_gather_text_optional("ur_coded_match")
+        if st.button("Suggest matches", key="ur_coded_suggest_btn", disabled=not match_text):
+            st.session_state.ur_coded_suggestions = _suggest_coded_service_matches(match_text, existing_items)
+        suggestions = st.session_state.get("ur_coded_suggestions") or []
+        if suggestions:
+            for s in suggestions:
+                scol1, scol2 = st.columns([4, 1])
+                with scol1:
+                    st.write(f"**{s['code']}** — {s['name']}")
+                    st.caption(f"match confidence: {s['score']:.0%}")
+                with scol2:
+                    if st.button("✅ Use this", key=f"ur_coded_use_{s['code']}"):
+                        st.session_state.ur_coded_suggested_code = s["code"]
+                        # Same fixed-key staleness rule as every editable_field/editable_table
+                        # in this app (see reset_stale_editable_field_widgets' docstring): the
+                        # selectbox below already rendered once on a prior run with its OWN
+                        # key, so a freshly-computed index= would otherwise be silently
+                        # ignored - clearing its stored value forces a fresh pick next render.
+                        st.session_state.pop("ur_coded_pick", None)
+                        st.rerun()
+            if suggested_code := st.session_state.get("ur_coded_suggested_code"):
+                st.success(f"Suggested match selected: **{suggested_code}** - confirm/change it below if needed.")
+        elif st.session_state.get("ur_coded_suggestions") == []:
+            st.caption("No confident match found - pick manually below.")
+
     recents = _recent_update_refresh_picks(kind_key, supplier_id)
     recent_codes = {r["code"] for r in recents}
     ordered_items = recents + [it for it in existing_items if it.get("code") not in recent_codes]
@@ -8089,7 +7968,15 @@ def _render_update_refresh_coded_service(client, service):
     if not manual_entry:
         options = {f"{it['code']} — {it['name']}" + (" ⭐ recently used" if it["code"] in recent_codes else ""): it
                    for it in ordered_items}
-        picked_label = st.selectbox(f"Which {service} do you want to update?", list(options.keys()), key="ur_coded_pick")
+        option_labels = list(options.keys())
+        default_index = 0
+        if suggested_code:
+            for i, it in enumerate(ordered_items):
+                if it["code"] == suggested_code:
+                    default_index = i
+                    break
+        picked_label = st.selectbox(f"Which {service} do you want to update?", option_labels,
+                                    index=default_index, key="ur_coded_pick")
         chosen = options[picked_label]
         chosen_code, chosen_name = chosen["code"], chosen["name"]
         with st.expander("Can't find it? Type the code manually instead"):
@@ -8385,7 +8272,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-update-refresh-coded-services"
+BUILD_VERSION = "2026-08-13-single-modality-create-inclusions-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
