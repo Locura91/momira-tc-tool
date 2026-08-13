@@ -2078,6 +2078,82 @@ def get_existing_ticket_codes(client, supplier_id):
     return cache[supplier_id]
 
 
+def get_existing_hotel_names(client, supplier_id):
+    """
+    Hotel equivalent of get_existing_tour_names()/get_existing_ticket_codes() - fetches and
+    caches the full list of Hotels already published for this supplier. Added for the
+    Update/Refresh existing Service screen's Hotel picker (render_update_refresh_flow), so a
+    human picks an existing hotel by name from a real list instead of having to already know
+    and type its exact providerCode by hand.
+    Returns (items_list, error_message) - each item is {"name": str, "code": str}.
+    """
+    if "_existing_hotels_cache" not in st.session_state:
+        st.session_state._existing_hotels_cache = {}
+    cache = st.session_state._existing_hotels_cache
+    if supplier_id in cache:
+        return cache[supplier_id]
+
+    try:
+        result = client.get_hotels(supplier_id)
+    except Exception as e:
+        cache[supplier_id] = ([], friendly_error_message(e))
+        return cache[supplier_id]
+
+    if isinstance(result, dict) and "error" in result:
+        cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing hotels")
+        return cache[supplier_id]
+
+    items = []
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        for key in ("hotel", "hotels", "items", "data", "results", "content"):
+            if isinstance(result.get(key), list):
+                items = result[key]
+                break
+
+    names = []
+    for item in items:
+        if isinstance(item, dict) and item.get("name"):
+            names.append({"name": item["name"], "code": item.get("code", "")})
+
+    if not items and not names:
+        cache[supplier_id] = ([], "no existing hotels found (or couldn't recognize the response format)")
+    else:
+        cache[supplier_id] = (names, None)
+    return cache[supplier_id]
+
+
+# ----------------------------------------------------------------------
+# "Recently updated via this screen" memory for the Update/Refresh flow's code pickers
+# (ClosedTour/Hotel/Ticket - CONFIRMED PRODUCT-OWNER REQUEST: "this would be more a mapping
+# which will be done in the database and so the App could learn"). Deliberately simple for
+# this round: it boosts recently-picked services to the top of the dropdown per supplier, on
+# durable (Postgres-backed, when DATABASE_URL is set) storage via platform_store - the same
+# mechanism transfer_matcher.py already uses for its route->id memory. Genuine AI-driven
+# auto-matching from a freshly uploaded document (the OTHER option described in the request)
+# is NOT built yet for these three types - ClosedTour/Hotel/Ticket already carry a real
+# human-assigned code, so "which exact service" only needs a pick-from-a-list step, not the
+# fuzzy departure/arrival matching Transfer needs (it has no such code at all).
+# ----------------------------------------------------------------------
+_UPDATE_REFRESH_RECENTS_NAMESPACE = "update_refresh_recent_picks"
+_UPDATE_REFRESH_RECENTS_MAX = 8
+
+
+def _remember_update_refresh_pick(kind: str, supplier_id: str, code: str, name: str) -> None:
+    if not code:
+        return
+    key = f"{kind}:{supplier_id}"
+    recents = platform_store.get(_UPDATE_REFRESH_RECENTS_NAMESPACE, key) or []
+    recents = [r for r in recents if r.get("code") != code]
+    recents.insert(0, {"code": code, "name": name})
+    platform_store.set(_UPDATE_REFRESH_RECENTS_NAMESPACE, key, recents[:_UPDATE_REFRESH_RECENTS_MAX])
+
+
+def _recent_update_refresh_picks(kind: str, supplier_id: str) -> list:
+    return platform_store.get(_UPDATE_REFRESH_RECENTS_NAMESPACE, f"{kind}:{supplier_id}") or []
+
+
 def check_duplicate_tour_name(client, supplier_id, tour_name):
     """
     Returns a human-readable warning string if `tour_name` (case/whitespace-
@@ -7898,19 +7974,27 @@ def render_update_refresh_flow(client):
     funnels through here instead: one screen instead of five different half-hidden "Update
     existing X" options buried inside each product type's own flow.
 
-    THIS ROUND (2026-08-12) wires up Transfer and Transport for real, by reusing
-    price_refresh.py's flow - which already never creates a new record (the whole point of
-    removing Transfer/Transport from Step 1's create buttons, per the product-owner rule
-    "Transfer and Transport are not possible to automatically Import/upload"), already lists
-    EXISTING Travel Compositor products as the source of truth, and already matches a new rate
-    sheet's rows against them one by one for a human to accept or reject - exactly the
-    "extract from a document and automatically match existing services" behaviour asked for
-    here. ClosedTour, Hotel and Ticket are NOT migrated onto this screen yet - their existing
-    "Update existing..." actions inside each product type's own Step 2 still work exactly as
-    before; this screen explains that plainly rather than pretending to support them, and will
-    grow to cover them next (deliberately incremental, not a five-type rewrite done at once -
-    see the human matching/mapping mechanism transfer_matcher.py already has, which is the
-    model for what ClosedTour/Hotel/Ticket will get here too)."""
+    THIS ROUND (2026-08-12) covers all five product types:
+      * Transfer/Transport reuse price_refresh.py's flow - which already never creates a new
+        record, already lists EXISTING Travel Compositor products as the source of truth, and
+        already matches a new rate sheet's rows against them one by one for a human to accept
+        or reject.
+      * ClosedTour/Hotel/Ticket already carry a real human-assigned code (unlike Transfer/
+        Transport, which have none) - so "which exact service" is a straightforward PICK FROM
+        A LIST fetched from Travel Compositor (see get_existing_tour_names/
+        get_existing_hotel_names/get_existing_ticket_codes) rather than Transfer's fuzzy
+        departure/arrival matching. Recently-picked services are boosted to the top of that
+        list per supplier (_recent_update_refresh_picks, Postgres-backed via platform_store
+        when DATABASE_URL is set) - the "database mapping so the App could learn" the request
+        asked for, for these three coded types. What's NOT built yet: genuine AI matching of a
+        freshly uploaded document's content against the existing list before the human even
+        picks - today the human always picks explicitly, then the app extracts/updates from
+        whatever source they provide next. After the pick, the update TYPE (main info only /
+        pricing-Modality only / add a new Modality) is asked exactly as answered when this was
+        scoped - reusing the SAME action menus (ACTION_LABELS/TICKET_ACTION_LABELS, minus
+        "create") the classic per-type flows already use, then handing off into that same
+        already-proven Step 3 code with everything pre-filled, so none of the actual
+        extraction/review/publish logic is duplicated here."""
     st.header("🔄 Update/Refresh existing Service")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
@@ -7920,9 +8004,8 @@ def render_update_refresh_flow(client):
                        horizontal=True, key="ur_service_choice")
     st.caption("**Transfer / Transport**: matches a new rate sheet's rows against your EXISTING "
               "Travel Compositor products and updates them - nothing is ever created here. "
-              "**ClosedTour / Hotel / Ticket**: not yet available on this screen - go back to "
-              "Step 1, choose that product type directly, and use one of its 'Update existing...' "
-              "options there for now.")
+              "**ClosedTour / Hotel / Ticket**: pick the exact existing one from the list below, "
+              "then what kind of update this is - nothing is created here either.")
 
     if service in (price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER):
         # Pre-select price_refresh's own internal "which product type" radio with what was
@@ -7931,9 +8014,133 @@ def render_update_refresh_flow(client):
         render_price_refresh_flow(client)
         return
 
-    st.info(f"Updating an existing **{service}** isn't available on this unified screen yet - "
-            f"go back to Step 1, choose **{service}**, and use its 'Update existing...' option "
-            f"there instead. This screen will cover {service} too in a future update.")
+    if service in ("ClosedTour", "Hotel", "Ticket"):
+        _render_update_refresh_coded_service(client, service)
+        return
+
+
+def _ur_pick_momira_supplier(client, key_prefix):
+    """Shared 'pick a Momira_ supplier' widget for the Update/Refresh screen's ClosedTour/
+    Hotel/Ticket branches - same LOCKED Momira_-only rule and emergency-manual-entry fallback
+    every other flow in this app already uses, just factored out once instead of copy-pasted a
+    fourth time. Returns the chosen supplier_id (str) or None."""
+    if st.session_state.suppliers_cache is None:
+        with st.spinner("Loading supplier list from Travel Compositor..."):
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception as e:
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.session_state.suppliers_cache = []
+
+    if not st.session_state.suppliers_cache:
+        st.error("Could not load the supplier list from Travel Compositor.")
+        with st.expander("⚠️ Emergency manual entry"):
+            return st.text_input("Supplier ID (numeric)", value="", key=f"{key_prefix}_supplier_manual").strip() or None
+
+    momira_suppliers = [
+        s for s in st.session_state.suppliers_cache
+        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+    ]
+    if not momira_suppliers:
+        st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
+        return None
+    supplier_options = {
+        f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
+        for s in momira_suppliers
+    }
+    selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key=f"{key_prefix}_supplier_select")
+    if st.button("🔄 Refresh supplier list", key=f"{key_prefix}_refresh_suppliers"):
+        st.session_state.suppliers_cache = None
+        st.rerun()
+    return str(supplier_options[selected_label])
+
+
+def _render_update_refresh_coded_service(client, service):
+    """ClosedTour/Hotel/Ticket branch of render_update_refresh_flow - pick supplier, pick the
+    exact existing service from a real list, pick what kind of update this is (skipped for
+    Hotel, which has no such distinction today), then hand off into that product type's own
+    proven Step 3 with everything pre-filled, so extraction/review/publish is never
+    duplicated here."""
+    st.subheader(f"Update/Refresh an existing {service}")
+    supplier_id = _ur_pick_momira_supplier(client, "ur_coded")
+    if not supplier_id:
+        return
+
+    if service == "Ticket":
+        existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
+        kind_key, action_labels = "ticket", {k: v for k, v in TICKET_ACTION_LABELS.items() if k != "create"}
+    elif service == "ClosedTour":
+        existing_items, list_error = get_existing_tour_names(client, supplier_id)
+        kind_key, action_labels = "tour", {k: v for k, v in ACTION_LABELS.items() if k != "create"}
+    else:  # Hotel
+        existing_items, list_error = get_existing_hotel_names(client, supplier_id)
+        kind_key, action_labels = "hotel", None
+
+    if list_error:
+        st.warning(f"⚠️ Couldn't load the existing {service} list ({list_error}) - you can still type "
+                  f"the code manually below.")
+
+    recents = _recent_update_refresh_picks(kind_key, supplier_id)
+    recent_codes = {r["code"] for r in recents}
+    ordered_items = recents + [it for it in existing_items if it.get("code") not in recent_codes]
+
+    manual_entry = not ordered_items
+    chosen_code = ""
+    if not manual_entry:
+        options = {f"{it['code']} — {it['name']}" + (" ⭐ recently used" if it["code"] in recent_codes else ""): it
+                   for it in ordered_items}
+        picked_label = st.selectbox(f"Which {service} do you want to update?", list(options.keys()), key="ur_coded_pick")
+        chosen = options[picked_label]
+        chosen_code, chosen_name = chosen["code"], chosen["name"]
+        with st.expander("Can't find it? Type the code manually instead"):
+            manual_override = st.text_input("Code", value="", key="ur_coded_manual").strip()
+            if manual_override:
+                chosen_code, chosen_name = manual_override, ""
+    else:
+        st.info(f"No existing {service}s were found/loaded for this supplier - type the code directly.")
+        chosen_code = st.text_input("Code", value="", key="ur_coded_manual_only").strip()
+        chosen_name = ""
+
+    action_key = None
+    if action_labels:
+        action_key = st.radio(
+            "What kind of update is this?", list(action_labels.keys()),
+            format_func=lambda k: action_labels[k], key="ur_coded_action"
+        )
+
+    ready = bool(chosen_code) and (action_labels is None or action_key is not None)
+    if st.button("➡️ Continue", type="primary", disabled=not ready, key="ur_coded_continue"):
+        _remember_update_refresh_pick(kind_key, supplier_id, chosen_code, chosen_name)
+        if service == "Ticket":
+            st.session_state.tk_cfg_action = action_key
+            st.session_state.tk_cfg_supplier_id = supplier_id
+            st.session_state.tk_prefill_existing_ticket_code = chosen_code
+            st.session_state.tk_step1_confirmed = True
+            st.session_state.tk_step2_confirmed = False
+            st.session_state.product_type = "Ticket"
+        elif service == "ClosedTour":
+            st.session_state.cfg_action = action_key
+            st.session_state.cfg_supplier_id = supplier_id
+            st.session_state.prefill_existing_tour_code = chosen_code
+            st.session_state.cfg_existing_tour_code = chosen_code
+            st.session_state.step1_confirmed = True
+            st.session_state.step2_confirmed = False
+            st.session_state.product_type = "ClosedTour"
+        else:  # Hotel - no action sub-choice; render_hotel_flow always updates when the code
+            # already exists, so jumping straight past its own Step 2 with the picked code and
+            # code's live currency/release days pre-filled is enough.
+            with st.spinner("Fetching this hotel's current details..."):
+                fetched = client.get_hotel(supplier_id, chosen_code)
+            if not isinstance(fetched, dict) or "error" in fetched:
+                st.error(f"Couldn't fetch `{chosen_code}` from Travel Compositor - check the code and try again.")
+                return
+            st.session_state.hp_cfg_supplier_id = supplier_id
+            st.session_state.hp_cfg_provider_code = chosen_code
+            st.session_state.hp_cfg_currency = fetched.get("currency") or "EUR"
+            st.session_state.hp_cfg_release_days = fetched.get("releaseDays", 7)
+            st.session_state.hp_step1_confirmed = True
+            st.session_state.product_type = "Hotel"
+        st.rerun()
 
 
 def render_price_refresh_flow(client):
@@ -8178,7 +8385,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-12-unified-update-refresh-step1"
+BUILD_VERSION = "2026-08-12-update-refresh-coded-services"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
