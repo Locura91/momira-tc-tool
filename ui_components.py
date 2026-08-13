@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-ticket-child-price-agerange-fix"
+MODULE_BUILD = "2026-08-13-image-crash-fix-closedtour-notes-removed"
 
 import re
 import math
@@ -883,7 +883,21 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
     for i, (fname, img_bytes) in enumerate(doc_raw_images):
         photo_key = abs(hash(fname + str(len(img_bytes))))  # content-based, stable per unique image
         with cols[i % 3]:
-            st.image(img_bytes, caption=fname)
+            # CONFIRMED REAL BUG (production crash, PIL.UnidentifiedImageError): a document can
+            # yield bytes that LOOK like an image to whatever pulled them out of the PDF/doc, but
+            # aren't a format PIL can decode (a corrupted extraction, a vector/unsupported format,
+            # a stray non-image blob) - st.image() used to call straight into PIL with no guard,
+            # and an unreadable single thumbnail crashed the ENTIRE page render (this function is
+            # called from deep inside the ClosedTour/Ticket upload flow - one bad image blocked
+            # the whole batch, not just its own thumbnail). Same "one bad item must never take
+            # down the whole screen" principle already applied elsewhere in this file (see
+            # render_readonly_source's try/except around st.code). The Upload/Download buttons
+            # still work either way - they don't need PIL to succeed.
+            try:
+                st.image(img_bytes, caption=fname)
+            except Exception:
+                st.warning(f"⚠️ '{fname}' couldn't be previewed (not a readable image format), but "
+                          f"you can still download or upload it below.")
             if st.button("☁️ Upload & Add", key=f"{state_prefix}_upload_{photo_key}"):
                 try:
                     url = upload_images_freeimage([(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg")])

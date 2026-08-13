@@ -797,7 +797,6 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
         editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
         render_cancellation_policy_editor(data, "mct_main")
-        service_notes.render_notes_editor(supplier_id, "ClosedTour", data, key_suffix="_mct")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
         tcol1, tcol2 = st.columns(2)
@@ -8157,7 +8156,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-ticket-child-price-agerange-fix"
+BUILD_VERSION = "2026-08-13-image-crash-fix-closedtour-notes-removed"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9114,7 +9113,6 @@ if st.session_state.extracted:
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
             render_cancellation_policy_editor(data, "legacy_tour")
-            service_notes.render_notes_editor(supplier_id, "ClosedTour", data, key_suffix="_legacy")
             editable_field("Nights", data, "nights", widget="number_input")
 
             tcol1, tcol2 = st.columns(2)
