@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-image-crash-fix-closedtour-notes-removed"
+MODULE_BUILD = "2026-08-13-image-upload-error-surfaced"
 
 import re
 import math
@@ -38,7 +38,10 @@ from builder import (
 # boundary and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from web_extractor import get_page_image_bytes
-from freeimage_client import upload_images as upload_images_freeimage
+from freeimage_client import (
+    upload_images as upload_images_freeimage,
+    upload_images_with_errors as upload_images_freeimage_with_errors,
+)
 from ai_extractor import friendly_error_message
 
 SUPPLEMENT_COLUMNS = ["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
@@ -899,15 +902,27 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
                 st.warning(f"⚠️ '{fname}' couldn't be previewed (not a readable image format), but "
                           f"you can still download or upload it below.")
             if st.button("☁️ Upload & Add", key=f"{state_prefix}_upload_{photo_key}"):
-                try:
-                    url = upload_images_freeimage([(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg")])
-                    if url:
-                        newly_added_url = url[0]
-                        st.success("Uploaded!")
-                    else:
-                        st.error("Upload returned no URL.")
-                except Exception as e:
-                    st.error(f"Upload failed: {friendly_error_message(e)}")
+                # CONFIRMED REAL GAP (product owner, "I can't integrate the images from the
+                # document, I get an error" - but the generic "Upload returned no URL." gave no
+                # way to tell what actually went wrong). upload_images_with_errors (unlike
+                # upload_images) preserves the real reason for each failure instead of a bare
+                # print() nobody sees on Streamlit Cloud - a human clicking this button IS
+                # watching the result, so show them the actual cause (missing/invalid
+                # FREEIMAGE_API_KEY, freeimage.host down, rate-limited, etc).
+                url, errors = upload_images_freeimage_with_errors(
+                    [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg")])
+                if url:
+                    newly_added_url = url[0]
+                    st.success("Uploaded!")
+                elif errors:
+                    # NOT friendly_error_message() here - that's written for Anthropic AI-call
+                    # errors ("Something went wrong while talking to the AI service...") and
+                    # would mislabel a freeimage.host hosting failure as an AI problem. The raw
+                    # message from upload_image() is already written for a human to read.
+                    st.error(f"Upload failed: {errors[0]}")
+                else:
+                    st.error("Upload returned no URL, for no reason the hosting service reported - "
+                             "try again, or use Download and host it manually.")
             st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"{state_prefix}_dl_{photo_key}")
     return newly_added_url
 

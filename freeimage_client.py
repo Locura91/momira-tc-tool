@@ -49,11 +49,34 @@ def upload_images(image_list: list) -> list:
     Returns list of successfully uploaded URLs - skips (doesn't crash on)
     any individual image that fails to upload, since one bad image
     shouldn't block the whole extraction.
+
+    CONFIRMED REAL GAP (product owner, "I can't integrate the images from the document, I get an
+    error" - the error was invisible): every per-image failure here was swallowed down to a bare
+    print(), which goes nowhere useful on Streamlit Cloud (not shown to the user, easy to miss
+    even in logs). A human clicking "Upload & Add" on a perfectly good photo saw only "Upload
+    returned no URL." with zero indication of WHY - missing/invalid FREEIMAGE_API_KEY, the
+    service being down, a rate limit, etc. are all indistinguishable from each other and from a
+    genuinely corrupt image. This function's own behavior is UNCHANGED (still silently skips, for
+    every existing bulk-upload call site that shouldn't halt on one bad image) - see
+    upload_images_with_errors() below for the same upload with the reasons preserved, used by the
+    single-image "Upload & Add" button where a human is watching and can act on the real reason.
     """
-    urls = []
-    for img_bytes, ext in image_list:
-        try:
-            urls.append(upload_image(img_bytes, filename=f"image.{ext or 'jpg'}"))
-        except Exception as e:
-            print(f"⚠️ Skipped one image upload: {e}")
+    urls, _ = upload_images_with_errors(image_list)
     return urls
+
+
+def upload_images_with_errors(image_list: list) -> tuple:
+    """
+    Same upload as upload_images(), but returns (urls, errors) instead of discarding the reason
+    for each failure - errors is a list of "filename: message" strings, one per failed image, in
+    the order they were attempted. Use this wherever a human is watching the result and needs to
+    know WHY an upload didn't produce a URL, rather than just that it didn't.
+    """
+    urls, errors = [], []
+    for img_bytes, ext in image_list:
+        filename = f"image.{ext or 'jpg'}"
+        try:
+            urls.append(upload_image(img_bytes, filename=filename))
+        except Exception as e:
+            errors.append(f"{filename}: {e}")
+    return urls, errors
