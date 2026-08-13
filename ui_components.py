@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-single-modality-create-inclusions-fix"
+MODULE_BUILD = "2026-08-13-ticket-occupancy-only-pricing"
 
 import re
 import math
@@ -29,7 +29,7 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
-from builder import coerce_price_list_shape
+from builder import coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts the ISO wire format, so every screen converts at the
 # boundary and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
@@ -240,6 +240,101 @@ def render_stop_sales_editor(data, key_prefix, help_text=None):
             data["stop_sales"] = new_stops
 
         editable_table("Blocked date ranges", stop_df, f"{key_prefix}_stop_sales", on_save=_save_stop_sales)
+
+
+def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
+    """
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "Can we only add occupancy or per Service for
+    the ticket. Always Occupancy first ... and 9 rows and in each row one pax with one price. If
+    the price is always same (like Distribution, then it would just 9 times the same price added
+    in each row)." Tickets used to offer 3 pricing modes (Distribution/Occupancy/Service) -
+    Distribution (a flat per-person Adult/Child/Infant rate) is retired from this editor entirely:
+    only Occupancy (always exactly `cap` rows, 1 through this Ticket's own Max Passengers, capped
+    at the platform-wide 9) and Service (one flat total) remain, so there's only ever one pricing
+    shape a human has to think about. A legacy Distribution-priced modality (from before this
+    change, or fetched live from Travel Compositor for editing) is transparently converted here
+    into an Occupancy table with its old flat Adult price repeated across every row - exactly what
+    the product owner described as "9 times the same price added in each row".
+
+    Mutates `data` in place (same convention as the rest of this file): sets/normalizes
+    data["price_type"] and data["occupancy_prices"]/data["base_service_price"]. Call this ONCE per
+    modality per render, before reading data["price_type"] elsewhere in the same flow.
+    """
+    cap = min(_TICKET_MAX_OCCUPANCY_PAX, _safe_int(max_passengers, fallback=_TICKET_MAX_OCCUPANCY_PAX))
+
+    if (data.get("price_type") or "OCCUPANCY") == "DISTRIBUTION":
+        flat_price = _safe_float(data.get("base_adult_price", 0))
+        child_price = _safe_float(data.get("base_children_price", 0))
+        infant_price = _safe_float(data.get("base_infant_price", 0))
+        existing_occ = {_safe_int(o.get("occupancy", 1), fallback=1): _safe_float(o.get("amount", 0))
+                       for o in (data.get("occupancy_prices") or []) if isinstance(o, dict)}
+        data["occupancy_prices"] = [
+            {"occupancy": n, "amount": existing_occ.get(n, flat_price)} for n in range(1, cap + 1)
+        ]
+        data["price_type"] = "OCCUPANCY"
+        if child_price != flat_price or infant_price:
+            note = (f"Converted from a flat per-person price - Adult was {flat_price}, Child was "
+                   f"{child_price}, Infant was {infant_price} {currency}. The Occupancy table now "
+                   f"repeats the Adult price on every row; double-check this still matches what "
+                   f"the source intended if Child/Infant pricing genuinely differed.")
+            existing_notes = (data.get("pricing_notes") or "").strip()
+            if note not in existing_notes:
+                data["pricing_notes"] = (existing_notes + " " + note).strip() if existing_notes else note
+
+    st.caption("A Ticket Modality holds ONE price setup + ONE validity date range (not a seasonal table). "
+              "For holiday/seasonal price differences, use dated Supplements below instead.")
+
+    price_type = st.radio(
+        "Pricing Mode", ["OCCUPANCY", "SERVICE"],
+        index=["OCCUPANCY", "SERVICE"].index(data.get("price_type") or "OCCUPANCY"),
+        format_func=lambda x: {
+            "OCCUPANCY": "Occupancy - price varies by group size (infants free, not counted)",
+            "SERVICE": "Service - one flat total price regardless of headcount",
+        }[x],
+        key=f"{key_prefix}_price_type"
+    )
+    data["price_type"] = price_type
+
+    if price_type == "SERVICE":
+        data["base_service_price"] = st.number_input(
+            "Total Service Price (flat, regardless of group size)", min_value=0.0,
+            value=float(data.get("base_service_price", 0) or 0), key=f"{key_prefix}_service_price"
+        )
+        return
+
+    # OCCUPANCY - always exactly `cap` rows, 1 through cap, Pax column locked.
+    st.caption(f"Always exactly {cap} row(s) - 1 through this Ticket's Max Passengers ({max_passengers}, "
+              f"capped at the platform-wide 9-pax limit). Infants are always free and excluded "
+              f"automatically. If your source gives one flat price regardless of group size, use the "
+              f"quick-fill below to repeat it across every row.")
+    existing_occ = {_safe_int(o.get("occupancy", 1), fallback=1): _safe_float(o.get("amount", 0))
+                   for o in (data.get("occupancy_prices") or []) if isinstance(o, dict)
+                   and _safe_int(o.get("occupancy", 1), fallback=1) <= cap}
+    data["occupancy_prices"] = [{"occupancy": n, "amount": existing_occ.get(n, 0)} for n in range(1, cap + 1)]
+
+    with st.expander("💨 Quick-fill: same price for every row"):
+        st.caption("Use this when the source gives one flat price regardless of group size - fills all "
+                  "rows below with the same amount (this replaces the old Distribution mode).")
+        qcol1, qcol2 = st.columns([3, 1])
+        with qcol1:
+            quick_price = st.number_input("Price for all rows", min_value=0.0, value=0.0, key=f"{key_prefix}_occ_quickfill_price")
+        with qcol2:
+            st.write("")
+            if st.button("Apply to all rows", key=f"{key_prefix}_occ_quickfill_apply"):
+                data["occupancy_prices"] = [{"occupancy": n, "amount": quick_price} for n in range(1, cap + 1)]
+                st.rerun()
+
+    occ_df = pd.DataFrame([{"Pax": o["occupancy"], "Price": o["amount"]} for o in data["occupancy_prices"]])
+
+    def _save_occupancy(edf, data=data, cap=cap):
+        edited = {_safe_int(r.get("Pax"), 1): _safe_float(r.get("Price")) for _, r in edf.iterrows()}
+        data["occupancy_prices"] = [{"occupancy": n, "amount": edited.get(n, 0)} for n in range(1, cap + 1)]
+
+    editable_table(
+        f"Occupancy Price ({cap} row(s), 1-{cap} pax)", occ_df, f"{key_prefix}_occupancy",
+        on_save=_save_occupancy, num_rows="fixed",
+        column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
+    )
 
 
 def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):

@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-single-modality-create-inclusions-fix"
+MODULE_BUILD = "2026-08-13-ticket-occupancy-only-pricing"
 
 import os
 import re
@@ -2519,6 +2519,32 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     if data.get("cancellation_policy_text") and not data.get("voucher_remarks"):
         data["voucher_remarks"] = data["cancellation_policy_text"]
 
+    return _finalize_ticket_price_type(data)
+
+
+def _finalize_ticket_price_type(data: dict) -> dict:
+    """
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "Can we only add occupancy or per Service for
+    the ticket. Always Occupancy first ... and 9 rows and in each row one pax with one price. If
+    the price is always same (like Distribution, then it would just 9 times the same price added
+    in each row)." The Ticket pricing editor (render_ticket_pricing_editor, ui_components.py) no
+    longer offers a Distribution mode at all - only Occupancy (always exactly N rows, 1 through
+    this Ticket's own Max Passengers capped at 9) and Service remain, and a "DISTRIBUTION"
+    price_type reaching it is auto-converted into a flat Occupancy table (the old flat
+    base_adult_price repeated across every row) the moment it's rendered.
+
+    Extraction itself is UNCHANGED - it still returns a flat base_adult_price/base_children_price/
+    base_infant_price for a flat-priced source, or a tiered occupancy_prices table for a
+    group-size-banded one (occupancy_prices is only ever populated when a genuine per-headcount
+    table exists in the source - see the occupancy_prices field rule above). This function just
+    decides which shape was actually extracted and labels it correctly for the UI:
+    - occupancy_prices non-empty -> "OCCUPANCY" (a genuine group-size-tiered table was found).
+    - otherwise -> "DISTRIBUTION" (only a flat per-person price was found) - the UI's own
+      conversion then repeats it into the Occupancy table automatically. Without this, a
+      flat-priced extraction (the common case) always defaulted to "OCCUPANCY" with an EMPTY
+      table, so the human never even saw the extracted price without manually digging for it.
+    """
+    data["price_type"] = "OCCUPANCY" if data.get("occupancy_prices") else "DISTRIBUTION"
     return data
 
 
@@ -2918,7 +2944,7 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
-    return data
+    return _finalize_ticket_price_type(data)
 
 
 TICKET_MODALITY_DETECTION_PROMPT = """You are checking whether a DMC supplier document/page prices MORE
@@ -3086,7 +3112,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
-    return data
+    return _finalize_ticket_price_type(data)
 
 
 # ==========================================
