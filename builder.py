@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-ticket-child-price-column"
+MODULE_BUILD = "2026-08-13-ticket-child-price-agerange-fix"
 
 import math
 import datetime
@@ -1638,16 +1638,23 @@ def build_ticket_payloads(
         # can never carry a 7-9 pax occupancy row that Travel Compositor would reject outright.
         effective_occupancy_cap = min(_MAX_OCCUPANCY_PAX, _safe_int(pre_config.max_passengers, fallback=_MAX_OCCUPANCY_PAX))
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "when child age is between 2 and 12, we
-        # must add a child price column next to adult price in pricing table" - each Occupancy
-        # row now carries a "childAmount" alongside "amount" whenever children are allowed on
-        # this Ticket, so the per-pax child rate travels with the payload the same way the adult
-        # rate does. NOTE: "occupancy"/"amount" on ContractTicketModalityVO.occupancyPrices are
-        # themselves only loosely confirmed (untyped List[dict], no full Swagger shape on file for
-        # this field - see coerce_ticket_occupancy_prices_shape's docstring) - "childAmount" here
-        # is a same-convention EXTENSION, not verified against a real GET response that actually
-        # returned per-occupancy child pricing. Confirm with one real save+GET before relying on
-        # Travel Compositor actually persisting/using it; worst case it's ignored as extra data.
+        # must add a child price column next to adult price in pricing table."
+        #
+        # CONFIRMED REAL SHAPE (2026-08-13, live GET /tickets/{supplierId}/{ticketCode}/{optionCode}
+        # response, captured via the app's own debug panel after saving a Children price directly
+        # in Travel Compositor's UI): occupancyPrices is ONE FLAT LIST holding both adult and
+        # child rows for the same modality - there is no separate array and no "childAmount"
+        # field on the adult row (that was an earlier, wrong guess - it silently did nothing).
+        # A child row is a completely separate {"occupancy": n, "amount": <child price for that
+        # headcount>, "ageRange": {"min": <childAgeMin>, "max": <childAgeMax>}} entry alongside
+        # the adult {"occupancy": n, "amount": <adult price>} entry for the SAME occupancy number
+        # - the "ageRange" key is what Travel Compositor uses to tell the two apart (real example
+        # also included a server-assigned "id" per row, which is never sent on write - same
+        # convention as every other list here, e.g. hotel rate seasons only echo an id when
+        # matching an existing row, otherwise Travel Compositor assigns one).
         children_allowed_for_pricing = not bool(extracted_ticket_data.get("disallow_children", False))
+        occ_child_age_min, occ_child_age_max = resolve_child_age_band(
+            extracted_ticket_data.get("child_age_min"), extracted_ticket_data.get("child_age_max"), 2, 12)
         occupancy_prices = []
         for o in (extracted_ticket_data.get("occupancy_prices") or []):
             if not isinstance(o, dict):
@@ -1655,10 +1662,12 @@ def build_ticket_payloads(
             occ_n = _safe_int(o.get("occupancy", 1), fallback=1)
             if occ_n > effective_occupancy_cap:
                 continue
-            row = {"occupancy": occ_n, "amount": _safe_float(o.get("amount", 0))}
+            occupancy_prices.append({"occupancy": occ_n, "amount": _safe_float(o.get("amount", 0))})
             if children_allowed_for_pricing and o.get("child_amount") not in (None, ""):
-                row["childAmount"] = _safe_float(o.get("child_amount", row["amount"]))
-            occupancy_prices.append(row)
+                occupancy_prices.append({
+                    "occupancy": occ_n, "amount": _safe_float(o.get("child_amount", 0)),
+                    "ageRange": {"min": occ_child_age_min, "max": occ_child_age_max},
+                })
         if selected_price_type != "DISTRIBUTION":
             # baseAdultPrice is REQUIRED on ContractTicketModalityVO regardless
             # of price mode (schemas.py: Field(...)) - confirmed the real API
