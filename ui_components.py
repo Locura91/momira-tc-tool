@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-ticket-occupancy-only-pricing"
+MODULE_BUILD = "2026-08-13-ticket-child-price-column"
 
 import re
 import math
@@ -29,7 +29,10 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
-from builder import coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX
+from builder import (
+    coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
+    resolve_ticket_child_price_ratio,
+)
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts the ISO wire format, so every screen converts at the
 # boundary and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
@@ -307,10 +310,35 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
               f"capped at the platform-wide 9-pax limit). Infants are always free and excluded "
               f"automatically. If your source gives one flat price regardless of group size, use the "
               f"quick-fill below to repeat it across every row.")
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "when child age is between 2 and 12, we must
+    # add a child price column next to adult price in pricing table. If not other stated, the
+    # child price = adult price. If Document says child between 2 to 11.99 50% off, the child
+    # price = adult price/2." Shown whenever this Ticket allows children at all - reuses the
+    # already-extracted base_adult_price/base_children_price (see resolve_ticket_child_price_ratio
+    # docstring for why those are reliable even for an Occupancy-priced Ticket) to derive the
+    # default ratio, so a document that stated a distinct child rate doesn't need re-typing here.
+    children_allowed = not bool(data.get("disallow_children", False))
+    child_age_min = _safe_int(data.get("child_age_min", 2), fallback=2)
+    child_age_max = _safe_int(data.get("child_age_max", 12), fallback=12)
+    child_ratio = resolve_ticket_child_price_ratio(
+        data.get("base_adult_price", 0), data.get("base_children_price", 0)
+    )
+
     existing_occ = {_safe_int(o.get("occupancy", 1), fallback=1): _safe_float(o.get("amount", 0))
                    for o in (data.get("occupancy_prices") or []) if isinstance(o, dict)
                    and _safe_int(o.get("occupancy", 1), fallback=1) <= cap}
-    data["occupancy_prices"] = [{"occupancy": n, "amount": existing_occ.get(n, 0)} for n in range(1, cap + 1)]
+    existing_child = {_safe_int(o.get("occupancy", 1), fallback=1): o.get("child_amount")
+                      for o in (data.get("occupancy_prices") or []) if isinstance(o, dict)
+                      and _safe_int(o.get("occupancy", 1), fallback=1) <= cap
+                      and o.get("child_amount") not in (None, "")}
+    data["occupancy_prices"] = []
+    for n in range(1, cap + 1):
+        amount = existing_occ.get(n, 0)
+        row = {"occupancy": n, "amount": amount}
+        if children_allowed:
+            row["child_amount"] = _safe_float(existing_child.get(n, round(amount * child_ratio, 2)))
+        data["occupancy_prices"] = data["occupancy_prices"] + [row]
 
     with st.expander("💨 Quick-fill: same price for every row"):
         st.caption("Use this when the source gives one flat price regardless of group size - fills all "
@@ -321,20 +349,56 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
         with qcol2:
             st.write("")
             if st.button("Apply to all rows", key=f"{key_prefix}_occ_quickfill_apply"):
-                data["occupancy_prices"] = [{"occupancy": n, "amount": quick_price} for n in range(1, cap + 1)]
+                data["occupancy_prices"] = [
+                    {"occupancy": n, "amount": quick_price,
+                     **({"child_amount": round(quick_price * child_ratio, 2)} if children_allowed else {})}
+                    for n in range(1, cap + 1)
+                ]
+                st.rerun()
+        if children_allowed:
+            st.caption(f"Child price default: {child_ratio:.0%} of the adult price on each row "
+                      f"(age {child_age_min}-{child_age_max}) - edit any row's Child Price directly "
+                      f"below to override.")
+            if st.button("Reset all Child Price cells to that default", key=f"{key_prefix}_occ_child_reset"):
+                data["occupancy_prices"] = [
+                    {"occupancy": o["occupancy"], "amount": o["amount"],
+                     "child_amount": round(o["amount"] * child_ratio, 2)}
+                    for o in data["occupancy_prices"]
+                ]
                 st.rerun()
 
-    occ_df = pd.DataFrame([{"Pax": o["occupancy"], "Price": o["amount"]} for o in data["occupancy_prices"]])
+    if children_allowed:
+        occ_df = pd.DataFrame([
+            {"Pax": o["occupancy"], "Price": o["amount"], "Child Price": o.get("child_amount", o["amount"])}
+            for o in data["occupancy_prices"]
+        ])
 
-    def _save_occupancy(edf, data=data, cap=cap):
-        edited = {_safe_int(r.get("Pax"), 1): _safe_float(r.get("Price")) for _, r in edf.iterrows()}
-        data["occupancy_prices"] = [{"occupancy": n, "amount": edited.get(n, 0)} for n in range(1, cap + 1)]
+        def _save_occupancy(edf, data=data, cap=cap):
+            edited = {_safe_int(r.get("Pax"), 1): (_safe_float(r.get("Price")), _safe_float(r.get("Child Price")))
+                     for _, r in edf.iterrows()}
+            data["occupancy_prices"] = [
+                {"occupancy": n, "amount": edited.get(n, (0, 0))[0], "child_amount": edited.get(n, (0, 0))[1]}
+                for n in range(1, cap + 1)
+            ]
 
-    editable_table(
-        f"Occupancy Price ({cap} row(s), 1-{cap} pax)", occ_df, f"{key_prefix}_occupancy",
-        on_save=_save_occupancy, num_rows="fixed",
-        column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
-    )
+        editable_table(
+            f"Occupancy Price ({cap} row(s), 1-{cap} pax) - Child Price covers age {child_age_min}-{child_age_max}",
+            occ_df, f"{key_prefix}_occupancy",
+            on_save=_save_occupancy, num_rows="fixed",
+            column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
+        )
+    else:
+        occ_df = pd.DataFrame([{"Pax": o["occupancy"], "Price": o["amount"]} for o in data["occupancy_prices"]])
+
+        def _save_occupancy(edf, data=data, cap=cap):
+            edited = {_safe_int(r.get("Pax"), 1): _safe_float(r.get("Price")) for _, r in edf.iterrows()}
+            data["occupancy_prices"] = [{"occupancy": n, "amount": edited.get(n, 0)} for n in range(1, cap + 1)]
+
+        editable_table(
+            f"Occupancy Price ({cap} row(s), 1-{cap} pax)", occ_df, f"{key_prefix}_occupancy",
+            on_save=_save_occupancy, num_rows="fixed",
+            column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
+        )
 
 
 def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):

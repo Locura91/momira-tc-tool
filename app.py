@@ -75,7 +75,7 @@ from builder import derive_arrival_from_duration, build_closed_tour_payloads, bu
 from builder import build_transport_payloads
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
-from builder import coerce_price_list_shape
+from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shape
 from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
@@ -462,9 +462,14 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         st.caption("Ask a question, or tell it to fix something (e.g. 'the price should be x3 for 3 "
                   "nights, not the per-night rate'). Applies real changes when you ask for them.")
         mm_clarify_q = st.text_input("Your message", key=f"mm_clarify_input_{idx}")
-        if not mm_clarify_q.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not mm_clarify_q.strip(), key=f"mm_clarify_send_{idx}"):
+        if render_house_rule_shortcut(mm_clarify_q, "ClosedTour", f"mm_{idx}"):
+            pass
+        elif not mm_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
+                      f"supplier instead of a one-off fix.")
+        if not mm_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not mm_clarify_q.strip(), key=f"mm_clarify_send_{idx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mm_raw_text, data, mm_clarify_q)
                 st.session_state[f"mm_clarify_result_{idx}"] = result
@@ -879,9 +884,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown("**🤖 Tell AI what to fix**")
         mct_clarify_q = st.text_input("Your message", key="mct_clarify_input_main")
-        if not mct_clarify_q.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not mct_clarify_q.strip(), key="mct_clarify_send_main"):
+        if render_house_rule_shortcut(mct_clarify_q, "ClosedTour", "mct_main"):
+            pass
+        elif not mct_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
+                      f"supplier instead of a one-off fix.")
+        if not mct_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not mct_clarify_q.strip(), key="mct_clarify_send_main"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
                 st.session_state["mct_clarify_result_main"] = result
@@ -1168,9 +1178,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown(f"**🤖 Tell AI what to fix - {mod['code']}**")
         mct_mod_clarify_q = st.text_input("Your message", key=f"mct_mod_clarify_input_{midx}")
-        if not mct_mod_clarify_q.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not mct_mod_clarify_q.strip(), key=f"mct_mod_clarify_send_{midx}"):
+        if render_house_rule_shortcut(mct_mod_clarify_q, "ClosedTour", f"mct_mod_{midx}"):
+            pass
+        elif not mct_mod_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
+                      f"supplier instead of a one-off fix.")
+        if not mct_mod_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not mct_mod_clarify_q.strip(), key=f"mct_mod_clarify_send_{midx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mct_raw_text, data, mct_mod_clarify_q)
                 st.session_state[f"mct_mod_clarify_result_{midx}"] = result
@@ -1849,6 +1864,19 @@ def apply_clarify_changes(data, result, currency="EUR"):
         if field_name == "price_list":
             new_value, price_notes = coerce_price_list_shape(new_value, currency)
             notes.extend(price_notes)
+        elif field_name == "occupancy_prices":
+            # Same reasoning as price_list above - a Ticket Modality's occupancy_prices is the
+            # PRIMARY pricing shape now (see render_ticket_pricing_editor), so a shape mistake
+            # here isn't a minor field, it's the whole price table. Checked at the door rather
+            # than trusted, same as price_list.
+            coerced, occ_notes = coerce_ticket_occupancy_prices_shape(new_value)
+            if not coerced and new_value:
+                # Nothing readable came back - keep the existing table rather than replacing a
+                # working price table with an empty one the human never asked for.
+                notes.extend(occ_notes)
+                continue
+            new_value = coerced
+            notes.extend(occ_notes)
         data[field_name] = new_value
     if notes:
         result["shape_notes"] = notes
@@ -2677,7 +2705,9 @@ def _summarize_modality_pricing(kind, data, currency):
             occ = data.get("occupancy_prices", []) or []
             st.write(f"**Occupancy pricing** - {len(occ)} tier(s):")
             for o in occ:
-                st.caption(f"{o.get('occupancy', '?')} pax: {o.get('amount', '?')} {currency}")
+                child_amt = o.get("child_amount")
+                child_part = f" (Child: {child_amt} {currency})" if child_amt not in (None, "") else ""
+                st.caption(f"{o.get('occupancy', '?')} pax: {o.get('amount', '?')} {currency}{child_part}")
         elif price_type == "SERVICE":
             st.write(f"**Flat service price:** {data.get('base_service_price', 0)} {currency}")
         else:
@@ -3030,6 +3060,47 @@ def remember_clarification(supplier_id, product_type, instruction, result):
         return []
     extraction_memory.record_instruction(supplier_id, product_type, instruction, changed)
     return changed
+
+
+HOUSE_RULE_CODEWORD = "Remember:"
+
+
+def render_house_rule_shortcut(message: str, product_type: str, key_prefix: str) -> bool:
+    """
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "a Word that the AI tool/App knows, that this
+    information is repeated might would help" - given as three examples of things repeated
+    across many documents (a holiday surcharge rule, a per-night pricing convention, a stop-sale
+    rule), none of which are true of just one supplier's document. The fix already existed for
+    ONE of the three (house rules - see render_house_rules() above, "Nile Cruise prices are
+    quoted per night" is its own documented example) but was buried in a collapsed expander at
+    the bottom of the page, disconnected from the "Tell AI what to fix" box where a human
+    actually types corrections. This surfaces it right there: typing "REMEMBER: <rule>" into any
+    clarify box saves the rule as a permanent house rule for EVERY supplier of this product type
+    (via extraction_memory.add_house_rule) instead of running a one-off AI correction against
+    just this document.
+
+    Returns True if the codeword was detected (the caller should render this and skip its normal
+    Send/apply_clarification flow for this message - a codeword message is never sent to the
+    per-document clarifier)."""
+    text = (message or "").strip()
+    if not text.upper().startswith(HOUSE_RULE_CODEWORD.upper()):
+        return False
+    rule_text = text[len(HOUSE_RULE_CODEWORD):].strip()
+    if not rule_text:
+        st.caption(f"Type the rule after \"{HOUSE_RULE_CODEWORD}\" - e.g. "
+                  f"\"{HOUSE_RULE_CODEWORD} Nile Cruise prices are quoted per night - single price "
+                  f"is nights x nightly rate.\"")
+        return True
+    st.info(f"🧠 Detected \"{HOUSE_RULE_CODEWORD}\" - this will be saved as a standing rule for "
+            f"**every {product_type} supplier**, not just this document.")
+    if st.button(f"✅ Remember this for every {product_type} supplier", key=f"{key_prefix}_house_rule_save", type="primary"):
+        if extraction_memory.add_house_rule(product_type, rule_text):
+            st.success(f"Saved. Applied to every future {product_type} extraction, for every "
+                      f"supplier, from now on - see \"🏛️ House rules\" at the bottom of the page.")
+        else:
+            st.info("That rule is already saved - no change needed.")
+        st.rerun()
+    return True
 
 
 def seed_transport_from_candidate(item, data, chosen_currency):
@@ -3757,9 +3828,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
-        if not mt_clarify_q.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
+        if render_house_rule_shortcut(mt_clarify_q, "Ticket", f"mt_{idx}"):
+            pass
+        elif not mt_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
+                      f"supplier instead of a one-off fix.")
+        if not mt_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.mt_raw_text, data, mt_clarify_q)
                 st.session_state[f"mt_clarify_result_{idx}"] = result
@@ -4601,9 +4677,14 @@ def render_ticket_flow(client):
 
         st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
-        if not tk_clarify_q.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not tk_clarify_q.strip(), key="tk_clarify_send"):
+        if render_house_rule_shortcut(tk_clarify_q, "Ticket", "tk_main"):
+            pass
+        elif not tk_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
+                      f"supplier instead of a one-off fix.")
+        if not tk_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not tk_clarify_q.strip(), key="tk_clarify_send"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q)
                 st.session_state.tk_clarify_result = result
@@ -4733,9 +4814,14 @@ def render_ticket_flow(client):
                   "shows exactly what changed so you can double-check.")
         tk_clarify_q2 = st.text_input("Your message", key="tk_clarify_input_pricing",
                                       placeholder="e.g. 'Fix the adult price to 89' or 'Is the child price for under 12?'")
-        if not tk_clarify_q2.strip():
-            st.caption("Type a message above first — Send stays disabled until there's something to send.")
-        if st.button("Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
+        if render_house_rule_shortcut(tk_clarify_q2, "Ticket", "tk_pricing"):
+            pass
+        elif not tk_clarify_q2.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
+                      f"supplier instead of a one-off fix.")
+        if not tk_clarify_q2.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q2)
                 remember_clarification(clarify_supplier_id(), "Ticket", tk_clarify_q2, result)
@@ -4839,8 +4925,16 @@ def render_ticket_flow(client):
                                         st.rerun()
 
                     if payloads.get("is_indonesia"):
-                        st.info(f"🇮🇩 Indonesia detected — Vesak Day is automatically blocked as a stop-sale "
-                                f"date, no excursion may start that day. {payloads.get('vesak_day_note', '')}")
+                        st.info(f"🇮🇩 Indonesia detected — Vesak Day and Nyepi are automatically blocked as "
+                                f"stop-sale dates, no excursion may start on either day. "
+                                f"{payloads.get('indonesia_holiday_note', '')}")
+
+                    if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
+                        _tk_tet = payloads["tet_overlap"]
+                        st.warning(f"🇻🇳 This Ticket's validity dates overlap **Tet Holiday {_tk_tet['year']}** "
+                                  f"({_tk_tet['start']} to {_tk_tet['end']}) — check whether the source "
+                                  f"document/contract needs a Tet surcharge added as a dated Supplement. "
+                                  f"{payloads.get('tet_holiday_note', '')}")
 
                     if payloads.get("release_days_overridden"):
                         st.info(f"📅 The document mentions its own booking/release deadline, so the release "
@@ -8063,7 +8157,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-ticket-occupancy-only-pricing"
+BUILD_VERSION = "2026-08-13-ticket-child-price-column"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9387,9 +9481,14 @@ if st.session_state.extracted:
               "what changed so you can double-check.")
     clarify_question = st.text_input("Your message", key="clarify_question_input",
                                      placeholder="e.g. 'Fix season 1's end date to Sept 30' or 'Does this include the Junior Suite?'")
-    if not clarify_question.strip():
-        st.caption("Type a message above first — Send stays disabled until there's something to send.")
-    if st.button("Send", disabled=not clarify_question.strip()):
+    if render_house_rule_shortcut(clarify_question, "ClosedTour", "single_ct"):
+        pass
+    elif not clarify_question.strip():
+        st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                  f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
+                  f"supplier instead of a one-off fix.")
+    if not clarify_question.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+            "Send", disabled=not clarify_question.strip(), key="clarify_question_input_send"):
         with st.spinner("Thinking..."):
             result = apply_clarification(st.session_state.raw_preview, data, clarify_question)
             remember_clarification(clarify_supplier_id(), "ClosedTour", clarify_question, result)
@@ -9489,8 +9588,16 @@ if st.session_state.extracted:
                 )
 
         if payloads.get("is_indonesia"):
-            st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day is automatically blocked as a "
-                    f"stop-sale date, no excursion/tour may start that day. {payloads.get('vesak_day_note', '')}")
+            st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day and Nyepi are automatically "
+                    f"blocked as stop-sale dates, no excursion/tour may start on either day. "
+                    f"{payloads.get('indonesia_holiday_note', '')}")
+
+        if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
+            _ct_tet = payloads["tet_overlap"]
+            st.warning(f"🇻🇳 This ClosedTour's price list overlaps **Tet Holiday {_ct_tet['year']}** "
+                      f"({_ct_tet['start']} to {_ct_tet['end']}) — check whether the source document/"
+                      f"contract needs a Tet surcharge added as a seasonal price row. "
+                      f"{payloads.get('tet_holiday_note', '')}")
 
         if payloads.get("release_days_overridden"):
             st.info(f"📅 The document mentions its own booking/release deadline, so the release period "

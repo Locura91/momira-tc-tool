@@ -2,12 +2,12 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-ticket-occupancy-only-pricing"
+MODULE_BUILD = "2026-08-13-ticket-child-price-column"
 
 import math
 import datetime
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
@@ -505,6 +505,124 @@ def coerce_price_list_shape(rows, currency="EUR"):
     return out, notes
 
 
+_OCCUPANCY_KEY_ALIASES = ("occupancy", "pax", "headcount", "passengers", "people", "persons", "n")
+_AMOUNT_KEY_ALIASES = ("amount", "price", "total", "value")
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "when child age is between 2 and 12, we must add
+# a child price column next to adult price in pricing table" - a per-row child rate alongside
+# each Occupancy row's adult amount. Kept as its own optional key (never required, never drops a
+# row for lacking it) so existing adult-only rows/tests are unaffected.
+_CHILD_AMOUNT_KEY_ALIASES = ("child_amount", "childamount", "child_price", "childprice", "child")
+
+
+def resolve_ticket_child_price_ratio(base_adult_price, base_children_price):
+    """
+    The Adult->Child price ratio to apply across an Occupancy table's per-row Child Price column,
+    derived from the already-extracted flat base_adult_price/base_children_price fields (these
+    are extracted for EVERY Ticket regardless of price_type - see ai_extractor.py's
+    "CRITICAL RULE for base_children_price" - so they're reusable here even for an
+    Occupancy-priced Ticket that never uses them directly in its own payload).
+
+    CONFIRMED PRODUCT-OWNER RULE (2026-08-13): "If not other stated, the child price = adult
+    price. If Document says child between 2 to 11.99 50% off, the child price = adult price/2."
+    i.e. default ratio 1.0 (matches the extractor's own "no distinct child rate -> equal to
+    adult" default), or whatever discount ratio the source document's stated child price implies.
+
+    Defensive against every "adult price not usefully known" case (0, missing, negative, NaN) by
+    always falling back to 1.0 rather than dividing by zero or publishing a nonsensical ratio.
+    """
+    adult = _safe_float(base_adult_price)
+    child = _safe_float(base_children_price)
+    if adult <= 0 or child < 0:
+        return 1.0
+    ratio = child / adult
+    if ratio <= 0:
+        return 1.0
+    return ratio
+
+
+def coerce_ticket_occupancy_prices_shape(rows, max_cap=_MAX_OCCUPANCY_PAX):
+    """Force a Ticket Modality's occupancy_prices into the one shape the pricing screen and the
+    payload builder expect: a list of {"occupancy": int, "amount": float} rows, each optionally
+    carrying a "child_amount": float too (see _CHILD_AMOUNT_KEY_ALIASES above).
+
+    CONFIRMED REAL RISK (product owner, "the Ask AI tool is almost useless"): "Tell AI what to
+    fix" merges whatever the model returns straight into the working data with nothing checking
+    the shape (see apply_clarify_changes' docstring - price_list already learned this lesson the
+    hard way). occupancy_prices is exactly as exposed: since the Ticket pricing redesign made
+    Occupancy the primary/default pricing shape (see render_ticket_pricing_editor), a price
+    correction on a Ticket Modality ("the 4-pax price should be 120") almost always needs to
+    write occupancy_prices now - and a model that writes the wrong key name (e.g. "pax"/"price"
+    instead of "occupancy"/"amount", easy to do since those are natural English words for the
+    same thing) would otherwise have every row silently read as occupancy=1 by the pricing
+    screen's own fallback-to-1 parsing, collapsing 9 rows into one and losing the rest - a
+    correction that looks successful (green checkmark) but quietly wrecks the price table.
+
+    Same pattern as coerce_price_list_shape: never raises, accepts common key aliases, drops
+    what it genuinely cannot read (rather than guessing), and always returns (rows, notes) so
+    the human is told exactly what happened rather than shown a table that silently lost data.
+    """
+    if not isinstance(rows, list):
+        return [], [f"the AI's occupancy_prices reply wasn't a list of rows (got {type(rows).__name__}) "
+                     f"and was ignored - please correct the price(s) directly in the table instead"]
+
+    seen = {}
+    seen_child = {}
+    notes = []
+    for index, row in enumerate(rows):
+        label = f"row {index + 1}"
+        if not isinstance(row, dict):
+            notes.append(f"occupancy_prices {label} was not a price row at all and was dropped")
+            continue
+
+        occ_raw = None
+        for key in _OCCUPANCY_KEY_ALIASES:
+            if row.get(key) not in (None, ""):
+                occ_raw = row.get(key)
+                break
+        amt_raw = None
+        for key in _AMOUNT_KEY_ALIASES:
+            if row.get(key) not in (None, ""):
+                amt_raw = row.get(key)
+                break
+        child_raw = None
+        for key in _CHILD_AMOUNT_KEY_ALIASES:
+            if row.get(key) not in (None, ""):
+                child_raw = row.get(key)
+                break
+
+        if occ_raw is None or amt_raw is None:
+            notes.append(f"occupancy_prices {label} was missing a pax count or a price and was dropped")
+            continue
+        try:
+            occ = int(float(occ_raw))
+            amt = float(amt_raw)
+        except (TypeError, ValueError):
+            notes.append(f"occupancy_prices {label} had a non-numeric pax count or price and was dropped")
+            continue
+        if occ < 1 or occ > max_cap:
+            notes.append(f"occupancy_prices {label} named {occ} pax, outside the bookable 1-{max_cap} "
+                         f"range, and was dropped")
+            continue
+        if occ in seen:
+            notes.append(f"occupancy_prices had two rows for {occ} pax - kept the later one ({amt})")
+        seen[occ] = amt
+
+        if child_raw is not None:
+            try:
+                seen_child[occ] = float(child_raw)
+            except (TypeError, ValueError):
+                notes.append(f"occupancy_prices {label} had a non-numeric child price - that row's "
+                             f"child price was dropped (adult price kept)")
+
+    out = []
+    for n in sorted(seen):
+        entry = {"occupancy": n, "amount": seen[n]}
+        if n in seen_child:
+            entry["child_amount"] = seen_child[n]
+        out.append(entry)
+    return out, notes
+
+
 def sold_occupancies(price_list):
     """Which occupancies this tour actually sells, read from its own price list."""
     sold = set()
@@ -779,6 +897,28 @@ VESAK_DAY_DATES = {
     2028: "2028-05-09",
 }
 
+# CONFIRMED business rule (product owner, 2026-08-13): "in Indonesia there is a public holiday
+# called Nyepi and every year on this day it must automatically add a stop sale to given
+# services" - same shape of rule as Vesak Day above (a moving date that must always be blocked
+# regardless of what the source document's own schedule says), so it is registered alongside it
+# below rather than duplicating the merge/note logic. Nyepi (the Balinese Day of Silence) shuts
+# down the ENTIRE island including the airport - if anything, a stronger case for an automatic
+# block than Vesak Day. Sourced from publicholidays.co.id and bali.com (checked 2026-08-13).
+NYEPI_DAY_DATES = {
+    2026: "2026-03-19",
+    2027: "2027-03-09",
+    2028: "2028-03-26",
+}
+
+# Registry of "always block this date, every year, for an Indonesia ClosedTour/Ticket" holidays.
+# Add a new one here (name + confirmed dates) rather than writing bespoke merge/note code each
+# time a new holiday needs the same treatment - see indonesia_holiday_stop_sales()/
+# indonesia_holiday_coverage_note() below, which fold every entry in automatically.
+INDONESIA_ALWAYS_BLOCKED_HOLIDAYS: Dict[str, Dict[int, str]] = {
+    "Vesak Day (Hari Raya Waisak)": VESAK_DAY_DATES,
+    "Nyepi (Day of Silence)": NYEPI_DAY_DATES,
+}
+
 
 def _is_indonesia_country_value(country_value) -> bool:
     """
@@ -833,6 +973,98 @@ def _detect_indonesia_tour(raw_locations: List[str], api_client: TravelComposito
     return False
 
 
+# CONFIRMED business rule (product owner, 2026-08-13): "in Vietnam there is every year the 'Tet
+# Holiday' and for this Holiday it is always a surcharge needed, regardless if hotel, ticket,
+# transfer, transport or closedtour." UNLIKE Vesak Day/Nyepi above, this can never be an
+# automatic BLOCK or an automatic PRICE change - the surcharge amount genuinely varies by
+# supplier/contract and inventing a number would be worse than missing it. What CAN be automatic
+# is the REMINDER: detect when a service's own validity dates overlap the known Tet window and
+# say so plainly, the same way the Vesak Day note already does for Indonesia - see
+# tet_holiday_overlap() below, called from the Ticket/ClosedTour review screens.
+#
+# Tet follows the lunar calendar so the date moves every year. The 1st day of the new year
+# (New Year's Day) is confirmed for each year below; the surcharge WINDOW is the wider period
+# DMCs commonly treat as "Tet pricing" - sourced directly for 2027 (official public holiday
+# Feb 3-11, 2027 per indochinavoyages.com, checked 2026-08-13) and applied as the same
+# -3/+5-day offset from New Year's Day for 2026 and 2028, since no directly-sourced official
+# window was found for those years - narrow this if Momira's suppliers confirm a different
+# window.
+TET_NEW_YEAR_DAY = {
+    2026: "2026-02-17",
+    2027: "2027-02-06",
+    2028: "2028-01-26",
+}
+TET_HOLIDAY_WINDOWS = {
+    2026: {"start": "2026-02-14", "end": "2026-02-22"},
+    2027: {"start": "2027-02-03", "end": "2027-02-11"},
+    2028: {"start": "2028-01-23", "end": "2028-01-31"},
+}
+
+
+def _is_vietnam_country_value(country_value) -> bool:
+    """Same reasoning as _is_indonesia_country_value - Travel Compositor's 'country' field may
+    hold either an ISO code ("VN") or a full name ("Vietnam")."""
+    if not country_value:
+        return False
+    value = str(country_value).strip().lower()
+    return value == "vn" or "vietnam" in value
+
+
+def _is_vietnam_place_name(display_name: str) -> bool:
+    return bool(display_name) and "vietnam" in display_name.lower()
+
+
+def _is_vietnam_destination(place_name: str, api_client: TravelCompositorAPI = None) -> bool:
+    """Vietnam counterpart to _is_indonesia_destination - same TC-first, geocoder-fallback
+    approach, kept as its own function (rather than a parameterized generic one) so this and the
+    Indonesia checks it mirrors can each be read and changed independently."""
+    if not place_name:
+        return False
+    if api_client is not None:
+        try:
+            country = api_client.get_destination_country(place_name)
+        except Exception:
+            country = None
+        if country is not None:
+            return _is_vietnam_country_value(country)
+    geo_result = geocode(place_name)
+    return geo_result.get("valid") and _is_vietnam_place_name(geo_result.get("display_name"))
+
+
+def _detect_vietnam_tour(raw_locations: List[str], api_client: TravelCompositorAPI = None) -> bool:
+    """Vietnam counterpart to _detect_indonesia_tour."""
+    for loc_name in raw_locations:
+        if loc_name and _is_vietnam_destination(loc_name, api_client):
+            return True
+    return False
+
+
+def tet_holiday_overlap(start_date: str, end_date: str) -> Optional[Dict[str, str]]:
+    """
+    Returns the Tet Holiday window (a {"start", "end", "year"} dict) that overlaps this
+    service's own validity date range, or None if it doesn't overlap any known year. Pure date
+    math - does not touch the network. A service spanning several years' Tet windows returns the
+    first (earliest) match, which is enough to prompt the human to check; every window is still
+    listed in tet_holiday_reminder_note() regardless.
+    """
+    svc_start, svc_end = (start_date or ""), (end_date or "")
+    if not svc_start or not svc_end:
+        return None
+    for year, window in sorted(TET_HOLIDAY_WINDOWS.items()):
+        if svc_start <= window["end"] and svc_end >= window["start"]:
+            return {"start": window["start"], "end": window["end"], "year": str(year)}
+    return None
+
+
+def tet_holiday_reminder_note() -> str:
+    """Plain-language note for the UI listing every known Tet window, so a human can see at a
+    glance how far the reminder reaches (mirrors indonesia_holiday_coverage_note() below)."""
+    years = sorted(TET_HOLIDAY_WINDOWS.keys())
+    windows = ", ".join(f"{y}: {TET_HOLIDAY_WINDOWS[y]['start']} to {TET_HOLIDAY_WINDOWS[y]['end']}" for y in years)
+    return (f"Known Tet windows: {windows}. For years beyond {years[-1]}, add a manual note once "
+            f"the holiday dates are confirmed.")
+
+
 def resolve_release_days(default_days: int, mentioned_days: List[Any]) -> int:
     """
     Human instruction (2026-07-30): the release period (how many days before
@@ -866,20 +1098,37 @@ def vesak_day_stop_sales() -> List[Dict[str, str]]:
     single day for both). Safe to always include every known year regardless
     of the product's actual selling window - a stop-sale date outside the
     real range is simply unused, never harmful.
+
+    Kept as its own function (not just folded into indonesia_holiday_stop_sales() below) since
+    it's still a meaningful standalone concept and existing callers may reference it directly -
+    but every builder call site now uses the combined function so a future third holiday only
+    needs adding to INDONESIA_ALWAYS_BLOCKED_HOLIDAYS, not a new merge call at every site.
     """
     return [{"start": d, "end": d} for d in VESAK_DAY_DATES.values()]
 
 
-def vesak_day_coverage_note() -> str:
+def indonesia_holiday_stop_sales() -> List[Dict[str, str]]:
+    """Every date from every registered INDONESIA_ALWAYS_BLOCKED_HOLIDAYS entry (currently Vesak
+    Day + Nyepi), as {"start", "end"} stop-sale entries. This is what ClosedTour/Ticket builders
+    actually call - see INDONESIA_ALWAYS_BLOCKED_HOLIDAYS' docstring for how to add a new one."""
+    out = []
+    for dates_by_year in INDONESIA_ALWAYS_BLOCKED_HOLIDAYS.values():
+        out.extend({"start": d, "end": d} for d in dates_by_year.values())
+    return out
+
+
+def indonesia_holiday_coverage_note() -> str:
     """
-    Plain-language note for the UI so a human reviewing an Indonesia product
-    can see at a glance how far the automatic Vesak Day block reaches, and
-    knows to add later years manually once Indonesia officially confirms them.
+    Plain-language note for the UI so a human reviewing an Indonesia product can see at a glance
+    which holidays are automatically blocked and how far each reaches.
     """
-    years = sorted(VESAK_DAY_DATES.keys())
-    return (f"Vesak Day is automatically blocked for {years[0]}-{years[-1]} (confirmed dates). "
-            f"For years beyond {years[-1]}, Indonesia's Vesak Day date isn't officially "
-            f"confirmed yet - add it manually as a stop-sale once announced.")
+    parts = []
+    for name, dates_by_year in INDONESIA_ALWAYS_BLOCKED_HOLIDAYS.items():
+        years = sorted(dates_by_year.keys())
+        parts.append(f"{name} ({years[0]}-{years[-1]})")
+    return ("Automatically blocked every year: " + "; ".join(parts) + ". For years beyond what's "
+            "listed, the date isn't officially confirmed yet - add it manually as a stop-sale "
+            "once announced.")
 
 
 def _merge_stop_sales(existing: List[Dict[str, str]], additions: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -950,9 +1199,14 @@ def build_closed_tour_payloads(
         collapsed_itinerary.append(item)
     validated_itinerary = collapsed_itinerary
 
-    # Indonesia / Vesak Day rule (human instruction): tours in Indonesia can
-    # never start on Vesak Day - automatically block it as a stop-sale below.
+    # Indonesia / Vesak Day + Nyepi rule (human instruction): tours in Indonesia can never start
+    # on either holiday - automatically block them as stop-sales below.
     is_indonesia = _detect_indonesia_tour(raw_locations, api_client)
+    # Vietnam / Tet Holiday rule (human instruction): Vietnam tours can't be auto-blocked or
+    # auto-surcharged (the surcharge amount varies by contract), but the human should be
+    # reminded when this tour's own dates overlap a known Tet window - see below, once the
+    # price list's real date range is known.
+    is_vietnam = _detect_vietnam_tour(raw_locations, api_client)
 
     # Transports = number of destination CHANGES along the itinerary (not total stops)
     transports_count = sum(
@@ -1087,7 +1341,17 @@ def build_closed_tour_payloads(
     # error is present.
     combined_stop_sales = extracted_dmc_data.get("stop_sales", []) or []
     if is_indonesia:
-        combined_stop_sales = _merge_stop_sales(combined_stop_sales, vesak_day_stop_sales())
+        combined_stop_sales = _merge_stop_sales(combined_stop_sales, indonesia_holiday_stop_sales())
+
+    _tour_price_list_sorted = sorted(
+        normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency),
+        key=lambda p: p.get("startDate", ""))
+    tet_overlap = None
+    if is_vietnam and _tour_price_list_sorted:
+        _tour_starts = [p.get("startDate", "") for p in _tour_price_list_sorted if p.get("startDate")]
+        _tour_ends = [p.get("endDate", "") for p in _tour_price_list_sorted if p.get("endDate")]
+        if _tour_starts and _tour_ends:
+            tet_overlap = tet_holiday_overlap(min(_tour_starts), max(_tour_ends))
 
     tour_option_payload = None
     tour_option_error = None
@@ -1096,9 +1360,7 @@ def build_closed_tour_payloads(
             code=pre_config.modality_code,
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=combined_stop_sales,
-            priceList=sorted(
-                normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency),
-                key=lambda p: p.get("startDate", "")),
+            priceList=_tour_price_list_sorted,
             translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
             quantityPerDay=99,
@@ -1122,7 +1384,10 @@ def build_closed_tour_payloads(
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
         "itinerary_resolution": itinerary_resolution,  # per-item status for clean green/red UI display
         "is_indonesia": is_indonesia,
-        "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
+        "indonesia_holiday_note": indonesia_holiday_coverage_note() if is_indonesia else None,
+        "is_vietnam": is_vietnam,
+        "tet_overlap": tet_overlap,
+        "tet_holiday_note": tet_holiday_reminder_note() if is_vietnam else None,
         "effective_release_days": effective_release_days,
         "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
     }
@@ -1176,11 +1441,18 @@ def build_ticket_payloads(
                 "source": provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geo_result["valid"] else "not_found",
             }
 
-    # Indonesia / Vesak Day rule (human instruction): excursions in Indonesia
-    # can never start on Vesak Day - automatically block it as a stop-sale
-    # below. Prefers Travel Compositor's own destination country data, falls
-    # back to the OpenStreetMap lookup already done above for coordinates.
+    # Indonesia / Vesak Day + Nyepi rule (human instruction): excursions in Indonesia can never
+    # start on either holiday - automatically block them as a stop-sale below. Prefers Travel
+    # Compositor's own destination country data, falls back to the OpenStreetMap lookup already
+    # done above for coordinates.
     is_indonesia = _is_indonesia_destination(city, api_client)
+    # Vietnam / Tet Holiday rule (human instruction): can't auto-block or auto-surcharge (the
+    # amount varies by contract) - just remind the human when this Ticket's own dates overlap a
+    # known Tet window, same reasoning as the ClosedTour builder above.
+    is_vietnam = _is_vietnam_destination(city, api_client)
+    tet_overlap = tet_holiday_overlap(
+        extracted_ticket_data.get("start_date"), extracted_ticket_data.get("end_date")
+    ) if is_vietnam else None
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
@@ -1365,11 +1637,28 @@ def build_ticket_payloads(
         # against whichever is actually lower so a ticket configured for e.g. max 6 passengers
         # can never carry a 7-9 pax occupancy row that Travel Compositor would reject outright.
         effective_occupancy_cap = min(_MAX_OCCUPANCY_PAX, _safe_int(pre_config.max_passengers, fallback=_MAX_OCCUPANCY_PAX))
-        occupancy_prices = [
-            {"occupancy": _safe_int(o.get("occupancy", 1), fallback=1), "amount": _safe_float(o.get("amount", 0))}
-            for o in (extracted_ticket_data.get("occupancy_prices") or []) if isinstance(o, dict)
-            and _safe_int(o.get("occupancy", 1), fallback=1) <= effective_occupancy_cap
-        ]
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): "when child age is between 2 and 12, we
+        # must add a child price column next to adult price in pricing table" - each Occupancy
+        # row now carries a "childAmount" alongside "amount" whenever children are allowed on
+        # this Ticket, so the per-pax child rate travels with the payload the same way the adult
+        # rate does. NOTE: "occupancy"/"amount" on ContractTicketModalityVO.occupancyPrices are
+        # themselves only loosely confirmed (untyped List[dict], no full Swagger shape on file for
+        # this field - see coerce_ticket_occupancy_prices_shape's docstring) - "childAmount" here
+        # is a same-convention EXTENSION, not verified against a real GET response that actually
+        # returned per-occupancy child pricing. Confirm with one real save+GET before relying on
+        # Travel Compositor actually persisting/using it; worst case it's ignored as extra data.
+        children_allowed_for_pricing = not bool(extracted_ticket_data.get("disallow_children", False))
+        occupancy_prices = []
+        for o in (extracted_ticket_data.get("occupancy_prices") or []):
+            if not isinstance(o, dict):
+                continue
+            occ_n = _safe_int(o.get("occupancy", 1), fallback=1)
+            if occ_n > effective_occupancy_cap:
+                continue
+            row = {"occupancy": occ_n, "amount": _safe_float(o.get("amount", 0))}
+            if children_allowed_for_pricing and o.get("child_amount") not in (None, ""):
+                row["childAmount"] = _safe_float(o.get("child_amount", row["amount"]))
+            occupancy_prices.append(row)
         if selected_price_type != "DISTRIBUTION":
             # baseAdultPrice is REQUIRED on ContractTicketModalityVO regardless
             # of price mode (schemas.py: Field(...)) - confirmed the real API
@@ -1386,7 +1675,7 @@ def build_ticket_payloads(
 
         combined_ticket_stop_sales = extracted_ticket_data.get("stop_sales", []) or []
         if is_indonesia:
-            combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, vesak_day_stop_sales())
+            combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, indonesia_holiday_stop_sales())
 
         ticket_option = ContractTicketModalityVO(
             code=pre_config.modality_code,
@@ -1454,7 +1743,10 @@ def build_ticket_payloads(
         "geolocation_latitude": geoloc.get("latitude"),
         "geolocation_longitude": geoloc.get("longitude"),
         "is_indonesia": is_indonesia,
-        "vesak_day_note": vesak_day_coverage_note() if is_indonesia else None,
+        "indonesia_holiday_note": indonesia_holiday_coverage_note() if is_indonesia else None,
+        "is_vietnam": is_vietnam,
+        "tet_overlap": tet_overlap,
+        "tet_holiday_note": tet_holiday_reminder_note() if is_vietnam else None,
         "effective_release_days": effective_release_days,
         "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
         "has_real_pricing": any([

@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-ticket-occupancy-only-pricing"
+MODULE_BUILD = "2026-08-13-ticket-child-price-column"
 
 import os
 import re
@@ -1405,7 +1405,42 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         "by its 'name', e.g. an entry named 'French-speaking guide') - removing it from extra_cost_options "
         "is what makes that Modality stop being generated. If the human names the BASE modality itself "
         "(no extra), the fix is base_adult_price/base_children_price/base_infant_price. Never put "
-        "'generated_modalities' in the changes object under any circumstances."
+        "'generated_modalities' in the changes object under any circumstances.\n\n"
+        "TICKET MODALITY PRICING - 'price_type' / 'occupancy_prices' / 'base_service_price' (Tickets "
+        "only - a ClosedTour/Hotel/Transfer/Transport modality has no 'price_type' field at all, so "
+        "none of this applies to those): a Ticket Modality's OWN price (as opposed to an extra_cost_options "
+        "surcharge - see above) is priced ONE of two ways, and the current extracted data always tells "
+        "you which via its 'price_type' field - check it, never guess:\n"
+        "  - price_type 'OCCUPANCY': 'occupancy_prices' is a list of {\"occupancy\": <exact integer pax "
+        "count>, \"amount\": <price for exactly that many people>} and MUST cover EVERY headcount from 1 "
+        "up through this Modality's own Max Passengers (never a partial list - the screen shows exactly "
+        "that many rows, not a variable-length table). If the human corrects the price for ONE specific "
+        "headcount (e.g. 'the 4-pax price should be 120', 'fix the price for 6 people'), return the FULL "
+        "occupancy_prices array as it should read afterward - every row from the current data, with only "
+        "that one row's amount changed - never a 1-row array containing just the corrected entry, since "
+        "that would delete every other row's price. If the human says the price is the SAME regardless of "
+        "group size (e.g. 'it's actually 45 per person no matter how many', 'flat rate of 45'), return "
+        "occupancy_prices with EVERY row set to that same amount - do NOT touch base_adult_price/"
+        "base_children_price/base_infant_price for this, those three fields are not used by the Ticket "
+        "pricing screen at all anymore.\n"
+        "  - CHILD PRICE COLUMN (2026-08-13, applies only when this Ticket allows children - "
+        "'disallow_children' is false): each occupancy_prices row may ALSO carry a \"child_amount\" - the "
+        "per-row price for a child in that same age band (child_age_min/child_age_max, default 2-12), "
+        "shown next to the adult 'amount' as its own column. Default is child_amount EQUAL to that row's "
+        "amount (no discount) unless the human or the source document states a distinct child rate/"
+        "discount (e.g. 'children are half price', 'child rate 50% off', 'kids pay 20 instead of 40') - "
+        "then compute child_amount as that ratio applied to each row's own amount, not a single flat "
+        "number copied to every row. If the human corrects only the child price (e.g. 'the child price "
+        "should be 15 for 2 people', 'children are actually free', 'no child discount, same as adult'), "
+        "return the FULL occupancy_prices array with every row unchanged except child_amount - the same "
+        "never-a-partial-array rule as the adult amount above. If the human's correction is about the "
+        "ADULT price only, still include the existing child_amount on every row unchanged, don't drop it.\n"
+        "  - price_type 'SERVICE': the ticket has one flat total price regardless of headcount, held in "
+        "base_service_price - a price correction here is simply base_service_price with its new value, "
+        "never occupancy_prices.\n"
+        "  - Never write price_type itself unless the human explicitly asks to switch pricing mode (e.g. "
+        "'change this to a flat Service price instead of per-person Occupancy pricing') - changing it "
+        "silently would rebuild the whole pricing table from a shape the human never asked to change."
     )
     # The source document text is put in its OWN cacheable content block,
     # separate from the (frequently-changing) current-data/instruction block.
