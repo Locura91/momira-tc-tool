@@ -788,6 +788,23 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             help="Your own reference code for this tour, e.g. 'BKK-1' - carried over from Step 3, edit "
                  "here if you want to change it."
         )
+        # CONFIRMED REAL COMPLAINT (product owner): "Only because I forgot to change the Code, I
+        # have to start all over, there must be a way that either the system first checks if the
+        # code is available or the human must be able to change the code even at the last step
+        # before publishing." This flow (the batch ClosedTour wizard) had NO code-availability
+        # check anywhere, even though check_code_availability() already existed and was already
+        # wired into the Ticket batch flow's equivalent code-entry step - just never carried over
+        # here. Checking right where the code is typed catches a collision before any of Steps
+        # 5/6's review/pricing/image work happens, instead of only at the very last "Publish"
+        # click after all of that is done. See the "publishing" phase below for the second half
+        # of the fix - an editable Tour Code right on the final screen too, so a code that still
+        # turns out to be taken (this check can be inconclusive, see its own docstring) never
+        # forces starting over.
+        _mct_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
+        if _mct_code_check and _mct_code_check["exists"]:
+            st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
+                     f"(\"{_mct_code_check.get('name') or '(unnamed)'}\") - change it above before "
+                     f"publishing, or this will fail at the very last step.")
 
         editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix="_main")
         editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix="_main")
@@ -1294,6 +1311,28 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         modalities = tour["modalities"]
         st.subheader(f"Ready to publish: {main_data.get('tour_name') or tour['tour_code']}")
 
+        # CONFIRMED REAL COMPLAINT (product owner): "Only because I forgot to change the Code, I
+        # have to start all over ... the human must be able to change the code even at the last
+        # step before publishing." The early check added at the "reviewing_main" phase above
+        # catches most collisions before all of Steps 5/6's work happens, but that check can be
+        # INCONCLUSIVE (see check_code_availability's own docstring - a transient API failure or
+        # a code-variant mismatch means "couldn't verify", not "definitely free") - so a
+        # collision can still only surface here, at the actual Publish click. Editing right here
+        # (same pattern as the itinerary-destinations fix a few lines below) means a rejected
+        # "already exists" error is a one-field fix and a re-click, never a reason to abandon the
+        # whole tour and start over - every other Step 5/6 field (images, pricing, itinerary)
+        # stays exactly as entered.
+        tour["tour_code"] = st.text_input(
+            "Tour Code", value=tour["tour_code"], key="mct_publish_tour_code",
+            help="Change this here if Publish below rejects it as already taken - nothing else "
+                 "on this tour needs re-entering."
+        )
+        _mct_publish_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
+        if _mct_publish_code_check and _mct_publish_code_check["exists"]:
+            st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
+                     f"(\"{_mct_publish_code_check.get('name') or '(unnamed)'}\") - change it above "
+                     f"before publishing.")
+
         # CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
         # applies to ALL Modalities." So there is one list, taken from the main tour record, and
         # nothing is tagged to a Modality. Modality data is merged in for pricing and schedule,
@@ -1375,10 +1414,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         )
         mct_publish_as_active = mct_activation_choice.startswith("Active")
 
+        mct_code_taken = bool(_mct_publish_code_check and _mct_publish_code_check["exists"])
         if mct_has_unresolved:
             st.info("Publishing is disabled until every destination above resolves - fix them in the "
                    "itinerary table above and re-check.")
-        if st.button("🚀 Publish", type="primary", disabled=mct_has_unresolved):
+        if mct_code_taken:
+            st.info("Publishing is disabled until the Tour Code above is changed to one that isn't "
+                   "already taken.")
+        if st.button("🚀 Publish", type="primary", disabled=mct_has_unresolved or mct_code_taken):
             with st.spinner(f"Publishing '{tour['tour_code']}'..."):
                 try:
                     pre_config = HumanPreConfig(
@@ -8156,7 +8199,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-image-upload-error-surfaced"
+BUILD_VERSION = "2026-08-13-closedtour-code-availability-check"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
