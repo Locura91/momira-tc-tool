@@ -5610,6 +5610,80 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         # render_skip_item_button reruns immediately on click, so if we got
         # here the item is still in the queue - safe to keep rendering it.
 
+        st.markdown("#### Which existing Transfer does this update, if any?")
+        st.caption("Travel Compositor has no human-assigned code for Transfers, so this app tracks its own "
+                  "id->route mapping locally, falling back to a departure/arrival similarity match against "
+                  "this supplier's full live list - either way, YOU always confirm before anything publishes.")
+
+        # CONFIRMED FIX (real bug found via audit): a match check used to be cached forever once
+        # clicked, even after Departure/Arrival were edited afterward - a human could end up
+        # confirming a candidate that was matched against now-outdated route text. Fingerprint the
+        # route text the check was run against, and invalidate the cached result the moment it
+        # no longer matches the CURRENT route text, forcing a fresh check.
+        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
+        if current.get("match_route_fingerprint") != current_route_fingerprint:
+            current["match_result"] = None
+            current["match_route_fingerprint"] = current_route_fingerprint
+
+        if st.button("🔎 Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
+            with st.spinner("Checking..."):
+                current["match_result"] = transfer_matcher.resolve_transfer_match(
+                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
+                )
+                current["match_route_fingerprint"] = current_route_fingerprint
+
+        match_result = current.get("match_result")
+        chosen_existing_id = None
+        if match_result:
+            if match_result.get("fetch_error"):
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transfers to check for a match: "
+                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
+                          f"Will create as new unless you already know the id below.")
+            if match_result.get("tracked_id"):
+                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                          f"**{match_result['tracked_id']}**.")
+                use_tracked = st.checkbox("Update that transfer", value=True, key=f"xtf_usetracked_{idx}")
+                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+            elif match_result.get("fallback_candidates"):
+                options = ["Create as a NEW transfer"] + [
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transfer_id']} "
+                    f"(departure: {c['departure_name']!r}, arrival: {c['arrival_name']!r}, match score {c['score']})"
+                    for c in match_result["fallback_candidates"]
+                ]
+                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
+                                  options, key=f"xtf_matchpick_{idx}")
+                if picked != options[0]:
+                    picked_idx = options.index(picked) - 1
+                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transfer_id"]
+            else:
+                st.info("No existing transfers found for this supplier - will create as new.")
+
+        current["confirmed_existing_id"] = chosen_existing_id
+
+        # CONFIRMED RULE (product owner): "Transfers which are getting updated, have already
+        # allowed bookings until 2049" - an update must be surgical, not a full overwrite. When
+        # updating an existing transfer, fetch its current live record so build_transfer_payload
+        # can merge into it (preserving its existing startDate/endDate/images/properties) rather
+        # than clobbering them with whatever this rate-sheet document happens to say. Cached per
+        # id so re-fetches don't happen on every widget rerun, only when the chosen id changes.
+        existing_transfer_snapshot = None
+        if chosen_existing_id:
+            if current.get("existing_snapshot_id") != chosen_existing_id:
+                with st.spinner(f"Fetching existing transfer {chosen_existing_id} to merge into..."):
+                    snapshot_result = client.get_transfer(supplier_id, chosen_existing_id)
+                if isinstance(snapshot_result, dict) and "error" in snapshot_result:
+                    st.warning(f"⚠️ Couldn't fetch existing transfer {chosen_existing_id} to merge into "
+                              f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
+                              f"document's own dates/images/properties instead of preserving the existing ones.")
+                    current["existing_snapshot"] = None
+                else:
+                    current["existing_snapshot"] = snapshot_result
+                current["existing_snapshot_id"] = chosen_existing_id
+            existing_transfer_snapshot = current.get("existing_snapshot")
+        else:
+            current["existing_snapshot"] = None
+            current["existing_snapshot_id"] = None
+
         st.markdown("#### Route")
         rcol1, rcol2 = st.columns(2)
         with rcol1:
@@ -5642,11 +5716,22 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                      "whole vehicle regardless of headcount (ChargeUnit-Service)."
             )
         with ccol2:
-            data["currency"] = st.selectbox(
-                "Currency", CURRENCY_OPTIONS,
-                index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
-                key=f"xtf_currency_{idx}"
-            )
+            # CONFIRMED REAL RULE (product owner): once a match against an existing transfer is
+            # confirmed above, currency is never asked again - build_transfer_payload already
+            # locks it to the existing record's own currency via _locked_on_update regardless of
+            # what's in data["currency"], so re-asking here was a pointless question with no
+            # effect. Only shown for a genuine create, where there's no existing currency yet.
+            if chosen_existing_id and existing_transfer_snapshot:
+                data["currency"] = existing_transfer_snapshot.get("currency") or data.get("currency")
+                st.text_input("Currency", value=data["currency"] or "(existing)", disabled=True,
+                              key=f"xtf_currency_locked_{idx}",
+                              help="Inherited from the existing transfer being updated - can't be changed.")
+            else:
+                data["currency"] = st.selectbox(
+                    "Currency", CURRENCY_OPTIONS,
+                    index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
+                    key=f"xtf_currency_{idx}"
+                )
         with ccol3:
             data["min_occupancy"] = st.number_input("Min occupancy", min_value=1, value=int(data.get("min_occupancy") or 1), key=f"xtf_minocc_{idx}")
         with ccol4:
@@ -5801,79 +5886,6 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         service_notes.render_notes_editor(supplier_id, "Transfer", data, key_suffix=key_suffix)
 
-        st.markdown("#### Which existing Transfer does this update, if any?")
-        st.caption("Travel Compositor has no human-assigned code for Transfers, so this app tracks its own "
-                  "id->route mapping locally, falling back to a departure/arrival similarity match against "
-                  "this supplier's full live list - either way, YOU always confirm before anything publishes.")
-
-        # CONFIRMED FIX (real bug found via audit): a match check used to be cached forever once
-        # clicked, even after Departure/Arrival were edited afterward - a human could end up
-        # confirming a candidate that was matched against now-outdated route text. Fingerprint the
-        # route text the check was run against, and invalidate the cached result the moment it
-        # no longer matches the CURRENT route text, forcing a fresh check.
-        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
-        if current.get("match_route_fingerprint") != current_route_fingerprint:
-            current["match_result"] = None
-            current["match_route_fingerprint"] = current_route_fingerprint
-
-        if st.button("🔎 Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
-            with st.spinner("Checking..."):
-                current["match_result"] = transfer_matcher.resolve_transfer_match(
-                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
-                )
-                current["match_route_fingerprint"] = current_route_fingerprint
-
-        match_result = current.get("match_result")
-        chosen_existing_id = None
-        if match_result:
-            if match_result.get("fetch_error"):
-                st.warning(f"⚠️ Couldn't fetch this supplier's existing transfers to check for a match: "
-                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
-                          f"Will create as new unless you already know the id below.")
-            if match_result.get("tracked_id"):
-                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
-                          f"**{match_result['tracked_id']}**.")
-                use_tracked = st.checkbox("Update that transfer", value=True, key=f"xtf_usetracked_{idx}")
-                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
-            elif match_result.get("fallback_candidates"):
-                options = ["Create as a NEW transfer"] + [
-                    f"Update: {c['name'] or '(unnamed)'} — {c['transfer_id']} "
-                    f"(departure: {c['departure_name']!r}, arrival: {c['arrival_name']!r}, match score {c['score']})"
-                    for c in match_result["fallback_candidates"]
-                ]
-                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
-                                  options, key=f"xtf_matchpick_{idx}")
-                if picked != options[0]:
-                    picked_idx = options.index(picked) - 1
-                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transfer_id"]
-            else:
-                st.info("No existing transfers found for this supplier - will create as new.")
-
-        current["confirmed_existing_id"] = chosen_existing_id
-
-        # CONFIRMED RULE (product owner): "Transfers which are getting updated, have already
-        # allowed bookings until 2049" - an update must be surgical, not a full overwrite. When
-        # updating an existing transfer, fetch its current live record so build_transfer_payload
-        # can merge into it (preserving its existing startDate/endDate/images/properties) rather
-        # than clobbering them with whatever this rate-sheet document happens to say. Cached per
-        # id so re-fetches don't happen on every widget rerun, only when the chosen id changes.
-        existing_transfer_snapshot = None
-        if chosen_existing_id:
-            if current.get("existing_snapshot_id") != chosen_existing_id:
-                with st.spinner(f"Fetching existing transfer {chosen_existing_id} to merge into..."):
-                    snapshot_result = client.get_transfer(supplier_id, chosen_existing_id)
-                if isinstance(snapshot_result, dict) and "error" in snapshot_result:
-                    st.warning(f"⚠️ Couldn't fetch existing transfer {chosen_existing_id} to merge into "
-                              f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
-                              f"document's own dates/images/properties instead of preserving the existing ones.")
-                    current["existing_snapshot"] = None
-                else:
-                    current["existing_snapshot"] = snapshot_result
-                current["existing_snapshot_id"] = chosen_existing_id
-            existing_transfer_snapshot = current.get("existing_snapshot")
-        else:
-            current["existing_snapshot"] = None
-            current["existing_snapshot_id"] = None
 
         st.markdown("#### Publish")
         pre_config = TransferHumanPreConfig(supplier_id=supplier_id, currency=currency, days_available_before_release=release_days)
@@ -6275,6 +6287,81 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             XTP_STATE_KEYS, f"xtp_skip_{idx}", widget_state_prefixes=["xtp_"] + SHARED_WIDGET_STATE_PREFIXES,
         )
 
+        st.markdown("#### Which existing Transport does this update, if any?")
+        st.caption("Travel Compositor assigns Transport ids itself (e.g. TRANSPORT-412579) with no human code, "
+                  "so this app tracks its own id->route mapping locally and falls back to a route-name "
+                  "similarity match - either way, YOU always confirm before anything publishes.")
+
+        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
+        if current.get("match_route_fingerprint") != current_route_fingerprint:
+            current["match_result"] = None
+            current["match_route_fingerprint"] = current_route_fingerprint
+
+        if st.button("🔎 Check for a matching existing transport", key=f"xtp_checkmatch_{idx}"):
+            with st.spinner("Checking..."):
+                current["match_result"] = transport_matcher.resolve_transport_match(
+                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
+                )
+                current["match_route_fingerprint"] = current_route_fingerprint
+
+        match_result = current.get("match_result")
+        chosen_existing_id = None
+        if match_result:
+            if match_result.get("fetch_error"):
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a match: "
+                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
+                          f"Will create as new.")
+            if match_result.get("tracked_id"):
+                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                          f"**{match_result['tracked_id']}**.")
+                use_tracked = st.checkbox("Update that transport", value=True, key=f"xtp_usetracked_{idx}")
+                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+            elif match_result.get("fallback_candidates"):
+                options = ["Create as a NEW transport"] + [
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transport_id']} (match score {c['score']})"
+                    for c in match_result["fallback_candidates"]
+                ]
+                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
+                                  options, key=f"xtp_matchpick_{idx}")
+                if picked != options[0]:
+                    picked_idx = options.index(picked) - 1
+                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transport_id"]
+            else:
+                st.info("No existing transports found for this supplier - will create as new.")
+
+        current["confirmed_existing_id"] = chosen_existing_id
+
+        # Merge-on-update: fetch the live parent record AND its existing options so
+        # build_transport_payloads can preserve existing dates/images and match each new bracket
+        # onto the right existing Option (by min/maxPassengers overlap) instead of duplicating.
+        existing_transport_snapshot = None
+        existing_options_snapshot = None
+        if chosen_existing_id:
+            if current.get("existing_snapshot_id") != chosen_existing_id:
+                with st.spinner(f"Fetching existing transport {chosen_existing_id} and its options to merge into..."):
+                    snapshot_result = client.get_transport(supplier_id, chosen_existing_id)
+                    if isinstance(snapshot_result, dict) and "error" in snapshot_result:
+                        st.warning(f"⚠️ Couldn't fetch existing transport {chosen_existing_id} "
+                                  f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
+                                  f"document's own dates/images instead of preserving the existing ones.")
+                        current["existing_snapshot"] = None
+                        current["existing_options"] = None
+                    else:
+                        current["existing_snapshot"] = snapshot_result
+                        opts = []
+                        for opt_code in (snapshot_result.get("optionCodes") or []):
+                            opt = client.get_transport_option(supplier_id, chosen_existing_id, opt_code)
+                            if isinstance(opt, dict) and "error" not in opt:
+                                opts.append(opt)
+                        current["existing_options"] = opts
+                current["existing_snapshot_id"] = chosen_existing_id
+            existing_transport_snapshot = current.get("existing_snapshot")
+            existing_options_snapshot = current.get("existing_options")
+        else:
+            current["existing_snapshot"] = None
+            current["existing_options"] = None
+            current["existing_snapshot_id"] = None
+
         st.markdown("#### Route")
         st.caption("Departure/arrival resolve against Travel Compositor's Transport Bases (the same master "
                   "location list the Transport screen itself uses), not raw GPS coordinates.")
@@ -6299,11 +6386,21 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         with vcol2:
             editable_field("Service / flight number", data, "service_number", key_suffix=key_suffix)
         with vcol3:
-            data["currency"] = st.selectbox(
-                "Currency", CURRENCY_OPTIONS,
-                index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
-                key=f"xtp_currency_{idx}"
-            )
+            # CONFIRMED REAL RULE (product owner): once a match against an existing transport is
+            # confirmed above, currency is never asked again - build_transport_payloads already
+            # locks it to the existing record's own currency via _locked_on_update regardless of
+            # what's in data["currency"]. Only shown for a genuine create.
+            if chosen_existing_id and existing_transport_snapshot:
+                data["currency"] = existing_transport_snapshot.get("currency") or data.get("currency")
+                st.text_input("Currency", value=data["currency"] or "(existing)", disabled=True,
+                              key=f"xtp_currency_locked_{idx}",
+                              help="Inherited from the existing transport being updated - can't be changed.")
+            else:
+                data["currency"] = st.selectbox(
+                    "Currency", CURRENCY_OPTIONS,
+                    index=CURRENCY_OPTIONS.index(data["currency"]) if data.get("currency") in CURRENCY_OPTIONS else 0,
+                    key=f"xtp_currency_{idx}"
+                )
 
         ccol1, ccol2, ccol3, ccol4 = st.columns(4)
         with ccol1:
@@ -6410,80 +6507,6 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
 
         service_notes.render_notes_editor(supplier_id, "Transport", data, key_suffix=key_suffix)
 
-        st.markdown("#### Which existing Transport does this update, if any?")
-        st.caption("Travel Compositor assigns Transport ids itself (e.g. TRANSPORT-412579) with no human code, "
-                  "so this app tracks its own id->route mapping locally and falls back to a route-name "
-                  "similarity match - either way, YOU always confirm before anything publishes.")
-
-        current_route_fingerprint = f"{data.get('departure_name', '')}::{data.get('arrival_name', '')}"
-        if current.get("match_route_fingerprint") != current_route_fingerprint:
-            current["match_result"] = None
-            current["match_route_fingerprint"] = current_route_fingerprint
-
-        if st.button("🔎 Check for a matching existing transport", key=f"xtp_checkmatch_{idx}"):
-            with st.spinner("Checking..."):
-                current["match_result"] = transport_matcher.resolve_transport_match(
-                    client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
-                )
-                current["match_route_fingerprint"] = current_route_fingerprint
-
-        match_result = current.get("match_result")
-        chosen_existing_id = None
-        if match_result:
-            if match_result.get("fetch_error"):
-                st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a match: "
-                          f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
-                          f"Will create as new.")
-            if match_result.get("tracked_id"):
-                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
-                          f"**{match_result['tracked_id']}**.")
-                use_tracked = st.checkbox("Update that transport", value=True, key=f"xtp_usetracked_{idx}")
-                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
-            elif match_result.get("fallback_candidates"):
-                options = ["Create as a NEW transport"] + [
-                    f"Update: {c['name'] or '(unnamed)'} — {c['transport_id']} (match score {c['score']})"
-                    for c in match_result["fallback_candidates"]
-                ]
-                picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
-                                  options, key=f"xtp_matchpick_{idx}")
-                if picked != options[0]:
-                    picked_idx = options.index(picked) - 1
-                    chosen_existing_id = match_result["fallback_candidates"][picked_idx]["transport_id"]
-            else:
-                st.info("No existing transports found for this supplier - will create as new.")
-
-        current["confirmed_existing_id"] = chosen_existing_id
-
-        # Merge-on-update: fetch the live parent record AND its existing options so
-        # build_transport_payloads can preserve existing dates/images and match each new bracket
-        # onto the right existing Option (by min/maxPassengers overlap) instead of duplicating.
-        existing_transport_snapshot = None
-        existing_options_snapshot = None
-        if chosen_existing_id:
-            if current.get("existing_snapshot_id") != chosen_existing_id:
-                with st.spinner(f"Fetching existing transport {chosen_existing_id} and its options to merge into..."):
-                    snapshot_result = client.get_transport(supplier_id, chosen_existing_id)
-                    if isinstance(snapshot_result, dict) and "error" in snapshot_result:
-                        st.warning(f"⚠️ Couldn't fetch existing transport {chosen_existing_id} "
-                                  f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
-                                  f"document's own dates/images instead of preserving the existing ones.")
-                        current["existing_snapshot"] = None
-                        current["existing_options"] = None
-                    else:
-                        current["existing_snapshot"] = snapshot_result
-                        opts = []
-                        for opt_code in (snapshot_result.get("optionCodes") or []):
-                            opt = client.get_transport_option(supplier_id, chosen_existing_id, opt_code)
-                            if isinstance(opt, dict) and "error" not in opt:
-                                opts.append(opt)
-                        current["existing_options"] = opts
-                current["existing_snapshot_id"] = chosen_existing_id
-            existing_transport_snapshot = current.get("existing_snapshot")
-            existing_options_snapshot = current.get("existing_options")
-        else:
-            current["existing_snapshot"] = None
-            current["existing_options"] = None
-            current["existing_snapshot_id"] = None
 
         st.markdown("#### Publish")
         pre_config = TransportHumanPreConfig(supplier_id=supplier_id, currency=currency,
@@ -6828,8 +6851,40 @@ def render_hotel_flow(client):
                  "Travel Compositor keys the whole contract off, for both create and update. Re-using an "
                  "existing code updates that hotel; a new code creates a new one."
         )
-        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="hp_currency")
-        st.caption("Only used when CREATING a new hotel. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
+
+        # CONFIRMED REAL RULE (product owner): an UPDATE never asks for things the live record
+        # already has - the currency in particular, since it can't be changed after creation and
+        # a rate sheet only ever changes prices, not the currency a live contract is denominated
+        # in (same rule already applied to ClosedTour/Ticket's ACTION_FIELDS). Hotel already has a
+        # human-assigned code available at this point (unlike Transfer/Transport), so - unlike
+        # those two - we CAN check existence right here, before asking currency at all, instead of
+        # asking it unconditionally and only warning it'll be ignored.
+        _hp_precheck_snapshot = None
+        _hp_precheck_code = provider_code_in.strip()
+        if supplier_id_choice and _hp_precheck_code:
+            if "_hotel_exists_cache" not in st.session_state:
+                st.session_state._hotel_exists_cache = {}
+            _cache = st.session_state._hotel_exists_cache
+            _cache_key = (str(supplier_id_choice), _hp_precheck_code)
+            if _cache_key not in _cache:
+                try:
+                    _snap = client.get_hotel(supplier_id_choice, _hp_precheck_code)
+                    _cache[_cache_key] = _snap if isinstance(_snap, dict) and "error" not in _snap else None
+                except Exception:
+                    _cache[_cache_key] = None
+            _hp_precheck_snapshot = _cache[_cache_key]
+
+        if _hp_precheck_snapshot:
+            currency_in = _hp_precheck_snapshot.get("currency")
+            st.info(f"📌 Hotel code **{_hp_precheck_code}** already exists "
+                    f"(“{_hp_precheck_snapshot.get('hotelname')}”) - publishing will UPDATE it, so the "
+                    f"currency it's already denominated in (**{currency_in}**) is used automatically; "
+                    f"no need to ask again.")
+        else:
+            currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="hp_currency")
+            st.caption("Only asked for a NEW hotel. Once a hotel code you enter above is recognized as "
+                      "existing, this question is skipped and the live currency is used instead.")
+
         release_days_in = st.number_input(
             "Release Days (days before arrival this hotel becomes bookable)",
             min_value=0, value=7, key="hp_release_days",
@@ -6842,6 +6897,11 @@ def render_hotel_flow(client):
             st.session_state.hp_cfg_provider_code = provider_code_in.strip()
             st.session_state.hp_cfg_currency = currency_in
             st.session_state.hp_cfg_release_days = release_days_in
+            # Carry the precheck forward so Phase 2's existence check doesn't need to repeat the
+            # same GET we just made - same cache shape it already uses.
+            if _hp_precheck_snapshot is not None:
+                st.session_state.hp_existing_snapshot = _hp_precheck_snapshot
+                st.session_state.hp_existing_checked = True
             st.session_state.hp_step1_confirmed = True
             st.rerun()
         return
@@ -8199,7 +8259,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-closedtour-code-availability-check"
+BUILD_VERSION = "2026-08-13-transfer-transport-upfront-match-hotel-currency-skip"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

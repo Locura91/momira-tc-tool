@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-closedtour-code-availability-check"
+MODULE_BUILD = "2026-08-13-transfer-transport-upfront-match-hotel-currency-skip"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator
