@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-bulk-supplement-additional-service"
+MODULE_BUILD = "2026-08-14-extraction-schemas-require-fields"
 
 import os
 import re
@@ -425,6 +425,86 @@ Output this exact JSON structure:
   "price_list": [],
   "release_days_mentions": []
 }"""
+
+
+def _required_keys_schema(defaults: dict) -> dict:
+    """Builds a tool-call input_schema that REQUIRES every key in `defaults` to be present,
+    typed by the shape of its own default value (bool->boolean, int/float->number, list->array,
+    dict->object, None->no type constraint, else->string). Values can still be ANY value of that
+    type, including the empty/zero one - only the KEY'S PRESENCE is enforced - so this can never
+    force the model to invent content, only stop it from silently DROPPING a whole field once
+    nothing but the prompt's prose was making it include one. Building the schema FROM the same
+    `defaults` dict each extraction function already uses for its post-call fallback-filling
+    means the two can never drift apart - see EXTRACTION_TOOL_SCHEMA's docstring below for the
+    confirmed real bug this whole mechanism exists to close."""
+    def _type_for(value):
+        if value is None:
+            return {}
+        if isinstance(value, bool):
+            return {"type": "boolean"}
+        if isinstance(value, (int, float)):
+            return {"type": "number"}
+        if isinstance(value, list):
+            return {"type": "array"}
+        if isinstance(value, dict):
+            return {"type": "object", "additionalProperties": True}
+        return {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {k: _type_for(v) for k, v in defaults.items()},
+        "required": list(defaults.keys()),
+    }
+
+
+# CONFIRMED REAL BUG (product owner, 2026-08-14, real document: "4 Days Sapa Cultural Treasures
+# & Bac Ha Market"): "the App could still not read any name, description or any other data from
+# this document" - a clean, well-formed ClosedTour document (checked directly: name/description/
+# itinerary/pricing all present and readable in the extracted text) came back with every field
+# empty, three times in a row. Root cause is almost certainly the same pattern confirmed twice
+# already this session (apply_clarification dropping "summary"; price_refresh's lookup dropping
+# "found"/"brackets") - extract_structured_data's call to _call_claude passed no input_schema,
+# so it silently used the fully permissive default (_PERMISSIVE_TOOL_SCHEMA), which gives the
+# model no structural signal that any key is actually expected. The defensive `defaults` dict
+# right below this call then quietly fills in "" / [] / 0 for every dropped key, so a total
+# field-drop produces exactly this symptom: no exception, no error on screen, just an empty
+# tour. A real schema that REQUIRES every top-level key (values can still be "" / [] / 0 - only
+# the KEY'S PRESENCE is enforced, never a non-empty value, so this can never force the model to
+# invent content) closes this off structurally instead of hoping the prompt's prose is enough.
+EXTRACTION_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tour_name": {"type": "string"},
+        "description": {"type": "string"},
+        "hotels_text": {"type": "string"},
+        "hotels_count": {"type": "integer"},
+        "supplements": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "included": {"type": "string"},
+        "excluded": {"type": "string"},
+        "meeting_point": {"type": "string"},
+        "policy_remarks": {"type": "string"},
+        "cancellation_policy_tiers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "cancellation_policy_text": {"type": "string"},
+        "itinerary_destinations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "nights": {"type": "integer"},
+        "start_time": {"type": "string"},
+        "end_time": {"type": "string"},
+        "min_child_age": {"type": "integer"},
+        "max_child_age": {"type": "integer"},
+        "operational_days": {"type": "array", "items": {"type": "string"}},
+        "schedule_notes": {"type": "string"},
+        "pricing_notes": {"type": "string"},
+        "stop_sales": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "price_list": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "release_days_mentions": {"type": "array"},
+    },
+    "required": [
+        "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
+        "excluded", "meeting_point", "policy_remarks", "cancellation_policy_tiers",
+        "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
+        "min_child_age", "max_child_age", "operational_days", "schedule_notes", "pricing_notes",
+        "stop_sales", "price_list", "release_days_mentions",
+    ],
+}
 
 
 def _strip_code_fences(text: str) -> str:
@@ -2025,7 +2105,8 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     # a longer multi-day tour's response got cut off mid-JSON at the old limit.
     # Sonnet 5 supports up to 128k output tokens on the synchronous API, so
     # this has plenty of headroom without needing any beta header.
-    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=32768)
+    data = _call_claude(EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=32768,
+                       input_schema=EXTRACTION_TOOL_SCHEMA)
 
     # Defensive defaults in case the model omits a key
     defaults = {
@@ -2470,11 +2551,10 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    # 16384 (up from a previous 8192) for the same headroom reason as the
-    # tour extraction above - Tickets are usually shorter, but a long
-    # description + many occupancy/supplement rows could still hit the old cap.
-    data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
-
+    # Defensive defaults in case the model omits a key - defined BEFORE the call so the same
+    # dict also builds the input_schema below (see _required_keys_schema's docstring: this is
+    # the fix for the confirmed real bug where a permissive schema let a whole extraction come
+    # back with every field silently empty).
     defaults = {
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
@@ -2489,6 +2569,13 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
     }
+
+    # 16384 (up from a previous 8192) for the same headroom reason as the
+    # tour extraction above - Tickets are usually shorter, but a long
+    # description + many occupancy/supplement rows could still hit the old cap.
+    data = _call_claude(TICKET_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=16384,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
@@ -2752,14 +2839,15 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(TICKET_MAIN_INFO_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
-
     defaults = {
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "is_private": False,
         "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": "",
     }
+    data = _call_claude(TICKET_MAIN_INFO_SYSTEM_PROMPT, user_content, model, max_tokens=8192,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
@@ -2972,8 +3060,6 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(TICKET_MODALITY_SYSTEM_PROMPT, user_content, model, max_tokens=16384)
-
     defaults = {
         "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 2, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
@@ -2985,6 +3071,9 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         "supplements": [],
     }
+    data = _call_claude(TICKET_MODALITY_SYSTEM_PROMPT, user_content, model, max_tokens=16384,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
@@ -3450,8 +3539,6 @@ def extract_transfer_data(raw_text: str, model: str = "claude-sonnet-5", transfe
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(TRANSFER_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
-
     defaults = {
         "service_name": "", "departure_name": "", "arrival_name": "", "is_zone_based": False,
         "class_or_product_type": "", "vehicle_hint": "", "charge_unit": "per_pax", "currency": "EUR",
@@ -3460,6 +3547,9 @@ def extract_transfer_data(raw_text: str, model: str = "claude-sonnet-5", transfe
         "mandatory_supplements": [], "location_notes": "", "description": "", "pickup_information": "",
         "start_date": "", "end_date": "", "cancellation_policy_tiers": [], "cancellation_policy_text": "",
     }
+    data = _call_claude(TRANSFER_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
@@ -3784,8 +3874,6 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(TRANSPORT_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
-
     defaults = {
         "service_name": "", "departure_name": "", "arrival_name": "", "transport_type_hint": "",
         "vehicle_model": "", "service_number": "", "charge_unit": "per_pax", "currency": "EUR",
@@ -3795,6 +3883,9 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
         "description": "", "company_name": "", "start_date": "", "end_date": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
     }
+    data = _call_claude(TRANSPORT_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
@@ -4076,8 +4167,6 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    data = _call_claude(HOTEL_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192)
-
     defaults = {
         "hotelname": "", "category": "", "chain": "",
         "address": {}, "latitude": None, "longitude": None, "description": "", "images": [],
@@ -4086,6 +4175,9 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "rooms": [], "meal_plans": [], "offers": [], "supplements": [], "rates": [],
     }
+    data = _call_claude(HOTEL_EXTRACTION_SYSTEM_PROMPT, user_content, model, max_tokens=8192,
+                       input_schema=_required_keys_schema(defaults))
+
     for key, default in defaults.items():
         if key not in data or data[key] is None:
             data[key] = default
