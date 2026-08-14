@@ -7839,10 +7839,13 @@ def render_update_refresh_flow(client):
               "then what kind of update this is - nothing is created here either.")
 
     if service in (price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER):
-        # Pre-select price_refresh's own internal "which product type" radio with what was
-        # already chosen just above, so the human isn't asked the same question twice.
+        # CONFIRMED REAL BUG (reported by product owner, with screenshot): setting
+        # st.session_state.pr_kind here only changed the radio's DEFAULT selection - the radio
+        # widget itself still rendered and asked "Which product type?" again, right under the
+        # exact same choice already made one screen up. Passing it through explicitly instead
+        # skips rendering that question entirely when it's already known.
         st.session_state.pr_kind = service
-        render_price_refresh_flow(client)
+        render_price_refresh_flow(client, preselected_kind=service)
         return
 
     if service in ("ClosedTour", "Hotel", "Ticket"):
@@ -8080,7 +8083,7 @@ def _render_update_refresh_coded_service(client, service):
         st.rerun()
 
 
-def render_price_refresh_flow(client):
+def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
 
     CONFIRMED REAL DESIGN (product owner): "would the app be better if TRANSPORTS are only
@@ -8090,14 +8093,26 @@ def render_price_refresh_flow(client):
     products here comes from Travel Compositor, which is a fact, instead of from an AI reading
     a document, which is a judgement - and it was that judgement that kept coming back empty.
     Nothing here resolves a location, estimates a duration, names anything, or creates
-    anything. Only numbers move."""
+    anything. Only numbers move.
+
+    preselected_kind: when the caller (the Update/Refresh dispatcher) already knows which
+    product type this is - the human picked "Transfer" or "Transport" one screen up - pass it
+    here to skip asking "Which product type?" again. CONFIRMED REAL BUG (reported by product
+    owner): setting st.session_state.pr_kind before calling this used to only change the
+    radio's default selection, not skip rendering the radio itself - the same question appeared
+    twice in a row. Only asked fresh when this is None (no caller currently does that, but kept
+    as the honest fallback rather than assuming there's always a preselection)."""
     st.header("💶 Refresh prices from a rate sheet")
     st.caption("For a rate sheet covering products that already exist. The list of routes comes "
               "from Travel Compositor, not from the document — the document is only asked what "
               "each one now costs. Nothing is created, and **nothing but prices changes** — "
               "validity dates, times, names and modality structure are left exactly as they are.")
-    kind = st.radio("Which product type?", [price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER],
-                    horizontal=True, key="pr_kind")
+    if preselected_kind:
+        kind = preselected_kind
+        st.caption(f"Product type: **{kind}** (already chosen above).")
+    else:
+        kind = st.radio("Which product type?", [price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER],
+                        horizontal=True, key="pr_kind")
 
     if st.session_state.suppliers_cache is None:
         with st.spinner("Loading supplier list…"):
@@ -8322,7 +8337,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-tracked-match-look-first-hotel-existing-rooms-rates"
+BUILD_VERSION = "2026-08-14-price-refresh-skip-duplicate-product-type-question"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
