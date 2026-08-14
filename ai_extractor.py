@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-hint-case-insensitive"
+MODULE_BUILD = "2026-08-14-hotel-supplement-name-no-date-or-per-night"
 
 import os
 import re
@@ -3932,6 +3932,15 @@ top-level description so a human reviewer understands the room rate already incl
 === OFFERS (discounts) and SUPPLEMENTS (extra charges) ===
 Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - those are offer-only):
   {"name": "" (short human label, e.g. "10% Discount when staying 3+ nights", "Resort Fee"),
+   CONFIRMED PRODUCT-OWNER RULE - FOR SUPPLEMENTS ONLY: the "name" the client sees must NEVER contain a
+   date, a night count, or wording like "per night"/"per stay"/"per person per night". Travel Compositor
+   only ever displays the supplement's single total charge to the client, never a per-night breakdown, so a
+   name saying "per night" next to a total price reads as wrong or confusing even when the underlying math
+   is correct. The charging basis already lives structurally in "apply" and the date restriction already
+   lives in "travel_windows" - do not restate either in the name. Write "Resort Fee", not "Resort Fee (USD
+   11 per night)" or "Resort Fee - valid 1 Dec to 31 Jan". This restriction is supplements only; an OFFER's
+   name may still describe its condition (e.g. "10% Discount when staying 3+ nights") since an offer's
+   savings are inherently tied to how long the client books.
    "type": "PERCENT" | "ABSOLUTE" | "STAY_TO_PAY" (offers only),
    "apply": one of "LODGING" | "MEAL" | "LODGING_AND_MEAL" | "PER_NIGHT" | "PER_NIGHT_PERSON" | "PER_STAY" |
      "PER_STAY_PERSON" - pick the single value the document ACTUALLY states (e.g. a fee explicitly worded

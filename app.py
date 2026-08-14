@@ -7294,6 +7294,11 @@ def render_hotel_flow(client):
     st.markdown("#### Supplements (extra charges)")
     st.caption("Same shape as Offers, but type is only PERCENT or ABSOLUTE. A hotel supplement is never "
               "optional - it is always an extra charge the client pays.")
+    st.caption("⚠️ **Keep the name plain.** Travel Compositor only ever shows the client the supplement's "
+              "one total price, never a per-night breakdown - so a name with a date, a night count, or "
+              "\"per night\"/\"per stay\" in it reads as confusing next to that total. Write \"Resort Fee\", "
+              "not \"Resort Fee (per night, 1 Dec–31 Jan)\" - the date and basis are already captured by "
+              "travel_start/travel_end and apply below.")
     st.caption("⚠️ **apply must be filled in by you.** The AI leaves it blank whenever the document doesn't "
               "state the basis outright, because 'per person' can mean once for the whole stay "
               "(PER_STAY_PERSON) or once per person per night (PER_NIGHT_PERSON) - on a 7-night stay those "
@@ -8454,7 +8459,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-price-refresh-hint-case-insensitive"
+BUILD_VERSION = "2026-08-14-hotel-supplement-name-no-date-or-per-night"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
