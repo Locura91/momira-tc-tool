@@ -5640,10 +5640,33 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                           f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
                           f"Will create as new unless you already know the id below.")
             if match_result.get("tracked_id"):
-                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
-                          f"**{match_result['tracked_id']}**.")
-                use_tracked = st.checkbox("Update that transfer", value=True, key=f"xtf_usetracked_{idx}")
-                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+                tracked_id = match_result["tracked_id"]
+                # CONFIRMED REAL RULE (product owner): a tracked/remembered match must not
+                # silently pre-apply - fetch it and show its key details right here (not
+                # lazily, after the checkbox) so the human actually looks at what they're
+                # about to update, same safety bar ClosedTour/Ticket already enforce (they
+                # force an explicit fetch-and-glance before an update can proceed). Default
+                # the confirm checkbox to UNCHECKED, so applying it is a deliberate choice
+                # made after seeing the details, not a pre-ticked box someone breezes past.
+                if current.get("_tracked_snapshot_id") != tracked_id:
+                    with st.spinner(f"Fetching {tracked_id} to show you what it currently looks like..."):
+                        current["_tracked_snapshot"] = client.get_transfer(supplier_id, tracked_id)
+                    current["_tracked_snapshot_id"] = tracked_id
+                tracked_snapshot = current.get("_tracked_snapshot")
+                if isinstance(tracked_snapshot, dict) and "error" not in tracked_snapshot:
+                    st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                              f"**{tracked_id}**.")
+                    st.caption(f"Existing record: departure **{(tracked_snapshot.get('departure') or {}).get('name', '?')}**, "
+                              f"arrival **{(tracked_snapshot.get('arrival') or {}).get('name', '?')}**, "
+                              f"currency **{tracked_snapshot.get('currency', '?')}**, "
+                              f"valid **{tracked_snapshot.get('startDate', '?')}** to **{tracked_snapshot.get('endDate', '?')}**.")
+                    use_tracked = st.checkbox("Yes, this is the right one - update it", value=False,
+                                              key=f"xtf_usetracked_{idx}")
+                    chosen_existing_id = tracked_id if use_tracked else None
+                else:
+                    st.warning(f"⚠️ This app remembers a match for this route (**{tracked_id}**) but couldn't "
+                              f"fetch it just now to confirm it still exists - won't auto-apply it blind. "
+                              f"Click Check again, or enter/confirm manually if you know it's still correct.")
             elif match_result.get("fallback_candidates"):
                 options = ["Create as a NEW transfer"] + [
                     f"Update: {c['name'] or '(unnamed)'} — {c['transfer_id']} "
@@ -6312,10 +6335,29 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                           f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
                           f"Will create as new.")
             if match_result.get("tracked_id"):
-                st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
-                          f"**{match_result['tracked_id']}**.")
-                use_tracked = st.checkbox("Update that transport", value=True, key=f"xtp_usetracked_{idx}")
-                chosen_existing_id = match_result["tracked_id"] if use_tracked else None
+                tracked_id = match_result["tracked_id"]
+                # CONFIRMED REAL RULE (product owner): a tracked/remembered match must not
+                # silently pre-apply - fetch and show its key details before it can be used,
+                # same safety bar as Transfer's tracked matches now enforce (mirrors
+                # ClosedTour/Ticket's forced fetch-and-glance before an update can proceed).
+                if current.get("_tracked_snapshot_id") != tracked_id:
+                    with st.spinner(f"Fetching {tracked_id} to show you what it currently looks like..."):
+                        current["_tracked_snapshot"] = client.get_transport(supplier_id, tracked_id)
+                    current["_tracked_snapshot_id"] = tracked_id
+                tracked_snapshot = current.get("_tracked_snapshot")
+                if isinstance(tracked_snapshot, dict) and "error" not in tracked_snapshot:
+                    st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
+                              f"**{tracked_id}**.")
+                    st.caption(f"Existing record: **{tracked_snapshot.get('name', '?')}**, "
+                              f"currency **{tracked_snapshot.get('currency', '?')}**, "
+                              f"valid **{tracked_snapshot.get('startDate', '?')}** to **{tracked_snapshot.get('endDate', '?')}**.")
+                    use_tracked = st.checkbox("Yes, this is the right one - update it", value=False,
+                                              key=f"xtp_usetracked_{idx}")
+                    chosen_existing_id = tracked_id if use_tracked else None
+                else:
+                    st.warning(f"⚠️ This app remembers a match for this route (**{tracked_id}**) but couldn't "
+                              f"fetch it just now to confirm it still exists - won't auto-apply it blind. "
+                              f"Click Check again, or enter/confirm manually if you know it's still correct.")
             elif match_result.get("fallback_candidates"):
                 options = ["Create as a NEW transport"] + [
                     f"Update: {c['name'] or '(unnamed)'} — {c['transport_id']} (match score {c['score']})"
@@ -7014,6 +7056,27 @@ def render_hotel_flow(client):
                 f"(“{existing_snapshot.get('hotelname')}”, contract {existing_snapshot.get('contractId')}). "
                 f"Publishing will UPDATE it. Rooms and meal plans already there that this document doesn't "
                 f"mention are preserved, not dropped.")
+        # CONFIRMED REAL RULE (product owner): same "look before you update" safety bar just
+        # applied to Transfer/Transport's tracked matches - a human should see what already
+        # exists BEFORE editing starts, not find out only when rooms/rates get silently merged
+        # at publish time. Rooms/Rates are matched by NAME (hotel_matcher.match_room_by_name /
+        # match_rate_by_name) at build time - shown here purely as a heads-up list, not yet an
+        # interactive picker, so the human knows which names to reuse for an update to land on
+        # the right existing room/rate instead of accidentally creating a near-duplicate.
+        existing_rooms = existing_snapshot.get("rooms") or []
+        existing_rates = existing_snapshot.get("rates") or []
+        with st.expander(f"📋 What's already there ({len(existing_rooms)} room(s), {len(existing_rates)} rate(s)) "
+                         f"- reuse these exact names below to update rather than duplicate", expanded=True):
+            if existing_rooms:
+                st.markdown("**Existing rooms:** " + ", ".join(
+                    f"`{r.get('name') or '(unnamed)'}`" for r in existing_rooms if isinstance(r, dict)))
+            else:
+                st.caption("No rooms on the existing record yet.")
+            if existing_rates:
+                st.markdown("**Existing rates:** " + ", ".join(
+                    f"`{r.get('name') or '(unnamed)'}`" for r in existing_rates if isinstance(r, dict)))
+            else:
+                st.caption("No rates on the existing record yet.")
     else:
         st.info(f"🆕 Hotel code **{provider_code}** isn't in Travel Compositor yet - publishing will CREATE it.")
     if st.button("🔄 Re-check", key="hp_recheck"):
@@ -8259,7 +8322,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-13-transfer-transport-upfront-match-hotel-currency-skip"
+BUILD_VERSION = "2026-08-13-tracked-match-look-first-hotel-existing-rooms-rates"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

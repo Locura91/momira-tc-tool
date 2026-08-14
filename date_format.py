@@ -24,7 +24,7 @@ becomes 4 March, moving a season boundary by a month with nothing on screen to s
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-13-transfer-transport-upfront-match-hotel-currency-skip"
+MODULE_BUILD = "2026-08-13-tracked-match-look-first-hotel-existing-rooms-rates"
 
 import re
 from datetime import date, datetime

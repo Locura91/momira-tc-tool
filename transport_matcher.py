@@ -183,7 +183,11 @@ def suggest_existing_transport_matches(departure_name: str, arrival_name: str, e
 def resolve_transport_match(client, supplier_id: str, departure_name: str, arrival_name: str) -> Dict[str, Any]:
     """
     Convenience wrapper combining both matching steps, mirroring transfer_matcher.resolve_transfer_match():
-      {"tracked_id": str or None,       # safe to use directly if set
+      {"tracked_id": str or None,       # CONFIRMED REAL RULE (product owner): even a tracked id
+                                         # must NOT be auto-applied silently - the UI must fetch and
+                                         # show the existing record's key details and get an explicit
+                                         # human confirmation before using it, same bar as the
+                                         # fallback_candidates path already had.
        "fallback_candidates": [...],    # only populated if tracked_id is None - MUST be human-confirmed
        "fetch_error": dict or None}     # set if get_transports() itself failed
     """

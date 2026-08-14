@@ -171,13 +171,16 @@ def suggest_existing_transfer_matches(departure_name: str, arrival_name: str, ex
 def resolve_transfer_match(client, supplier_id: str, departure_name: str, arrival_name: str) -> Dict[str, Any]:
     """
     Convenience wrapper combining both matching steps for a UI to call in
-    one shot: tries the app-tracked id first (silent, safe to auto-apply),
-    and only if that comes up empty, fetches the supplier's full live
-    transfer list and returns ranked fallback candidates for a human to
-    confirm.
+    one shot: tries the app-tracked id first, and only if that comes up
+    empty, fetches the supplier's full live transfer list and returns
+    ranked fallback candidates for a human to confirm.
 
     Returns:
-      {"tracked_id": str or None,       # safe to use directly if set
+      {"tracked_id": str or None,       # CONFIRMED REAL RULE (product owner): even a tracked id
+                                         # must NOT be auto-applied silently - the UI must fetch and
+                                         # show the existing record's key details and get an explicit
+                                         # human confirmation before using it, same safety bar as the
+                                         # fallback_candidates path already had.
        "fallback_candidates": [...],    # only populated if tracked_id is None - MUST be human-confirmed
        "fetch_error": dict or None}     # set if get_transfers() itself failed - candidates will be empty, not a hard failure
     """
