@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-skip-duplicate-product-type-question"
+MODULE_BUILD = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
 
 import os
 import re
@@ -3329,6 +3329,13 @@ Extract:
   of headcount within the stated range (look for wording like "ChargeUnit-Service", "per vehicle", "flat rate").
 - currency: the 3-letter currency code stated for this document/table.
 - min_occupancy, max_occupancy: the smallest and largest passenger count this specific service/class covers.
+- min_billable_pax: the SMALLEST number of passengers a per-person rate may be charged for, when the
+  document states a minimum party size - e.g. "Private Transfer p.p. valid for (Min.2 pax) in Vehicle"
+  means min_billable_pax = 2. CONFIRMED REAL RULE (product owner, same rule Transport already follows): a
+  solo traveller must still be able to book, paying the two-person total - that becomes its own
+  occupancy_price_tiers entry automatically, so do NOT invent a 1-pax row yourself here. Just report the
+  minimum the document states. Use 1 (or leave it out) when the document states no minimum, and NEVER set
+  it for a per-service/flat rate, where the price does not depend on headcount at all.
 - occupancy_price_tiers: a list of {"occupancy": <integer>, "price": <number>, "child_price": <number or
   null>, "infant_price": <number or null>}. DRIVER-ONLY BASE RULE (CRITICAL): the price(s) here must be
   the DRIVER-ONLY rate (no guide included) - if the document ONLY gives guide-inclusive pricing with no
@@ -3410,7 +3417,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 {
   "service_name": "", "departure_name": "", "arrival_name": "", "is_zone_based": false,
   "class_or_product_type": "", "vehicle_hint": "", "charge_unit": "per_pax", "currency": "",
-  "min_occupancy": 1, "max_occupancy": 4, "occupancy_price_tiers": [],
+  "min_occupancy": 1, "max_occupancy": 4, "min_billable_pax": 1, "occupancy_price_tiers": [],
   "child_infant_rule_text": "", "additional_services": [], "guide_language_surcharges": [],
   "mandatory_supplements": [], "location_notes": "", "description": "", "pickup_information": "",
   "start_date": "", "end_date": "", "cancellation_policy_tiers": [], "cancellation_policy_text": ""
@@ -3439,7 +3446,7 @@ def extract_transfer_data(raw_text: str, model: str = "claude-sonnet-5", transfe
     defaults = {
         "service_name": "", "departure_name": "", "arrival_name": "", "is_zone_based": False,
         "class_or_product_type": "", "vehicle_hint": "", "charge_unit": "per_pax", "currency": "EUR",
-        "min_occupancy": 1, "max_occupancy": 4, "occupancy_price_tiers": [],
+        "min_occupancy": 1, "max_occupancy": 4, "min_billable_pax": 1, "occupancy_price_tiers": [],
         "child_infant_rule_text": "", "additional_services": [], "guide_language_surcharges": [],
         "mandatory_supplements": [], "location_notes": "", "description": "", "pickup_information": "",
         "start_date": "", "end_date": "", "cancellation_policy_tiers": [], "cancellation_policy_text": "",

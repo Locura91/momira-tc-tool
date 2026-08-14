@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-skip-duplicate-product-type-question"
+MODULE_BUILD = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
 
 import math
 import datetime
@@ -1910,6 +1910,7 @@ def build_transfer_payload(
 
     payload_error = None
     payload = None
+    synthesized_solo_tier = False
     try:
         departure_loc = TransferLocationVO(
             name=departure_geo.get("name") or departure_name,
@@ -2013,6 +2014,15 @@ def build_transfer_payload(
             # system cap, even though the source document's own stated max_occupancy was for a
             # single vehicle only.
             max_occupancy = max(max_occupancy, _safe_int(tiers_sorted[-1].get("occupancy", 1), fallback=1))
+
+        # CONFIRMED REAL GAP (product owner, screenshot of a live TRANSFER-nnnnnn record): a
+        # rate sheet priced from 2 pax up (min_billable_pax) must still make 1 pax bookable, at
+        # the 2-pax rate charged to one person - see _add_transfer_minimum_charge_tier's
+        # docstring. Runs AFTER base_price was already captured above from the document's own
+        # tiers, so the synthesized solo tier never becomes the visible default rate.
+        tiers_sorted = _add_transfer_minimum_charge_tier(
+            tiers_sorted, price_by_pax, extracted_transfer_data.get("min_billable_pax"))
+        synthesized_solo_tier = any(t.get("synthesized_minimum_charge") for t in tiers_sorted)
 
         def _money(amount):
             return TransferMoneyVO(amount=_safe_float(amount), currency=currency)
@@ -2145,6 +2155,7 @@ def build_transfer_payload(
         "arrival_geolocation_source": arrival_geo.get("source"),
         "is_zone_based": is_zone_based,
         "existing_transfer_id": existing_transfer_id,
+        "synthesized_solo_tier": synthesized_solo_tier,
     }
 
 
@@ -2334,6 +2345,53 @@ def _add_minimum_charge_bracket(brackets_sorted, price_per_pax, min_billable_pax
         "synthesized_minimum_charge": True,
     }
     return [solo] + list(brackets_sorted)
+
+
+def _add_transfer_minimum_charge_tier(tiers_sorted, price_per_pax, min_billable_pax=None,
+                                      max_cap=_MAX_OCCUPANCY_PAX):
+    """Transfer-shaped counterpart of _add_minimum_charge_bracket() above - same CONFIRMED
+    REAL RULE (product owner): "Private Transfer p.p. valid for (Min.2 pax) in Vehicle" means
+    "1 Pax must get an own Modality for the Transport and gets a surcharge, so that one pax
+    pays the price as for 2 pax." Needed as a separate function rather than reusing
+    _add_minimum_charge_bracket() because Transfer's occupancy_price_tiers are single-occupancy
+    rows (schemas.TransferOccupancyPriceVO has no min/max range at all, unlike Transport's
+    Option brackets) - same idea, different tier shape.
+
+    CONFIRMED REAL GAP (product owner, screenshot of a live TRANSFER-nnnnnn record): this rule
+    was already built and live for Transport, but never wired into Transfer's own builder -
+    a Transfer whose document only prices 2+ pax got no 1-pax bracket synthesized at all,
+    silently dropping solo travellers from search exactly the way _add_minimum_charge_bracket's
+    docstring warns about for Transport.
+
+    Only applies when the document's own tiers don't already state occupancy=1 (nothing to
+    synthesize if the supplier already prices it), and only for a genuinely per-person rate -
+    a per-vehicle rate has no such gap, the vehicle costs the same regardless of headcount."""
+    if not price_per_pax or not tiers_sorted:
+        return tiers_sorted
+    if any(_safe_int(t.get("occupancy", 0), fallback=0) == 1 for t in tiers_sorted):
+        return tiers_sorted
+    lowest_occupancy = _safe_int(tiers_sorted[0].get("occupancy", 1), fallback=1)
+    minimum = _safe_int(min_billable_pax, fallback=0) or lowest_occupancy
+    if minimum <= 1 or minimum > max_cap:
+        return tiers_sorted
+    base_tier = next((t for t in tiers_sorted
+                      if _safe_int(t.get("occupancy", 0), fallback=0) == minimum), tiers_sorted[0])
+    unit_price = _safe_float(base_tier.get("price", 0))
+    if unit_price <= 0:
+        return tiers_sorted
+    solo = {
+        "occupancy": 1,
+        # Per person, and this tier holds one person - so the per-person figure IS the
+        # minimum-party total, same "times the minimum" rule as Transport's version.
+        "price": round(unit_price * minimum, 2),
+        "child_price": (round(_safe_float(base_tier.get("child_price")) * minimum, 2)
+                        if base_tier.get("child_price") is not None else None),
+        "infant_price": (round(_safe_float(base_tier.get("infant_price")) * minimum, 2)
+                         if base_tier.get("infant_price") is not None else None),
+        "synthesized_minimum_charge": True,
+    }
+    return sorted([solo] + list(tiers_sorted),
+                  key=lambda t: _safe_int(t.get("occupancy", 1), fallback=1))
 
 
 def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax, max_cap=_MAX_OCCUPANCY_PAX):
@@ -2597,6 +2655,7 @@ def build_transport_payloads(
     brackets_sorted = sorted(brackets, key=lambda x: x["min_occupancy"])
     brackets_sorted = _add_minimum_charge_bracket(
         brackets_sorted, price_per_pax, extracted_transport_data.get("min_billable_pax"))
+    synthesized_solo_bracket = any(b.get("synthesized_minimum_charge") for b in brackets_sorted)
     brackets_sorted = _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_per_pax)
 
     # CONFIRMED (via real data): unlike Transfer (which always writes every tier explicitly, so
@@ -2851,6 +2910,7 @@ def build_transport_payloads(
         "existing_transport_id": existing_transport_id,
         "option_actions": option_actions,
         "options_to_deactivate": options_to_deactivate,
+        "synthesized_solo_bracket": synthesized_solo_bracket,
     }
 
 

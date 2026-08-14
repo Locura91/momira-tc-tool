@@ -5761,6 +5761,19 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             data["max_occupancy"] = st.number_input("Max occupancy", min_value=1, value=int(data.get("max_occupancy") or 4), key=f"xtf_maxocc_{idx}")
 
         st.markdown("#### Pricing by occupancy")
+        # CONFIRMED REAL RULE (product owner): "when the document says min. 2 Pax, we can offer
+        # this for 1 Pax by simply increasing the cost - 1 pax pays the price what 2 pax would
+        # pay together." When the document states a minimum party size for its per-person rate
+        # (e.g. "valid for Min.2 pax"), enter it here and a 1-pax bracket at that minimum's total
+        # is added automatically at publish time - flagged for you to check, never invented
+        # silently. Leave at 1 when the document states no minimum.
+        data["min_billable_pax"] = st.number_input(
+            "Minimum billable pax (leave at 1 if the document states no minimum party size)",
+            min_value=1, max_value=9, value=int(data.get("min_billable_pax") or 1),
+            key=f"xtf_minbillable_{idx}",
+            help="A per-person rate valid from e.g. 2 pax up means a solo traveller pays the "
+                 "2-pax total, not half of it - set this to 2 and that 1-pax bracket is added "
+                 "automatically. Only applies to per-pax pricing, ignored for per-service.")
         st.caption("Top-level basePrice is the DEFAULT rate; only add a row here for an occupancy whose "
                   "rate genuinely DIFFERS from the default - unless the document gives a fully explicit "
                   "rate per bracket (like a 1/2/3-5/6-8/9-14 table), in which case list every tier "
@@ -5931,6 +5944,19 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         if build_result.get("transfer_error"):
             st.error(f"⚠️ This transfer can't be built yet: {build_result['transfer_error']}")
         else:
+            # CONFIRMED REAL RULE (product owner): "when the document says min. 2 Pax, we can
+            # offer this for 1 Pax by simply increasing the cost" - a 1-pax bracket the document
+            # itself never stated. Flagged here rather than applied silently, so a human catches
+            # it if this route genuinely shouldn't get the treatment (e.g. it's not really a
+            # minimum-party rate at all).
+            if build_result.get("synthesized_solo_tier"):
+                _solo_entry = next((e for e in (build_result["transfer_payload"].get("pricesByOccupancy") or [])
+                                    if e.get("occupancy") == 1), None)
+                _solo_amount = (_solo_entry or {}).get("basePrice", {}).get("amount")
+                st.info(f"ℹ️ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
+                        f"up, so a **1-pax bracket at {_solo_amount} {data.get('currency', '')}** was "
+                        f"synthesized automatically (the minimum-party rate, charged to one person) - the "
+                        f"document itself doesn't state this number. Check it before publishing.")
             with st.expander("🔎 Preview payload"):
                 st.json(build_result["transfer_payload"])
             if not geoloc_ok:
@@ -6489,6 +6515,17 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                        "journey that appears to take no time. Enter one before publishing.")
 
         st.markdown("#### Pricing by occupancy bracket")
+        # CONFIRMED REAL RULE (product owner): same minimum-party-size rule as Transfer - "when
+        # the document says min. 2 Pax, we can offer this for 1 Pax by simply increasing the
+        # cost." Was already built and applied silently for Transport; now shown here to edit
+        # and flagged at Publish time so a human can check it rather than discover it later.
+        data["min_billable_pax"] = st.number_input(
+            "Minimum billable pax (leave at 1 if the document states no minimum party size)",
+            min_value=1, max_value=9, value=int(data.get("min_billable_pax") or 1),
+            key=f"xtp_minbillable_{idx}",
+            help="A per-person rate valid from e.g. 2 pax up means a solo traveller pays the "
+                 "2-pax total, not half of it - set this to 2 and that 1-pax bracket is added "
+                 "automatically. Only applies to per-pax pricing, ignored for per-service.")
         st.caption("One row per bracket the document actually states (e.g. 1-2 Pax, 3-4 Pax). Each price is "
                   "the ACTUAL final price for that bracket - never interpolated between brackets, since real "
                   "contracts have shown non-monotonic patterns. Brackets above 9 pax are dropped automatically "
@@ -6602,6 +6639,23 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         data["modality_names"].pop(_key, None)
             _base = _safe_float(build_result["transport_payload"].get("baseAdultPrice"), fallback=0.0)
             _per_pax = bool(build_result["transport_payload"].get("pricePerPax"))
+            # CONFIRMED REAL RULE (product owner): "when the document says min. 2 Pax, we can
+            # offer this for 1 Pax by simply increasing the cost" - flagged here rather than
+            # applied silently, so a human catches it if this route genuinely shouldn't get the
+            # treatment. This rule was already live for Transport before it had any visible
+            # confirmation step - added alongside the same fix for Transfer.
+            if build_result.get("synthesized_solo_bracket"):
+                _solo_action = next((a for a in option_actions if _safe_int(a.get("min_occupancy", 0), fallback=0) == 1), None)
+                if _solo_action:
+                    _solo_sup = 0.0
+                    for _pr in (_solo_action.get("option_payload", {}).get("prices") or []):
+                        if isinstance(_pr, dict):
+                            _solo_sup = _safe_float(_pr.get("adultPriceSupplement"), fallback=0.0)
+                    _solo_price = round(_base + _solo_sup, 2)
+                    st.info(f"ℹ️ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
+                            f"up, so a **1-pax bracket at {_solo_price} {currency}** was synthesized "
+                            f"automatically (the minimum-party rate, charged to one person) - the document "
+                            f"itself doesn't state this number. Check it before publishing.")
             _rows = []
             for a in option_actions:
                 _sup = 0.0
@@ -8223,9 +8277,23 @@ def render_price_refresh_flow(client, preselected_kind=None):
         with cols[0]:
             p["accepted"] = st.checkbox("Yes", value=p["accepted"], key=f"pr_ok_{p['index']}")
         with cols[1]:
-            st.markdown(head + "  ·  " + "  ·  ".join(
-                f"{c['min_pax']}–{c['max_pax']} pax: **{c['old']} → {c['new']}** "
-                f"{route.get('currency') or ''}" for c in p["changes"]))
+            st.markdown(head)
+            # CONFIRMED REAL GAP (product owner): the AI's read price used to be take-it-or-
+            # leave-it - a low-confidence or wrong read (like a bundled route with two
+            # different underlying prices) had no way to be corrected other than rejecting the
+            # whole row and fixing it some other way. Each bracket's "new" price is now directly
+            # editable, pre-filled with what the AI read - overwrite it by hand and that's what
+            # gets applied on Publish.
+            for c in p["changes"]:
+                pcol1, pcol2 = st.columns([3, 2])
+                with pcol1:
+                    st.write(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
+                             f"(AI read **{c['new']}**) {route.get('currency') or ''}")
+                with pcol2:
+                    c["new"] = st.number_input(
+                        f"New price ({c['min_pax']}-{c['max_pax']} pax)", min_value=0.0, step=1.0,
+                        value=float(c["new"]), key=f"pr_price_{p['index']}_{c['code']}",
+                        label_visibility="collapsed")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f"from the row *“{finding['matched_row']}”*")
@@ -8238,6 +8306,35 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
                 st.caption("  ·  ".join(bits))
+            # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
+            # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
+            # route) short of fixing the number by hand above. This re-reads ONLY this one
+            # route, with the extra instruction folded in, and replaces its proposal in place -
+            # every other route in the batch is untouched.
+            with st.expander("🤖 Not right? Tell the AI more about this route", expanded=False):
+                route_hint = st.text_input(
+                    "Extra instruction for this route only", key=f"pr_hint_{p['index']}",
+                    placeholder="e.g. use the Port Ghalib price, not Marsa Allam")
+                if st.button("🔁 Re-read this route", key=f"pr_reread_{p['index']}",
+                             disabled=not route_hint.strip()):
+                    with st.spinner("Re-reading this route..."):
+                        combined_hint = "\n".join(
+                            x for x in [(hint or "").strip(), route_hint.strip()] if x)
+                        try:
+                            single_finding = price_refresh.lookup_prices(
+                                [route], st.session_state.pr_raw_text, human_hint=combined_hint
+                            ).get(0)
+                        except Exception as e:
+                            st.error(f"Couldn't re-read this route: {friendly_error_message(e)}")
+                            single_finding = None
+                    if single_finding is not None:
+                        rebuilt = price_refresh.build_proposals(
+                            st.session_state.pr_routes, {p["index"]: single_finding})
+                        st.session_state.pr_proposals[p["index"]] = rebuilt[p["index"]]
+                        st.rerun()
+                    elif single_finding is None and route_hint.strip():
+                        st.warning("The AI didn't find this route in the document even with the extra "
+                                  "instruction - the current price is left as it was.")
 
     if unchanged:
         with st.expander(f"➖ {len(unchanged)} already at the document's price"):
@@ -8337,7 +8434,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-price-refresh-skip-duplicate-product-type-question"
+BUILD_VERSION = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
