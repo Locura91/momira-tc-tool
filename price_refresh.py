@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-airport-code-matching-bundled-route-price-name-lock-red-green"
+MODULE_BUILD = "2026-08-14-price-refresh-solo-bracket-minimum-pax-fix"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -81,9 +81,15 @@ MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
 PRICES:
 - Report the number exactly as the document states it. Never convert a currency, never apply a discount,
   never interpolate a bracket the document does not price.
-- "per person, minimum 2 pax" means the 2+ bracket takes the stated number. A 1-pax bracket, where one
-  exists, is that number times the minimum - but do NOT calculate it yourself, just report the stated
-  per-person price and set minimum_pax to what the document says.
+- "per person, minimum 2 pax" (or "Min.2 pax", or similar) means the price column applies from that many
+  passengers up - the document is NOT separately pricing 1 pax at all, whatever the column shows is the
+  per-person rate for a full-minimum party. Report ONLY that bracket (e.g. min_pax equal to the stated
+  minimum), with the price exactly as the document states it, and set "minimum_pax" to that same number.
+  Do NOT ALSO include a separate bracket entry for min_pax=1 in this case - not even carrying the same raw
+  number "as reported" - there is no such entry to report, the document does not price it. A 1-pax price
+  is entirely the calling application's job (it multiplies the minimum-party rate itself, using
+  "minimum_pax"), never yours - a "brackets" list containing a min_pax=1 entry alongside a stated minimum
+  party size greater than 1 is always wrong.
 - If the document does not price a route at all, say so with "found": false. That is a useful, correct
   answer - a route the supplier dropped this season should not be guessed at.
 - If you are unsure which row a route matches, set "confidence": "low" and say why in "note". A human
@@ -344,21 +350,35 @@ def bracket_price_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
                       minimum_pax: int) -> Optional[float]:
     """The new unit price for one EXISTING bracket, from what the document said.
 
-    Exact bracket match first. Failing that, an overlapping one - a document that prices
-    "2-9" still tells you what a live "2-6" bracket costs. The solo bracket is the special
-    case: on a per-person rate with a minimum party size, one passenger pays the per-person
-    rate times that minimum, which is the rule the upload flow already applies."""
+    The solo bracket is checked FIRST, ahead of any exact match. Failing that: exact bracket
+    match, then an overlapping one - a document that prices "2-9" still tells you what a live
+    "2-6" bracket costs.
+
+    CONFIRMED REAL BUG (product owner, real document: "HRG Airport to El Quseir", "Private
+    Transfer p.p. valid for (Min.2 pax)" priced at 32 - the live 1-pax bracket should become 64
+    (32*2), but was proposed at 32 unchanged). Root cause: the solo-bracket multiplication used
+    to run only when NO exact match existed for the requested 1-pax bracket. The prompt asks
+    the AI not to compute the 1-pax price itself, but doesn't stop it from still emitting a
+    min_pax=1 entry carrying the raw (un-multiplied) per-person number "as stated" - and that
+    entry then satisfied the exact-match check below, short-circuiting the multiplication
+    entirely before it ever ran. Checking the minimum-party rule FIRST makes this correct
+    regardless of whether the AI included a spurious 1-pax entry or, per the prompt, correctly
+    omitted one - an AI-reported min_pax=1 price is never trusted directly once a real minimum
+    party size is known, since a genuine minimum-party rate means the document never actually
+    prices 1 pax on its own."""
     if not finding.get("found"):
         return None
     brackets = finding.get("brackets") or []
-    for b in brackets:
-        if b["min_pax"] == min_pax and b["max_pax"] == max_pax:
-            return b["price"]
     if max_pax == 1 and minimum_pax > 1:
         base = next((b["price"] for b in brackets if b["min_pax"] == minimum_pax), None)
+        if base is None:
+            base = next((b["price"] for b in brackets if b["min_pax"] > 1), None)
         if base is None and brackets:
             base = brackets[0]["price"]
         return round(base * minimum_pax, 2) if base is not None else None
+    for b in brackets:
+        if b["min_pax"] == min_pax and b["max_pax"] == max_pax:
+            return b["price"]
     for b in brackets:
         if b["min_pax"] <= max_pax and b["max_pax"] >= min_pax:
             return b["price"]
