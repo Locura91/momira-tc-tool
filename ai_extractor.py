@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-extraction-schemas-require-fields"
+MODULE_BUILD = "2026-08-14-closedtour-vague-departure-arrival-time"
 
 import os
 import re
@@ -339,8 +339,24 @@ Rules:
   return day") - use that stated time as end_time, since it reflects the actual earliest moment the
   traveler is free to leave. This applies whether it's phrased as the tour's own return time or as
   flight-booking advice for the final day - either way, treat it as when the tour itself effectively ends.
-  Leave start_time/end_time as empty strings only if NEITHER a real time NOR (for start_time) the
-  pre-arrival-advisory default above applies.
+  CONFIRMED RULE (product owner, 2026-08-14) - vague time-of-day wording, no exact clock time anywhere:
+  WHY THIS MATTERS - Travel Compositor uses a ClosedTour's own start_time/end_time to check whether a
+  customer combining this tour with a Transport can actually catch it: it compares the two and expects
+  roughly a 2-hour gap, so a blank time here breaks that check entirely and can silently let a customer
+  book a transport they cannot make. A vague-but-real time-of-day mention is still useful information and
+  must not be thrown away just because it isn't an exact clock time.
+    * start_time - Day 1's description says the tour leaves in the "early morning" (or equivalent: "morning
+      departure", "departs early", "before sunrise") with NO exact clock time given anywhere else in the
+      source: default start_time to "07:00:00". Only use this default when truly nothing more specific is
+      stated - a real pick-up time anywhere in the source (the rule above) always wins, and so does the
+      pre-arrival-advisory default above when that specific situation applies instead.
+    * end_time - the final day's description gives an APPROXIMATE arrival/return time (e.g. "arriving
+      approximately at 6pm", "you'll arrive back around 21:00", "return to your hotel by approximately
+      9:00 PM") - this counts as a stated time just as much as an exact one. Extract the hour given (round
+      to the nearest half hour if the source itself is only that precise) as end_time - do not leave it
+      blank just because the source hedges it with "approximately"/"around"/"about".
+  Leave start_time/end_time as empty strings only if NEITHER a real time, an approximate time, NOR (for
+  start_time) one of the two defaults above applies.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
