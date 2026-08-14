@@ -129,8 +129,31 @@ def lookup_tracked_transfer_id(supplier_id: str, departure_name: str, arrival_na
     return routes.get(_route_key(departure_name, arrival_name))
 
 
+# CONFIRMED REAL RULE (product owner): "when Transfer or Transport says a three letter code
+# from Airport, this must be seen as a City name too" - e.g. "HRG to El Gouna" is the same
+# route as "Hurghada to El Gouna". The AI extraction/detection/price-lookup prompts already
+# know this (see ai_extractor.py, price_refresh.py's PRICE_LOOKUP_SYSTEM_PROMPT), but this
+# module's plain difflib text-similarity fallback had no such awareness at all - "HRG" and
+# "Hurghada" barely overlap as strings, so a live route recorded under the full city name
+# could score too low to even show up as a candidate. Only the codes already confirmed
+# elsewhere in this codebase are covered here; extend as more are confirmed rather than
+# guessing at codes nobody has verified.
+_AIRPORT_CODE_TO_CITY = {
+    "RMF": "Marsa Alam", "HRG": "Hurghada", "SSH": "Sharm El Sheikh", "CAI": "Cairo",
+}
+
+
+def _expand_airport_codes(text: str) -> str:
+    result = text or ""
+    for code, city in _AIRPORT_CODE_TO_CITY.items():
+        result = re.sub(rf"\b{code}\b", city, result, flags=re.IGNORECASE)
+    return result
+
+
 def _name_similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, (a or "").strip().lower(), (b or "").strip().lower()).ratio()
+    return difflib.SequenceMatcher(
+        None, _expand_airport_codes(a).strip().lower(), _expand_airport_codes(b).strip().lower()
+    ).ratio()
 
 
 def suggest_existing_transfer_matches(departure_name: str, arrival_name: str, existing_transfers: List[dict],

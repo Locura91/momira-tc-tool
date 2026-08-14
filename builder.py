@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
+MODULE_BUILD = "2026-08-14-airport-code-matching-bundled-route-price-name-lock-red-green"
 
 import math
 import datetime
@@ -1929,7 +1929,19 @@ def build_transfer_payload(
         class_hint = extracted_transfer_data.get("class_or_product_type") or ""
         name_prefix = service_name if not class_hint or class_hint.lower() in service_name.lower() \
             else f"{service_name} ({class_hint})"
-        transfer_name = f"{name_prefix}: {departure_name} - {arrival_name}".strip(": ")
+        generated_transfer_name = f"{name_prefix}: {departure_name} - {arrival_name}".strip(": ")
+        # CONFIRMED REAL RULE (product owner): "do not change the name and the description of
+        # transfer and transport" on an update/refresh - same _locked_on_update principle
+        # already applied to currency/min/max occupancy/dates/images/properties. The name and
+        # description are how the listing already reads to a booking agent; a rate-sheet
+        # refresh should update pricing, not silently reword the listing because this run's
+        # extraction phrased the route slightly differently than the original one did.
+        transfer_name, _name_inherited = _locked_on_update(
+            existing_transfer_snapshot, "name", generated_transfer_name)
+        existing_datasheet_en = ((existing_transfer_snapshot or {}).get("datasheets") or {}).get("EN") or {}
+        effective_description, _description_inherited = _locked_on_update(
+            {"description": existing_datasheet_en.get("description")} if existing_datasheet_en else None,
+            "description", extracted_transfer_data.get("description") or "")
 
         # CONFIRMED FALLBACK RULE (product owner decision): when the document states no
         # specific cancellation terms, fall back to the same 30-day/100%-refund default
@@ -1953,7 +1965,7 @@ def build_transfer_payload(
 
         datasheet_en = TransferDescriptorVO(
             name=transfer_name,
-            description=extracted_transfer_data.get("description") or "",
+            description=effective_description,
             pickupDescription=extracted_transfer_data.get("pickup_information") or "",
             voucherRemarks=voucher_text,
         )
@@ -2682,8 +2694,14 @@ def build_transport_payloads(
     # House naming: "DEPARTURE - ARRIVAL" (confirmed product-owner template). The service class
     # lives in the description and in the modality codes, not in the product name, so two
     # classes on one route do not produce two products with the same name.
-    transport_name = transport_display_name(departure_name, arrival_name) or \
+    generated_transport_name = transport_display_name(departure_name, arrival_name) or \
         extracted_transport_data.get("service_name") or ""
+    # CONFIRMED REAL RULE (product owner): "do not change the name and the description of
+    # transfer and transport" on an update/refresh - same _locked_on_update principle as
+    # Transfer's own name/description lock above. A price refresh should update pricing, not
+    # silently reword an already-live listing.
+    transport_name, _transport_name_inherited = _locked_on_update(
+        existing_transport_snapshot, "name", generated_transport_name)
 
     # CONFIRMED (via real Swagger): ContractTransportDataSheetVO only has name/description - no
     # dedicated voucherRemarks-style field the way ClosedTour/Ticket/Transfer have. The
@@ -2703,6 +2721,15 @@ def build_transport_payloads(
     if full_description and "<" not in full_description:
         full_description = "".join(f"<p>{para.strip()}</p>"
                                    for para in full_description.split("\n\n") if para.strip())
+    # CONFIRMED REAL RULE (product owner): "do not change the name and the description of
+    # transfer and transport" on an update/refresh - locked whole, cancellation text included
+    # (product owner's explicit choice, given Transport has no separate cancellation-terms
+    # field the way ClosedTour/Ticket/Transfer do - a genuine cancellation-policy change would
+    # need a separate, deliberate path rather than riding in on every price refresh).
+    existing_transport_datasheet_en = ((existing_transport_snapshot or {}).get("datasheets") or {}).get("EN") or {}
+    full_description, _description_inherited = _locked_on_update(
+        {"description": existing_transport_datasheet_en.get("description")} if existing_transport_datasheet_en else None,
+        "description", full_description)
     datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
 
     # Arrival is DERIVED from departure + duration whenever a duration is known, rather than

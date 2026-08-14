@@ -131,8 +131,28 @@ def lookup_tracked_transport_id(supplier_id: str, departure_name: str, arrival_n
     return routes.get(_route_key(departure_name, arrival_name))
 
 
+# CONFIRMED REAL RULE (product owner): "when Transfer or Transport says a three letter code
+# from Airport, this must be seen as a City name too" - same rule as transfer_matcher.py's own
+# copy of this table (see its docstring for why it's duplicated rather than shared, and why
+# only these codes). Applied to BOTH place names and full route-name strings here (see
+# _half_score below), since Transport's own 'name' field is a full descriptive string that may
+# embed a code, not a bare place name.
+_AIRPORT_CODE_TO_CITY = {
+    "RMF": "Marsa Alam", "HRG": "Hurghada", "SSH": "Sharm El Sheikh", "CAI": "Cairo",
+}
+
+
+def _expand_airport_codes(text: str) -> str:
+    result = text or ""
+    for code, city in _AIRPORT_CODE_TO_CITY.items():
+        result = re.sub(rf"\b{code}\b", city, result, flags=re.IGNORECASE)
+    return result
+
+
 def _name_similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, (a or "").strip().lower(), (b or "").strip().lower()).ratio()
+    return difflib.SequenceMatcher(
+        None, _expand_airport_codes(a).strip().lower(), _expand_airport_codes(b).strip().lower()
+    ).ratio()
 
 
 def suggest_existing_transport_matches(departure_name: str, arrival_name: str, existing_transports: List[dict],
@@ -161,8 +181,8 @@ def suggest_existing_transport_matches(departure_name: str, arrival_name: str, e
         # full descriptive route name, not just the bare place name the way Transfer's departure/
         # arrival.name fields are. Substring containment is checked first and given strong credit;
         # ratio() is only the fallback for genuinely fuzzy (non-substring) matches.
-        place_clean = (place_name or "").strip().lower()
-        route_clean = (route_name or "").strip().lower()
+        place_clean = _expand_airport_codes(place_name or "").strip().lower()
+        route_clean = _expand_airport_codes(route_name or "").strip().lower()
         if place_clean and place_clean in route_clean:
             return 0.9
         return _name_similarity(place_name, route_name)

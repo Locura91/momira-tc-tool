@@ -8286,14 +8286,22 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # gets applied on Publish.
             for c in p["changes"]:
                 pcol1, pcol2 = st.columns([3, 2])
-                with pcol1:
-                    st.write(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
-                             f"(AI read **{c['new']}**) {route.get('currency') or ''}")
                 with pcol2:
                     c["new"] = st.number_input(
                         f"New price ({c['min_pax']}-{c['max_pax']} pax)", min_value=0.0, step=1.0,
                         value=float(c["new"]), key=f"pr_price_{p['index']}_{c['code']}",
                         label_visibility="collapsed")
+                with pcol1:
+                    # CONFIRMED REAL REQUEST (product owner): red when the price to apply
+                    # differs from what's already live, green when (after any hand-edit above)
+                    # it now matches - a quick visual scan instead of reading every number.
+                    _ccy = route.get('currency') or ''
+                    if abs(c["new"] - c["old"]) < 0.005:
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
+                                   f":green[**{c['new']}**] {_ccy}  ·  *matches the live price*")
+                    else:
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
+                                   f":red[**{c['new']}**] {_ccy}")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f"from the row *“{finding['matched_row']}”*")
@@ -8339,7 +8347,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
     if unchanged:
         with st.expander(f"➖ {len(unchanged)} already at the document's price"):
             for p in unchanged:
-                st.write(f"- {p['route'].get('name')}")
+                route = p["route"]
+                price_bits = ", ".join(
+                    f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
+                    for o in (route.get("options") or []) if not o.get("fetch_failed"))
+                st.markdown(f"- **{route.get('name')}**  ·  :green[{price_bits}] {route.get('currency') or ''}")
     if absent:
         with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
             st.caption("The document may price these under a wording nobody matched, or the supplier "
@@ -8434,7 +8446,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
+BUILD_VERSION = "2026-08-14-airport-code-matching-bundled-route-price-name-lock-red-green"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

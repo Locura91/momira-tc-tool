@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
+MODULE_BUILD = "2026-08-14-airport-code-matching-bundled-route-price-name-lock-red-green"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -67,6 +67,16 @@ MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
   only; the return leg has the same price unless the document says otherwise. Use the same row.
 - Match the SERVICE CLASS too. A document with a "Shuttle" column and a "Private" column prices two
   different products for the same row - take the column that matches the route's own class.
+- BUNDLED ROUTES ("/" in the route name): CONFIRMED REAL RULE (product owner) - a route name joining two
+  or more places with "/" or "or" (e.g. "Hurghada / El Gouna or Soma Bay") is ONE existing product that
+  deliberately combines what the document prices as SEPARATE rows (one row per place). This is a
+  deliberate simplification already decided on, not a matching mistake - the alternative would be many
+  near-duplicate transfers/transports in the system for what the operator has chosen to sell as one. When
+  a route name bundles multiple places this way, find EACH place's own row in the document and use the
+  HIGHEST of their prices for that bracket - never the lowest, never an average. This is a known, accepted
+  rule, not a guess: report "confidence": "high" for this case (do not lower it just because multiple rows
+  were involved), and in "note" say which places you found bundled and what each one priced, e.g. "bundles
+  Hurghada (24) and El Gouna (26) - used the higher, El Gouna's 26."
 
 PRICES:
 - Report the number exactly as the document states it. Never convert a currency, never apply a discount,

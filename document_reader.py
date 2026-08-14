@@ -31,7 +31,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-transfer-solo-synthesis-price-refresh-edit-and-ai-hint"
+MODULE_BUILD = "2026-08-14-airport-code-matching-bundled-route-price-name-lock-red-green"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
