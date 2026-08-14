@@ -7668,72 +7668,169 @@ def render_manual_information_flow(client):
         st.info("Choose a supplier above to write a note.")
         return
 
-    # ---- 1. Where does the text go? -----------------------------------
-    st.markdown("### 1. Where should the text go?")
-    targets = bulk_notes.available_targets(product_type)
-    target = st.selectbox("Field", targets, key="mi_target")
-    missing = bulk_notes.unavailable_targets(product_type)
-    if missing:
-        # Naming what ISN'T possible, and why, stops someone hunting for an option that
-        # was never there - which is exactly what happened with the first Hotel note.
-        st.caption("Not available on " + product_type + ": "
-                   + "  ·  ".join(f"**{k}** — {v}" for k, v in missing.items()))
+    # ---- 1. What are you adding? ---------------------------------------
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-14): a Supplement (ClosedTour, applies to
+    # every Modality; Transfer) and an Additional Service (Transfer) are useful to bulk-add
+    # here too, alongside the plain-text fields this flow already handles. They're
+    # structured records, not a block of text, so they get their own small form below
+    # rather than the text box - see bulk_notes.STRUCTURED_TARGETS.
+    structured_labels = bulk_notes.available_structured_targets(product_type)
+    add_structured = False
+    structured_kind = None
+    item_data = {}
+    if structured_labels:
+        st.markdown("### 1. What are you adding?")
+        add_mode = st.radio(
+            "What are you adding?", ["Text into an existing field", "A new Supplement / Additional Service"],
+            key="mi_add_mode", label_visibility="collapsed", horizontal=True,
+        )
+        add_structured = add_mode.startswith("A new")
 
-    # ---- 2. The text --------------------------------------------------
-    st.markdown("### 2. What should it say?")
-    text = st.text_area(
-        "Text to add to every one of this supplier's " + product_type + " services",
-        key="mi_text", height=120,
-        placeholder="e.g. All pickups now depart from the new terminal, not the old arrivals hall.",
-    )
-    mode_label = st.radio(
-        "How should it be written?",
-        ["Add at the bottom (keep what is already there)",
-         "Replace the field completely"],
-        key="mi_mode",
-    )
-    mode = (bulk_notes.MODE_REPLACE if mode_label.startswith("Replace") else bulk_notes.MODE_APPEND)
-    if mode == bulk_notes.MODE_REPLACE:
-        st.warning("⚠️ Replace deletes whatever is currently in that field — including text "
-                   "extracted from the supplier's own contract. There is no undo in Travel "
-                   "Compositor. Use it only when the old wording is genuinely superseded.")
+    if add_structured:
+        kind_label = st.selectbox("Which one?", structured_labels, key="mi_structured_kind_label")
+        structured_kind = bulk_notes.STRUCTURED_TARGETS[product_type][kind_label]
+        st.caption("This ADDS a new entry to every matching service - it never edits or replaces "
+                  "anything already there. A service that already has an entry with the same name "
+                  "is left alone, so sending twice can't duplicate it.")
 
-    codes = None
-    if bulk_notes.needs_manual_codes(product_type):
-        st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
-                "found automatically — paste the tour codes, one per line.")
-        raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
-                                 placeholder="ASW-CT1\nCAI-CT2")
-        codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+        target = kind_label
+        text = None
+        mode = None
+        item_data = {"name": st.text_input("Name", key="mi_s_name",
+                                           placeholder="e.g. Resort Fee, Child Seat")}
+        if structured_kind == "closedtour_supplement":
+            st.caption("Applies to every Modality on the tour - Travel Compositor has no way to "
+                      "scope a ClosedTour supplement to just one cabin.")
+            c1, c2 = st.columns(2)
+            with c1:
+                item_data["price"] = st.number_input("Price per person", min_value=0.0, step=1.0,
+                                                      key="mi_s_price")
+                item_data["mandatory"] = st.checkbox("Mandatory", value=False, key="mi_s_mandatory")
+            with c2:
+                item_data["on_request"] = st.checkbox("On request", value=False, key="mi_s_on_request")
+            item_data["single_price"] = item_data["price"]
+            item_data["double_price"] = item_data["price"]
+        elif structured_kind == "transfer_supplement":
+            st.caption("Mandatory, automatically-applied surcharges only - an optional extra "
+                      "belongs under Additional Service instead.")
+            c1, c2 = st.columns(2)
+            with c1:
+                item_data["amount"] = st.number_input("Amount", min_value=0.0, step=1.0, key="mi_s_amount")
+                item_data["type"] = st.radio("Type", ["ABSOLUTE", "PERCENT"], key="mi_s_type",
+                                             horizontal=True,
+                                             help="PERCENT is applied to the base price itself by "
+                                                  "Travel Compositor - never pre-calculate it.")
+            with c2:
+                item_data["start_time"] = st.text_input("Start time (optional, HH:MM)", key="mi_s_start_time",
+                                                         placeholder="22:00")
+                item_data["end_time"] = st.text_input("End time (optional, HH:MM)", key="mi_s_end_time",
+                                                       placeholder="08:00")
+            st.caption("Dates left blank inherit each transfer's own validity window.")
+        elif structured_kind == "transfer_additional_service":
+            st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
+            c1, c2 = st.columns(2)
+            with c1:
+                item_data["price"] = st.number_input("Price", min_value=0.0, step=1.0, key="mi_s_svc_price")
+                item_data["currency"] = st.text_input("Currency (optional - defaults to the transfer's own)",
+                                                       key="mi_s_svc_currency", placeholder="EUR")
+            with c2:
+                item_data["max_quantity"] = st.number_input("Maximum quantity", min_value=1, step=1,
+                                                             value=1, key="mi_s_svc_max")
+                item_data["on_request"] = st.checkbox("On request", value=False, key="mi_s_svc_on_request")
 
-    also_future = st.checkbox(
-        f"Also attach this to every {product_type} I upload from now on",
-        value=True, key="mi_also_future",
-        help="Saved as a standing note. Note: on future uploads it is added to the Voucher "
-             "Remarks, which is the field the upload flows write notes into.",
-    )
+        codes = None
+        if bulk_notes.needs_manual_codes(product_type):
+            st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
+                    "found automatically — paste the tour codes, one per line.")
+            raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
+                                     placeholder="ASW-CT1\nCAI-CT2")
+            codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+        also_future = False
+    else:
+        # ---- 1b. Where does the text go? -------------------------------
+        st.markdown("### 1. Where should the text go?" if not structured_labels
+                    else "### 2. Where should the text go?")
+        targets = bulk_notes.available_targets(product_type)
+        target = st.selectbox("Field", targets, key="mi_target")
+        missing = bulk_notes.unavailable_targets(product_type)
+        if missing:
+            # Naming what ISN'T possible, and why, stops someone hunting for an option that
+            # was never there - which is exactly what happened with the first Hotel note.
+            st.caption("Not available on " + product_type + ": "
+                       + "  ·  ".join(f"**{k}** — {v}" for k, v in missing.items()))
+
+        # ---- 2. The text ------------------------------------------------
+        st.markdown("### 2. What should it say?" if not structured_labels else "### 3. What should it say?")
+        text = st.text_area(
+            "Text to add to every one of this supplier's " + product_type + " services",
+            key="mi_text", height=120,
+            placeholder="e.g. All pickups now depart from the new terminal, not the old arrivals hall.",
+        )
+        mode_label = st.radio(
+            "How should it be written?",
+            ["Add at the bottom (keep what is already there)",
+             "Replace the field completely"],
+            key="mi_mode",
+        )
+        mode = (bulk_notes.MODE_REPLACE if mode_label.startswith("Replace") else bulk_notes.MODE_APPEND)
+        if mode == bulk_notes.MODE_REPLACE:
+            st.warning("⚠️ Replace deletes whatever is currently in that field — including text "
+                       "extracted from the supplier's own contract. There is no undo in Travel "
+                       "Compositor. Use it only when the old wording is genuinely superseded.")
+
+        codes = None
+        if bulk_notes.needs_manual_codes(product_type):
+            st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
+                    "found automatically — paste the tour codes, one per line.")
+            raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
+                                     placeholder="ASW-CT1\nCAI-CT2")
+            codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+
+        also_future = st.checkbox(
+            f"Also attach this to every {product_type} I upload from now on",
+            value=True, key="mi_also_future",
+            help="Saved as a standing note. Note: on future uploads it is added to the Voucher "
+                 "Remarks, which is the field the upload flows write notes into.",
+        )
 
     # ---- 3. Preview, then send ----------------------------------------
-    st.markdown("### 3. Check it, then send")
+    st.markdown("### 3. Check it, then send" if not structured_labels else "### 4. Check it, then send")
     st.caption("Preview reads Travel Compositor and shows exactly what would change. Nothing "
               "is written until you press Send.")
 
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-14): "either for all Service from a supplier
+    # or just a selection" - the preview list below now has a checkbox per would-change
+    # service so specific ones can be deselected before Send, for both text and structured
+    # additions. ClosedTour keeps its pasted-codes list as the primary way to narrow the set,
+    # but the checkboxes work there too if a pasted code turns out not to need this after all.
+    if add_structured:
+        preview_disabled = not (item_data.get("name") or "").strip()
+        current_sig = (supplier_id, product_type, structured_kind,
+                       tuple(sorted((item_data or {}).items())), tuple(codes or ()))
+    else:
+        preview_disabled = not (text or "").strip()
+        current_sig = (supplier_id, product_type, target, text, mode, tuple(codes or ()))
+
     pcol1, pcol2 = st.columns([1, 3])
     with pcol1:
-        if st.button("🔍 Preview", key="mi_preview", disabled=not (text or "").strip()):
+        if st.button("🔍 Preview", key="mi_preview", disabled=preview_disabled):
             bar = st.progress(0.0, text="Reading Travel Compositor...")
 
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Checking {name} ({done}/{total})")
 
             try:
-                st.session_state.mi_plan = bulk_notes.plan(
-                    client, supplier_id, product_type, target, text, mode=mode,
-                    codes=codes, progress=_tick)
+                if add_structured:
+                    st.session_state.mi_plan = bulk_notes.plan_structured(
+                        client, supplier_id, product_type, structured_kind, item_data,
+                        codes=codes, progress=_tick)
+                else:
+                    st.session_state.mi_plan = bulk_notes.plan(
+                        client, supplier_id, product_type, target, text, mode=mode,
+                        codes=codes, progress=_tick)
                 # The signature includes `codes`: without it, previewing tours A+B and then
                 # editing the box to C left Send armed and would have written A+B.
-                st.session_state.mi_plan_sig = (supplier_id, product_type, target, text,
-                                                mode, tuple(codes or ()))
+                st.session_state.mi_plan_sig = current_sig
             except Exception as e:
                 # A failed refresh must DISARM, never leave the previous plan pressable.
                 for _k in ("mi_plan", "mi_plan_sig"):
@@ -7746,17 +7843,17 @@ def render_manual_information_flow(client):
     planned = st.session_state.get("mi_plan")
     # A plan is only valid for the exact inputs it was built from. Editing the text after
     # previewing and then pressing Send would otherwise publish the OLD text.
-    if planned and st.session_state.get("mi_plan_sig") != (supplier_id, product_type, target,
-                                                          text, mode, tuple(codes or ())):
+    if planned and st.session_state.get("mi_plan_sig") != current_sig:
         st.info("You changed something after previewing — press Preview again to see the new result.")
         planned = None
 
     if planned:
         if planned.get("error"):
             st.error(planned["error"])
+        noun = "service(s)" if add_structured else "already have this text or have nothing to write into"
         st.markdown(f"**{planned['will_change']} service(s) would change**, "
-                    f"{planned['unchanged']} already have this text or have nothing to write "
-                    f"into, {planned['failed']} couldn't be read.")
+                    f"{planned['unchanged']} {'already have this entry' if add_structured else noun}, "
+                    f"{planned['failed']} couldn't be read.")
         for it in planned["items"]:
             icon = {"will_change": "✏️", "unchanged": "➖", "failed": "❌"}[it["status"]]
             with st.expander(f"{icon} {it['name']}"
@@ -7764,6 +7861,12 @@ def render_manual_information_flow(client):
                                 if it["status"] != "will_change" else ""),
                              expanded=False):
                 if it["status"] == "will_change":
+                    # Mutating `it` in place is deliberate: `planned` IS
+                    # st.session_state.mi_plan, so this checkbox's value survives reruns
+                    # without a separate session key to keep in sync.
+                    it["_include"] = st.checkbox(
+                        "Include this service", value=it.get("_include", True),
+                        key=f"mi_include_{it.get('id')}")
                     for lang, (before, after) in sorted(it["changes"].items()):
                         st.caption(f"{lang} — before")
                         st.code(before or "(empty)")
@@ -7772,17 +7875,31 @@ def render_manual_information_flow(client):
                 else:
                     st.caption(it.get("reason") or it.get("detail") or "")
 
+        included_count = sum(1 for it in planned["items"]
+                             if it["status"] == "will_change" and it.get("_include", True))
         if planned["will_change"]:
-            st.warning(f"This writes to **{planned['will_change']} live service(s)** for supplier "
+            if included_count < planned["will_change"]:
+                st.caption(f"{planned['will_change'] - included_count} deselected above — "
+                          f"those will be left untouched.")
+            st.warning(f"This writes to **{included_count} live service(s)** for supplier "
                        f"{supplier_id}. Travel Compositor has no undo.")
-            if st.button(f"🚀 Send to {planned['will_change']} service(s)", type="primary",
-                         key="mi_send"):
+            if st.button(f"🚀 Send to {included_count} service(s)", type="primary",
+                         key="mi_send", disabled=not included_count):
                 bar = st.progress(0.0, text="Sending...")
 
                 def _tick2(done, total, name):
                     bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
 
-                st.session_state.mi_result = bulk_notes.apply(client, supplier_id, planned,
+                # Deselected items are excluded by giving them a status apply() doesn't act
+                # on - apply() only ever sends items still marked "will_change", and counts
+                # everything else as skipped.
+                to_apply = dict(planned)
+                to_apply["items"] = [
+                    (dict(it, status="excluded_by_user")
+                     if it["status"] == "will_change" and not it.get("_include", True) else it)
+                    for it in planned["items"]
+                ]
+                st.session_state.mi_result = bulk_notes.apply(client, supplier_id, to_apply,
                                                               progress=_tick2)
                 bar.empty()
                 if also_future:
@@ -7795,7 +7912,8 @@ def render_manual_information_flow(client):
                     st.session_state.pop(_k, None)
                 st.rerun()
         else:
-            st.info("Nothing to send — every live service already has this text.")
+            st.info("Nothing to send — every live service already has this "
+                    + ("entry." if add_structured else "text."))
             if also_future and st.button("💾 Save it for future uploads anyway",
                                          key="mi_save_future_only"):
                 if service_notes.set_standing_note(supplier_id, product_type, text):
@@ -8459,7 +8577,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-hotel-supplement-name-no-date-or-per-night"
+BUILD_VERSION = "2026-08-14-bulk-supplement-additional-service"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

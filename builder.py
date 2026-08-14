@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-hotel-supplement-name-no-date-or-per-night"
+MODULE_BUILD = "2026-08-14-bulk-supplement-additional-service"
 
 import math
 import datetime
@@ -267,6 +267,28 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
             endDate=(s.get("end_date") or transfer_end_date or _TRANSFER_MAX_END_DATE) or None,
             startTime=normalize_supplement_time(s.get("start_time")),
             endTime=normalize_supplement_time(s.get("end_time")),
+        ))
+    return out
+
+
+def build_transfer_additional_service_vos(items, default_currency: str = "EUR") -> List[TransferAdditionalServiceVO]:
+    """OPTIONAL/on-request extras only (child seat, non-default guide language, etc) - see
+    TransferAdditionalServiceVO's docstring for the confirmed shape. Factored out of
+    build_transfer_payload so bulk_notes' "add this to every one of a supplier's transfers"
+    flow can build the exact same VO a single-transfer upload would, rather than a
+    hand-rolled approximation that could quietly drift from the real create/update path."""
+    out = []
+    for a in (items or []):
+        if not isinstance(a, dict):
+            continue
+        svc_name = a.get("name") or ""
+        if a.get("on_request") and "request" not in svc_name.lower():
+            svc_name = f"{svc_name} (on request)".strip()
+        out.append(TransferAdditionalServiceVO(
+            currency=a.get("currency") or default_currency,
+            maximum=_safe_int(a.get("max_quantity", 1), fallback=1) or 1,
+            price=_safe_float(a.get("price", 0)),
+            translations={"EN": TransferAdditionalServiceTranslation(name=svc_name)},
         ))
     return out
 
@@ -2056,19 +2078,8 @@ def build_transfer_payload(
         # languages, and similar all belong here (never in supplements, which is mandatory-
         # only). An "on request" qualifier gets folded into the name text itself since this
         # schema has no structured on-request flag.
-        additional_services = []
-        for a in (extracted_transfer_data.get("additional_services") or []):
-            if not isinstance(a, dict):
-                continue
-            svc_name = a.get("name") or ""
-            if a.get("on_request") and "request" not in svc_name.lower():
-                svc_name = f"{svc_name} (on request)".strip()
-            additional_services.append(TransferAdditionalServiceVO(
-                currency=a.get("currency") or currency,
-                maximum=_safe_int(a.get("max_quantity", 1), fallback=1) or 1,
-                price=_safe_float(a.get("price", 0)),
-                translations={"EN": TransferAdditionalServiceTranslation(name=svc_name)},
-            ))
+        additional_services = build_transfer_additional_service_vos(
+            extracted_transfer_data.get("additional_services"), default_currency=currency)
         # CONFIRMED RULE: guide language is never included by default (driver-only is the
         # base) - each other language priced in the source becomes its own optional
         # additionalServices surcharge rather than a separate whole transfer record.

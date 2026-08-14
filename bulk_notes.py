@@ -40,6 +40,8 @@ available_targets() is the single source of truth for what can actually be writt
 import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import builder
+
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}
 #   "translation_list" -> record[field] = [{"language": "EN", "description": "..."}]
@@ -154,6 +156,156 @@ UNAVAILABLE_REASON: Dict[str, Dict[str, str]] = {
 
 MODE_APPEND = "append"
 MODE_REPLACE = "replace"
+
+
+# ----------------------------------------------------------------------
+# Structured targets: Supplement / Additional Service
+#
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-08-14): "is there a chance we can include a
+# Supplement for ClosedTour... Supplement for Transfers... Additional Services for
+# Transfers" in this same bulk tool. Unlike everything above, these are not one block of
+# text - they're structured records (name + price/percentage + validity + mandatory/
+# on-request flags) that get ADDED as a new list entry, never appended into or replacing an
+# existing string. So this is a parallel mechanism, not a new TARGETS entry: plan_structured
+# builds one new supplements/additionalServices entry via the SAME builder.py functions the
+# single-service upload flows already use (build_supplement_vos /
+# build_transfer_supplement_vos / build_transfer_additional_service_vos), so a bulk-added
+# entry is never a hand-rolled approximation that could drift from the real shape.
+#
+# Transport and Hotel are deliberately absent here: Transport has no supplements or
+# additionalServices field in Travel Compositor at all (see ContractTransportVO), and a
+# Hotel supplement already has its own dedicated, more carefully gated bulk-safe path
+# (there is no such thing as "add this supplement to every hotel of a supplier" as a
+# product-owner-confirmed request yet) - this only covers what was actually asked for.
+STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
+    "ClosedTour": {"Supplement (applies to all Modalities)": "closedtour_supplement"},
+    "Transfer": {"Supplement": "transfer_supplement", "Additional Service": "transfer_additional_service"},
+}
+
+# Which list field on the live record each structured kind writes into.
+STRUCTURED_FIELD: Dict[str, str] = {
+    "closedtour_supplement": "supplements",
+    "transfer_supplement": "supplements",
+    "transfer_additional_service": "additionalServices",
+}
+
+
+def available_structured_targets(product_type: str) -> List[str]:
+    return list(STRUCTURED_TARGETS.get(product_type, {}).keys())
+
+
+def _structured_entry_name(entry: Dict[str, Any], kind: str) -> str:
+    """The name of one EXISTING supplement/additionalService entry, for the duplicate check -
+    both closedtour_supplement and transfer_additional_service store it under
+    translations.EN.name; transfer_supplement stores it as a plain top-level "name"."""
+    if not isinstance(entry, dict):
+        return ""
+    if kind == "transfer_supplement":
+        return str(entry.get("name") or "")
+    return str(((entry.get("translations") or {}).get("EN") or {}).get("name") or "")
+
+
+def _build_structured_entry(kind: str, item_data: Dict[str, Any],
+                            record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One new supplements/additionalServices entry, built by the SAME code the single-
+    service flows use - never a parallel hand-rolled shape. Returns None if the builder
+    couldn't produce an entry (e.g. a blank name or zero amount it deliberately skips)."""
+    try:
+        if kind == "closedtour_supplement":
+            vos = builder.build_supplement_vos([item_data])
+        elif kind == "transfer_supplement":
+            vos = builder.build_transfer_supplement_vos(
+                [item_data],
+                transfer_start_date=record.get("startDate") or "",
+                transfer_end_date=record.get("endDate") or "")
+        elif kind == "transfer_additional_service":
+            vos = builder.build_transfer_additional_service_vos(
+                [item_data], default_currency=record.get("currency") or "EUR")
+        else:
+            return None
+    except Exception:
+        return None
+    if not vos:
+        return None
+    return vos[0].dict()
+
+
+def plan_structured(client, supplier_id: str, product_type: str, kind: str,
+                    item_data: Dict[str, Any], codes: Optional[List[str]] = None,
+                    progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Same job as plan(), for a structured Supplement/Additional Service instead of a text
+    field: work out exactly what would change, WITHOUT writing anything. A service that
+    already has an entry with this same name is left alone (status "unchanged"), so pressing
+    Send twice can't add the same supplement twice."""
+    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
+                              "failed": 0, "product_type": product_type, "target": kind,
+                              "structured": True}
+    name = str((item_data or {}).get("name") or "").strip()
+    if not name:
+        result["error"] = "Give the supplement/service a name."
+        return result
+    field = STRUCTURED_FIELD.get(kind)
+    if not field or kind not in STRUCTURED_TARGETS.get(product_type, {}).values():
+        result["error"] = f"{kind!r} isn't available on a {product_type}."
+        return result
+
+    records, err = list_services(client, supplier_id, product_type, codes=codes)
+    if err and not records:
+        result["error"] = err
+        return result
+    result["error"] = err  # partial failures still worth surfacing
+
+    cfg = PRODUCTS[product_type]
+    total = len(records)
+    for i, summary in enumerate(records):
+        ident = summary.get(cfg["id_field"])
+        disp_name = label_for(summary, product_type)
+        if progress:
+            progress(i + 1, total, disp_name)
+        record = summary
+        if not cfg["full_in_list"]:
+            try:
+                record = getattr(client, cfg["fetch_fn"])(supplier_id, ident)
+            except Exception as e:
+                record = {"error": type(e).__name__, "message": str(e)}
+            if not isinstance(record, dict) or "error" in record:
+                detail = (str(record.get("message") or record.get("error"))
+                          if isinstance(record, dict) else
+                          f"unexpected response type {type(record).__name__}")
+                result["items"].append({"id": ident, "name": disp_name, "status": "failed",
+                                        "detail": detail, "changes": {}})
+                result["failed"] += 1
+                continue
+
+        existing_list = record.get(field) or []
+        existing_names = {_norm(_structured_entry_name(e, kind))
+                          for e in existing_list if isinstance(e, dict)}
+        if _norm(name) in existing_names:
+            result["unchanged"] += 1
+            result["items"].append({
+                "id": ident, "name": label_for(record, product_type), "status": "unchanged",
+                "changes": {}, "reason": "this service already has an entry with this name",
+            })
+            continue
+
+        new_entry = _build_structured_entry(kind, item_data, record)
+        if new_entry is None:
+            result["failed"] += 1
+            result["items"].append({
+                "id": ident, "name": label_for(record, product_type), "status": "failed",
+                "detail": "couldn't build this entry (check the name/amount)", "changes": {},
+            })
+            continue
+
+        updated = copy.deepcopy(record)
+        current = updated.get(field)
+        updated[field] = (list(current) if isinstance(current, list) else []) + [new_entry]
+        result["will_change"] += 1
+        result["items"].append({
+            "id": ident, "name": label_for(record, product_type), "status": "will_change",
+            "changes": {"EN": ("", name)}, "record": updated,
+        })
+    return result
 
 
 def available_targets(product_type: str) -> List[str]:
