@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-strict-schema-fix"
+MODULE_BUILD = "2026-08-14-price-refresh-hint-case-insensitive"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -56,6 +56,12 @@ it is correct. Your only job is to find each one's price in the document.
 
 You will be given a numbered list of ROUTES, each with the passenger brackets it is sold in, and then the
 document. For each route, report the price the document states for each bracket.
+
+You may also be given an OPERATOR INSTRUCTION - a human typed this in their own words to point you at part
+of the document (e.g. "focus only on Sharm El Sheikh"). Match it BY MEANING, never as exact text: ignore
+capitalization and wording differences entirely - "sharm el sheikh", "Sharm El Sheikh" and "SHARM EL SHEIKH"
+all mean the identical place and must be treated identically. The instruction only narrows which routes you
+report as found; it is never a reason to report a route "found": false that the document genuinely prices.
 
 MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
 - The route names PLACES; the document often names AIRPORTS. "RMF Airport" is Marsa Alam, "HRG Airport" is
@@ -83,6 +89,9 @@ PRICES:
 - If you are unsure which row a route matches, set "confidence": "low" and say why in "note". A human
   confirms every price before anything is written, so an honest doubt is far more useful than a guess
   presented as fact.
+- Before you answer, check yourself: if the document plainly prices a section (e.g. its own heading names
+  the place) but you are about to report every route under it as not found, re-read that section - you are
+  very likely missing the row, not looking at a document that truly has no prices for it.
 
 Output ONLY valid JSON, no markdown fences:
 {

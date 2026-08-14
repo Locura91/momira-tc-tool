@@ -8269,10 +8269,17 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 p["accepted"] = False
             st.rerun()
 
+    def _id_suffix(route):
+        # CONFIRMED REAL REQUEST (product owner): show the TRANSFER-xxxxx / TRANSPORT-xxxxx id
+        # next to the route so a human can find the exact record in Travel Compositor without
+        # having to search by name.
+        rid = route.get("id")
+        return f"  ·  `{rid}`" if rid else ""
+
     for p in changed:
         route = p["route"]
         finding = p["finding"]
-        head = f"**{route.get('name') or route.get('id')}**"
+        head = f"**{route.get('name') or route.get('id')}**{_id_suffix(route)}"
         cols = st.columns([1, 6])
         with cols[0]:
             p["accepted"] = st.checkbox("Yes", value=p["accepted"], key=f"pr_ok_{p['index']}")
@@ -8351,7 +8358,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 price_bits = ", ".join(
                     f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
                     for o in (route.get("options") or []) if not o.get("fetch_failed"))
-                st.markdown(f"- **{route.get('name')}**  ·  :green[{price_bits}] {route.get('currency') or ''}")
+                st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  ·  "
+                           f":green[{price_bits}] {route.get('currency') or ''}")
     if absent:
         with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
             st.caption("The document may price these under a wording nobody matched, or the supplier "
@@ -8360,7 +8368,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
                 with mcol1:
-                    st.write(f"**{route.get('name')}**")
+                    st.write(f"**{route.get('name')}**{_id_suffix(route)}")
                     st.caption(", ".join(f"{o['min_pax']}–{o['max_pax']} pax now {o['unit_price']}"
                                          for o in route["options"] if not o.get("fetch_failed")))
                 with mcol2:
@@ -8446,7 +8454,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-price-refresh-strict-schema-fix"
+BUILD_VERSION = "2026-08-14-price-refresh-hint-case-insensitive"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
