@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-prompt-simplified-detection-fix"
+MODULE_BUILD = "2026-08-14-price-refresh-strict-schema-fix"
 
 import os
 import re
@@ -857,7 +857,8 @@ def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt:
     )
 
 
-def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096) -> dict:
+def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096,
+                 input_schema: dict = None) -> dict:
     """
     Shared helper: calls Claude via a forced tool call (see
     _stream_claude_tool_call - guarantees well-formed JSON back, no manual
@@ -867,9 +868,17 @@ def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: 
     item in a multi-tour/multi-ticket batch) are billed at a fraction of
     the normal input price for that cached portion, instead of paying full
     price for the same multi-thousand-token prompt every single time.
+
+    `input_schema` is optional and defaults to the fully permissive schema
+    (see _stream_claude_tool_call) - pass a real schema with "required"
+    fields for a caller whose output has a small, fixed shape where a
+    dropped field would silently break everything downstream (e.g. a
+    per-item "found"/"brackets" pair that a missing-field default quietly
+    turns into "not found" for every single item at once).
     """
     client = _get_anthropic_client()
-    data, stop_reason = _stream_claude_tool_call(client, model, max_tokens, system_prompt, user_content)
+    data, stop_reason = _stream_claude_tool_call(client, model, max_tokens, system_prompt, user_content,
+                                                 input_schema=input_schema)
     if stop_reason == "max_tokens":
         raise RuntimeError(
             "Claude's response was cut off (hit the token limit) before finishing - try a shorter "

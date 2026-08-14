@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-14-price-refresh-prompt-simplified-detection-fix"
+MODULE_BUILD = "2026-08-14-price-refresh-strict-schema-fix"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -98,6 +98,59 @@ Output ONLY valid JSON, no markdown fences:
   ]
 }
 Report every route you were given, in the same order, including the ones you did not find."""
+
+# CONFIRMED REAL BUG (product owner, 2026-08-14): "before it was working fine... now the AI did
+# not detect any transfer" - EVERY route came back "not found", not just the hard ones. Root
+# cause was almost certainly the fully permissive tool schema (see ai_extractor._call_claude's
+# default): the same pattern was already confirmed once before, on apply_clarification, where a
+# permissive schema let Claude drop a required field on every single call once nothing but prose
+# was enforcing the shape. Here the at-risk fields are "found" and "brackets" - lookup_prices
+# treats a missing/empty "brackets" as not-found (see the `bool(brackets)` check below), so if
+# Claude drops that key for one route it silently drops it for all of them, and a mid-round
+# prompt-wording change is exactly the kind of thing that can trigger it. A real schema that
+# REQUIRES "found" and "brackets" on every route item closes this off structurally, the same way
+# CLARIFY_TOOL_SCHEMA closes it off for apply_clarification - rather than depending on prose to
+# keep the model reporting every field, every time.
+PRICE_LOOKUP_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "routes": {
+            "type": "array",
+            "description": "One entry per route you were given, in the same order, including the "
+                            "ones you did not find.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "found": {"type": "boolean"},
+                    "matched_row": {"type": "string"},
+                    "currency": {"type": "string"},
+                    "minimum_pax": {"type": "integer"},
+                    "brackets": {
+                        "type": "array",
+                        "description": "Empty array if found is false or the document doesn't "
+                                        "price any bracket for this route.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "min_pax": {"type": "integer"},
+                                "max_pax": {"type": "integer"},
+                                "price": {"type": "number"},
+                                "child_price": {"type": ["number", "null"]},
+                                "infant_price": {"type": ["number", "null"]},
+                            },
+                            "required": ["min_pax", "max_pax", "price"],
+                        },
+                    },
+                    "confidence": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["index", "found", "brackets"],
+            },
+        },
+    },
+    "required": ["routes"],
+}
 
 
 # ----------------------------------------------------------------------
@@ -294,7 +347,7 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
     user_content = (f"{instruction}ROUTES TO PRICE:\n" + "\n".join(described) +
                     f"\n\n--- DOCUMENT ---\n{raw_text}")
     data = ai_extractor._call_claude(PRICE_LOOKUP_SYSTEM_PROMPT, user_content, model,
-                                     max_tokens=8192) or {}
+                                     max_tokens=8192, input_schema=PRICE_LOOKUP_TOOL_SCHEMA) or {}
     findings = {}
     for item in (data.get("routes") or []):
         if not isinstance(item, dict):
