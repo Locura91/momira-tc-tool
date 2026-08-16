@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-closedtour-ignore-pre-post-night"
+MODULE_BUILD = "2026-08-16-outreach-combo-cap-and-email-only-preselect"
 
 import csv
 import io
@@ -176,14 +176,19 @@ def _render_country_scope():
     # minutes and a lot of API calls that nobody knowingly agreed to.
     st.markdown(f"**{len(planned)} search(es)** would run: "
                 f"{len(chosen_places) or 'any'} place(s) × {len(chosen_themes) or 'any'} theme(s).")
-    if len(planned) > 12:
+    over_cap = len(planned) > _MAX_COMBINATIONS
+    if over_cap:
+        st.error(f"🚫 That's {len(planned)} combinations - only up to {_MAX_COMBINATIONS} can run at "
+                 f"once. Untick some places or themes to bring it down to {_MAX_COMBINATIONS} or fewer, "
+                 f"then come back for the rest in a second run.")
+    elif len(planned) > 12:
         st.warning(f"That is a lot of searching and will take a while. Consider starting with the "
                    f"handful you most need, then coming back — the list is remembered.")
     with st.expander("See exactly what will be searched"):
         st.dataframe(pd.DataFrame(planned), use_container_width=True, hide_index=True)
 
     if st.button(f"🔎 Search suppliers for these {len(planned)} combination(s)", type="primary",
-                 key="or_scope_run"):
+                 key="or_scope_run", disabled=over_cap):
         st.session_state["or_queue"] = planned
         st.session_state["or_queue_index"] = 0
         st.session_state[_PHASE_KEY] = "search"
@@ -193,13 +198,29 @@ def _render_country_scope():
 # ============================================================================
 # SCREEN 1 — SEARCH
 # ============================================================================
+# CONFIRMED RULE (product owner, 2026-08-16): "only one supplier at all, even if the supplier
+# has multiple matches. We can contact each supplier only once." A country-scope run queues up
+# to _MAX_COMBINATIONS place/theme searches, and the same real business routinely turns up under
+# several of them (the same Nile Cruise operator matches both "Luxor" and "Aswan"). One dedupe
+# pass by domain/name catches the obvious case, but two searches can also surface the SAME
+# supplier under a different domain or a slightly different name (an aggregator listing on one
+# side, the operator's own site on the other) - which is exactly what the email/social-based
+# dedupe_suppliers_by_contact() pass already does for a single search. Running that same pass
+# again across the merged cross-combination list closes that gap, so a supplier can never end up
+# as two rows that both get ticked and both get an email.
+_MAX_COMBINATIONS = 20
+_MAX_MERGED_RESULTS = 30
+
+
 def _run_queued_searches(queue):
     """Run a scope-built list of searches and merge them into one supplier list.
 
     Merged rather than run one at a time because the point of the country step is a single
-    picture of who exists across the whole programme. Deduplicated by domain: the same operator
-    legitimately turns up under Luxor/Nile Cruise and Aswan/Nile Cruise, and reviewing them twice
-    is how a supplier gets emailed twice."""
+    picture of who exists across the whole programme. Deduplicated by domain, then a second time
+    by email/social across the WHOLE merged list (see _MAX_COMBINATIONS comment above) - the same
+    operator legitimately turns up under Luxor/Nile Cruise and Aswan/Nile Cruise, and reviewing
+    them twice is how a supplier gets emailed twice. Finally capped to _MAX_MERGED_RESULTS total,
+    so a wide combination run still hands back a reviewable list rather than several hundred rows."""
     merged, seen = [], set()
     stats = {"raw": 0, "after_prefilter": 0, "final": 0, "used_mock_provider": False}
     progress = st.progress(0.0)
@@ -236,6 +257,26 @@ def _run_queued_searches(queue):
     if failures:
         st.warning("Some searches failed and were skipped:\n\n" +
                    "\n".join(f"- {f}" for f in failures))
+
+    # Second dedupe pass, this time by email/social across every combination's results
+    # together - catches the same real supplier surfacing under two different domains/names
+    # in two different searches, which the per-job fingerprint pass above cannot see.
+    merged = od.dedupe_suppliers_by_contact(merged)
+
+    # Same priority the single-search path uses: a real email first, then a website, then
+    # rating - so if a wide run finds more than _MAX_MERGED_RESULTS suppliers, the ones
+    # actually worth reviewing survive the cut rather than whichever combination ran first.
+    merged.sort(key=lambda s: (
+        0 if s.get("email") else 1,
+        0 if s.get("website") else 1,
+        -(s["rating"] if s.get("rating") is not None else -1),
+    ))
+    dropped = max(0, len(merged) - _MAX_MERGED_RESULTS)
+    merged = merged[:_MAX_MERGED_RESULTS]
+    if dropped:
+        stats["capped_at"] = _MAX_MERGED_RESULTS
+        stats["dropped_over_cap"] = dropped
+
     return {"suppliers": merged, "stats": stats}
 
 
@@ -496,20 +537,36 @@ def _render_review_and_send():
                                     f"been written. Check the Memory line at the bottom of the page.")
                             st.rerun()
 
-    with st.expander(f"🔬 How the {stats['raw']} raw results became {stats['final']}"):
+    if stats.get("dropped_over_cap"):
+        st.caption(f"ℹ️ {stats['dropped_over_cap']} additional supplier(s) were found across these "
+                   f"combinations but not shown — capped at the top {stats['capped_at']} (by email, "
+                   f"then website, then rating). Run fewer combinations at once to see the rest.")
+
+    # A combination/queue run merges several searches' own stats together (see
+    # _run_queued_searches) and has no single drop_log or per-stage breakdown of its own -
+    # only a single search (this screen's other entry point) produces those. Every metric here
+    # is read with .get() so the expander degrades to "not available for a combined run" instead
+    # of a KeyError, and the same for result.get("drop_log") below.
+    with st.expander(f"🔬 How the {stats.get('raw', 0)} raw results became {stats.get('final', len(suppliers))}"):
         st.caption("The original tool wrote this to a server console. It's here instead because the "
                    "distinction matters: a known operator never appearing at all is a search problem, "
                    "whereas appearing and being dropped is a filter problem.")
-        scol1, scol2, scol3 = st.columns(3)
-        scol1.metric("Raw results", stats["raw"])
-        scol1.metric("Passed pre-filter", stats["after_prefilter"])
-        scol2.metric("Passed vetting", stats["after_vetting"])
-        scol2.metric("After merging duplicates", stats["after_dedupe"])
-        scol3.metric("Dropped by AI check", stats["ai_dropped"])
-        scol3.metric("Dropped: no way to contact", stats["no_contact_dropped"])
-        if result["drop_log"]:
-            st.dataframe(pd.DataFrame(result["drop_log"]), use_container_width=True, hide_index=True)
+        if "after_vetting" in stats:
+            scol1, scol2, scol3 = st.columns(3)
+            scol1.metric("Raw results", stats["raw"])
+            scol1.metric("Passed pre-filter", stats["after_prefilter"])
+            scol2.metric("Passed vetting", stats["after_vetting"])
+            scol2.metric("After merging duplicates", stats["after_dedupe"])
+            scol3.metric("Dropped by AI check", stats["ai_dropped"])
+            scol3.metric("Dropped: no way to contact", stats["no_contact_dropped"])
         else:
+            st.caption("This breakdown is only available for a single Country/City/Keyword search - a "
+                       "combination run merges several searches together, so there's no single "
+                       "raw-to-final path to show.")
+        drop_log = result.get("drop_log")
+        if drop_log:
+            st.dataframe(pd.DataFrame(drop_log), use_container_width=True, hide_index=True)
+        elif "after_vetting" in stats:
             st.caption("Nothing was dropped.")
 
     # ---- Template ----

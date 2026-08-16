@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-closedtour-ignore-pre-post-night"
+MODULE_BUILD = "2026-08-16-outreach-combo-cap-and-email-only-preselect"
 
 import os
 import re
@@ -1028,9 +1028,11 @@ def to_supplier_record(candidate: Dict[str, Any], country: str, keyword: str) ->
         "rating": candidate.get("rating"),
         "reviewCount": candidate.get("reviewCount"),
         "sources": candidate.get("sources") or [],
-        # Pre‑select if there's an email, website, or social – so the operator can
-        # easily add a missing email from the website.
-        "selected": bool(candidate.get("email") or candidate.get("website") or candidate.get("social")),
+        # CONFIRMED RULE (product owner, 2026-08-16): only pre-tick a supplier for sending
+        # when a real email address was actually found. A website or social link alone isn't
+        # enough to send anything - ticking those too just meant unticking them by hand on
+        # every run, since they can't be emailed without an address being added first.
+        "selected": bool(candidate.get("email")),
         "isMock": bool(candidate.get("isMock")),
     }
 
@@ -1079,8 +1081,9 @@ def merge_supplier_records(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, An
         "sources": (primary.get("sources") or []) + (secondary.get("sources") or []),
         # Recomputed rather than inherited - a merge can combine a no-email row with an
         # email-having one, and the checkbox default must reflect the FINAL merged email.
-        "selected": bool(merged_email or primary.get("website") or primary.get("social") or
-                         secondary.get("website") or secondary.get("social")),
+        # CONFIRMED RULE (product owner, 2026-08-16): pre-tick for sending ONLY when an actual
+        # email survived the merge - a website or social link alone still isn't sendable.
+        "selected": bool(merged_email),
     })
     return merged
 
