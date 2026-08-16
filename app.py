@@ -1002,8 +1002,9 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 cand["code"] = st.text_input(
                     "Modality Code", value=cand["code"], key=f"mct_modcand_code_{i}",
                     help="Just the short category name, e.g. 'Standard' or 'Deluxe' - cannot contain the "
-                         "characters / \\ + - or . (Travel Compositor's system rejects those), and should "
-                         "NOT include descriptive text like the language or a minimum-pax note."
+                         "characters / \\ + - (Travel Compositor's system rejects those, since the code "
+                         "becomes part of a URL), and should NOT include descriptive text like the "
+                         "language or a minimum-pax note."
                 )
             with c3:
                 cand["hint"] = st.text_input("AI focus hint (optional)", value=cand["hint"], key=f"mct_modcand_hint_{i}")
@@ -1017,15 +1018,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     _clear_batch_widget_state(["mct_modcand_"])
                     st.rerun()
 
-            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-", "."]):
-                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -, .).")
+            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-"]):
+                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -).")
 
         if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
         selected = [c for c in candidates if c["selected"]]
-        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-.")]
+        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-")]
         missing = [c for c in selected if not (c["code"] or "").strip()]
         seen = {}
         for c in selected:
@@ -8577,7 +8578,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-14-closedtour-vague-departure-arrival-time"
+BUILD_VERSION = "2026-08-16-modality-code-allow-period"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
