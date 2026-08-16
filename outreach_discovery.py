@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-outreach-no-combo-cap-one-supplier-per-combo"
+MODULE_BUILD = "2026-08-16-outreach-stop-search-button"
 
 import os
 import re
@@ -1284,7 +1284,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     `max_results` overrides the usual _max_results() cap for THIS call. CONFIRMED RULE
     (product owner, 2026-08-16): a country-scope run can queue many place/theme
     combinations at once with no upper limit on how many - passing max_results=1 there
-    (see outreach_tool._run_queued_searches) is what actually makes that fast, not just
+    (see outreach_tool._process_one_queued_job) is what actually makes that fast, not just
     smaller. The cap is applied right after dedupe, BEFORE AI verification and per-
     candidate website enrichment - both of which run once per surviving candidate - so
     capping early means one AI-verification call and one website fetch per combination

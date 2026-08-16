@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-outreach-no-combo-cap-one-supplier-per-combo"
+MODULE_BUILD = "2026-08-16-outreach-stop-search-button"
 
 import csv
 import io
@@ -175,7 +175,7 @@ def _render_country_scope():
     # THE COUNT, BEFORE ANYTHING RUNS. Six places by five themes is thirty searches.
     # CONFIRMED RULE (product owner, 2026-08-16): no cap on how many combinations can run at
     # once - a prior round added a hard block at 20, and the product owner asked for it to be
-    # removed. Speed comes from _run_queued_searches passing max_results=1 to each combination's
+    # removed. Speed comes from _process_one_queued_job passing max_results=1 to each combination's
     # own search instead (one AI-verification call and one website fetch per combination rather
     # than up to _max_candidates() of each), not from limiting how many combinations run.
     st.markdown(f"**{len(planned)} search(es)** would run: "
@@ -221,50 +221,31 @@ _PER_COMBINATION_RESULTS = 1
 _MAX_MERGED_RESULTS = 30
 
 
-def _run_queued_searches(queue):
-    """Run a scope-built list of searches (one supplier each - see _PER_COMBINATION_RESULTS)
-    and merge them into one supplier list.
-
-    Merged rather than run one at a time because the point of the country step is a single
-    picture of who exists across the whole programme. Deduplicated by domain, then a second time
-    by email/social across the WHOLE merged list (see the module-level comment above) - the same
-    operator legitimately turns up under Luxor/Nile Cruise and Aswan/Nile Cruise, and reviewing
-    them twice is how a supplier gets emailed twice. Finally capped to _MAX_MERGED_RESULTS total,
-    so a wide combination run still hands back a reviewable list rather than several hundred rows."""
-    merged, seen = [], set()
-    stats = {"raw": 0, "after_prefilter": 0, "final": 0, "used_mock_provider": False}
-    progress = st.progress(0.0)
-    status = st.empty()
-    failures = []
-
-    for index, job in enumerate(queue):
-        label = " · ".join(x for x in (job.get("city"), job.get("keyword")) if x) or job["country"]
-        status.caption(f"⏳ {index + 1} of {len(queue)}: {label}")
-        try:
-            result = od.discover_suppliers(job["country"], job.get("city", ""),
-                                           job.get("keyword", "") or job["country"],
-                                           max_results=_PER_COMBINATION_RESULTS)
-        except Exception as e:
-            failures.append(f"{label}: {e}")
-            progress.progress((index + 1) / len(queue))
+def _merge_one_job_result(merged, seen, stats, label, result):
+    """Fold one combination's search result into the running merged list/seen-set/stats -
+    pulled out as its own function so it's the same code whether a full queue runs straight
+    through or is processed one job per Streamlit rerun (see _process_one_queued_job)."""
+    for key in ("raw", "after_prefilter", "final"):
+        stats[key] += result["stats"].get(key, 0)
+    stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
+    for supplier in result["suppliers"]:
+        domain = om.extract_domain(supplier.get("website") or supplier.get("listingUrl") or "")
+        fingerprint = domain or (supplier.get("name") or "").strip().lower()
+        if fingerprint and fingerprint in seen:
             continue
-        for key in ("raw", "after_prefilter", "final"):
-            stats[key] += result["stats"].get(key, 0)
-        stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
-        for supplier in result["suppliers"]:
-            domain = om.extract_domain(supplier.get("website") or supplier.get("listingUrl") or "")
-            fingerprint = domain or (supplier.get("name") or "").strip().lower()
-            if fingerprint and fingerprint in seen:
-                continue
-            if fingerprint:
-                seen.add(fingerprint)
-            supplier = dict(supplier)
-            supplier["foundVia"] = label
-            merged.append(supplier)
-        progress.progress((index + 1) / len(queue))
+        if fingerprint:
+            seen.add(fingerprint)
+        supplier = dict(supplier)
+        supplier["foundVia"] = label
+        merged.append(supplier)
 
-    progress.empty()
-    status.empty()
+
+def _finalize_queue_result(merged, stats, failures, stopped_early=False, searched=0, total=0):
+    """The second dedupe pass + cap + reporting, run once after every job that's GOING to run
+    has run - whether that's the whole queue or however much got through before Stop was
+    pressed. CONFIRMED RULE (product owner, 2026-08-16): "give the human one button that says
+    'Stop the search' and give the human all results found until then" - a stopped run is not
+    an error case, it goes through the exact same finishing steps a completed one does."""
     if failures:
         st.warning("Some searches failed and were skipped:\n\n" +
                    "\n".join(f"- {f}" for f in failures))
@@ -287,17 +268,113 @@ def _run_queued_searches(queue):
     if dropped:
         stats["capped_at"] = _MAX_MERGED_RESULTS
         stats["dropped_over_cap"] = dropped
+    if stopped_early:
+        stats["stopped_early"] = True
+        stats["searched"] = searched
+        stats["total_planned"] = total
 
     return {"suppliers": merged, "stats": stats}
 
 
+def _init_queue_run(queue):
+    """Start a combination run. State lives in session_state, not a local variable, because
+    the run is processed ONE JOB PER RERUN (see _process_one_queued_job) so the 'Stop the
+    search' button has an actual gap to be clicked in - a plain Python for-loop over 40
+    combinations blocks the whole script and Streamlit cannot service a button click until it
+    returns, so a for-loop can never be interrupted once started."""
+    st.session_state.or_queue_running = True
+    st.session_state.or_queue_full = queue
+    st.session_state.or_queue_pos = 0
+    st.session_state.or_queue_merged = []
+    st.session_state.or_queue_seen = set()
+    st.session_state.or_queue_stats = {"raw": 0, "after_prefilter": 0, "final": 0, "used_mock_provider": False}
+    st.session_state.or_queue_failures = []
+    st.session_state.or_queue_stopped = False
+
+
+def _process_one_queued_job():
+    """Run exactly one combination's search and fold it into the running state, then advance.
+    Called once per rerun while or_queue_running is True - see _init_queue_run for why."""
+    queue = st.session_state.or_queue_full
+    pos = st.session_state.or_queue_pos
+    job = queue[pos]
+    label = " · ".join(x for x in (job.get("city"), job.get("keyword")) if x) or job["country"]
+    try:
+        result = od.discover_suppliers(job["country"], job.get("city", ""),
+                                       job.get("keyword", "") or job["country"],
+                                       max_results=_PER_COMBINATION_RESULTS)
+        _merge_one_job_result(st.session_state.or_queue_merged, st.session_state.or_queue_seen,
+                              st.session_state.or_queue_stats, label, result)
+    except Exception as e:
+        st.session_state.or_queue_failures.append(f"{label}: {e}")
+    st.session_state.or_queue_pos = pos + 1
+    if st.session_state.or_queue_pos >= len(queue):
+        st.session_state.or_queue_running = False
+
+
 def _render_search():
+    # A running combination search - checked FIRST, before the not-yet-started queue below,
+    # so a rerun mid-run lands straight back here instead of re-showing the queue's own
+    # "Run them now" button.
+    if st.session_state.get("or_queue_running"):
+        total = len(st.session_state.or_queue_full)
+        pos = st.session_state.or_queue_pos
+        st.subheader(f"Searching {total} place/theme combination(s)")
+        current_job = st.session_state.or_queue_full[pos] if pos < total else None
+        current_label = (" · ".join(x for x in (current_job.get("city"), current_job.get("keyword"))
+                                    if x) or current_job["country"]) if current_job else ""
+        st.progress(pos / total if total else 0.0,
+                   text=f"⏳ {pos} of {total} searched" + (f" — now: {current_label}" if current_label else ""))
+        st.caption(f"{len(st.session_state.or_queue_merged)} supplier(s) found so far.")
+        # CONFIRMED RULE (product owner, 2026-08-16): "give the human one button that says
+        # 'Stop the search' and give the human all results found until then." Checked BEFORE
+        # processing the next job, and this run must not call _process_one_queued_job/rerun
+        # again once pressed - both would keep the loop going for another combination first.
+        if st.button("⏹️ Stop the search — show me what's found so far", key="or_queue_stop"):
+            st.session_state.or_queue_running = False
+            st.session_state.or_queue_stopped = True
+        else:
+            _process_one_queued_job()
+
+        # Checked AFTER acting, not before: processing the queue's LAST job also sets
+        # or_queue_running False by itself (see _process_one_queued_job), and that finish has
+        # to be handled right here too - not just the Stop-button path - or the run would call
+        # st.rerun() one more time and land back at the top of this function with
+        # or_queue_running already False, skipping the finalize step below entirely and
+        # stranding the results that were just found.
+        if st.session_state.or_queue_running:
+            st.rerun()
+
+        # Either the queue ran out on its own, or Stop was just pressed - both finish the same
+        # way, through the exact same dedupe/cap/report steps.
+        result = _finalize_queue_result(
+            st.session_state.or_queue_merged, st.session_state.or_queue_stats,
+            st.session_state.or_queue_failures,
+            stopped_early=st.session_state.get("or_queue_stopped", False),
+            searched=st.session_state.or_queue_pos, total=total,
+        )
+        st.session_state.or_result = result
+        st.session_state.or_session = {
+            "country": st.session_state.or_queue_full[0]["country"],
+            "city": "",
+            "keyword": f"{total} place/theme combination(s)",
+        }
+        st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
+        for key in ("or_queue_running", "or_queue_full", "or_queue_pos", "or_queue_merged",
+                   "or_queue_seen", "or_queue_stats", "or_queue_failures", "or_queue_stopped"):
+            st.session_state.pop(key, None)
+        st.session_state.pop("or_queue", None)
+        st.session_state[_PHASE_KEY] = "review"
+        st.rerun()
+        return
+
     # A list built on the country screen, waiting to be run.
     queue = st.session_state.get("or_queue")
     if queue:
         st.subheader(f"Searching {len(queue)} place/theme combination(s)")
         st.caption("Results are merged into one list, with duplicates removed - the same operator "
-                   "often appears under several of them.")
+                   "often appears under several of them. Once running, a **Stop the search** "
+                   "button lets you cut it short and keep whatever's been found up to that point.")
         qcol1, qcol2 = st.columns([1, 1])
         with qcol1:
             go = st.button("▶️ Run them now", type="primary", key="or_queue_run")
@@ -308,16 +385,7 @@ def _render_search():
                 st.rerun()
         st.dataframe(pd.DataFrame(queue), use_container_width=True, hide_index=True)
         if go:
-            result = _run_queued_searches(queue)
-            st.session_state.or_result = result
-            st.session_state.or_session = {
-                "country": queue[0]["country"],
-                "city": "",
-                "keyword": f"{len(queue)} place/theme combination(s)",
-            }
-            st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
-            st.session_state.pop("or_queue", None)
-            st.session_state[_PHASE_KEY] = "review"
+            _init_queue_run(queue)
             st.rerun()
         return
 
@@ -398,6 +466,12 @@ def _render_review_and_send():
 
     if stats["used_mock_provider"]:
         st.warning("⚠️ These are **mock results** — no search API key is configured. Don't email them.")
+
+    if stats.get("stopped_early"):
+        st.info(f"⏹️ Search stopped early — {stats['searched']} of {stats['total_planned']} "
+                f"combination(s) were searched before you stopped it. Everything found up to "
+                f"that point is below; run the rest later if you want the remaining "
+                f"{stats['total_planned'] - stats['searched']}.")
 
     if not suppliers:
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
@@ -554,10 +628,10 @@ def _render_review_and_send():
                    f"then website, then rating). Run fewer combinations at once to see the rest.")
 
     # A combination/queue run merges several searches' own stats together (see
-    # _run_queued_searches) and has no single drop_log or per-stage breakdown of its own -
-    # only a single search (this screen's other entry point) produces those. Every metric here
-    # is read with .get() so the expander degrades to "not available for a combined run" instead
-    # of a KeyError, and the same for result.get("drop_log") below.
+    # _merge_one_job_result/_finalize_queue_result) and has no single drop_log or per-stage
+    # breakdown of its own - only a single search (this screen's other entry point) produces
+    # those. Every metric here is read with .get() so the expander degrades to "not available
+    # for a combined run" instead of a KeyError, and the same for result.get("drop_log") below.
     with st.expander(f"🔬 How the {stats.get('raw', 0)} raw results became {stats.get('final', len(suppliers))}"):
         st.caption("The original tool wrote this to a server console. It's here instead because the "
                    "distinction matters: a known operator never appearing at all is a search problem, "

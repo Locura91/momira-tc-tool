@@ -8,8 +8,9 @@ CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16):
 2. "only one supplier at all, even if the supplier has multiple matches. We can contact each
    supplier only once" - dedupe_suppliers_by_contact() is the mechanism that collapses two rows
    sharing an email or social link into one merged row (also exercised a second time, across an
-   entire combination run, by outreach_tool._run_queued_searches - see that module's own
-   _PER_COMBINATION_RESULTS/_MAX_MERGED_RESULTS constants for the rest of that rule).
+   entire combination run, by outreach_tool._finalize_queue_result - see that module's own
+   _PER_COMBINATION_RESULTS/_MAX_MERGED_RESULTS constants and tests/test_outreach_tool_queue.py
+   for the rest of that rule).
 3. "Please no limitation, but search per each combination only one supplier, so the search is
    faster" - a follow-up: the country-scope screen's earlier hard cap on how many combinations
    can run at once was removed, and discover_suppliers() gained a `max_results` override that
