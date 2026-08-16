@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-outreach-combo-cap-and-email-only-preselect"
+MODULE_BUILD = "2026-08-16-stop-sales-release-almost-full-sender-match"
 
 import os
 import re

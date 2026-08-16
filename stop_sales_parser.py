@@ -56,6 +56,15 @@ inventory and nobody notices:
 - General availability warnings with no dates ("August is very busy").
 - Dates that refer to when the email was written, a booking deadline, a payment due date, or a
   cancellation deadline.
+- CONFIRMED RULE (product owner, 2026-08-16): "ALMOST FULL" is NOT a stop sale. If the email says
+  availability is limited, low, running out, "almost full", "few spots left", "limited allotment
+  remaining" or similar - but does NOT say the product is actually closed/sold out/fully
+  booked/zero availability - there are still spots being sold, so nothing should be blocked. Set
+  "is_stop_sale": false for these and explain in "notes" that the email describes limited-but-still-
+  available inventory, not a closure. Do NOT list any dates in "stop_sales" for this case. Only
+  treat it as a real stop sale once the email says availability has actually reached zero (fully
+  booked, sold out, closed, no more availability) - "almost full" and "full" are different
+  statements and must not be read as the same thing.
 
 DATES - the part that must be right:
 - Output every range as {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, inclusive of both days.
@@ -274,9 +283,9 @@ def warnings_for(parsed: Dict[str, Any]) -> List[str]:
     for a block, or a range that would block more than the supplier asked for."""
     out = []
     if parsed.get("is_release"):
-        out.append("This email looks like it RELEASES a stop sale rather than adding one. "
-                   "Applying it would BLOCK those dates, which is the opposite. Check the "
-                   "wording before continuing.")
+        out.append("This email looks like it RE-OPENS dates rather than closing them. Applying "
+                   "it will REMOVE the matching dates from what is currently blocked, not add a "
+                   "new block - check the wording matches that before continuing.")
     if any(r.get("date_format_ambiguous") for r in parsed.get("stop_sales", [])):
         out.append("At least one date was written numerically (e.g. 01/02) and could mean two "
                    "different months. It was read as DAY/MONTH — confirm that matches how this "
@@ -304,6 +313,51 @@ def _span_days(r: Dict[str, Any]) -> int:
         return (b - a).days + 1
     except Exception:
         return 0
+
+
+def remove_stop_sales(existing: List[Dict[str, Any]],
+                      release: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The other half of a stop sale's lifecycle: a supplier re-opening dates that were
+    previously blocked. CONFIRMED RULE (product owner, 2026-08-16): "New re-open selling date:
+    We must remove an existing stop sale" - a release is not a new block, it undoes one.
+
+    Only removes an EXACT (start, end) match against what is actually live. A release range that
+    does not exactly match a live entry is reported in "not_found" and left untouched rather than
+    guessed at - if a supplier releases 12-15 Aug out of a live 12-19 Aug block, splitting that
+    block into 12-11 + 16-19 is a real decision a human should make on the review screen, not
+    something this silently does. Matches the same "report ambiguity, never resolve it" rule
+    merge_stop_sales already follows for additions."""
+    kept = [dict(s) for s in (existing or []) if isinstance(s, dict) and s.get("start")]
+    index_by_range: Dict[tuple, int] = {}
+    for i, s in enumerate(kept):
+        index_by_range.setdefault((str(s.get("start")), str(s.get("end"))), i)
+
+    removed, not_found, remove_idx = [], [], set()
+    for r in (release or []):
+        key = (str(r.get("start")), str(r.get("end")))
+        idx = index_by_range.get(key)
+        if idx is None or idx in remove_idx:
+            not_found.append(dict(r))
+            continue
+        remove_idx.add(idx)
+        removed.append(dict(kept[idx]))
+
+    result = [s for i, s in enumerate(kept) if i not in remove_idx]
+    return {"merged": result, "removed": removed, "not_found": not_found}
+
+
+def normalize_sender(raw_from: str) -> Dict[str, str]:
+    """Pulls a clean email address and domain out of a raw From header
+    ("DMC Nile Cruises <info@nile-dmc.com>" -> email + domain), for the
+    sender -> supplier matching rule (see stop_sales_tool.py's remembered_supplier_for /
+    remember_supplier_for): "Stop sale will come from a specific mail, which must be the first
+    time matched to an existing supplier from our system" - every email that mail address (or,
+    more robustly, that domain - the same DMC often emails from several addresses at one
+    company) sends afterwards should match the same supplier automatically."""
+    _, addr = email.utils.parseaddr(raw_from or "")
+    addr = (addr or "").strip().lower()
+    domain = addr.split("@", 1)[1] if "@" in addr else ""
+    return {"email": addr, "domain": domain}
 
 
 def merge_stop_sales(existing: List[Dict[str, Any]],
