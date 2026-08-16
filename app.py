@@ -8578,7 +8578,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-16-stop-sales-release-almost-full-sender-match"
+BUILD_VERSION = "2026-08-16-outreach-no-combo-cap-one-supplier-per-combo"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-stop-sales-release-almost-full-sender-match"
+MODULE_BUILD = "2026-08-16-outreach-no-combo-cap-one-supplier-per-combo"
 
 import csv
 import io
@@ -172,23 +172,25 @@ def _render_country_scope():
         st.caption("Tick at least one place or theme to build a search list.")
         return
 
-    # THE COUNT, BEFORE ANYTHING RUNS. Six places by five themes is thirty searches - several
-    # minutes and a lot of API calls that nobody knowingly agreed to.
+    # THE COUNT, BEFORE ANYTHING RUNS. Six places by five themes is thirty searches.
+    # CONFIRMED RULE (product owner, 2026-08-16): no cap on how many combinations can run at
+    # once - a prior round added a hard block at 20, and the product owner asked for it to be
+    # removed. Speed comes from _run_queued_searches passing max_results=1 to each combination's
+    # own search instead (one AI-verification call and one website fetch per combination rather
+    # than up to _max_candidates() of each), not from limiting how many combinations run.
     st.markdown(f"**{len(planned)} search(es)** would run: "
-                f"{len(chosen_places) or 'any'} place(s) × {len(chosen_themes) or 'any'} theme(s).")
-    over_cap = len(planned) > _MAX_COMBINATIONS
-    if over_cap:
-        st.error(f"🚫 That's {len(planned)} combinations - only up to {_MAX_COMBINATIONS} can run at "
-                 f"once. Untick some places or themes to bring it down to {_MAX_COMBINATIONS} or fewer, "
-                 f"then come back for the rest in a second run.")
-    elif len(planned) > 12:
-        st.warning(f"That is a lot of searching and will take a while. Consider starting with the "
-                   f"handful you most need, then coming back — the list is remembered.")
+                f"{len(chosen_places) or 'any'} place(s) × {len(chosen_themes) or 'any'} theme(s). "
+                f"Each combination looks for its single best-reviewed supplier, so even a large "
+                f"list runs at one search's worth of time per combination.")
+    if len(planned) > 30:
+        st.info(f"{len(planned)} combinations queued. This still takes a while purely from the "
+                f"number of searches - you can watch progress once it starts, and the list is "
+                f"remembered if you want to come back to it.")
     with st.expander("See exactly what will be searched"):
         st.dataframe(pd.DataFrame(planned), use_container_width=True, hide_index=True)
 
     if st.button(f"🔎 Search suppliers for these {len(planned)} combination(s)", type="primary",
-                 key="or_scope_run", disabled=over_cap):
+                 key="or_scope_run"):
         st.session_state["or_queue"] = planned
         st.session_state["or_queue_index"] = 0
         st.session_state[_PHASE_KEY] = "search"
@@ -199,25 +201,33 @@ def _render_country_scope():
 # SCREEN 1 — SEARCH
 # ============================================================================
 # CONFIRMED RULE (product owner, 2026-08-16): "only one supplier at all, even if the supplier
-# has multiple matches. We can contact each supplier only once." A country-scope run queues up
-# to _MAX_COMBINATIONS place/theme searches, and the same real business routinely turns up under
-# several of them (the same Nile Cruise operator matches both "Luxor" and "Aswan"). One dedupe
-# pass by domain/name catches the obvious case, but two searches can also surface the SAME
-# supplier under a different domain or a slightly different name (an aggregator listing on one
-# side, the operator's own site on the other) - which is exactly what the email/social-based
+# has multiple matches. We can contact each supplier only once." A country-scope run queues
+# every place/theme combination the operator ticked - no cap on the count (see the note in
+# _render_country_scope) - and the same real business routinely turns up under several of them
+# (the same Nile Cruise operator matches both "Luxor" and "Aswan"). One dedupe pass by
+# domain/name catches the obvious case, but two searches can also surface the SAME supplier under
+# a different domain or a slightly different name (an aggregator listing on one side, the
+# operator's own site on the other) - which is exactly what the email/social-based
 # dedupe_suppliers_by_contact() pass already does for a single search. Running that same pass
 # again across the merged cross-combination list closes that gap, so a supplier can never end up
 # as two rows that both get ticked and both get an email.
-_MAX_COMBINATIONS = 20
+#
+# CONFIRMED RULE (product owner, 2026-08-16): "search per each combination only one supplier, so
+# the search is faster." _PER_COMBINATION_RESULTS=1 is passed to discover_suppliers so each
+# combination's own AI-verification and website-enrichment work (the slow parts) only ever runs
+# on its single best-rated candidate instead of up to _max_candidates() of them - see that
+# function's max_results docstring for exactly where the time is saved.
+_PER_COMBINATION_RESULTS = 1
 _MAX_MERGED_RESULTS = 30
 
 
 def _run_queued_searches(queue):
-    """Run a scope-built list of searches and merge them into one supplier list.
+    """Run a scope-built list of searches (one supplier each - see _PER_COMBINATION_RESULTS)
+    and merge them into one supplier list.
 
     Merged rather than run one at a time because the point of the country step is a single
     picture of who exists across the whole programme. Deduplicated by domain, then a second time
-    by email/social across the WHOLE merged list (see _MAX_COMBINATIONS comment above) - the same
+    by email/social across the WHOLE merged list (see the module-level comment above) - the same
     operator legitimately turns up under Luxor/Nile Cruise and Aswan/Nile Cruise, and reviewing
     them twice is how a supplier gets emailed twice. Finally capped to _MAX_MERGED_RESULTS total,
     so a wide combination run still hands back a reviewable list rather than several hundred rows."""
@@ -232,7 +242,8 @@ def _run_queued_searches(queue):
         status.caption(f"⏳ {index + 1} of {len(queue)}: {label}")
         try:
             result = od.discover_suppliers(job["country"], job.get("city", ""),
-                                           job.get("keyword", "") or job["country"])
+                                           job.get("keyword", "") or job["country"],
+                                           max_results=_PER_COMBINATION_RESULTS)
         except Exception as e:
             failures.append(f"{label}: {e}")
             progress.progress((index + 1) / len(queue))

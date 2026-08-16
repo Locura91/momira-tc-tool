@@ -9,7 +9,13 @@ CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16):
    supplier only once" - dedupe_suppliers_by_contact() is the mechanism that collapses two rows
    sharing an email or social link into one merged row (also exercised a second time, across an
    entire combination run, by outreach_tool._run_queued_searches - see that module's own
-   _MAX_COMBINATIONS/_MAX_MERGED_RESULTS constants for the rest of that rule).
+   _PER_COMBINATION_RESULTS/_MAX_MERGED_RESULTS constants for the rest of that rule).
+3. "Please no limitation, but search per each combination only one supplier, so the search is
+   faster" - a follow-up: the country-scope screen's earlier hard cap on how many combinations
+   can run at once was removed, and discover_suppliers() gained a `max_results` override that
+   caps candidates down BEFORE the expensive AI-verification/website-enrichment steps rather
+   than only at the end, so passing max_results=1 per combination genuinely saves time rather
+   than just trimming the display.
 """
 import outreach_discovery as od
 
@@ -98,3 +104,38 @@ def test_dedupe_suppliers_by_contact_keeps_distinct_suppliers_separate():
     ]
     result = od.dedupe_suppliers_by_contact(suppliers)
     assert len(result) == 2
+
+
+# ======================================================================
+# cap_candidates_by_rating - the "one supplier per combination, so it's faster" mechanism
+# ======================================================================
+def test_cap_candidates_by_rating_keeps_the_single_highest_rated():
+    candidates = [
+        {"name": "Low Rated Co", "rating": 3.2},
+        {"name": "Best Nile Tours", "rating": 4.9},
+        {"name": "Mid Co", "rating": 4.0},
+    ]
+    capped = od.cap_candidates_by_rating(candidates, 1)
+    assert len(capped) == 1
+    assert capped[0]["name"] == "Best Nile Tours"
+
+
+def test_cap_candidates_by_rating_puts_missing_ratings_last():
+    candidates = [
+        {"name": "No Rating Co", "rating": None},
+        {"name": "Rated Co", "rating": 4.1},
+    ]
+    capped = od.cap_candidates_by_rating(candidates, 1)
+    assert capped[0]["name"] == "Rated Co"
+
+
+def test_cap_candidates_by_rating_never_returns_zero_even_if_n_is_zero():
+    candidates = [{"name": "Only Co", "rating": 4.5}]
+    capped = od.cap_candidates_by_rating(candidates, 0)
+    assert len(capped) == 1
+
+
+def test_cap_candidates_by_rating_returns_everything_if_n_exceeds_the_list():
+    candidates = [{"name": "A", "rating": 4.0}, {"name": "B", "rating": 3.0}]
+    capped = od.cap_candidates_by_rating(candidates, 10)
+    assert len(capped) == 2

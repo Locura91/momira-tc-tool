@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-stop-sales-release-almost-full-sender-match"
+MODULE_BUILD = "2026-08-16-outreach-no-combo-cap-one-supplier-per-combo"
 
 import os
 import re
@@ -700,6 +700,23 @@ def dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(by_name.values())
 
 
+def cap_candidates_by_rating(candidates: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+    """The best `n` candidates by rating, missing ratings sorted last.
+
+    Used by discover_suppliers' max_results override to cut the candidate list down BEFORE
+    the expensive per-candidate steps (AI verification, website enrichment) rather than only
+    trimming the final display - see that function's docstring. A missing rating isn't a red
+    flag, it just sorts after anything that has one, matching the convention the final
+    suppliers.sort() in discover_suppliers already uses. bool is excluded explicitly since it's
+    a subclass of int in Python and would otherwise pass the numeric-rating check."""
+    ranked = sorted(
+        candidates,
+        key=lambda c: -(c["rating"] if isinstance(c.get("rating"), (int, float))
+                        and not isinstance(c.get("rating"), bool) else -1)
+    )
+    return ranked[:max(1, n)]
+
+
 # ============================================================================
 # 6. ENRICHMENT - scrape a candidate's own website for direct contact info
 # ============================================================================
@@ -1249,7 +1266,8 @@ def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: s
 # ============================================================================
 # PUBLIC ENTRY POINT
 # ============================================================================
-def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> Dict[str, Any]:
+def discover_suppliers(country: str, city: str, keyword: str, progress=None,
+                       max_results: Optional[int] = None) -> Dict[str, Any]:
     """
     Runs the whole discovery pipeline and returns:
       {"suppliers": [...], "stats": {...}, "drop_log": [...]}
@@ -1262,7 +1280,17 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> 
     filter) is exactly what the original's logging existed to preserve.
 
     `progress` is an optional callable(str) for live status updates in the UI.
-    """
+
+    `max_results` overrides the usual _max_results() cap for THIS call. CONFIRMED RULE
+    (product owner, 2026-08-16): a country-scope run can queue many place/theme
+    combinations at once with no upper limit on how many - passing max_results=1 there
+    (see outreach_tool._run_queued_searches) is what actually makes that fast, not just
+    smaller. The cap is applied right after dedupe, BEFORE AI verification and per-
+    candidate website enrichment - both of which run once per surviving candidate - so
+    capping early means one AI-verification call and one website fetch per combination
+    instead of up to _max_candidates() of each. Candidates are ranked by rating first, so
+    the one candidate that survives is the best one found, not just whichever query found
+    it first."""
     def report(msg):
         if progress:
             progress(msg)
@@ -1352,6 +1380,12 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> 
 
     deduped = dedupe_candidates(vetted)[:_max_candidates()]
 
+    if max_results is not None:
+        # Cutting HERE, before verification/enrichment, is what actually saves the time - see
+        # the max_results docstring above.
+        deduped = cap_candidates_by_rating(deduped, max_results)
+        report(f"Keeping the top {len(deduped)} candidate(s) for speed…")
+
     ai_dropped = 0
     if is_ai_verification_enabled():
         report("Verifying candidates with AI…")
@@ -1404,7 +1438,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None) -> 
         -(s["rating"] if s.get("rating") is not None else -1),
     ))
 
-    suppliers = suppliers[:_max_results()]
+    suppliers = suppliers[:(max_results if max_results is not None else _max_results())]
     report(f"Done — {len(suppliers)} supplier(s) ready for review.")
 
     return {
