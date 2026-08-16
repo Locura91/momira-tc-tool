@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-modality-code-allow-period"
+MODULE_BUILD = "2026-08-16-closedtour-ignore-pre-post-night"
 
 import os
 import re
@@ -153,6 +153,16 @@ Rules:
   CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
   never add these as a supplement or anywhere else in the extracted data, even though they're technically
   optional and priced. This is a deliberate exclusion, not an oversight.
+  CRITICAL - CONFIRMED RULE (product owner, 2026-08-16): IGNORE Pre-night / Post-night (a.k.a. pre-tour or
+  post-tour extra night, "Pre Night Option", "Post Night Option") mentions entirely - never add one as a
+  ClosedTour supplement, even though the source prices it and it looks exactly like an optional add-on.
+  Travel Compositor cannot calculate an extra night into a ClosedTour's own day count, so a Pre/Post night
+  option has nowhere correct to live on this record - adding it as a supplement would let a client buy an
+  extra night that never actually gets scheduled. This is a deliberate exclusion, not an oversight: skip
+  it in supplements, and skip it everywhere else in the extracted data too (it is not part of included,
+  excluded, or pricing_notes either) - simply leave the mention out, exactly like the carbon-offset rule
+  above. Do NOT confuse this with a hotel EXTENSION that is itself sold as its own separate product/tour -
+  this exclusion is specifically about a Pre/Post night OFFERED AS PART OF this ClosedTour's own document.
   CRITICAL - CONFIRMED RULE: this rule ONLY applies if the source document ITSELF explicitly mentions a
   peak season/holiday/seasonal surcharge somewhere. NEVER invent or add a peak-season supplement that
   isn't actually mentioned in the source - if the source says nothing about a seasonal surcharge, do not
