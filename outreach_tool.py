@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-16-outreach-stop-search-button"
+MODULE_BUILD = "2026-08-17-outreach-followup-reminders"
 
 import csv
 import io
@@ -52,6 +52,7 @@ import pandas as pd
 
 import outreach_discovery as od
 import outreach_email as oe
+import outreach_followups as ofw
 import outreach_memory as om  # new learning module
 import outreach_scope as osc
 
@@ -84,6 +85,16 @@ def _render_country_scope():
     st.caption("Before hunting for suppliers, look at the whole country: the regions worth having "
                "in a programme, and the kinds of product it is actually known for. Tick what you "
                "want and each combination becomes its own supplier search.")
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): a nudge back to whoever was emailed a while
+    # ago with no reply logged yet, surfaced right where a session naturally starts rather than
+    # buried behind a menu the operator has to remember exists.
+    due = ofw.pending_followups()
+    if due:
+        if st.button(f"📋 {len(due)} follow-up(s) due — suppliers emailed a while ago with no "
+                    f"reply logged yet", key="or_followups_nav"):
+            st.session_state[_PHASE_KEY] = "followups"
+            st.rerun()
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -739,6 +750,11 @@ def _render_review_and_send():
         with st.spinner("Sending…"):
             st.session_state.or_send_log = oe.dispatch_batch(selected, session, template,
                                                               on_progress=on_progress, dry_run=False)
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): durable send history, so a "sent N+
+        # days ago, no reply logged" follow-up list has something to work from - see
+        # outreach_followups.py's module docstring for why this couldn't exist before (a send
+        # log used to live only in this browser session and a downloaded CSV).
+        ofw.record_sends_from_log(selected, session, st.session_state.or_send_log)
         progress_box.empty()
         st.session_state.pop("or_dry_log", None)
         st.rerun()
@@ -777,6 +793,75 @@ def _render_review_and_send():
 
 
 # ============================================================================
+# SCREEN — FOLLOW-UPS DUE (manual-confirm reply tracking)
+# ============================================================================
+def _render_followups():
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): a worklist of suppliers who were emailed a
+    while ago with nothing logged as a reply yet - see outreach_followups.py's module docstring
+    for why this is manual-confirm rather than automatic reply detection (the platform can send
+    mail, it has no access to any inbox to read replies from).
+
+    Each row is one earlier real send. The operator checks their own inbox by hand and either
+    marks it replied (drops off this list for good) or sends a short reminder from here (recorded
+    too, so the row doesn't come back tomorrow - see pending_followups' grace period)."""
+    st.subheader("📋 Follow-ups due")
+    st.caption(f"Suppliers emailed **{ofw.FOLLOWUP_DUE_DAYS}+ days** ago with no reply logged yet. "
+               "This is not automatic reply detection - the platform can't read your inbox, so "
+               "please check it yourself before marking a row as replied.")
+
+    if st.button("⬅️ Back", key="or_followups_back"):
+        st.session_state[_PHASE_KEY] = "scope"
+        st.rerun()
+
+    due = ofw.pending_followups()
+    if not due:
+        st.success("Nothing due right now — either everything's been replied to, or it's too "
+                   "soon since the last send.")
+        return
+
+    for row in due:
+        with st.container(border=True):
+            title = row.get("supplier_name") or row.get("email")
+            st.markdown(f"**{title}** — {row.get('email', '')}")
+            meta_bits = []
+            if row.get("country"):
+                meta_bits.append(row["country"])
+            if row.get("keyword"):
+                meta_bits.append(row["keyword"])
+            if meta_bits:
+                st.caption(" · ".join(meta_bits))
+            st.caption(f"Sent {row.get('days_since_sent')} day(s) ago"
+                      + (f" · reminder already sent, {row.get('days_since_last_contact')} day(s) ago"
+                         if row.get("reminder_sent_at") else "")
+                      + f" · subject: \"{row.get('subject', '')}\"")
+
+            rcol1, rcol2 = st.columns([1, 1])
+            with rcol1:
+                if st.button("✅ Mark as replied", key=f"or_followup_replied_{row['key']}"):
+                    ofw.mark_replied(row["email"], row["sent_at"])
+                    st.rerun()
+            with rcol2:
+                if st.button("📨 Send reminder", key=f"or_followup_remind_{row['key']}"):
+                    supplier = {
+                        "name": row.get("supplier_name") or "",
+                        "email": row.get("email") or "",
+                        "website": row.get("website") or "",
+                    }
+                    session = {
+                        "country": row.get("country") or "",
+                        "keyword": row.get("keyword") or "",
+                    }
+                    try:
+                        oe.send_supplier_email(supplier, session, oe.DEFAULT_REMINDER_TEMPLATE)
+                    except Exception as exc:
+                        st.error(f"Reminder failed to send: {exc}")
+                    else:
+                        ofw.mark_reminder_sent(row["email"], row["sent_at"])
+                        st.success("Reminder sent.")
+                        st.rerun()
+
+
+# ============================================================================
 # ENTRY POINT
 # ============================================================================
 def render_outreach_tool():
@@ -789,5 +874,7 @@ def render_outreach_tool():
         _render_country_scope()
     elif st.session_state[_PHASE_KEY] == "search":
         _render_search()
+    elif st.session_state[_PHASE_KEY] == "followups":
+        _render_followups()
     else:
         _render_review_and_send()
