@@ -42,7 +42,7 @@ misreading a screen.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-17-outreach-followup-reminders"
+MODULE_BUILD = "2026-08-19-audit-fixes"
 
 import csv
 import io
@@ -57,6 +57,30 @@ import outreach_memory as om  # new learning module
 import outreach_scope as osc
 
 _PHASE_KEY = "or_phase"
+
+
+def _mark_already_contacted(suppliers):
+    """CONFIRMED FIX (2026-08-19 audit): the existing dedupe passes (_merge_one_job_result's
+    fingerprint check, dedupe_suppliers_by_contact) only ever compare suppliers WITHIN the
+    current search/queue run. outreach_followups.py has held a durable, cross-session send
+    history since the follow-up-reminders round, but nothing checked it during discovery - so
+    a supplier found again next month under a slightly different name/domain could get a
+    second cold-outreach email, contradicting "we can contact each supplier only once" (see
+    the _PER_COMBINATION_RESULTS block above).
+
+    Pre-unticks (does not remove) any result whose email was already sent to before, and tags
+    it so the review table can show why. A human can still deliberately re-tick a row - this
+    is a safety default, not a hard block, the same posture the rest of this screen takes
+    everywhere else a human makes the final call."""
+    contacted_emails = {row["email"] for row in ofw.list_all_sends() if row.get("email")}
+    if not contacted_emails:
+        return suppliers
+    for supplier in suppliers:
+        email = (supplier.get("email") or "").strip().lower()
+        if email and email in contacted_emails:
+            supplier["alreadyContacted"] = True
+            supplier["selected"] = False
+    return suppliers
 
 
 def _reset_run():
@@ -364,6 +388,7 @@ def _render_search():
             stopped_early=st.session_state.get("or_queue_stopped", False),
             searched=st.session_state.or_queue_pos, total=total,
         )
+        result["suppliers"] = _mark_already_contacted(result["suppliers"])
         st.session_state.or_result = result
         st.session_state.or_session = {
             "country": st.session_state.or_queue_full[0]["country"],
@@ -434,6 +459,7 @@ def _render_search():
                 st.error(f"Search failed: {e}")
                 return
         progress_box.empty()
+        result["suppliers"] = _mark_already_contacted(result["suppliers"])
         st.session_state.or_result = result
         st.session_state.or_session = {
             "country": country.strip(),
@@ -490,6 +516,10 @@ def _render_review_and_send():
     # ---- Results table ----
     st.caption("Untick anyone you don't want to contact. You can also edit the **Name** or **Email** fields directly "
                "— corrections are saved back to the supplier list.")
+    if any(s.get("alreadyContacted") for s in suppliers):
+        st.caption("🔁 Rows marked **Contacted before** were already emailed in an earlier session and have "
+                   "been pre-unticked, per \"we can contact each supplier only once\" — re-tick one only if "
+                   "you deliberately want to reach out again.")
 
     if suppliers:
         df = pd.DataFrame([{
@@ -500,6 +530,7 @@ def _render_review_and_send():
             "Social": s["social"] or "",
             "Listing": s["listingUrl"] or "",
             "Rating": s["rating"],
+            "Contacted before": "🔁" if s.get("alreadyContacted") else "",
             "Why selected": s["selectionReason"],
         } for s in suppliers])
 
@@ -513,10 +544,12 @@ def _render_review_and_send():
                 "Website": st.column_config.LinkColumn("Website"),
                 "Social": st.column_config.LinkColumn("Social"),
                 "Listing": st.column_config.LinkColumn("Listing"),
+                "Contacted before": st.column_config.TextColumn(
+                    "Contacted before", help="Already emailed in an earlier session — pre-unticked."),
                 "Why selected": st.column_config.TextColumn("Why selected", width="large"),
             },
             # Only the read‑only columns remain disabled – Name is now editable
-            disabled=["Website", "Social", "Listing", "Rating", "Why selected"],
+            disabled=["Website", "Social", "Listing", "Rating", "Contacted before", "Why selected"],
         )
 
         # Fold the operator's edits back onto the real records, matched by row order.
@@ -755,6 +788,21 @@ def _render_review_and_send():
         # outreach_followups.py's module docstring for why this couldn't exist before (a send
         # log used to live only in this browser session and a downloaded CSV).
         ofw.record_sends_from_log(selected, session, st.session_state.or_send_log)
+
+        # CONFIRMED FIX (2026-08-19 audit): previously nothing disarmed the send button after a
+        # successful send - the confirm checkbox and the "Send" ticks stayed exactly as they
+        # were, so a refresh, a double-click, or an accidental re-click of "Send" resent the
+        # identical batch to the same recipients. Every row that actually got a message out
+        # (status == "sent") is now un-ticked and flagged "Contacted before" so re-sending
+        # requires a deliberate re-tick, and the confirmation checkbox resets to unchecked.
+        sent_emails = {e["email"] for e in st.session_state.or_send_log
+                      if e.get("status") == "sent" and e.get("email")}
+        for s in suppliers:
+            if (s.get("email") or "") in sent_emails:
+                s["selected"] = False
+                s["alreadyContacted"] = True
+        st.session_state.pop("or_confirm_real", None)
+
         progress_box.empty()
         st.session_state.pop("or_dry_log", None)
         st.rerun()
@@ -795,16 +843,72 @@ def _render_review_and_send():
 # ============================================================================
 # SCREEN — FOLLOW-UPS DUE (manual-confirm reply tracking)
 # ============================================================================
+def _render_followup_row(row, show_replied_button=True, show_reminder_button=True,
+                         show_external_button=True):
+    """One card, shared by the 'due' and 'cold' sections below - the actions available differ
+    (a cold row already used its one reminder, so only 'mark replied' remains useful there)."""
+    with st.container(border=True):
+        title = row.get("supplier_name") or row.get("email")
+        st.markdown(f"**{title}** — {row.get('email', '')}")
+        meta_bits = []
+        if row.get("country"):
+            meta_bits.append(row["country"])
+        if row.get("keyword"):
+            meta_bits.append(row["keyword"])
+        if meta_bits:
+            st.caption(" · ".join(meta_bits))
+        reminder_note = ""
+        if row.get("reminder_sent_at"):
+            channel = "logged externally" if row.get("reminder_channel") == "external" else "reminder sent"
+            reminder_note = f" · {channel} {row.get('days_since_reminder', '?')} day(s) ago"
+        st.caption(f"Sent {row.get('days_since_sent')} day(s) ago{reminder_note} · "
+                  f"subject: \"{row.get('subject', '')}\"")
+
+        cols = st.columns([1, 1, 1])
+        with cols[0]:
+            if show_replied_button and st.button("✅ Mark as replied", key=f"or_followup_replied_{row['key']}"):
+                ofw.mark_replied(row["email"], row["sent_at"])
+                st.rerun()
+        with cols[1]:
+            if show_reminder_button and st.button("📨 Send reminder", key=f"or_followup_remind_{row['key']}"):
+                supplier = {
+                    "name": row.get("supplier_name") or "",
+                    "email": row.get("email") or "",
+                    "website": row.get("website") or "",
+                }
+                session = {
+                    "country": row.get("country") or "",
+                    "keyword": row.get("keyword") or "",
+                }
+                try:
+                    oe.send_supplier_email(supplier, session, oe.DEFAULT_REMINDER_TEMPLATE)
+                except Exception as exc:
+                    st.error(f"Reminder failed to send: {exc}")
+                else:
+                    ofw.mark_reminder_sent(row["email"], row["sent_at"], channel="tool")
+                    st.success("Reminder sent.")
+                    st.rerun()
+        with cols[2]:
+            if show_external_button and st.button("📞 Log external contact",
+                                                   key=f"or_followup_external_{row['key']}",
+                                                   help="I already followed up with this supplier myself, "
+                                                        "outside this tool."):
+                ofw.log_external_contact(row["email"], row["sent_at"])
+                st.success("Logged — this won't nag again unless you mark it replied.")
+                st.rerun()
+
+
 def _render_followups():
     """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): a worklist of suppliers who were emailed a
     while ago with nothing logged as a reply yet - see outreach_followups.py's module docstring
     for why this is manual-confirm rather than automatic reply detection (the platform can send
     mail, it has no access to any inbox to read replies from).
 
-    Each row is one earlier real send. The operator checks their own inbox by hand and either
-    marks it replied (drops off this list for good) or sends a short reminder from here (recorded
-    too, so the row doesn't come back tomorrow - see pending_followups' grace period)."""
-    st.subheader("📋 Follow-ups due")
+    CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): reminders are capped at one, and a row
+    can also be settled by logging an external (outside-the-tool) contact - both move a row from
+    the "due" list below into the "cold" list, which never nags but stays visible in case a very
+    late reply shows up and the operator wants to mark it replied."""
+    st.subheader("📋 Follow-ups")
     st.caption(f"Suppliers emailed **{ofw.FOLLOWUP_DUE_DAYS}+ days** ago with no reply logged yet. "
                "This is not automatic reply detection - the platform can't read your inbox, so "
                "please check it yourself before marking a row as replied.")
@@ -817,48 +921,18 @@ def _render_followups():
     if not due:
         st.success("Nothing due right now — either everything's been replied to, or it's too "
                    "soon since the last send.")
-        return
+    else:
+        st.markdown(f"##### {len(due)} due — never followed up on yet")
+        for row in due:
+            _render_followup_row(row)
 
-    for row in due:
-        with st.container(border=True):
-            title = row.get("supplier_name") or row.get("email")
-            st.markdown(f"**{title}** — {row.get('email', '')}")
-            meta_bits = []
-            if row.get("country"):
-                meta_bits.append(row["country"])
-            if row.get("keyword"):
-                meta_bits.append(row["keyword"])
-            if meta_bits:
-                st.caption(" · ".join(meta_bits))
-            st.caption(f"Sent {row.get('days_since_sent')} day(s) ago"
-                      + (f" · reminder already sent, {row.get('days_since_last_contact')} day(s) ago"
-                         if row.get("reminder_sent_at") else "")
-                      + f" · subject: \"{row.get('subject', '')}\"")
-
-            rcol1, rcol2 = st.columns([1, 1])
-            with rcol1:
-                if st.button("✅ Mark as replied", key=f"or_followup_replied_{row['key']}"):
-                    ofw.mark_replied(row["email"], row["sent_at"])
-                    st.rerun()
-            with rcol2:
-                if st.button("📨 Send reminder", key=f"or_followup_remind_{row['key']}"):
-                    supplier = {
-                        "name": row.get("supplier_name") or "",
-                        "email": row.get("email") or "",
-                        "website": row.get("website") or "",
-                    }
-                    session = {
-                        "country": row.get("country") or "",
-                        "keyword": row.get("keyword") or "",
-                    }
-                    try:
-                        oe.send_supplier_email(supplier, session, oe.DEFAULT_REMINDER_TEMPLATE)
-                    except Exception as exc:
-                        st.error(f"Reminder failed to send: {exc}")
-                    else:
-                        ofw.mark_reminder_sent(row["email"], row["sent_at"])
-                        st.success("Reminder sent.")
-                        st.rerun()
+    cold = ofw.cold_followups()
+    if cold:
+        with st.expander(f"🧊 {len(cold)} already followed up once, still no reply"):
+            st.caption("Reminders are capped at one, so these won't come back onto the list above "
+                      "on their own. Mark one replied if it eventually responds.")
+            for row in cold:
+                _render_followup_row(row, show_reminder_button=False, show_external_button=False)
 
 
 # ============================================================================

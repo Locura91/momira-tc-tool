@@ -159,3 +159,65 @@ def test_mark_reminder_sent_sets_reminder_timestamp():
     match = [r for r in rows if r["email"] == "remindme@followup-mark-test.example"
             and r["sent_at"] == sent_at]
     assert match[0]["reminder_sent_at"]
+
+
+# ======================================================================
+# reminder cap + cold_followups + log_external_contact
+# CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): reminders are capped at one - a row
+# that already got a reminder (or a manually logged external contact) stops resurfacing in
+# pending_followups() and moves to cold_followups() instead.
+# ======================================================================
+def test_pending_followups_excludes_a_row_that_already_got_one_reminder():
+    supplier = {"name": "Reminded Once", "email": "remindedonce@followup-cap-test.example"}
+    session = {"country": "Kenya", "keyword": "Safari"}
+    sent_at = _iso(20)
+    ofw.record_send(supplier, session, "Subject", sent_at=sent_at)
+    ofw.mark_reminder_sent("remindedonce@followup-cap-test.example", sent_at)
+    due = ofw.pending_followups(min_days=5)
+    assert not any(r["email"] == "remindedonce@followup-cap-test.example" for r in due)
+
+
+def test_cold_followups_includes_a_row_that_already_got_one_reminder():
+    supplier = {"name": "Cold Row", "email": "cold@followup-cap-test.example"}
+    session = {"country": "Kenya", "keyword": "Safari"}
+    sent_at = _iso(20)
+    ofw.record_send(supplier, session, "Subject", sent_at=sent_at)
+    ofw.mark_reminder_sent("cold@followup-cap-test.example", sent_at)
+    cold = ofw.cold_followups()
+    match = [r for r in cold if r["email"] == "cold@followup-cap-test.example" and r["sent_at"] == sent_at]
+    assert len(match) == 1
+    assert match[0]["reminder_channel"] == "tool"
+
+
+def test_cold_followups_excludes_rows_never_reminded():
+    supplier = {"name": "Never Reminded", "email": "never@followup-cap-test.example"}
+    session = {"country": "Kenya", "keyword": "Safari"}
+    sent_at = _iso(20)
+    ofw.record_send(supplier, session, "Subject", sent_at=sent_at)
+    cold = ofw.cold_followups()
+    assert not any(r["email"] == "never@followup-cap-test.example" for r in cold)
+
+
+def test_cold_followups_excludes_replied_rows():
+    supplier = {"name": "Replied After Reminder", "email": "repliedafter@followup-cap-test.example"}
+    session = {"country": "Kenya", "keyword": "Safari"}
+    sent_at = _iso(20)
+    ofw.record_send(supplier, session, "Subject", sent_at=sent_at)
+    ofw.mark_reminder_sent("repliedafter@followup-cap-test.example", sent_at)
+    ofw.mark_replied("repliedafter@followup-cap-test.example", sent_at)
+    cold = ofw.cold_followups()
+    assert not any(r["email"] == "repliedafter@followup-cap-test.example" for r in cold)
+
+
+def test_log_external_contact_behaves_like_a_reminder():
+    supplier = {"name": "External Contact", "email": "external@followup-cap-test.example"}
+    session = {"country": "Kenya", "keyword": "Safari"}
+    sent_at = _iso(20)
+    ofw.record_send(supplier, session, "Subject", sent_at=sent_at)
+    assert ofw.log_external_contact("external@followup-cap-test.example", sent_at)
+    due = ofw.pending_followups(min_days=5)
+    assert not any(r["email"] == "external@followup-cap-test.example" for r in due)
+    cold = ofw.cold_followups()
+    match = [r for r in cold if r["email"] == "external@followup-cap-test.example" and r["sent_at"] == sent_at]
+    assert len(match) == 1
+    assert match[0]["reminder_channel"] == "external"

@@ -73,6 +73,7 @@ from builder import (transport_company_name as builder_transport_company_name,
                      start_date_or_today as builder_start_date_or_today)
 from builder import derive_arrival_from_duration, build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
 from builder import build_transport_payloads
+from builder import transport_type_is_confirmed_match
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
 from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shape
@@ -3800,13 +3801,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             current["step"] = "main"
             st.rerun()
 
-        acol1, acol2 = st.columns(2)
-        with acol1:
-            data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("child_age_min", 2) or 2), key=f"mt_min_child_age_{idx}")
-        with acol2:
-            data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
-                                                     value=int(data.get("child_age_max", 12) or 12), key=f"mt_max_child_age_{idx}")
+        # CONFIRMED FIX (2026-08-19 audit): was inline `... or 2)` / `... or 12)`, which silently
+        # rewrote a legitimate child-age minimum of 0 back to 2 - the exact trap ClosedTour already
+        # fixed in render_child_age_band. Ticket had never adopted that shared helper; now it does,
+        # so Ticket also gets the min>max/min==max sanity warnings ClosedTour already had.
+        render_child_age_band(data, key_prefix=f"mt_{idx}",
+                              min_key="child_age_min", max_key="child_age_max")
 
         st.markdown("**Start Time(s)**")
         tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
@@ -4610,13 +4610,10 @@ def render_ticket_flow(client):
 
                 editable_field("Duration (hours)", data, "duration", widget="number_input")
 
-                acol1, acol2 = st.columns(2)
-                with acol1:
-                    data["child_age_min"] = st.number_input("Min Child Age", min_value=0, max_value=17,
-                                                             value=int(data.get("child_age_min", 2) or 2), key="tk_min_child_age")
-                with acol2:
-                    data["child_age_max"] = st.number_input("Max Child Age", min_value=0, max_value=17,
-                                                             value=int(data.get("child_age_max", 12) or 12), key="tk_max_child_age")
+                # CONFIRMED FIX (2026-08-19 audit): same "0 is falsy" trap as the batch Ticket
+                # screen above - now routed through the shared helper instead of a local copy.
+                render_child_age_band(data, key_prefix="tk",
+                                      min_key="child_age_min", max_key="child_age_max")
 
                 # Engines (Search Engines to Sell through): always ALL of them - this was
                 # previously a review multiselect, but there's never a real reason to sell
@@ -6449,6 +6446,15 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         with scol3:
             editable_field("Company name", data, "company_name", key_suffix=key_suffix)
 
+        # CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): only CAR/COMBINED/PLANE are
+        # confirmed out of the 8-value transportType enum - anything else used to default
+        # silently to CAR. Now flagged so it can be corrected before publish.
+        if not transport_type_is_confirmed_match(data.get("transport_type_hint"),
+                                                  data.get("service_name")):
+            st.warning("⚠️ Couldn't confidently match this to a known transport type (car/"
+                      "combined/plane) — it will be sent as **CAR** unless you correct the "
+                      "hint above. Double-check this is actually a car service before publishing.")
+
         vcol1, vcol2, vcol3 = st.columns(3)
         with vcol1:
             editable_field("Vehicle / aircraft model", data, "vehicle_model", key_suffix=key_suffix)
@@ -7507,12 +7513,15 @@ def render_hotel_flow(client):
               f"supplement(s), **{len(data.get('rates') or [])}** rate(s) with **{seasons_total}** season(s).")
 
     rooms_ok = bool(room_names) and not rooms_missing_dist
+    # CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): Hotel used to be the only one of the
+    # five publish flows that let a record go live with zero priced rooms - just a warning, not
+    # a blocked button, unlike Transfer's hard match/dates/geoloc gates. Now blocked to match.
     if not priced_rooms:
-        st.warning("⚠️ No room in any season has prices yet - the hotel and its rooms would publish, but "
-                  "nothing would be sellable.")
+        st.error("⚠️ No room in any season has prices yet - publishing is blocked until at least "
+                 "one room has a price, so nothing unsellable goes live.")
 
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
-                 type="primary", key="hp_publish", disabled=not rooms_ok):
+                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms):
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
@@ -8578,7 +8587,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-17-outreach-followup-reminders"
+BUILD_VERSION = "2026-08-19-audit-fixes"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

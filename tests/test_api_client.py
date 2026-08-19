@@ -222,3 +222,21 @@ def test_extra_headers_are_merged_not_overwritten_and_survive_reauth(client):
         assert call_headers.get("first") == "1"
         assert "auth-token" in call_headers
     assert calls[1]["auth-token"] == "fresh"
+
+
+# ======================================================================
+# _json - CONFIRMED FIX (2026-08-19 audit): every call site used to call res.json() directly.
+# A 2xx response is not a guarantee of a parseable body (proxy hiccup, empty/truncated
+# response) - this used to raise a raw json.JSONDecodeError straight through to the UI.
+# ======================================================================
+def test_json_returns_parsed_body_on_a_normal_response(client):
+    res = make_response(200, json_body={"id": "abc123"})
+    assert client._json(res) == {"id": "abc123"}
+
+
+def test_json_raises_a_friendly_runtime_error_on_a_malformed_body(client):
+    res = make_response(200, text="<html>not json</html>")
+    with pytest.raises(RuntimeError) as exc_info:
+        client._json(res)
+    # The response body is included so the error is actually debuggable, not just "it broke".
+    assert "not json" in str(exc_info.value)

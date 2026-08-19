@@ -31,8 +31,10 @@ import email.utils
 import hashlib
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+import date_format
 
 import ai_extractor
 
@@ -315,35 +317,58 @@ def _span_days(r: Dict[str, Any]) -> int:
         return 0
 
 
+def _parse_stop_sale_date(value) -> Optional[date]:
+    iso = date_format.to_iso_date(value)
+    try:
+        return datetime.strptime(iso[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
 def remove_stop_sales(existing: List[Dict[str, Any]],
                       release: List[Dict[str, Any]]) -> Dict[str, Any]:
     """The other half of a stop sale's lifecycle: a supplier re-opening dates that were
     previously blocked. CONFIRMED RULE (product owner, 2026-08-16): "New re-open selling date:
     We must remove an existing stop sale" - a release is not a new block, it undoes one.
 
-    Only removes an EXACT (start, end) match against what is actually live. A release range that
-    does not exactly match a live entry is reported in "not_found" and left untouched rather than
-    guessed at - if a supplier releases 12-15 Aug out of a live 12-19 Aug block, splitting that
-    block into 12-11 + 16-19 is a real decision a human should make on the review screen, not
-    something this silently does. Matches the same "report ambiguity, never resolve it" rule
-    merge_stop_sales already follows for additions."""
+    CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): a release range that only PARTIALLY
+    overlaps a live block is auto-split - e.g. releasing 12-15 Aug out of a live 12-19 Aug block
+    removes 12-15 and leaves 16-19 still blocked. Earlier this only ever matched an EXACT
+    (start, end) pair and left any partial overlap untouched in "not_found"; that was a safer
+    default while unproven, but confirmed as no longer wanted now that the behavior is live and
+    understood. A release range that overlaps NOTHING live is still reported in "not_found" and
+    left alone - there is nothing to split if there was never a live block there."""
     kept = [dict(s) for s in (existing or []) if isinstance(s, dict) and s.get("start")]
-    index_by_range: Dict[tuple, int] = {}
-    for i, s in enumerate(kept):
-        index_by_range.setdefault((str(s.get("start")), str(s.get("end"))), i)
+    removed, not_found = [], []
 
-    removed, not_found, remove_idx = [], [], set()
     for r in (release or []):
-        key = (str(r.get("start")), str(r.get("end")))
-        idx = index_by_range.get(key)
-        if idx is None or idx in remove_idx:
+        r_start, r_end = _parse_stop_sale_date(r.get("start")), _parse_stop_sale_date(r.get("end"))
+        if r_start is None or r_end is None or r_start > r_end:
             not_found.append(dict(r))
             continue
-        remove_idx.add(idx)
-        removed.append(dict(kept[idx]))
 
-    result = [s for i, s in enumerate(kept) if i not in remove_idx]
-    return {"merged": result, "removed": removed, "not_found": not_found}
+        any_overlap = False
+        next_kept = []
+        for s in kept:
+            s_start, s_end = _parse_stop_sale_date(s.get("start")), _parse_stop_sale_date(s.get("end"))
+            if s_start is None or s_end is None or s_end < r_start or s_start > r_end:
+                next_kept.append(s)  # no overlap with this release range - untouched
+                continue
+            any_overlap = True
+            # Overlap: keep whichever slice(s) of the live block fall OUTSIDE the release
+            # window. Fully contained (s inside r) contributes nothing back - fully released.
+            if s_start < r_start:
+                next_kept.append({**s, "end": (r_start - timedelta(days=1)).isoformat()})
+            if s_end > r_end:
+                next_kept.append({**s, "start": (r_end + timedelta(days=1)).isoformat()})
+        kept = next_kept
+
+        if any_overlap:
+            removed.append(dict(r))
+        else:
+            not_found.append(dict(r))
+
+    return {"merged": kept, "removed": removed, "not_found": not_found}
 
 
 def normalize_sender(raw_from: str) -> Dict[str, str]:

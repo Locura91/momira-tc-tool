@@ -108,3 +108,32 @@ def test_finalize_queue_result_with_nothing_found_returns_an_empty_list_not_an_e
     result = ot._finalize_queue_result([], _fresh_stats(), [], stopped_early=True, searched=1, total=40)
     assert result["suppliers"] == []
     assert result["stats"]["stopped_early"] is True
+
+
+# ======================================================================
+# _mark_already_contacted
+# CONFIRMED FIX (2026-08-19 audit): dedupe within a single search run was already covered
+# above (_merge_one_job_result / _finalize_queue_result) - but nothing checked the durable
+# cross-session send history (outreach_followups.py), so a supplier found again in a LATER
+# session could get emailed a second time, contradicting "we can contact each supplier only
+# once". _mark_already_contacted closes that gap using outreach_followups' own send log.
+# ======================================================================
+import outreach_followups as ofw
+from datetime import datetime, timezone
+
+
+def test_mark_already_contacted_unticks_a_previously_emailed_supplier():
+    email = "already-emailed@outreach-tool-crosssession-test.example"
+    ofw.record_send({"name": "Old Contact", "email": email}, {"country": "Peru", "keyword": "Trekking"},
+                    "Subject", sent_at=datetime.now(timezone.utc).isoformat())
+    suppliers = [_supplier("Old Contact", email=email)]
+    result = ot._mark_already_contacted(suppliers)
+    assert result[0]["selected"] is False
+    assert result[0]["alreadyContacted"] is True
+
+
+def test_mark_already_contacted_leaves_a_new_supplier_untouched():
+    suppliers = [_supplier("Brand New", email="brandnew@outreach-tool-crosssession-test.example")]
+    result = ot._mark_already_contacted(suppliers)
+    assert result[0]["selected"] is True
+    assert "alreadyContacted" not in result[0]

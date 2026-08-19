@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-17-outreach-followup-reminders"
+MODULE_BUILD = "2026-08-19-audit-fixes"
 
 import math
 import datetime
@@ -2292,6 +2292,16 @@ def _map_transport_type(type_hint: str, service_name: str) -> str:
         if any(k in text for k in keywords):
             return enum_val
     return "CAR"
+
+
+def transport_type_is_confirmed_match(type_hint: str, service_name: str) -> bool:
+    """CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): _map_transport_type used to fall
+    back to CAR for anything that didn't match a known keyword (boat, train, etc.) with nothing
+    surfacing to catch a wrong contract term. This lets the UI show a visible warning whenever
+    that silent default is about to be used, so it can be caught and corrected before publish
+    rather than shipped unnoticed."""
+    text = f"{type_hint or ''} {service_name or ''}".lower()
+    return any(any(k in text for k in keywords) for _enum_val, keywords in _TRANSPORT_TYPE_KEYWORDS)
 
 
 def derive_arrival_from_duration(departure_time, duration_time):

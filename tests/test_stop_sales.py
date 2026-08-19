@@ -38,11 +38,31 @@ def test_remove_stop_sales_leaves_other_live_ranges_untouched():
     assert result["merged"] == [{"start": "2026-09-01", "end": "2026-09-05"}]
 
 
-def test_remove_stop_sales_reports_a_non_exact_match_as_not_found_and_changes_nothing():
-    # Supplier releases 12-15 Aug but the live block is the wider 12-19 Aug - must NOT guess
-    # at splitting the range; report it and leave the live block alone.
+def test_remove_stop_sales_auto_splits_a_partial_overlap():
+    # CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): supplier releases 12-15 Aug out of a
+    # live 12-19 Aug block - the block is now split, leaving 16-19 Aug still blocked.
     existing = [{"start": "2026-08-12", "end": "2026-08-19"}]
     result = ssp.remove_stop_sales(existing, [{"start": "2026-08-12", "end": "2026-08-15"}])
+    assert result["merged"] == [{"start": "2026-08-16", "end": "2026-08-19"}]
+    assert len(result["removed"]) == 1
+    assert result["not_found"] == []
+
+
+def test_remove_stop_sales_auto_splits_a_middle_overlap_into_two_remaining_pieces():
+    # Releasing a window entirely inside a wider live block leaves both the before- and
+    # after-slice still blocked.
+    existing = [{"start": "2026-08-01", "end": "2026-08-31"}]
+    result = ssp.remove_stop_sales(existing, [{"start": "2026-08-10", "end": "2026-08-15"}])
+    assert sorted(result["merged"], key=lambda r: r["start"]) == [
+        {"start": "2026-08-01", "end": "2026-08-09"},
+        {"start": "2026-08-16", "end": "2026-08-31"},
+    ]
+    assert len(result["removed"]) == 1
+
+
+def test_remove_stop_sales_release_with_no_overlap_is_still_not_found():
+    existing = [{"start": "2026-08-12", "end": "2026-08-19"}]
+    result = ssp.remove_stop_sales(existing, [{"start": "2026-09-01", "end": "2026-09-05"}])
     assert result["merged"] == existing
     assert result["removed"] == []
     assert len(result["not_found"]) == 1

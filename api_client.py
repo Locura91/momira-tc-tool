@@ -206,6 +206,22 @@ class TravelCompositorAPI:
 
         return last_res
 
+    def _json(self, res: requests.Response) -> Any:
+        """CONFIRMED FIX (2026-08-19 audit): every call site used to call res.json() directly
+        with no guard. _network_error_response already turns a request that never got a real
+        HTTP response into a synthetic error Response every caller handles gracefully - but a
+        2xx response with a malformed or truncated body (a proxy hiccup, an empty body) is a
+        different failure from the SAME class, and used to raise json.JSONDecodeError straight
+        through to a raw traceback on screen instead of a friendly error. Centralized here so
+        every .json() call gets the same treatment without a try/except at each site."""
+        try:
+            return res.json()
+        except ValueError as e:
+            raise RuntimeError(
+                f"Travel Compositor returned a {res.status_code} response that wasn't valid "
+                f"JSON ({e}). Response body (first 300 chars): {res.text[:300]!r}"
+            ) from e
+
     # ------------------------------------------------------------------
     # DESTINATIONS  (the consolidated, correct resolver)
     # ------------------------------------------------------------------
@@ -222,7 +238,7 @@ class TravelCompositorAPI:
         url = f"{self.api_base_url}/destination/{self.microsite_id}"
         res = self._request("GET", url, params={"lang": lang})
         res.raise_for_status()
-        data = res.json()
+        data = self._json(res)
 
         destinations = data.get("destination", []) if isinstance(data, dict) else data
         self._destination_cache = destinations or []
@@ -327,7 +343,7 @@ class TravelCompositorAPI:
         try:
             res = self._request("GET", url_direct, params={"lang": "EN"})
             if res.status_code == 200:
-                data = res.json()
+                data = self._json(res)
                 if isinstance(data, dict) and data.get("code"):
                     lat, lng = _extract_coords(data)
                     return {
@@ -545,7 +561,7 @@ class TravelCompositorAPI:
         try:
             res = self._request("GET", url_direct, params={"lang": "EN"})
             if res.status_code == 200:
-                data = res.json()
+                data = self._json(res)
                 if isinstance(data, dict) and data.get("code"):
                     code, name = data["code"], data.get("name", data["code"])
                     print(f"✅ RESOLVED (by code): '{clean_query}' -> {code} ({name})")
@@ -634,7 +650,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return []
-        data = res.json()
+        data = self._json(res)
         return data if isinstance(data, list) else []
 
     def get_all_users(self) -> List[Dict[str, Any]]:
@@ -650,7 +666,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return []
-        data = res.json()
+        data = self._json(res)
         return data if isinstance(data, list) else []
 
     def get_closed_tours(self, supplier_id: str, first: int = 0, limit: int = 100) -> Dict[str, Any]:
@@ -670,7 +686,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """
@@ -685,7 +701,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_closed_tour_option(self, supplier_id: str, closed_tour_code: str, option_code: str) -> Dict[str, Any]:
         """
@@ -700,7 +716,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /closedtour/{supplierId} — creates main tour (draft, active: False)."""
@@ -710,7 +726,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /closedtour/{supplierId}/{closedTourCode} — pushes modality/pricing option."""
@@ -720,7 +736,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
@@ -735,7 +751,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
         """
@@ -750,7 +766,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     # ------------------------------------------------------------------
     # TICKET UPLOADS (excursions - single destination, no overnight)
@@ -764,7 +780,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_ticket(self, supplier_id: str, ticket_code: str) -> Dict[str, Any]:
         """Executes GET /tickets/{supplierId}/{ticketCode} — returns the full existing ticket."""
@@ -774,7 +790,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_ticket_option(self, supplier_id: str, ticket_code: str, option_code: str) -> Dict[str, Any]:
         """Executes GET /tickets/{supplierId}/{ticketCode}/{optionCode} — returns a specific ticket modality."""
@@ -784,7 +800,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /tickets/{supplierId} — creates a new ticket."""
@@ -794,7 +810,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /tickets/{supplierId}/{ticketCode} — creates a new ticket option/modality."""
@@ -804,7 +820,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /tickets/{supplierId} — updates an EXISTING ticket's details."""
@@ -814,7 +830,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /tickets/{supplierId}/{ticketCode} — updates an EXISTING ticket option/modality."""
@@ -824,7 +840,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     # ------------------------------------------------------------------
     # TRANSFER UPLOADS
@@ -847,7 +863,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_transfer(self, supplier_id: str, transfer_id: str) -> Dict[str, Any]:
         """Executes GET /transfer/{supplierId}/{transferId} — returns one specific transfer by its TC-generated id."""
@@ -857,7 +873,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /transfer/{supplierId} — creates a new transfer. Travel Compositor
@@ -869,7 +885,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
@@ -884,7 +900,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     # ------------------------------------------------------------------
     # TRANSPORT BASES  (the location master list Transport's segments
@@ -916,7 +932,7 @@ class TravelCompositorAPI:
                 if res.status_code != 200:
                     print(f"⚠️ Could not fetch transport bases (page starting {first}): {res.status_code} {res.text}")
                     break
-                data = res.json()
+                data = self._json(res)
                 page = data.get("transportbase", []) if isinstance(data, dict) else (data or [])
                 bases.extend(page)
                 pagination = data.get("pagination") or {} if isinstance(data, dict) else {}
@@ -1012,7 +1028,7 @@ class TravelCompositorAPI:
             url_direct = f"{self.api_base_url}/transportbases/{clean_query}"
             res = self._request("GET", url_direct, params={"lang": "EN"})
             if res.status_code == 200:
-                data = res.json()
+                data = self._json(res)
                 if isinstance(data, dict) and data.get("code"):
                     geo = data.get("geolocation") or {}
                     print(f"✅ RESOLVED (by code): '{clean_query}' -> {data['code']} ({data.get('name')})")
@@ -1095,7 +1111,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_transport(self, supplier_id: str, transport_id: str) -> Dict[str, Any]:
         """Executes GET /transport/{supplierId}/{transportId} — returns one specific transport
@@ -1106,7 +1122,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /transport/{supplierId} — creates a new transport (the parent record
@@ -1119,7 +1135,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
@@ -1133,7 +1149,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     # ------------------------------------------------------------------
     # TRANSPORT OPTIONS  (one per occupancy/passenger bracket - see
@@ -1152,7 +1168,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /transport/{supplierId}/{transportId} — creates a new occupancy-bracket
@@ -1163,7 +1179,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /transport/{supplierId}/{transportId} — updates an EXISTING occupancy-
@@ -1176,7 +1192,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     # ------------------------------------------------------------------
     # HOTEL UPLOADS
@@ -1200,7 +1216,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def get_hotel(self, supplier_id: str, provider_code: str) -> Dict[str, Any]:
         """Executes GET /hotel/{supplierId}/{providerCode} — returns the FULL nested hotel record
@@ -1214,7 +1230,7 @@ class TravelCompositorAPI:
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/{supplierId} — creates a new hotel contract. Payload includes the
@@ -1227,7 +1243,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /hotel/{supplierId} — updates an EXISTING hotel contract. Unlike Transfer/
@@ -1242,7 +1258,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel_room(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/room/{supplierId}/{providerCode} — adds a single room to an
@@ -1256,7 +1272,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel_mealplan(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/mealplan/{supplierId}/{providerCode} — adds a single meal plan to
@@ -1269,7 +1285,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel_offer(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/offer/{supplierId}/{providerCode} — adds an offer to an existing
@@ -1282,7 +1298,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel_supplement(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/supplement/{supplierId}/{providerCode} — adds a supplement to an
@@ -1293,7 +1309,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def create_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes POST /hotel/rates/{supplierId}/{providerCode} — adds a new rate (with its
@@ -1306,7 +1322,7 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)
 
     def update_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
         """Executes PUT /hotel/rates/{supplierId}/{providerCode} — updates an EXISTING rate.
@@ -1319,4 +1335,4 @@ class TravelCompositorAPI:
         if res.status_code not in (200, 201):
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
-        return res.json()
+        return self._json(res)

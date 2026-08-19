@@ -233,11 +233,25 @@ def render_template(text: Optional[str], data: Dict[str, Any]) -> str:
 
 
 def build_template_data(supplier: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # CONFIRMED FIX (2026-08-19 audit): a combination/queue run's `session["keyword"]` is a
+    # summary string like "12 place/theme combination(s)" - real for the run as a whole, but
+    # nonsense in a sentence addressed to one supplier ("...your 12 place/theme
+    # combination(s) offerings..."). Each supplier found via a combination run carries its OWN
+    # `foundVia` label (e.g. "Luxor · Nile Cruise" - see _merge_one_job_result in
+    # outreach_tool.py), which is what actually matched this specific supplier and is what
+    # should go in the email. A plain single Country/City/Keyword search has no foundVia, so
+    # session["keyword"] (the real keyword typed for that search) is still used there.
+    focus_keyword = supplier.get("foundVia") or session.get("keyword")
+    # CONFIRMED FIX (2026-08-19 audit): render_template deliberately leaves an unmatched
+    # [Tag] visible so a genuine authoring typo stays noticeable - but a supplier scraped
+    # with no name (rather than a typo in the template) hit that same fallback and could
+    # send a real client an email literally containing "[SupplierName]". A missing name is
+    # a data gap, not an authoring mistake, so it gets a safe generic fallback here instead.
     return {
-        "SupplierName": supplier.get("name"),
+        "SupplierName": supplier.get("name") or "your company",
         "ContactName": supplier.get("contactName") or "there",
         "Country": session.get("country"),
-        "FocusKeyword": session.get("keyword"),
+        "FocusKeyword": focus_keyword,
         "Website": supplier.get("website") or "",
         "SenderName": os.getenv("SENDER_NAME") or "Momira Travel Partnerships",
     }
@@ -354,8 +368,20 @@ def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
                 raise RuntimeError(err.get("message") or str(err))
             except ValueError:
                 raise RuntimeError(f"HTTP {res.status_code}: {res.text[:200]}")
-        body = res.json() if res.content else {}
-        return {"messageId": body.get("id"), "demo": False, "provider": provider}
+        # CONFIRMED FIX (2026-08-19 audit): Resend already returned a non-error status here -
+        # the email genuinely went out. Previously, if the response BODY then failed to parse
+        # (a malformed/truncated JSON body - a different failure than a non-2xx status), the
+        # ValueError propagated up through dispatch_batch's per-recipient try/except and got
+        # logged as "failed", even though the message was actually sent - meaning it would
+        # never be recorded by record_sends_from_log (only "sent" entries are) and a naive
+        # retry would send the same supplier a real duplicate. A parse failure here can only
+        # mean "we don't know the provider's message id", not "the send failed".
+        try:
+            body = res.json() if res.content else {}
+            message_id = body.get("id")
+        except ValueError:
+            message_id = None
+        return {"messageId": message_id, "demo": False, "provider": provider}
 
     if provider == "demo":
         # Fully built but never delivered, so the workflow stays testable.
