@@ -26,8 +26,9 @@ import streamlit as st
 
 import ai_extractor
 import trip_prompt_extractor as tpe
+import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-19-ai-trip-idea-prototype"
+MODULE_BUILD = "2026-08-19-budget-tier-rules"
 
 _PHASE_KEY = "ti_phase"
 
@@ -63,6 +64,9 @@ def _render_criteria(result):
 
     themes = result.get("themes") or []
     budget = result.get("budget_hint") or ""
+    budget_tier = result.get("budget_tier") or "unspecified"
+    tier_label = {"budget": "💰 Budget-friendly", "superior": "⭐ Superior",
+                 "luxury": "💎 Luxury", "unspecified": "*(not stated)*"}.get(budget_tier, budget_tier)
 
     ccol1, ccol2 = st.columns(2)
     with ccol1:
@@ -71,7 +75,7 @@ def _render_criteria(result):
         st.markdown(f"**👥 Travellers:** {party}")
     with ccol2:
         st.markdown(f"**🎯 Themes:** {', '.join(themes) if themes else '*(not stated)*'}")
-        st.markdown(f"**💶 Budget:** {budget or '*(not stated)*'}")
+        st.markdown(f"**💶 Budget tier:** {tier_label}" + (f" *(\"{budget}\")*" if budget else ""))
 
     confidence = result.get("confidence", "low")
     badge = {"high": "🟢 High", "medium": "🟡 Medium", "low": "🔴 Low"}.get(confidence, confidence)
@@ -81,8 +85,28 @@ def _render_criteria(result):
         st.info(f"💬 Before searching, the widget would ask the customer: "
                f"*\"{result['clarification_needed']}\"*")
 
+    # CONFIRMED PRODUCT-OWNER RULE (2026-08-19): "Budget friendly means 3* hotel, small car (if
+    # requested). Superior means 4* hotel. Luxury means 5* hotel. Rule must be always with
+    # breakfast, hotel reviews minimum 8." See trip_search_rules.py for where this rule lives.
+    rules = tsr.resolve_search_rules(budget_tier, car_wanted=bool(result.get("car_wanted")))
+    st.markdown("##### 🧭 Search rules this tier would apply")
+    rcol1, rcol2, rcol3, rcol4 = st.columns(4)
+    with rcol1:
+        stars = rules["hotel_star_rating"]
+        st.metric("Hotel stars", f"{stars}★" if stars else "any")
+    with rcol2:
+        st.metric("Board", rules["board_type"].capitalize())
+    with rcol3:
+        st.metric("Min. review score", f"{rules['min_hotel_review_score']}/10*")
+    with rcol4:
+        st.metric("Car category", rules["car_category"] or ("none requested" if not result.get("car_wanted") else "standard"))
+    st.caption("*Review score assumed on a /10 scale — not yet confirmed against Travel "
+              "Compositor's actual review scale. Breakfast and the minimum review score apply "
+              "regardless of tier; car category only applies when a rental car is actually part "
+              "of the trip.")
+
     with st.expander("🔎 Raw structured output (what would be handed to a search step)"):
-        st.json(result)
+        st.json({**result, "resolved_search_rules": rules})
 
 
 def render_trip_idea_tool():

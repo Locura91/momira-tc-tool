@@ -110,6 +110,26 @@ TRIP_PROMPT_SCHEMA = {
             "description": "Any budget signal in the customer's own terms (e.g. 'budget-friendly', "
                             "'around 1500 euros per person', 'luxury'). Empty string if none given.",
         },
+        "budget_tier": {
+            "type": "string",
+            "enum": ["budget", "superior", "luxury", "unspecified"],
+            "description": "CONFIRMED PRODUCT-OWNER RULE (2026-08-19): the customer's budget language "
+                            "mapped to one of Momira's three tiers - 'budget' (e.g. 'budget-friendly', "
+                            "'cheap', 'affordable', 'on a budget'), 'superior' (e.g. 'nice hotel', "
+                            "'upscale', 'a bit more comfort', '4-star'), or 'luxury' (e.g. 'luxury', "
+                            "'high-end', '5-star', 'the best', 'money is no object'). 'unspecified' if "
+                            "the customer gave no budget signal at all. This tier - NOT budget_hint - "
+                            "is what actually drives the hotel star rating / board type / minimum "
+                            "review score rules (see trip_search_rules.py); do not invent a tier from "
+                            "a vague prompt that gave no real signal - 'unspecified' is a valid and "
+                            "often correct answer.",
+        },
+        "car_wanted": {
+            "type": "boolean",
+            "description": "true only if the customer explicitly mentioned wanting a rental car / "
+                            "self-drive / road trip. false if not mentioned, even if transfers or "
+                            "getting around are implied some other way - never assume a car is wanted.",
+        },
         "confidence": {
             "type": "string",
             "enum": ["high", "medium", "low"],
@@ -125,7 +145,7 @@ TRIP_PROMPT_SCHEMA = {
                             "region did you have in mind?'). Empty string if confidence is 'high'.",
         },
     },
-    "required": ["destination_country", "adults", "themes", "confidence"],
+    "required": ["destination_country", "adults", "themes", "budget_tier", "confidence"],
 }
 
 TRIP_PROMPT_SYSTEM_PROMPT = """You are reading a PROSPECTIVE CUSTOMER's own free-text description of a
@@ -158,6 +178,11 @@ named week, "the first two weeks of March").
 THEMES: use the customer's own words/intent, not a fixed list you must fill from - "city and beach"
 should produce ["city", "beach"], not additional themes they didn't mention.
 
+BUDGET_TIER: only set 'budget', 'superior', or 'luxury' when the customer's own words actually signal
+one of those tiers - do not infer a tier from destination or theme alone (a beach trip is not
+automatically 'budget'). No signal at all means 'unspecified', which is a normal, common, correct
+answer - not a fallback to avoid.
+
 Call the provide_trip_criteria tool with the structured result. Do not include any other commentary."""
 
 
@@ -171,6 +196,7 @@ def extract_trip_criteria(customer_prompt: str, model: str = TRIP_PROMPT_MODEL) 
             "destination_country": "", "destination_region_or_city": "", "travel_month": "",
             "date_range_start": "", "date_range_end": "", "duration_nights": None,
             "adults": 2, "children": 0, "children_ages": [], "themes": [], "budget_hint": "",
+            "budget_tier": "unspecified", "car_wanted": False,
             "confidence": "low", "clarification_needed": "What kind of trip are you looking for?",
         }
     return ax._call_claude(
