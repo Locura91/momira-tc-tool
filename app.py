@@ -8597,7 +8597,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-19-package-rollover-prototype"
+BUILD_VERSION = "2026-08-19-step1-expandable-menu"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8962,25 +8962,49 @@ if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
 # ======================================================================
 if st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
-    pt_choice = st.radio("Choose one:",
-                          ["ClosedTour", "Ticket", "Hotel",
-                           MANUAL_INFO_CHOICE, UPDATE_REFRESH_CHOICE],
-                          key="pt_choice_radio")
-    st.caption("**ClosedTour** = multi-day tour (itinerary, room-occupancy pricing). "
-              "**Ticket** = single-destination excursion/activity, no overnight, passenger-type pricing. "
-              "**Hotel** = a full accommodation contract: rooms, meal plans, offers, supplements and "
-              "rate seasons. Each of these three CREATES something new: either a brand-new product with "
-              "its first Modality, or a new Modality added to one that already exists. "
-              "**Adding manual information** = no document at all: write something you know about a "
-              "supplier — a moved pickup point, changed cancellation terms — and it is attached "
-              "automatically to every future upload of that product type. "
-              "**Update/Refresh existing Service** = the one place for every other kind of update - "
-              "new prices, changed details, a new Modality on something that already exists - for "
-              "ANY of the five product types, including Transfer and Transport (which can no longer "
-              "be created fresh through this tool, only updated here).")
-    if st.button("➡️ Continue", type="primary"):
-        st.session_state.product_type = pt_choice
-        st.rerun()
+    st.caption("Click a section below to open it, then pick where you want to go — like "
+              "Travel Compositor's own \"Contracts\" menu.")
+
+    # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-19): "can we make the menu in the App more
+    # like this example in the Travel Compositor site: When the human clicks on the according
+    # step 1: then the dropdown opens with all the options within the options in the step 1."
+    # Replaces the flat radio-button list with two independently expandable/collapsible
+    # sections (Streamlit's st.expander keeps each section's open/closed state on its own,
+    # so opening one doesn't close the other - confirmed as the wanted behaviour over an
+    # accordion). Clicking an option inside a section selects it immediately and moves on,
+    # the same one-click navigation as clicking a leaf item in Travel Compositor's sidebar -
+    # there's no separate "Continue" button to click afterwards anymore.
+    with st.expander("📦 Create a new product", expanded=False):
+        st.caption("Each of these CREATES something new: either a brand-new product with its "
+                  "first Modality, or a new Modality added to one that already exists.")
+        if st.button("ClosedTour", key="pt_choice_closedtour", use_container_width=True):
+            st.session_state.product_type = "ClosedTour"
+            st.rerun()
+        st.caption("Multi-day tour (itinerary, room-occupancy pricing).")
+        if st.button("Ticket", key="pt_choice_ticket", use_container_width=True):
+            st.session_state.product_type = "Ticket"
+            st.rerun()
+        st.caption("Single-destination excursion/activity, no overnight, passenger-type pricing.")
+        if st.button("Hotel", key="pt_choice_hotel", use_container_width=True):
+            st.session_state.product_type = "Hotel"
+            st.rerun()
+        st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
+                  "rate seasons.")
+
+    with st.expander("🔧 Manage an existing product", expanded=False):
+        if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
+            st.session_state.product_type = MANUAL_INFO_CHOICE
+            st.rerun()
+        st.caption("No document at all: write something you know about a supplier — a moved "
+                  "pickup point, changed cancellation terms — and it is attached automatically "
+                  "to every future upload of that product type.")
+        if st.button(UPDATE_REFRESH_CHOICE, key="pt_choice_updaterefresh", use_container_width=True):
+            st.session_state.product_type = UPDATE_REFRESH_CHOICE
+            st.rerun()
+        st.caption("The one place for every other kind of update - new prices, changed "
+                  "details, a new Modality on something that already exists - for ANY of the "
+                  "five product types, including Transfer and Transport (which can no longer "
+                  "be created fresh through this tool, only updated here).")
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
