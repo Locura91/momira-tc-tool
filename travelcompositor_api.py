@@ -647,3 +647,33 @@ class TravelCompositorAPI:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return res.json()
+
+    # ---- Holiday Packages — day-to-day detail + calendar (2026-08-19, for the
+    # Package Rollover prototype: finding a package's current departure/price/hotel
+    # and the candidate future departures to roll onto) ----------------------
+    def get_holiday_package_day_to_day(self, microsite_id: str, holiday_package_id: str,
+                                        lang: str = "EN") -> Dict[str, Any]:
+        """Executes GET /package/{micrositeId}/{holidayPackageId} — the "day to day" detail
+        for ONE holiday package. Field names for departure date / price / hotel / review
+        score are NOT yet confirmed against a real response — this is intentionally a thin,
+        unopinionated wrapper so the Package Rollover tool can show the raw response and let
+        a human (and this codebase) learn the real shape from a live package, the same way
+        get_holiday_package_info's shape was learned before WRITABLE_FIELDS was written."""
+        url = f"{self.api_base_url}/package/{microsite_id}/{holiday_package_id}"
+        res = self._request("GET", url, params={"lang": lang})
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
+
+    def get_holiday_package_calendar(self, microsite_id: str, holiday_package_id: str,
+                                      lang: str = "EN") -> Dict[str, Any]:
+        """Executes GET /package/calendar/{micrositeId}/{holidayPackageId} — the calendar of
+        available/candidate departure dates for ONE holiday package. Same caveat as
+        get_holiday_package_day_to_day: shape not yet confirmed against a real response."""
+        url = f"{self.api_base_url}/package/calendar/{microsite_id}/{holiday_package_id}"
+        res = self._request("GET", url, params={"lang": lang})
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()

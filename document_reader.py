@@ -31,7 +31,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-19-budget-tier-rules"
+MODULE_BUILD = "2026-08-19-package-rollover-prototype"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 

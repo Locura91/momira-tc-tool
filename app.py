@@ -128,6 +128,12 @@ from outreach_tool import render_outreach_tool
 # structured search criteria, shown to a human. Not connected to Travel Compositor yet - see
 # trip_idea_tool.py's module docstring and the "client-trip-prompt-idea" project note.
 from trip_idea_tool import render_trip_idea_tool
+# PROTOTYPE (2026-08-19): "Package Rollover" - a human enters one Holiday Package ID, the tool
+# looks up its real departure/price/hotel data and calendar from Travel Compositor and
+# proposes a replacement departure under the confirmed rules. Read-only (real GET calls, no
+# PUT yet) - see package_rollover_tool.py's module docstring and the
+# "package-auto-rollover-rules" project note.
+from package_rollover_tool import render_package_rollover_tool
 
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
@@ -8591,7 +8597,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-19-budget-tier-rules"
+BUILD_VERSION = "2026-08-19-package-rollover-prototype"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8606,7 +8612,7 @@ def _module_build_mismatches():
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
                  "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope",
-                 "ui_components", "trip_idea_tool"):
+                 "ui_components", "trip_idea_tool", "package_rollover_tool"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -8804,6 +8810,10 @@ TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 # PROTOTYPE (2026-08-19): free-text customer trip idea -> structured search criteria. Doesn't
 # touch Travel Compositor at all yet - see trip_idea_tool.py's module docstring for why.
 TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
+# PROTOTYPE (2026-08-19): human enters a Holiday Package ID, tool proposes a replacement
+# departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
+# docstring and the "package-auto-rollover-rules" project note.
+TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
 
 # A Step 1 destination that is not a product type. It sits in the same list because that is
 # where a person looks when they have something to record about a supplier, even though
@@ -8889,6 +8899,12 @@ if st.session_state.active_tool is None:
          "Type a trip idea the way a customer might describe it (\"2 adults, February, city "
          "and beach in Spain\") and see it turned into destination/dates/party/theme fields.",
          "Doesn't touch Travel Compositor — not a real search yet."),
+        (TOOL_PACKAGEROLLOVER, "tool_btn_packagerollover",
+         "PROTOTYPE — look up a Holiday Package and see a proposed replacement departure.",
+         "Enter a Package ID; it fetches the real current departure/price and calendar from "
+         "Travel Compositor and proposes a new departure under the confirmed rules (14-day "
+         "trigger, ~4 months out, rating 8+, price within +3.5%).",
+         "Read-only — real GET calls, never writes anything."),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -8922,6 +8938,12 @@ if st.session_state.active_tool == TOOL_TRANSLATE:
 # need the Travel Compositor client at all ----
 if st.session_state.active_tool == TOOL_TRIPIDEA:
     render_trip_idea_tool()
+    st.stop()
+
+# ---- Package Rollover prototype: hand straight off, it has no product-type step and uses
+# its own Packages-API client (see package_rollover_tool.py's module docstring) ----
+if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
+    render_package_rollover_tool()
     st.stop()
 
 # ======================================================================
