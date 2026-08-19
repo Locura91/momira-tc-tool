@@ -24,6 +24,24 @@ next to the value, so a human looking at the tool's output can immediately see (
 wrong guess. This is deliberately not trusted to be right on the first real package; it exists
 to let the FIRST real Package ID Chris tries give us a real example to confirm or fix the
 field names against, the same "flagged, not guessed" posture as the rest of this codebase.
+
+CONFIRMED AGAINST A REAL RESPONSE (package 56355178, 2026-08-19): Travel Compositor represents
+money as an OBJECT, not a flat number — {"amount": 1459.56, "currency": "EUR"} — never a plain
+1459.56. The original heuristic didn't know this and, matching "totalPrice" before
+"pricePerPerson" AND handing the whole {"amount":..., "currency":...} object to a generic
+string-based number parser, produced 291912.0 for a real package whose actual per-person price
+was 1459.56 (rounds to the 1460 Chris reported) — the parser was reading the Python
+str()-repr of the dict itself, not the amount inside it. Fixed by _extract_amount() below,
+which unwraps the {"amount": ...} shape first, and by re-ordering _PRICE_KEY_GROUPS to prefer
+"pricePerPerson" over "totalPrice" (the rule is stated per person: "1460 Euro per Person").
+Also confirmed: a hotel's rating is a LIST of per-source objects —
+[{"score": "8.6", "source": "Booking.com", "numReviews": 3279}, {"score": "4.5",
+"source": "Tripadvisor", ...}, {"score": "7.2", "source": "Expedia", ...}] — not one flat
+number, and different sources use different scales (Tripadvisor's 4.5 is out of 5, not /10).
+_extract_rating() picks PREFERRED_RATING_SOURCE — Booking.com by default, since it had by far
+the most reviews in the one real example seen and its scale matches the assumed /10 — but this
+default is NOT yet confirmed as the source the product owner wants used; see the
+"package-auto-rollover-rules" project note.
 """
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
@@ -39,10 +57,15 @@ CLOSED_WITHIN_DAYS = 14          # CONFIRMED (product owner, 2026-08-19)
 TARGET_LEAD_DAYS = 122           # ~4 months — CONFIRMED (product owner, 2026-08-19)
 MIN_HOTEL_RATING = 8             # assumed /10 scale — see module docstring
 MAX_PRICE_INCREASE_PCT = 3.5     # CONFIRMED (product owner, 2026-08-19), vs. current live price
+# NOT yet confirmed with the product owner — see module docstring's 2026-08-19 note.
+PREFERRED_RATING_SOURCE = "Booking.com"
 
 # Ordered most-specific-first: the first hint group with ANY match in an entry's keys wins.
+# "priceperperson" before "totalprice" — CONFIRMED against a real response (package 56355178,
+# 2026-08-19): the rule is stated per person ("1460 Euro per Person"), and totalPrice is the
+# whole party's total, not a per-person figure.
 _DATE_KEY_GROUPS = [["departuredate"], ["startdate"], ["date"]]
-_PRICE_KEY_GROUPS = [["totalprice"], ["priceperperson"], ["price"], ["amount"], ["cost"]]
+_PRICE_KEY_GROUPS = [["priceperperson"], ["totalprice"], ["price"], ["amount"], ["cost"]]
 _RATING_KEY_GROUPS = [["reviewscore"], ["hotelrating"], ["rating"], ["review"], ["score"]]
 
 
@@ -58,6 +81,34 @@ def _find_field(entry: Dict[str, Any], hint_groups: List[List[str]]):
             if any(h in key_l for h in hints):
                 return real_key, value
     return None, None
+
+
+def _extract_amount(value) -> Optional[float]:
+    """Unwraps Travel Compositor's real money shape — {"amount": 1459.56, "currency": "EUR"}
+    — before falling back to the generic string parser. CONFIRMED real bug (package 56355178,
+    2026-08-19) without this: parse_number_loose(the whole dict) read Python's str()-repr of
+    the dict itself and produced 291912.0 for an actual amount of 1459.56 / 2919.12."""
+    if isinstance(value, dict) and "amount" in value:
+        return parse_number_loose(value.get("amount"))
+    return parse_number_loose(value)
+
+
+def _extract_rating(value, preferred_source: str = PREFERRED_RATING_SOURCE) -> Optional[float]:
+    """Unwraps Travel Compositor's real hotel-rating shape — a LIST of per-source objects,
+    e.g. [{"score": "8.6", "source": "Booking.com", "numReviews": 3279}, ...] — CONFIRMED
+    against package 56355178, 2026-08-19. Different sources use different scales (Tripadvisor
+    is out of 5, not /10), so this picks ONE source (preferred_source) rather than averaging
+    or taking the first — averaging across mismatched scales would produce a meaningless
+    number. Falls back to the first entry if the preferred source isn't present, and still
+    handles a plain number/money-object for safety in case some other response shape is flat."""
+    if isinstance(value, list):
+        preferred = next((v for v in value if isinstance(v, dict)
+                          and preferred_source.lower() in str(v.get("source", "")).lower()), None)
+        chosen = preferred or (value[0] if value and isinstance(value[0], dict) else None)
+        if chosen is None:
+            return None
+        return parse_number_loose(chosen.get("score"))
+    return _extract_amount(value)
 
 
 def parse_date_loose(value) -> Optional[date]:
@@ -106,9 +157,10 @@ def find_price(entry: Dict[str, Any]):
     """Public wrapper around the price heuristic for a single dict (e.g. a package info or
     day-to-day response) — returns (matched_field_name, parsed_price) so a caller outside
     this module (package_rollover_tool.py) doesn't need to reach into the private
-    _find_field/_PRICE_KEY_GROUPS internals directly."""
+    _find_field/_PRICE_KEY_GROUPS internals directly. Unwraps TC's real {"amount": ...} money
+    shape via _extract_amount — see its docstring for the real bug this fixes."""
     key, raw = _find_field(entry, _PRICE_KEY_GROUPS)
-    return key, parse_number_loose(raw)
+    return key, _extract_amount(raw)
 
 
 def find_departure_date(entry: Dict[str, Any]):
@@ -153,9 +205,9 @@ def find_candidates(calendar_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         candidates.append({
             "date": parse_date_loose(date_raw),
             "date_field": date_key,
-            "price": parse_number_loose(price_raw),
+            "price": _extract_amount(price_raw),
             "price_field": price_key,
-            "rating": parse_number_loose(rating_raw),
+            "rating": _extract_rating(rating_raw),
             "rating_field": rating_key,
             "raw": entry,
         })

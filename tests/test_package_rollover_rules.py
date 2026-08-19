@@ -111,6 +111,72 @@ def test_find_candidates_returns_empty_list_for_unrecognized_top_level_shape():
     assert prr.find_candidates("not even a dict") == []
 
 
+# ---- Real-data regression pins (package 56355178, confirmed 2026-08-19) ------------------
+# CONFIRMED BUG: Travel Compositor represents money as {"amount": x, "currency": "EUR"}, not a
+# flat number. The original heuristic handed the whole dict to a generic string parser, which
+# read Python's str()-repr of the dict and produced 291912.0 for a real per-person price of
+# 1459.56 (Chris reported "1460 Euro per Person"; totalPrice for 2 adults was 2919.12, and
+# str({"amount": 2919.12, "currency": "EUR"}) parses to "291912.0" after non-digit stripping -
+# exactly the wrong number that was shown). Also confirmed: a hotel's rating is a LIST of
+# per-source objects with different scales (Tripadvisor is /5, not /10).
+
+def test_find_price_unwraps_a_real_travel_compositor_money_object():
+    # This exact shape is what GET .../info/{id} actually returned for pricePerPerson.
+    key, price = prr.find_price({"pricePerPerson": {"amount": 1459.56, "currency": "EUR"}})
+    assert key == "pricePerPerson"
+    assert price == 1459.56
+
+
+def test_find_price_prefers_priceperperson_over_totalprice():
+    # Regression guard for the real bug: totalPrice used to win the priority race and get
+    # misread as a per-person price.
+    entry = {
+        "pricePerPerson": {"amount": 1459.56, "currency": "EUR"},
+        "totalPrice": {"amount": 2919.12, "currency": "EUR"},
+    }
+    key, price = prr.find_price(entry)
+    assert key == "pricePerPerson"
+    assert price == 1459.56
+
+
+def test_find_price_falls_back_to_totalprice_when_priceperperson_is_absent():
+    key, price = prr.find_price({"totalPrice": {"amount": 2919.12, "currency": "EUR"}})
+    assert key == "totalPrice"
+    assert price == 2919.12
+
+
+def test_find_candidates_unwraps_a_money_object_price_in_a_calendar_entry():
+    calendar_response = [
+        {"departureDate": "2026-12-15", "pricePerPerson": {"amount": 1459.56, "currency": "EUR"}},
+    ]
+    candidates = prr.find_candidates(calendar_response)
+    assert candidates[0]["price"] == 1459.56
+
+
+def test_find_candidates_unwraps_a_real_multi_source_rating_list_preferring_booking_com():
+    # This exact shape is what GET .../{id} (day-to-day) actually returned for a hotel's
+    # ratings - three sources, three different scales.
+    calendar_response = [{
+        "departureDate": "2026-12-15",
+        "ratings": [
+            {"score": "8.6", "source": "Booking.com", "numReviews": 3279},
+            {"score": "4.5", "source": "Tripadvisor", "numReviews": 1003},
+            {"score": "7.2", "source": "Expedia", "numReviews": 437},
+        ],
+    }]
+    candidates = prr.find_candidates(calendar_response)
+    assert candidates[0]["rating"] == 8.6
+
+
+def test_find_candidates_rating_falls_back_to_the_first_source_when_booking_com_is_absent():
+    calendar_response = [{
+        "departureDate": "2026-12-15",
+        "ratings": [{"score": "7.2", "source": "Expedia", "numReviews": 437}],
+    }]
+    candidates = prr.find_candidates(calendar_response)
+    assert candidates[0]["rating"] == 7.2
+
+
 # ---- find_price / find_departure_date: public wrappers for a single entry ----------------
 
 def test_find_price_matches_a_price_like_field_on_a_single_entry():
