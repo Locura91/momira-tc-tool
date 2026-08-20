@@ -8597,7 +8597,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-19-step1-expandable-menu"
+BUILD_VERSION = "2026-08-19-prototypes-collapsed"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -8894,17 +8894,6 @@ if st.session_state.active_tool is None:
          "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
          "would change, and blocks them only after you confirm. Existing blocks are kept.",
          "Closed Tours · Hotels"),
-        (TOOL_TRIPIDEA, "tool_btn_tripidea",
-         "PROTOTYPE — turn a customer's free-text trip idea into structured search criteria.",
-         "Type a trip idea the way a customer might describe it (\"2 adults, February, city "
-         "and beach in Spain\") and see it turned into destination/dates/party/theme fields.",
-         "Doesn't touch Travel Compositor — not a real search yet."),
-        (TOOL_PACKAGEROLLOVER, "tool_btn_packagerollover",
-         "PROTOTYPE — look up a Holiday Package and see a proposed replacement departure.",
-         "Enter a Package ID; it fetches the real current departure/price and calendar from "
-         "Travel Compositor and proposes a new departure under the confirmed rules (14-day "
-         "trigger, ~4 months out, rating 8+, price within +3.5%).",
-         "Read-only — real GET calls, never writes anything."),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -8917,6 +8906,30 @@ if st.session_state.active_tool is None:
             if st.button(_label, key=_key, type="primary", use_container_width=True):
                 st.session_state.active_tool = _label
                 st.rerun()
+
+    # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-19): "Make one botton for the 2 Prototyp
+    # below the find contact; Upload/Update; Translate and Stop Sale reader. As long as
+    # those tools are prototypes, we do not have to shwo them immediately." Both prototypes
+    # (AI Trip Idea, Package Rollover) collapse into one expandable section under the four
+    # real tools above, instead of getting their own full-width cards - same expandable-menu
+    # pattern as Step 1 of Upload & Update, so a prototype only takes up screen space once
+    # someone actually opens it.
+    st.write("")
+    with st.expander("🧪 Prototypes — not part of the regular workflow yet"):
+        st.caption("Early, not-yet-finished tools. Safe to try - see each one's own warning "
+                  "for exactly what it does and doesn't do.")
+        if st.button(TOOL_TRIPIDEA, key="tool_btn_tripidea", use_container_width=True):
+            st.session_state.active_tool = TOOL_TRIPIDEA
+            st.rerun()
+        st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
+                  "beach in Spain\") into structured destination/dates/party/theme fields. "
+                  "Doesn't touch Travel Compositor — not a real search yet.")
+        if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
+            st.session_state.active_tool = TOOL_PACKAGEROLLOVER
+            st.rerun()
+        st.caption("Look up a Holiday Package by ID and see a proposed replacement departure "
+                  "(14-day trigger, ~4 months out, rating 8+, price within +3.5%). Read-only — "
+                  "real GET calls, never writes anything.")
     st.stop()
 
 # ---- Outreach tool: hand straight off, it has no product-type step ----
