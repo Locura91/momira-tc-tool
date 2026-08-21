@@ -94,7 +94,7 @@ import ai_extractor as ai_extractor_module
 from ui_components import (
     editable_table, editable_field, render_stop_sales_editor, render_cancellation_policy_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
-    render_seasonal_price_editor, render_readonly_source, render_optional_time_input,
+    render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
@@ -548,6 +548,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                         show_publish_error(f"publish **{q['code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         continue
 
+        st.write("")
+        st.divider()
         if st.button("🆕 Start a new batch"):
             for key in ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"]:
                 st.session_state.pop(key, None)
@@ -1152,6 +1154,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_mod_days_{midx}"
         )
         render_stop_sales_editor(data, f"mct_mod_{midx}")
+
+        # CONFIRMED (product owner, 2026-08-19): "display the Currency within the modalities...
+        # in case the human selected a wrong currency, so he could still change it... an extra
+        # check." Only for a genuine create (this loop covers every Modality of the new tour) -
+        # updates keep the existing tour's currency locked, per the rule above.
+        currency = render_currency_check(currency, CURRENCY_OPTIONS, "cfg_currency", f"mct_mod_currency_{midx}")
 
         default_price_list = sorted(
             coerce_price_list_shape(data.get("price_list"), currency)[0] or [{"name": "Example row", "startDate": "2027-01-01", "endDate": "2027-12-31",
@@ -3747,7 +3755,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
             render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
 
-            editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}")
+            # CONFIRMED FIX (2026-08-19): min_value=0 so an unset duration stays honestly blank
+            # (0) instead of the shared widget silently substituting a fabricated 1.
+            editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}",
+                          min_value=0)
 
             inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
             def _save_mt_includes(edf, data=data):
@@ -3830,6 +3841,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mt_op_days_{idx}"
         )
 
+        # CONFIRMED (product owner, 2026-08-19): "display the Currency within the modalities...
+        # in case the human selected a wrong currency, so he could still change it... an extra
+        # check." Replaces the old read-only "Pricing (in {currency})" caption with an
+        # editable one - still shows the currency right where the pricing is, just catchable
+        # now instead of only informational.
+        currency = render_currency_check(currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mt_currency_{idx}")
         st.markdown(f"**Pricing (in {currency})**")
         render_ticket_pricing_editor(data, f"mt_{idx}", currency, max_passengers)
         mt_price_type = data["price_type"]
@@ -4090,6 +4107,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     # option was starting the whole batch over. Mirror the same price-type-aware
                     # pricing block (and the same Max Passengers cap) used in the main per-item
                     # review above, so whatever actually caused the rejection is editable here.
+                    # Extra check (product owner, 2026-08-19): currency shown here too, editable,
+                    # for the same "catch a wrong pick before publishing" reason as the main
+                    # per-item pricing block above.
+                    currency = render_currency_check(currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtf_currency_{fi_idx}")
                     render_ticket_pricing_editor(fdata, f"mtf_{fi_idx}", currency, max_passengers)
 
                     ftt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in fdata.get("time_tables", [])]) if fdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
@@ -4137,6 +4158,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             except Exception as e:
                                 show_publish_error(f"retry **{fi['ticket_code']}**'s option (unexpected error)", str(e))
 
+        st.write("")
+        st.divider()
         if st.button("🆕 Start a new batch"):
             for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                        "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items"]:
@@ -4618,7 +4641,9 @@ def render_ticket_flow(client):
                            f"going back to Step 3 (Details) and adding \"Private\" to it if you'd like "
                            f"this reflected there.")
 
-                editable_field("Duration (hours)", data, "duration", widget="number_input")
+                # CONFIRMED FIX (2026-08-19): min_value=0 so an unset duration stays honestly
+                # blank (0) instead of the shared widget silently substituting a fabricated 1.
+                editable_field("Duration (hours)", data, "duration", widget="number_input", min_value=0)
 
                 # CONFIRMED FIX (2026-08-19 audit): same "0 is falsy" trap as the batch Ticket
                 # screen above - now routed through the shared helper instead of a local copy.
@@ -6022,6 +6047,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         if all(q.get("publish_status") == "success" for q in queue):
             st.balloons()
             st.success(f"🎉 All {len(queue)} transfer(s) in this batch published.")
+            st.write("")
+            st.divider()
             if st.button("🆕 Start a new batch", key="xtf_new_batch"):
                 for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
                     st.session_state.pop(key, None)
@@ -6828,6 +6855,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         if all(q.get("publish_status") == "success" for q in queue):
             st.balloons()
             st.success(f"🎉 All {len(queue)} transport(s) in this batch published.")
+            st.write("")
+            st.divider()
             if st.button("🆕 Start a new batch", key="xtp_new_batch"):
                 for key in XTP_STATE_KEYS:
                     st.session_state.pop(key, None)
@@ -8597,7 +8626,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-19-prototypes-collapsed"
+BUILD_VERSION = "2026-08-21-currency-check-duration-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-19-prototypes-collapsed"
+MODULE_BUILD = "2026-08-21-currency-check-duration-fix"
 
 import re
 import math
@@ -161,6 +161,37 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
             on_save(edited)
             st.session_state[edit_flag_key] = False
             st.rerun()
+
+
+def render_currency_check(currency, currency_options, state_key, widget_key):
+    """
+    A small, editable Currency display shown right next to a Modality's own pricing - an
+    extra check for a CREATE flow, not a replacement for the Currency question already asked
+    earlier in the wizard.
+
+    CONFIRMED (product owner, 2026-08-19): "Please display the Currency within the modalities,
+    when creating a new Service - in case the human selected a wrong currency, so he could
+    still change it. But leave it in the first step too, because if a Service is created
+    without a modality, the currency is already required there. It shall be more like an
+    extra check." A whole product/Service is denominated in ONE currency throughout - there is
+    no such thing as Modality 1 in EUR and Modality 2 in USD on the same record - so changing
+    it here writes back to the SAME session_state key the earlier Currency step reads from
+    (`state_key`) and reruns, rather than only affecting this one Modality's own numbers.
+    That keeps every Modality's pricing consistent instead of quietly creating a
+    part-EUR/part-USD product nobody would notice until publish.
+    """
+    chosen = st.selectbox(
+        "Currency", currency_options,
+        index=currency_options.index(currency) if currency in currency_options else 0,
+        key=widget_key,
+        help="Set earlier in this wizard - shown again here so a wrong pick is easy to catch "
+             "and fix before publishing, instead of only surfacing once you're looking at raw "
+             "numbers. Changing it here updates every Modality of this Service.",
+    )
+    if chosen != currency:
+        st.session_state[state_key] = chosen
+        st.rerun()
+    return chosen
 
 
 def render_seasonal_price_editor(label, target_data, edit_key, currency):
@@ -667,7 +698,8 @@ def _plain_list_to_html_for_saving(text):
     return "<ul>" + "".join(li_parts) + "</ul>"
 
 
-def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value="", key_suffix=""):
+def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value="", key_suffix="",
+                   min_value=1):
     """
     Renders a field in READ-ONLY display mode by default, with a small
     pencil button to switch it into an editable widget. Saving switches
@@ -741,7 +773,17 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
         elif widget == "text_area":
             new_value = st.text_area(label, value=current_value, height=height or 120, key=widget_key)
         elif widget == "number_input":
-            new_value = st.number_input(label, min_value=1, value=int(current_value or 1), key=widget_key)
+            # min_value defaults to 1, unchanged for callers like "Nights" (a tour can never
+            # legitimately be 0 nights). CONFIRMED FIX (product owner, 2026-08-19): "if no
+            # Duration time is mentioned in the Ticket section, please leave it blank, do not
+            # just enter 1" - a caller can now pass min_value=0 (see the Duration call sites)
+            # so an unset/0 duration shows honestly as 0 instead of this widget silently
+            # substituting a fabricated 1 the instant a human opens the editor. The old
+            # `int(current_value or 1)` treated a genuine 0 exactly like a missing value.
+            new_value = st.number_input(
+                label, min_value=min_value,
+                value=int(current_value) if current_value else min_value,
+                key=widget_key)
         else:
             new_value = st.text_input(label, value=current_value, key=widget_key)
         if st.button("✅ Save", key=f"save_{field_key}{key_suffix}", type="primary"):
