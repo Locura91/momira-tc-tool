@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-21-currency-check-duration-fix"
+MODULE_BUILD = "2026-08-21-modality-code-chars-allowed"
 
 _PHASE_KEY = "pkr_phase"
 

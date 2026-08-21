@@ -370,7 +370,6 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
-        invalid_codes = []
         new_queue = []
         for cand in candidates:
             if not cand["selected"]:
@@ -378,13 +377,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             code = cand["code"].strip()
             if not code:
                 continue
-            if any(c in code for c in ["/", "\\", "+", "-"]):
-                invalid_codes.append(code)
-                continue
             new_queue.append({"code": code, "hint": cand["hint"].strip(), "data": None, "confirmed": False})
-
-        if invalid_codes:
-            st.error(f"🚫 These codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
 
         st.caption(f"**{len(new_queue)}** modality(ies) selected to review and publish.")
 
@@ -1014,10 +1007,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             with c2:
                 cand["code"] = st.text_input(
                     "Modality Code", value=cand["code"], key=f"mct_modcand_code_{i}",
-                    help="Just the short category name, e.g. 'Standard' or 'Deluxe' - cannot contain the "
-                         "characters / \\ + - (Travel Compositor's system rejects those, since the code "
-                         "becomes part of a URL), and should NOT include descriptive text like the "
-                         "language or a minimum-pax note."
+                    help="Just the short category name, e.g. 'Standard' or 'Deluxe' - should NOT include "
+                         "descriptive text like the language or a minimum-pax note."
                 )
             with c3:
                 cand["hint"] = st.text_input("AI focus hint (optional)", value=cand["hint"], key=f"mct_modcand_hint_{i}")
@@ -1031,15 +1022,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     _clear_batch_widget_state(["mct_modcand_"])
                     st.rerun()
 
-            if any(c in (cand["code"] or "") for c in ["/", "\\", "+", "-"]):
-                st.error(f"🚫 Modality Code '{cand['code']}' contains invalid characters (/, \\, +, -).")
-
         if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
         selected = [c for c in candidates if c["selected"]]
-        invalid = [c["code"] for c in selected if any(ch in (c["code"] or "") for ch in "/\\+-")]
         missing = [c for c in selected if not (c["code"] or "").strip()]
         seen = {}
         for c in selected:
@@ -1053,7 +1040,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if not selected:
             st.info("Include at least one Modality to continue.")
 
-        ready = bool(selected) and not invalid and not missing and not dup_codes
+        ready = bool(selected) and not missing and not dup_codes
         if st.button("➡️ Start Reviewing Modalities", type="primary", disabled=not ready):
             tour["modalities"] = [
                 {"code": c["code"].strip(), "hint": c["hint"], "data": None, "confirmed": False}
@@ -3471,8 +3458,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 cand["modality_code"] = st.text_input(
                     "Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}",
                     help="The name of the pricing option for this ticket, e.g. 'Standard' or 'Standard "
-                         "Private'. Cannot contain the characters / \\ + or - (Travel Compositor's system "
-                         "rejects those in this field)."
+                         "Private'."
                 )
 
         if st.button("➕ Add another excursion manually"):
@@ -3480,7 +3466,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                               "selected": True, "is_genuine_variant": False})
             st.rerun()
 
-        invalid_codes = []
         missing_codes = []
         new_queue = []
         seen_ticket_codes = {}
@@ -3492,9 +3477,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if not code or not mod_code:
                 missing_codes.append(cand["label"] or "(unnamed excursion)")
                 continue
-            if any(c in mod_code for c in ["/", "\\", "+", "-"]):
-                invalid_codes.append(mod_code)
-                continue
             seen_ticket_codes.setdefault(code, []).append(cand["label"] or "(unnamed excursion)")
             new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None,
                              "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
@@ -3504,8 +3486,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if missing_codes:
             st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
                     f"excluded - enter one for each before continuing: {missing_codes}")
-        if invalid_codes:
-            st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -) and were excluded: {invalid_codes}")
         if duplicate_codes:
             for code, labels in duplicate_codes.items():
                 st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
@@ -4319,8 +4299,6 @@ def render_ticket_flow(client):
             default_modality = st.session_state.get("tk_check_modality_pick", "") if action == "update_option" else ""
             label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
             modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard 7 Days", key="tk_modality_code")
-            if any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
-                st.error("🚫 The Modality Code cannot contain '/', '\\\\', '+', or '-' - it becomes part of a URL. Use spaces instead.")
         if "on_request" in needed:
             on_request_in = st.checkbox("On Request", value=False, key="tk_on_request")
         if "release_days" in needed:
@@ -4335,8 +4313,6 @@ def render_ticket_flow(client):
         if "currency" in needed and not (currency_in or "").strip():
             required_ok = False
         if "modality_code" in needed and not (modality_code_in or "").strip():
-            required_ok = False
-        if "modality_code" in needed and any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
             required_ok = False
         if "existing_ticket_code" in needed and not existing_ticket_code_in:
             required_ok = False
@@ -4557,7 +4533,6 @@ def render_ticket_flow(client):
                         st.error(f"Extraction failed: {friendly_error_message(e)}")
             else:
                 tkpv_missing = [s["label"] for s in tkpv_selection if s["selected"] and (not s["ticket_code"].strip() or not s["modality_code"].strip())]
-                tkpv_invalid = [s["modality_code"] for s in tkpv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
                 tkpv_codes_seen = {}
                 for s in tkpv_selection:
                     if s["selected"] and s["ticket_code"].strip():
@@ -4572,8 +4547,6 @@ def render_ticket_flow(client):
 
                 if tkpv_missing:
                     st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
-                elif tkpv_invalid:
-                    st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {tkpv_invalid}")
                 elif tkpv_dupes:
                     st.error(f"🚫 These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
                 elif tkpv_existing:
@@ -8626,7 +8599,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-21-currency-check-duration-fix"
+BUILD_VERSION = "2026-08-21-modality-code-chars-allowed"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9241,10 +9214,6 @@ else:
         default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
         label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
         modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise")
-        if any(c in (modality_code_in or "") for c in ["/", "\\", "+", "-"]):
-            st.error("🚫 The Modality Code cannot contain '/', '\\\\', '+', or '-' - it becomes part of a URL, "
-                    "and these characters can break lookups (confirmed: a slash already caused a real HTTP "
-                    "400 error). Use spaces instead, e.g. 'Standard Cruise'.")
     if "on_request" in needed:
         on_request_in = st.checkbox("On Request", value=True)
     if "release_days" in needed:
@@ -9276,8 +9245,6 @@ else:
     if "currency" in needed and not (currency_in or "").strip():
         required_ok = False
     if "modality_code" in needed and not (modality_code_in or "").strip():
-        required_ok = False
-    if "modality_code" in needed and ("/" in (modality_code_in or "") or "\\" in (modality_code_in or "") or "+" in (modality_code_in or "") or "-" in (modality_code_in or "")):
         required_ok = False
     if "existing_tour_code" in needed and not existing_tour_code_in:
         required_ok = False
@@ -9572,7 +9539,6 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     st.error(f"Extraction failed: {friendly_error_message(e)}")
         else:
             pv_missing = [s["label"] for s in pv_selection if s["selected"] and (not s["tour_code"].strip() or not s["modality_code"].strip())]
-            pv_invalid = [s["modality_code"] for s in pv_selection if s["selected"] and any(c in s["modality_code"] for c in ["/", "\\", "+", "-"])]
             pv_codes_seen = {}
             for s in pv_selection:
                 if s["selected"] and s["tour_code"].strip():
@@ -9586,8 +9552,6 @@ if st.session_state.get("pending_variants") and not is_option_only:
                         pv_existing.append(s["tour_code"].strip())
             if pv_missing:
                 st.error(f"🚫 These selected variants are missing a ClosedTour Code or Modality Code: {pv_missing}")
-            elif pv_invalid:
-                st.error(f"🚫 These Modality Codes contain invalid characters (/, \\, +, -): {pv_invalid}")
             elif pv_dupes:
                 st.error(f"🚫 These ClosedTour Codes are used by more than one selected variant: {list(pv_dupes.keys())}")
             elif pv_existing:
@@ -9927,9 +9891,6 @@ if st.session_state.extracted:
                     # those generic prefixes, not "extramod_" itself.
                     _clear_batch_widget_state(["extramod_"] + SHARED_WIDGET_STATE_PREFIXES)
                     st.rerun()
-
-            if any(c in (mod["code"] or "") for c in ["/", "\\", "+", "-"]):
-                st.error(f"🚫 Modality Code '{mod['code']}' contains invalid characters (/, \\, +, -).")
 
             if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
                 with st.spinner("Extracting..."):
