@@ -42,6 +42,56 @@ _extract_rating() picks PREFERRED_RATING_SOURCE — Booking.com by default, sinc
 the most reviews in the one real example seen and its scale matches the assumed /10 — but this
 default is NOT yet confirmed as the source the product owner wants used; see the
 "package-auto-rollover-rules" project note.
+
+CONFIRMED (product owner, 2026-08-21) — DYNAMIC PACKAGES (no fixed calendar of departures):
+"the upload shall be available on all days. Only limitations are holiday package IDs with a
+closed tour...when a closed tour (like nile cruises) start on a specific day." Package
+56355178's empty calendar (see above) turns out to be the NORMAL case for a dynamic package,
+not a one-off Idea quirk — most packages can depart any day, so there's no calendar list to pick
+a "candidate" from at all. propose_dynamic_rollover() below handles this: it proposes
+today + TARGET_LEAD_DAYS directly rather than searching for a matching calendar entry, EXCEPT
+for three confirmed blackout windows the human doesn't want a departure landing inside
+("no departure should be set during christmas time, no departure New Years Eve...and no
+departure during Easter time"):
+  - Christmas/New Year: Dec 24 - Jan 1 inclusive (CONFIRMED exact range, 2026-08-21) - New
+    Year's Eve (Dec 31) falls inside this window, so it isn't a separate rule.
+  - Easter: the 10 days centered on Easter Sunday (CONFIRMED width, 2026-08-21), computed as
+    Easter Sunday - 5 days through Easter Sunday + 4 days. Easter Sunday itself is calculated
+    with the standard Anonymous Gregorian / Meeus-Jones-Butcher algorithm (CONFIRMED: "calculate
+    it automatically" rather than a manually maintained per-year list), so this needs no yearly
+    maintenance.
+If the raw target date falls in a blackout window, it's shifted forward day by day until it
+lands outside every window - never shifted earlier than the confirmed ~4-month lead time.
+Packages built around a FIXED-departure component (a closed tour/cruise with specific weekly
+departure days) are NOT auto-detected — CONFIRMED (product owner, 2026-08-21): "Human checks
+manually, tool just warns." package_rollover_tool.py always shows a caution note on this path
+telling the human to verify the proposed date against any embedded fixed-schedule component
+themselves in Travel Compositor before applying anything.
+
+CONFIRMED (product owner, 2026-08-21) — PICKING AMONG CALENDAR CANDIDATES: "the tool is testing
+minimum 3 different days and...the cheapest offer has to be reviewed by humans." For packages
+that DO have a calendar of fixed departure dates, propose_rollover() now recommends the CHEAPEST
+qualifying candidate overall (not the one closest to the ~4-month target — that's now only a
+tie-breaker when two qualifying candidates share the same lowest price, kept for predictability).
+MIN_CANDIDATES_TO_TEST (3) is a visibility flag, not a hard requirement — if the calendar has
+fewer than 3 future departures to consider, `below_minimum_test_coverage` is set on the result so
+the human reviewing sees a caution rather than silently trusting a thin sample. Still open: a
+genuinely DYNAMIC package (see propose_dynamic_rollover above) has no calendar of priced dates to
+test 3 of in the first place — testing 3 candidate days there needs a re-quote/availability
+endpoint this codebase hasn't identified yet (see the "package-auto-rollover-rules" project note).
+
+CONFIRMED (product owner, 2026-08-21) — SCOPE, WHICH PACKAGES ACTUALLY NEED THIS TOOL: "Holiday
+Packages that are coming from a ClosedTour and the ID includes only a closed tour...do not need
+an update. But if a ClosedTour has dynamic flights and pre and post program included, then the
+holiday package ID needs an update." So a package ID that's PURELY a ClosedTour (e.g. a
+fixed-schedule cruise, no other components) is out of scope for this tool — its departure is
+managed the normal way, through the ClosedTour itself. A package built around a ClosedTour PLUS
+dynamic flights/pre-post program DOES need this tool. There's no confirmed field yet to tell
+these apart automatically from the API response, so package_rollover_tool.py surfaces this as
+guidance for the human, not an automatic filter. CONFIRMED (product owner, 2026-08-21): "for test
+reasons, we can focus on the beginning for holiday packages without closedtours, so it is
+available on all days" — i.e. start testing against fully DYNAMIC packages (propose_dynamic_
+rollover's path), not the ClosedTour-calendar path, for now.
 """
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
@@ -59,6 +109,9 @@ MIN_HOTEL_RATING = 8             # assumed /10 scale — see module docstring
 MAX_PRICE_INCREASE_PCT = 3.5     # CONFIRMED (product owner, 2026-08-19), vs. current live price
 # NOT yet confirmed with the product owner — see module docstring's 2026-08-19 note.
 PREFERRED_RATING_SOURCE = "Booking.com"
+MIN_CANDIDATES_TO_TEST = 3       # CONFIRMED (product owner, 2026-08-21) — a visibility flag, not
+                                  # a hard block; see module docstring's "PICKING AMONG CALENDAR
+                                  # CANDIDATES" note.
 
 # Ordered most-specific-first: the first hint group with ANY match in an entry's keys wins.
 # "priceperperson" before "totalprice" — CONFIRMED against a real response (package 56355178,
@@ -220,9 +273,12 @@ def propose_rollover(candidates: List[Dict[str, Any]], current_price: Optional[f
     describing the best replacement departure found (or why none qualified), for a human to
     review. Never calls any API — pure decision logic over data already fetched.
 
-    Picking rule: among candidates that pass BOTH the rating gate (if a rating was found at
-    all — see 'rating_unverifiable' below) and the price cap (if current_price is known — see
-    'price_unverifiable'), pick the one whose date is closest to today + TARGET_LEAD_DAYS.
+    Picking rule (CONFIRMED, product owner, 2026-08-21): among candidates that pass BOTH the
+    rating gate (if a rating was found at all — see 'rating_unverifiable' below) and the price
+    cap (if current_price is known — see 'price_unverifiable'), pick the CHEAPEST one overall.
+    If two or more tie on price, the closest to today + TARGET_LEAD_DAYS breaks the tie. If no
+    qualifying candidate has a known price to compare, falls back to closest-to-target (the old
+    rule), since "cheapest" can't be judged without a price.
     """
     target_date = today + timedelta(days=TARGET_LEAD_DAYS)
     # Rounded to cents before comparison — a plain float multiply (100 * 1.035) lands on
@@ -234,6 +290,8 @@ def propose_rollover(candidates: List[Dict[str, Any]], current_price: Optional[f
     dated = [c for c in candidates if c["date"] is not None and c["date"] > today]
     if not dated:
         return {"status": "no_dated_candidates", "candidates_seen": len(candidates)}
+
+    below_min = len(dated) < MIN_CANDIDATES_TO_TEST
 
     qualifying = []
     rejected = []
@@ -252,10 +310,20 @@ def propose_rollover(candidates: List[Dict[str, Any]], current_price: Optional[f
         return {
             "status": "no_qualifying_candidates",
             "candidates_seen": len(candidates),
+            "candidates_tested": len(dated),
+            "below_minimum_test_coverage": below_min,
             "rejected": rejected,
         }
 
-    best = min(qualifying, key=lambda c: abs((c["date"] - target_date).days))
+    priced_qualifying = [c for c in qualifying if c["price"] is not None]
+    if priced_qualifying:
+        min_price = min(c["price"] for c in priced_qualifying)
+        tied = [c for c in priced_qualifying if c["price"] == min_price]
+        best = min(tied, key=lambda c: abs((c["date"] - target_date).days))
+        picked_by = "cheapest_price"
+    else:
+        best = min(qualifying, key=lambda c: abs((c["date"] - target_date).days))
+        picked_by = "closest_to_target_fallback"
 
     return {
         "status": "proposed",
@@ -265,5 +333,95 @@ def propose_rollover(candidates: List[Dict[str, Any]], current_price: Optional[f
         "rating_unverifiable": best["rating"] is None,
         "price_unverifiable": max_price is not None and best["price"] is None,
         "alternatives_considered": len(qualifying) - 1,
+        "qualifying": qualifying,
         "rejected": rejected,
+        "candidates_tested": len(dated),
+        "below_minimum_test_coverage": below_min,
+        "picked_by": picked_by,
+    }
+
+
+# ---- Dynamic packages (no fixed calendar of departures) ---------------------------------
+# CONFIRMED (product owner, 2026-08-21) — see the module docstring's "DYNAMIC PACKAGES" note.
+
+CHRISTMAS_BLACKOUT_START = (12, 24)   # Dec 24 - CONFIRMED (product owner, 2026-08-21)
+CHRISTMAS_BLACKOUT_END = (1, 1)       # Jan 1 (following year) - CONFIRMED (product owner, 2026-08-21)
+EASTER_WINDOW_DAYS_BEFORE = 5         # CONFIRMED width (product owner, 2026-08-21): "10 days
+EASTER_WINDOW_DAYS_AFTER = 4          # centered on Easter" = Easter Sunday - 5 .. Easter Sunday + 4
+
+
+def easter_sunday(year: int) -> date:
+    """Easter Sunday (Gregorian calendar) for a given year, via the standard Anonymous
+    Gregorian / Meeus-Jones-Butcher algorithm. CONFIRMED (product owner, 2026-08-21):
+    "calculate it automatically" rather than maintaining a per-year list by hand."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def is_blackout_date(d: date):
+    """Returns (True, reason) if `d` falls inside a CONFIRMED no-departure blackout window -
+    Christmas/New Year (Dec 24 - Jan 1) or the 10 days centered on Easter Sunday. Returns
+    (False, None) otherwise. See the module docstring's "DYNAMIC PACKAGES" note for the exact
+    confirmed ranges."""
+    if (d.month == CHRISTMAS_BLACKOUT_START[0] and d.day >= CHRISTMAS_BLACKOUT_START[1]) or \
+       (d.month == CHRISTMAS_BLACKOUT_END[0] and d.day <= CHRISTMAS_BLACKOUT_END[1]):
+        return True, "Christmas / New Year blackout (Dec 24 - Jan 1)"
+    for year in (d.year - 1, d.year, d.year + 1):
+        sunday = easter_sunday(year)
+        window_start = sunday - timedelta(days=EASTER_WINDOW_DAYS_BEFORE)
+        window_end = sunday + timedelta(days=EASTER_WINDOW_DAYS_AFTER)
+        if window_start <= d <= window_end:
+            return True, f"Easter blackout ({window_start.isoformat()} to {window_end.isoformat()})"
+    return False, None
+
+
+def nearest_non_blackout_date(target: date, max_search_days: int = 60) -> date:
+    """Starting at `target`, walks FORWARD day by day until a date outside every blackout
+    window is found. Walks forward only (never earlier) so the proposed departure never moves
+    ahead of the confirmed ~4-month lead time - it only ever gets pushed later, past the
+    blackout window it landed in."""
+    d = target
+    for _ in range(max_search_days):
+        blackout, _ = is_blackout_date(d)
+        if not blackout:
+            return d
+        d = d + timedelta(days=1)
+    return d  # pragma: no cover - confirmed blackout windows are well under 60 days wide
+
+
+def propose_dynamic_rollover(today: date) -> Dict[str, Any]:
+    """For a package with NO usable calendar of fixed departure dates - CONFIRMED (product
+    owner, 2026-08-21) to be the normal case for a dynamic package, not a data gap. Proposes
+    today + TARGET_LEAD_DAYS directly (skipping the candidate-matching in propose_rollover()
+    entirely, since there's no calendar to match against), shifted later if that date falls in
+    a confirmed blackout window.
+
+    Does NOT check price or hotel rating - a dynamic package has no calendar entry to read
+    those from; a real quote for the proposed date has to be checked in Travel Compositor.
+    Does NOT know whether this package contains a fixed-departure component (e.g. a cruise) -
+    CONFIRMED (product owner, 2026-08-21): "Human checks manually, tool just warns" - see
+    package_rollover_tool.py's caution note on this path.
+    """
+    raw_target = today + timedelta(days=TARGET_LEAD_DAYS)
+    blackout, reason = is_blackout_date(raw_target)
+    proposed_date = nearest_non_blackout_date(raw_target) if blackout else raw_target
+    return {
+        "status": "proposed_dynamic",
+        "target_date": raw_target,
+        "proposed_date": proposed_date,
+        "shifted_for_blackout": blackout,
+        "blackout_reason": reason,
     }

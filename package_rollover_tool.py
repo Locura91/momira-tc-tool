@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-21-modality-code-chars-allowed"
+MODULE_BUILD = "2026-08-21-rollover-cheapest-and-scope"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -114,6 +114,13 @@ def render_package_rollover_tool():
               "change is a manual step you do yourself, inside Travel Compositor's normal "
               "package-edit screen** — exactly the same click-Save you already do today. See "
               "the \"package-auto-rollover-rules\" project note for the full picture.")
+    st.info("📌 **Scope, confirmed 2026-08-21:** a Holiday Package ID that's ONLY a ClosedTour "
+           "(e.g. a fixed-schedule cruise) doesn't need this tool — its departures are managed "
+           "through the normal ClosedTour update flow instead. Use this tool for a package "
+           "that's fully dynamic (no ClosedTour component — any day works) or one built around "
+           "a ClosedTour PLUS dynamic flights and a pre/post program. **For now, testing is "
+           "focused on fully dynamic packages (no ClosedTour component)** — those are the ones "
+           "where the 'no calendar found' path below applies.")
 
     package_id = st.text_input("Holiday Package ID", key="pkr_input",
                                placeholder="e.g. 59582825")
@@ -160,22 +167,62 @@ def render_package_rollover_tool():
         candidates = prr.find_candidates(calendar)
         st.markdown("##### Proposed replacement departure")
         if not candidates:
-            st.info("Didn't find a recognizable list of departure dates in the calendar "
-                   "response — see the raw data below. This is the exact case this prototype "
-                   "was built to surface: once you look at the raw shape, tell me the real "
-                   "field names and I'll fix the heuristic.")
+            # CONFIRMED (product owner, 2026-08-21): an empty/unusable calendar is the NORMAL
+            # case for a dynamic package (any day can be a departure), not a data gap - see
+            # package_rollover_rules.py's "DYNAMIC PACKAGES" note. Propose today + ~4 months
+            # directly, avoiding the confirmed Christmas/New Year and Easter blackout windows.
+            dyn = prr.propose_dynamic_rollover(today=date.today())
+            st.markdown("###### Old → New (what you'd change in Travel Compositor)")
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                st.markdown("**Departure date**")
+                old_dep = current_departure.isoformat() if current_departure else "*(unknown)*"
+                st.markdown(f"{old_dep} → **{dyn['proposed_date'].isoformat()}**")
+            with dcol2:
+                st.markdown("**Price**")
+                st.markdown(f"{current_price if current_price is not None else '*(unknown)*'} → "
+                           f"*(check the live quote for this date in Travel Compositor)*")
+            st.info("No calendar of fixed departure dates was found for this package, which is "
+                   "the normal case for a dynamic package — any day can work, so this proposes "
+                   "today + ~4 months directly rather than matching against a calendar entry.")
+            if dyn["shifted_for_blackout"]:
+                st.warning(f"⚠️ The plain ~4-months-out date ({dyn['target_date'].isoformat()}) "
+                          f"fell inside a no-departure window ({dyn['blackout_reason']}), so "
+                          f"the proposal was pushed forward to the next clear date.")
+            st.warning("⚠️ **This doesn't check price or hotel rating automatically** — a "
+                      "dynamic package has no calendar entry to read those from. Get a real "
+                      "quote for this date in Travel Compositor and confirm the +3.5% price "
+                      "cap and 8+ rating rules yourself before applying it.")
+            st.warning("⚠️ **If this package includes a fixed-departure component** (e.g. a "
+                      "cruise or coach tour that only departs on specific weekdays, like a "
+                      "Nile cruise), this proposed date is NOT checked against that schedule — "
+                      "confirm it matches before applying it in Travel Compositor.")
+            st.info("👉 **This app never applies this change.** Open this package in Travel "
+                   "Compositor's own edit screen, enter this departure date the same way you "
+                   "would for any regular update, and click **Save there** — the normal, "
+                   "manual step you already do today.")
         else:
             result = prr.propose_rollover(candidates, current_price, today=date.today())
             if result["status"] == "no_dated_candidates":
                 st.info(f"Found {result['candidates_seen']} calendar entr(y/ies) but couldn't "
                        f"parse a future date from any of them — see raw data below.")
             elif result["status"] == "no_qualifying_candidates":
+                if result.get("below_minimum_test_coverage"):
+                    st.warning(f"⚠️ Only {result['candidates_tested']} future departure day(s) "
+                              f"were available to test — fewer than the minimum "
+                              f"{prr.MIN_CANDIDATES_TO_TEST} this process is meant to check.")
                 st.warning(f"Found {result['candidates_seen']} future departure(s), but none "
                           f"passed the rating/price rules. See the rejected list below.")
                 with st.expander(f"Rejected candidates ({len(result['rejected'])})"):
                     st.json(result["rejected"])
             else:
                 best = result["proposed"]
+
+                if result.get("below_minimum_test_coverage"):
+                    st.warning(f"⚠️ Only {result['candidates_tested']} future departure day(s) "
+                              f"were available to test — fewer than the minimum "
+                              f"{prr.MIN_CANDIDATES_TO_TEST} this process is meant to check. "
+                              f"Review this recommendation with extra caution.")
 
                 st.markdown("###### Old → New (what you'd change in Travel Compositor)")
                 ocol1, ocol2 = st.columns(2)
@@ -188,11 +235,32 @@ def render_package_rollover_tool():
                     old_price = current_price if current_price is not None else "*(unknown)*"
                     new_price = best["price"] if best["price"] is not None else "*(unknown)*"
                     st.markdown(f"{old_price} → **{new_price}**")
-                st.caption(f"Hotel rating on the new departure: "
-                          f"{best['rating'] if best['rating'] is not None else '(unknown)'}. "
-                          f"Target was ~4 months out ({result['target_date'].isoformat()}); "
-                          f"{result['alternatives_considered']} other qualifying candidate(s) "
-                          f"considered.")
+                if result.get("picked_by") == "cheapest_price":
+                    st.caption(f"✅ Picked as the **cheapest** of {result['candidates_tested']} "
+                              f"day(s) tested that passed the rating/price rules "
+                              f"({result['alternatives_considered']} other qualifying "
+                              f"candidate(s) were more expensive). Hotel rating: "
+                              f"{best['rating'] if best['rating'] is not None else '(unknown)'}.")
+                else:
+                    st.caption(f"Hotel rating on the new departure: "
+                              f"{best['rating'] if best['rating'] is not None else '(unknown)'}. "
+                              f"No qualifying candidate had a known price to compare, so the "
+                              f"closest to the ~4-month target ({result['target_date'].isoformat()}) "
+                              f"was used instead. "
+                              f"{result['alternatives_considered']} other qualifying candidate(s) "
+                              f"considered.")
+
+                with st.expander(f"📋 All {result['candidates_tested']} departure day(s) tested"):
+                    rows = []
+                    for c in result.get("qualifying") or []:
+                        rows.append({"date": c["date"].isoformat() if c["date"] else None,
+                                    "price": c["price"], "rating": c["rating"],
+                                    "status": "👉 recommended" if c is best else "qualifying"})
+                    for c in result.get("rejected") or []:
+                        rows.append({"date": c["date"].isoformat() if c["date"] else None,
+                                    "price": c["price"], "rating": c["rating"],
+                                    "status": "rejected: " + "; ".join(c["rejected_because"])})
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
 
                 if result["rating_unverifiable"]:
                     st.warning("⚠️ Couldn't find a rating field on this candidate — the 8+ "

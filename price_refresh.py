@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-21-modality-code-chars-allowed"
+MODULE_BUILD = "2026-08-21-rollover-cheapest-and-scope"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple

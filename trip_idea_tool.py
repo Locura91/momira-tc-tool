@@ -28,7 +28,7 @@ import ai_extractor
 import trip_prompt_extractor as tpe
 import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-21-modality-code-chars-allowed"
+MODULE_BUILD = "2026-08-21-rollover-cheapest-and-scope"
 
 _PHASE_KEY = "ti_phase"
 
