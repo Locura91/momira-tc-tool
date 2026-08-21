@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-21-rollover-cheapest-and-scope"
+MODULE_BUILD = "2026-08-21-rollover-closed-check"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -159,6 +159,26 @@ def render_package_rollover_tool():
     with ccol2:
         _render_field_note("Current price", current_price,
                            "price" if current_price is not None else None)
+
+    # CONFIRMED RULE (product owner, 2026-08-19): a departure only needs rolling once it's
+    # under 14 days out. Real test (package 59011047, 2026-08-21) surfaced that this screen
+    # was proposing a replacement unconditionally, even for a departure 8+ months away - which
+    # produced a nonsensical "proposed" date EARLIER than the real current departure. This
+    # check doesn't block the proposal below (still useful to preview while testing), but makes
+    # it unmistakable whether the confirmed trigger has actually fired yet.
+    today = date.today()
+    if current_departure is not None:
+        days_out = (current_departure - today).days
+        if prr.is_departure_closed(current_departure, today):
+            st.error(f"🔴 This departure is {days_out} day(s) away — under the confirmed "
+                    f"14-day trigger, this package NEEDS rolling.")
+        else:
+            st.success(f"✅ This departure is {days_out} day(s) away — still well outside the "
+                      f"confirmed 14-day trigger, so it does NOT need rolling yet. The "
+                      f"proposal below is shown for testing/preview only.")
+    else:
+        st.warning("⚠️ Couldn't determine the current departure date, so it's unknown whether "
+                  "this package actually needs rolling yet.")
 
     if isinstance(calendar, dict) and "error" in calendar:
         st.info("Can't propose a replacement departure — the calendar call failed (see error "
