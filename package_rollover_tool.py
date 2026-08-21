@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-21-rollover-closed-check"
+MODULE_BUILD = "2026-08-21-rollover-real-field-labels"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -83,24 +83,28 @@ def _do_lookup(package_id: str):
 
 def _current_price_from(info, day_to_day):
     """Tries the info response first, then day-to-day — whichever has a recognizable price
-    field. Both are best-effort, same heuristic as the calendar candidates."""
+    field. Both are best-effort, same heuristic as the calendar candidates. Returns
+    (matched_field_name, price) so the UI can show the REAL key that was matched (e.g.
+    "pricePerPerson"), not a guessed/hardcoded label — see _render_field_note's docstring
+    intent and package_rollover_rules.py's "flagged, not guessed" design."""
     for source in (info, day_to_day):
         if isinstance(source, dict) and "error" not in source:
-            _, price = prr.find_price(source)
+            field, price = prr.find_price(source)
             if price is not None:
-                return price
-    return None
+                return field, price
+    return None, None
 
 
 def _current_departure_from(info, day_to_day):
     """Same idea as _current_price_from, for the CURRENT departure date — needed for the
-    old-vs-new comparison a human applies manually in Travel Compositor."""
+    old-vs-new comparison a human applies manually in Travel Compositor. Returns
+    (matched_field_name, date)."""
     for source in (info, day_to_day):
         if isinstance(source, dict) and "error" not in source:
-            _, dep_date = prr.find_departure_date(source)
+            field, dep_date = prr.find_departure_date(source)
             if dep_date is not None:
-                return dep_date
-    return None
+                return field, dep_date
+    return None, None
 
 
 def render_package_rollover_tool():
@@ -149,16 +153,15 @@ def render_package_rollover_tool():
     day_to_day = st.session_state.get("pkr_day_to_day")
     calendar = st.session_state.get("pkr_calendar")
 
-    current_price = _current_price_from(info, day_to_day)
-    current_departure = _current_departure_from(info, day_to_day)
+    current_departure_field, current_departure = _current_departure_from(info, day_to_day)
+    current_price_field, current_price = _current_price_from(info, day_to_day)
     st.markdown("##### Current state (as published in Travel Compositor today)")
     ccol1, ccol2 = st.columns(2)
     with ccol1:
         _render_field_note("Current departure", current_departure.isoformat() if current_departure else None,
-                           "departure date" if current_departure is not None else None)
+                           current_departure_field)
     with ccol2:
-        _render_field_note("Current price", current_price,
-                           "price" if current_price is not None else None)
+        _render_field_note("Current price", current_price, current_price_field)
 
     # CONFIRMED RULE (product owner, 2026-08-19): a departure only needs rolling once it's
     # under 14 days out. Real test (package 59011047, 2026-08-21) surfaced that this screen
