@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-21-rollover-real-field-labels"
+MODULE_BUILD = "2026-08-21-rollover-closed-check"
 
 _PHASE_KEY = "pkr_phase"
 
