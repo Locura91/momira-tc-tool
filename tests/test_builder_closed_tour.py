@@ -141,3 +141,23 @@ def test_a_malformed_supplement_price_degrades_to_a_per_field_error_not_a_crash(
     data = minimal_extracted_data(supplements=[{"name": "Weird", "price": {"nested": {"deeply": True}}}])
     result = build_closed_tour_payloads(make_pre_config(), data, fake_api_client)
     assert result["main_tour_error"] is None  # never raises; _safe_supplement_price falls back to 0
+
+
+# CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same thing -
+# same split as Tickets, same reasoning (a supplier's own per-service reference code belongs
+# in the CODE, never in the NAME the client sees).
+def test_modality_code_and_name_are_independent_when_a_supplier_code_is_appended(fake_api_client):
+    pre_config = make_pre_config(modality_code="STANDARD_WT1", modality_name="Standard Private")
+    result = build_closed_tour_payloads(pre_config, minimal_extracted_data(), fake_api_client)
+    assert result["tour_option_error"] is None
+    assert result["tour_option_payload"]["code"] == "STANDARD_WT1"
+    assert result["tour_option_payload"]["translations"]["EN"]["name"] == "Standard Private"
+
+
+def test_modality_name_falls_back_to_modality_code_when_not_given(fake_api_client):
+    """The normal case (no per-service supplier code on the document) - behaviour must be
+    identical to before this code/name split existed."""
+    pre_config = make_pre_config(modality_code="STANDARD_CABIN")
+    result = build_closed_tour_payloads(pre_config, minimal_extracted_data(), fake_api_client)
+    assert result["tour_option_payload"]["code"] == "STANDARD_CABIN"
+    assert result["tour_option_payload"]["translations"]["EN"]["name"] == "STANDARD_CABIN"

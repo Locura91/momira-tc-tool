@@ -3380,9 +3380,25 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
                     candidates = []
                     for e in detected:
+                        # CONFIRMED (product owner, 2026-08-22): code and client-facing name are
+                        # two different things. The base name below ("Standard"/"Standard
+                        # Private") is what the CLIENT sees and never changes just because the
+                        # supplier happens to print their own reference code on this row (e.g. a
+                        # "Tour Code" column reading "WT1", "WT2", ...). That supplier code
+                        # exists for the SUPPLIER's benefit only, so it's appended to the CODE,
+                        # never substituted into the name. When the document gives no such code
+                        # (the normal case), modality_code stays exactly the base name, unchanged
+                        # from before this split existed.
+                        _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
+                        _supplier_code = str(e.get("supplier_code") or "").strip()
+                        _modality_code = (
+                            f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}"
+                            if _supplier_code else _base_modality_name
+                        )
                         candidates.append({
                             "label": e.get("label", ""), "ticket_code": "",
-                            "modality_code": "Standard Private" if e.get("is_private") else "Standard",
+                            "modality_code": _modality_code,
+                            "modality_name": _base_modality_name,
                             "selected": True,
                             # Real AI-detected excursion - safe to later restrict extraction
                             # to just this one (see is_genuine_variant usage in PHASE 3 below).
@@ -3398,6 +3414,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         # Prefill the Ticket Code from what was already entered back in Step 3
                         # (default_ticket_code) so the human doesn't have to type it again here.
                         candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "Standard",
+                                      "modality_name": "Standard",
                                       "selected": True, "is_genuine_variant": False}]
 
                     _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
@@ -3443,7 +3460,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                       "what it means).")
 
         for i, cand in enumerate(candidates):
-            ccol1, ccol2, ccol3, ccol4 = st.columns([1, 3, 2, 2])
+            cand.setdefault("modality_name", cand.get("modality_code", "Standard"))
+            ccol1, ccol2, ccol3, ccol4, ccol5 = st.columns([1, 3, 2, 2, 2])
             with ccol1:
                 cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mt_sel_{i}")
             with ccol2:
@@ -3455,14 +3473,23 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     help="Your own reference code for THIS ticket - make it up yourself, e.g. 'BALI-T1'."
                 )
             with ccol4:
+                cand["modality_name"] = st.text_input(
+                    "Modality Name", value=cand["modality_name"], key=f"mt_modname_{i}",
+                    help="What the CLIENT sees, e.g. 'Standard' or 'Standard Private' - always the "
+                         "normal descriptive name, never a supplier reference code."
+                )
+            with ccol5:
                 cand["modality_code"] = st.text_input(
                     "Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}",
-                    help="The name of the pricing option for this ticket, e.g. 'Standard' or 'Standard "
-                         "Private'."
+                    help="What the SUPPLIER sees. If the document assigns this exact service its own "
+                         "reference code (e.g. a 'Tour Code' column reading 'WT1'), that code has "
+                         "already been appended here automatically - edit if needed. Otherwise this "
+                         "matches the Modality Name above."
                 )
 
         if st.button("➕ Add another excursion manually"):
             candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard",
+                              "modality_name": "Standard",
                               "selected": True, "is_genuine_variant": False})
             st.rerun()
 
@@ -3478,7 +3505,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 missing_codes.append(cand["label"] or "(unnamed excursion)")
                 continue
             seen_ticket_codes.setdefault(code, []).append(cand["label"] or "(unnamed excursion)")
-            new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code, "data": None,
+            new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code,
+                             "modality_name": (cand.get("modality_name") or mod_code).strip(), "data": None,
                              "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
 
         duplicate_codes = {code: labels for code, labels in seen_ticket_codes.items() if len(labels) > 1}
@@ -3988,7 +4016,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     try:
                         pre_config = TicketHumanPreConfig(
                             supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
-                            modality_code=q["modality_code"], on_request=on_request,
+                            modality_code=q["modality_code"], modality_name=q.get("modality_name"), on_request=on_request,
                             days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                         )
                         payloads = build_ticket_payloads(pre_config, q["data"], client)

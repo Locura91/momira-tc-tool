@@ -5,7 +5,10 @@ without ever calling out to the real geocoder (geocode() in geocoding_client.py)
 build_ticket_payloads' own geolocation branch for why a manual override skips it entirely.
 """
 from schemas import TicketHumanPreConfig
-from builder import build_ticket_payloads, build_ticket_supplement_vos
+from builder import (
+    build_ticket_payloads, build_ticket_supplement_vos, coerce_ticket_occupancy_prices_shape,
+    resolve_ticket_child_price_ratio,
+)
 
 
 def make_pre_config(**overrides):
@@ -96,6 +99,67 @@ def test_occupancy_pricing_zeroes_the_other_two_modes(fake_api_client):
     assert option["baseServicePrice"] == 0.0
 
 
+def test_occupancy_pricing_adds_a_separate_child_row_with_age_range_when_children_allowed(fake_api_client):
+    """CONFIRMED REAL SHAPE (live GET response, 2026-08-13): a child price is its own
+    {"occupancy", "amount", "ageRange"} entry in the SAME occupancyPrices list as the adult
+    row for that headcount - not a field tacked onto the adult row (that was an earlier, wrong
+    guess that Travel Compositor silently ignored)."""
+    data = minimal_ticket_data(price_type="OCCUPANCY", disallow_children=False,
+                               child_age_min=2, child_age_max=12,
+                               occupancy_prices=[{"occupancy": 2, "amount": 40, "child_amount": 20}])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [
+        {"occupancy": 2, "amount": 40.0},
+        {"occupancy": 2, "amount": 20.0, "ageRange": {"min": 2, "max": 12}},
+    ]
+
+
+def test_occupancy_pricing_uses_the_resolved_child_age_band_in_age_range(fake_api_client):
+    data = minimal_ticket_data(price_type="OCCUPANCY", disallow_children=False,
+                               child_age_min=7, child_age_max=None,
+                               occupancy_prices=[{"occupancy": 2, "amount": 40, "child_amount": 20}])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    # resolve_child_age_band: a stated floor (7) with no stated ceiling keeps the house
+    # ceiling (12) rather than collapsing to a zero-width 7-7 band.
+    assert option["occupancyPrices"][1]["ageRange"] == {"min": 7, "max": 12}
+
+
+def test_occupancy_pricing_omits_the_child_row_when_children_disallowed(fake_api_client):
+    """CONFIRMED PRODUCT-OWNER RULE: the child column only applies when this Ticket actually
+    allows children - a disallow_children=True Ticket has no child rate to publish, even if a
+    stale child_amount is still sitting in the working data from before it was toggled off."""
+    data = minimal_ticket_data(price_type="OCCUPANCY", disallow_children=True,
+                               occupancy_prices=[{"occupancy": 2, "amount": 40, "child_amount": 20}])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [{"occupancy": 2, "amount": 40.0}]
+
+
+def test_occupancy_pricing_omits_the_child_row_when_the_row_never_had_one(fake_api_client):
+    data = minimal_ticket_data(price_type="OCCUPANCY", disallow_children=False,
+                               occupancy_prices=[{"occupancy": 2, "amount": 40}])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [{"occupancy": 2, "amount": 40.0}]
+
+
+def test_occupancy_pricing_multiple_rows_interleave_adult_and_child_entries(fake_api_client):
+    data = minimal_ticket_data(price_type="OCCUPANCY", disallow_children=False, occupancy_prices=[
+        {"occupancy": 1, "amount": 202, "child_amount": 202},
+        {"occupancy": 2, "amount": 110, "child_amount": 110},
+    ])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    option = result["ticket_option_payload"]
+    assert option["occupancyPrices"] == [
+        {"occupancy": 1, "amount": 202.0},
+        {"occupancy": 1, "amount": 202.0, "ageRange": {"min": 2, "max": 12}},
+        {"occupancy": 2, "amount": 110.0},
+        {"occupancy": 2, "amount": 110.0, "ageRange": {"min": 2, "max": 12}},
+    ]
+
+
 def test_occupancy_prices_above_9_pax_are_dropped(fake_api_client):
     """CONFIRMED REAL SYSTEM LIMIT (product owner): Travel Compositor can't book more than 9
     people on any product - the same rule already enforced for Transfer/Transport via
@@ -165,6 +229,28 @@ def test_modality_code_with_a_slash_is_rejected_by_the_schema_before_building(fa
         make_pre_config(modality_code="BAD/CODE")
 
 
+# CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same thing.
+# A supplier's own per-service reference code (e.g. "WT1" from a "Tour Code" column) belongs
+# in the CODE, appended to the standard short-code - never in the NAME the client sees.
+def test_modality_code_and_name_are_independent_when_a_supplier_code_is_appended(fake_api_client):
+    pre_config = make_pre_config(modality_code="STANDARD_WT1", modality_name="Standard Private")
+    result = build_ticket_payloads(pre_config, minimal_ticket_data(), fake_api_client)
+    assert result["ticket_option_error"] is None
+    assert result["ticket_option_payload"]["code"] == "STANDARD_WT1"
+    # The client-facing name lives in remarks[EN].name - must stay the plain descriptive name,
+    # never the supplier's reference code.
+    assert result["ticket_option_payload"]["remarks"]["EN"]["name"] == "Standard Private"
+
+
+def test_modality_name_falls_back_to_modality_code_when_not_given(fake_api_client):
+    """The normal case (no per-service supplier code on the document) - behaviour must be
+    identical to before this code/name split existed."""
+    pre_config = make_pre_config(modality_code="Standard")
+    result = build_ticket_payloads(pre_config, minimal_ticket_data(), fake_api_client)
+    assert result["ticket_option_payload"]["code"] == "Standard"
+    assert result["ticket_option_payload"]["remarks"]["EN"]["name"] == "Standard"
+
+
 # CORRECTED 2026-08-12 (product owner): "Main Ticket information has no supplement, Modality of
 # a Ticket has their own supplement." The main Ticket record still has none (see the
 # ignored_ticket_supplements test above, unchanged), but each Modality now carries its own
@@ -230,3 +316,113 @@ def test_has_real_pricing_reflects_whether_any_base_price_was_actually_entered(f
         make_pre_config(), minimal_ticket_data(base_adult_price=0), fake_api_client)
     assert with_price["has_real_pricing"] is True
     assert without_price["has_real_pricing"] is False
+
+
+# ---------------------------------------------------------------------------
+# coerce_ticket_occupancy_prices_shape - the "Tell AI what to fix" safety net
+# for a Ticket Modality's occupancy_prices (see apply_clarify_changes in app.py
+# and the CONFIRMED REAL RISK docstring on this function).
+# ---------------------------------------------------------------------------
+
+def test_occupancy_shape_accepts_the_canonical_shape_unchanged():
+    rows, notes = coerce_ticket_occupancy_prices_shape([
+        {"occupancy": 1, "amount": 40}, {"occupancy": 2, "amount": 70},
+    ])
+    assert rows == [{"occupancy": 1, "amount": 40.0}, {"occupancy": 2, "amount": 70.0}]
+    assert notes == []
+
+
+def test_occupancy_shape_accepts_common_key_aliases():
+    """A model correcting a price could plausibly write 'pax'/'price' instead of
+    'occupancy'/'amount' - both are natural English words for the same thing."""
+    rows, notes = coerce_ticket_occupancy_prices_shape([{"pax": 4, "price": 120}])
+    assert rows == [{"occupancy": 4, "amount": 120.0}]
+    assert notes == []
+
+
+def test_occupancy_shape_drops_rows_above_the_bookable_cap():
+    rows, notes = coerce_ticket_occupancy_prices_shape([
+        {"occupancy": 9, "amount": 30}, {"occupancy": 12, "amount": 20},
+    ], max_cap=9)
+    assert rows == [{"occupancy": 9, "amount": 30.0}]
+    assert len(notes) == 1
+
+
+def test_occupancy_shape_drops_unreadable_rows_and_reports_them():
+    rows, notes = coerce_ticket_occupancy_prices_shape([
+        {"occupancy": 3, "amount": 55}, "not a row", {"occupancy": "n/a", "amount": 10}, {},
+    ])
+    assert rows == [{"occupancy": 3, "amount": 55.0}]
+    assert len(notes) == 3
+
+
+def test_occupancy_shape_rejects_a_non_list_entirely():
+    rows, notes = coerce_ticket_occupancy_prices_shape({"occupancy": 2, "amount": 50})
+    assert rows == []
+    assert len(notes) == 1
+
+
+def test_occupancy_shape_keeps_the_later_duplicate_and_notes_it():
+    rows, notes = coerce_ticket_occupancy_prices_shape([
+        {"occupancy": 2, "amount": 50}, {"occupancy": 2, "amount": 65},
+    ])
+    assert rows == [{"occupancy": 2, "amount": 65.0}]
+    assert len(notes) == 1
+
+
+# ---------------------------------------------------------------------------
+# Child Price column (2026-08-13 product-owner request): "when child age is
+# between 2 and 12, we must add a child price column next to adult price in
+# pricing table" - default child_amount = adult amount, or the document's
+# stated discount ratio when one exists.
+# ---------------------------------------------------------------------------
+
+def test_occupancy_shape_carries_child_amount_when_present():
+    rows, notes = coerce_ticket_occupancy_prices_shape([
+        {"occupancy": 1, "amount": 40, "child_amount": 20},
+        {"occupancy": 2, "amount": 70, "child_amount": 35},
+    ])
+    assert rows == [
+        {"occupancy": 1, "amount": 40.0, "child_amount": 20.0},
+        {"occupancy": 2, "amount": 70.0, "child_amount": 35.0},
+    ]
+    assert notes == []
+
+
+def test_occupancy_shape_accepts_child_amount_key_aliases():
+    rows, notes = coerce_ticket_occupancy_prices_shape([{"pax": 3, "price": 90, "child_price": 45}])
+    assert rows == [{"occupancy": 3, "amount": 90.0, "child_amount": 45.0}]
+    assert notes == []
+
+
+def test_occupancy_shape_omits_child_amount_key_when_never_given():
+    """Rows with no child price at all shouldn't gain a fabricated child_amount key - the caller
+    (render_ticket_pricing_editor) is what fills in the default-to-adult-price value."""
+    rows, notes = coerce_ticket_occupancy_prices_shape([{"occupancy": 1, "amount": 40}])
+    assert rows == [{"occupancy": 1, "amount": 40.0}]
+    assert "child_amount" not in rows[0]
+
+
+def test_occupancy_shape_drops_only_the_unreadable_child_price_keeping_the_adult_price():
+    rows, notes = coerce_ticket_occupancy_prices_shape([{"occupancy": 1, "amount": 40, "child_amount": "n/a"}])
+    assert rows == [{"occupancy": 1, "amount": 40.0}]
+    assert len(notes) == 1
+
+
+def test_child_price_ratio_defaults_to_one_when_no_distinct_child_rate_stated():
+    assert resolve_ticket_child_price_ratio(40, 40) == 1.0
+
+
+def test_child_price_ratio_defaults_to_one_when_nothing_extracted_at_all():
+    assert resolve_ticket_child_price_ratio(0, 0) == 1.0
+
+
+def test_child_price_ratio_reflects_a_stated_discount():
+    # "child between 2 to 11.99 50% off" -> child price = adult price / 2.
+    assert resolve_ticket_child_price_ratio(40, 20) == 0.5
+
+
+def test_child_price_ratio_is_never_negative_or_a_divide_by_zero():
+    assert resolve_ticket_child_price_ratio(0, 20) == 1.0
+    assert resolve_ticket_child_price_ratio(-5, 20) == 1.0
+    assert resolve_ticket_child_price_ratio(40, -5) == 1.0

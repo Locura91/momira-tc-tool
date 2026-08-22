@@ -2517,7 +2517,12 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
   "excursions": [
     {"label": "short human-readable label, e.g. 'City Tour in El Gouna'",
      "is_private": true if this specific excursion is described as private (private tour/transfer/guide),
-     false if described as joint/shared/group/public, false if not specified either way}
+     false if described as joint/shared/group/public, false if not specified either way,
+     "supplier_code": "the SUPPLIER's own reference code for this specific excursion, ONLY if the
+       document explicitly assigns one (e.g. a 'Tour Code' / 'Product Code' / 'Ref' column showing
+       something like 'WT1', 'WT2' next to each row) - use exactly what's printed, or null if the
+       document doesn't give one. This is NOT something to invent - most documents have no such
+       code and null is the normal/expected answer."}
   ]
 }
 If there is only one excursion, set "multiple_excursions": false and "excursions": [] ."""
