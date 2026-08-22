@@ -24,6 +24,19 @@ class HumanPreConfig(BaseModel):
     max_pax: int = Field(..., description="Must be between 2 and 9")
     currency: str = Field(..., example="EUR", description="ISO 3-letter currency code")
     modality_code: str = Field(..., example="STANDARD_CABIN", description="Modality / Option Code")
+    # CONFIRMED (product owner, 2026-08-22): the CODE and the client-facing NAME of a modality
+    # are two different things and must not be conflated. The code exists for the SUPPLIER's
+    # benefit (so they can tell which exact product was booked - e.g. when a supplier assigns
+    # their own per-service reference like "WT1", that reference belongs IN the code, appended
+    # to the standard short-code: "STANDARD_WT1"). The name exists for the CLIENT's benefit (so
+    # they can immediately tell what it is - e.g. "Standard English Private") and must stay the
+    # normal descriptive name regardless of what the code contains. Optional and defaults to
+    # `modality_code` so every existing call site (a document with no per-service supplier code)
+    # keeps behaving exactly as before.
+    modality_name: Optional[str] = Field(
+        None, description="Client-facing Modality name (e.g. 'Standard English Private'). "
+                          "Defaults to modality_code when not given - only diverges from it when "
+                          "modality_code has a supplier reference code appended.")
     on_request: bool = Field(True, description="True for On Request, False for Instant Confirmation")
     days_available_before_release: int = Field(30, description="How many days before departure this tour becomes bookable/visible")
     
@@ -260,6 +273,10 @@ class TicketHumanPreConfig(BaseModel):
     ticket_code: str = Field(..., example="JAP-T1", description="Human-chosen Ticket code")
     currency: str = Field(..., example="EUR")
     modality_code: str = Field(..., example="Standard")
+    # See HumanPreConfig.modality_name's docstring - same code/name split, same default-to-code
+    # backward compatibility for documents with no per-service supplier reference code.
+    modality_name: Optional[str] = Field(
+        None, description="Client-facing Modality name. Defaults to modality_code when not given.")
     on_request: bool = Field(False, description="True for On Request, False for Instant Confirmation")
     days_available_before_release: int = Field(30)
     min_passengers: int = Field(1)

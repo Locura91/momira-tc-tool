@@ -1383,7 +1383,10 @@ def build_closed_tour_payloads(
             operationalDays=extracted_dmc_data.get("operational_days", WEEKDAY_NAMES.copy()),
             stopSales=combined_stop_sales,
             priceList=_tour_price_list_sorted,
-            translations={"EN": OptionTranslation(name=pre_config.modality_code, remarks=None)},
+            # CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same
+            # thing - see HumanPreConfig.modality_name's docstring. Falls back to modality_code
+            # when no separate name was given (i.e. no supplier reference code was appended).
+            translations={"EN": OptionTranslation(name=pre_config.modality_name or pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
             quantityPerDay=99,
             useAdditionalOnRequestQuota=False
@@ -1717,7 +1720,10 @@ def build_ticket_payloads(
             # the Voucher Remarks field above (via _cancellation_voucher_text -
             # document-stated policy, or the standing default when nothing was
             # stated), so staff see it too and the two fields can't drift apart.
-            remarks={"EN": TicketRemark(name=pre_config.modality_code, remarks=ticket_cancellation_voucher_text)},
+            # CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same
+            # thing - see TicketHumanPreConfig.modality_name's docstring. Falls back to
+            # modality_code when no separate name was given (no supplier reference code appended).
+            remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code, remarks=ticket_cancellation_voucher_text)},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
