@@ -347,8 +347,32 @@ Rules:
   all (e.g. "not suitable for children under 7", "no children under 7 accepted"), that is a booking
   restriction, not an age band: still set min_child_age to 7, AND state the restriction plainly in the
   description so a human can see it, since these two numbers cannot express "not accepted".
+  CONFIRMED HOUSE RULE (product owner, 2026-08-24) - a stated CEILING with no separate minimum, e.g.
+  "children under 5 are free" / "children up to 5 years old" / "children aged 5.5 and above are
+  charged as a full adult": this is a simple, single-band cutoff, NOT an infant/child split - set
+  min_child_age: 0 (do not leave it at the 2 default; there is no separate infant band unless the
+  source discusses infants separately from this cutoff) and max_child_age to the cutoff. TRAVEL
+  COMPOSITOR SEMANTICS: entering max_child_age N means "up to and including age N gets the child
+  rate; the traveler is charged as an adult starting the day they turn N+1" - so read the source's
+  own cutoff literally as that N, do not add or subtract a year to compensate.
+  FRACTIONAL/HALF-YEAR CUTOFFS ("5.5 and above pays adult"): max_child_age is a whole number, so round
+  DOWN to the child-favoring integer - "5.5 and above is adult" means a 5-year-old still gets the
+  child rate, so max_child_age: 5 (not 6). Always round a fractional cutoff toward the child, never
+  toward the adult.
   Default to 2/12 ONLY if genuinely nothing about child age appears anywhere in the source (standard
   convention: infant = 0-2, child = 2-12).
+- child_discount_percentage: if the source states what a child pays relative to the adult rate,
+  extract it as a plain percentage OFF the adult price - "children are free" / "no charge for
+  children" -> 100, "child rate is 50% off" / "children pay half price" -> 50, "children pay 70% of
+  adult price" -> 30 (the DISCOUNT, not the amount they pay - invert a "pays X%" phrasing: 30% discount
+  means they pay 70%). Set to null if the source states no child discount/rate at all (do not invent
+  a default). CONFIRMED TRAVEL COMPOSITOR LIMITATION - IMPORTANT, mention this in pricing_notes if a
+  child discount is genuinely stated: Travel Compositor's Closed Tour price list can only apply this
+  discount to a child who is the THIRD or FOURTH person sharing a room (tripleChildPercentageDiscount /
+  quadrupleChildPercentageDiscount) - there is no field at all for a child as the first or second
+  occupant of a room, so a stated discount cannot be reflected in single/double occupancy pricing
+  no matter how it's extracted. Still extract the percentage whenever the source states one; it will
+  be applied everywhere the platform actually supports it.
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM).
   CONFIRMED RULE - start_time: if the source gives an actual pick-up/collection time for Day 1 (e.g. "Pick-up
   at 07:30", "collection between 6:00-6:30am" - use the earlier/first time given for a range), always use
@@ -393,10 +417,18 @@ Rules:
       "singlePrice": {"amount": 0, "currency": "EUR"},
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
-      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+      "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "tripleChildPercentageDiscount": 0,
+      "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a date range), use that same date for both startDate and endDate. Use the currency mentioned in the document.
+  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as the document's stated
+  child_discount_percentage (see below) on every row that has a triplePrice/quadruplePrice - "children
+  free" -> 100, "50% off" -> 50. Omit both keys entirely if no child discount is stated anywhere in the
+  source (do not default to 0 in that case - 0 would mean "confirmed no discount", which is different
+  from "not stated"). These two fields are the ONLY place Travel Compositor lets a child discount
+  affect price - it has no equivalent field for single/double occupancy.
 
   ============================================================
   PER-NIGHT PRICING - CONFIRMED HOUSE RULE (product owner), and the single most repeated
@@ -459,7 +491,7 @@ Output this exact JSON structure:
   "cancellation_policy_text": "",
   "itinerary_destinations": [],
   "nights": 0,
-  "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
+  "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12, "child_discount_percentage": null,
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
@@ -531,6 +563,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "end_time": {"type": "string"},
         "min_child_age": {"type": "integer"},
         "max_child_age": {"type": "integer"},
+        "child_discount_percentage": {"type": ["number", "null"]},
         "operational_days": {"type": "array", "items": {"type": "string"}},
         "schedule_notes": {"type": "string"},
         "pricing_notes": {"type": "string"},
@@ -542,8 +575,8 @@ EXTRACTION_TOOL_SCHEMA = {
         "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
         "excluded", "meeting_point", "policy_remarks", "cancellation_policy_tiers",
         "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
-        "min_child_age", "max_child_age", "operational_days", "schedule_notes", "pricing_notes",
-        "stop_sales", "price_list", "release_days_mentions",
+        "min_child_age", "max_child_age", "child_discount_percentage", "operational_days",
+        "schedule_notes", "pricing_notes", "stop_sales", "price_list", "release_days_mentions",
     ],
 }
 
@@ -1833,11 +1866,18 @@ Extract ONLY:
       "singlePrice": {"amount": 0, "currency": "EUR"},
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
-      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+      "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "tripleChildPercentageDiscount": 0,
+      "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
+  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as this Modality's stated
+  child_discount_percentage (see below), on every row with a triplePrice/quadruplePrice - "children
+  free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
+  0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
+  on this record - there is no equivalent for single/double occupancy.
 - pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a group-size table into the 4-slot schema - explain exactly what, with real numbers.
 - schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only. NEVER include an instruction telling the customer to contact the operator/supplier directly (e.g. "contact the operator 48h before to confirm pick-up time") - Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
@@ -1855,12 +1895,20 @@ Extract ONLY:
   passenger count required for the non-guaranteed occurrences. Set this to null if the source does not
   describe this specific pattern (a plain weekly schedule with no guaranteed-vs-not distinction is NOT
   this - leave null in that ordinary case). Never invent a rule that isn't actually stated.
+- child_discount_percentage: if the source states what a child pays relative to the adult rate,
+  extract it as a plain percentage OFF the adult price - "children are free" -> 100, "child rate is
+  50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the DISCOUNT, not
+  the amount they pay). Set to null if no child discount/rate is stated anywhere (do not invent a
+  default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
+  Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
+  pricing when a 3rd/4th person is sharing the room.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
   "price_list": [],
+  "child_discount_percentage": null,
   "pricing_notes": "",
   "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
@@ -1942,11 +1990,18 @@ Extract:
       "singlePrice": {"amount": 0, "currency": "EUR"},
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
-      "quadruplePrice": {"amount": 0, "currency": "EUR"}
+      "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "tripleChildPercentageDiscount": 0,
+      "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
+  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as this Modality's stated
+  child_discount_percentage (see below), on every row with a triplePrice/quadruplePrice - "children
+  free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
+  0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
+  on this record - there is no equivalent for single/double occupancy.
 - supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them (upgrades, optional excursions), OR a peak-season/holiday surcharge, that apply SPECIFICALLY to bookings of THIS Modality. Do NOT include anything already covered in included/excluded, and do NOT include a supplement that the source clearly ties to a DIFFERENT Modality.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional CO2 offset contribution") - never add these as a supplement. This is a deliberate exclusion, not an oversight.
   CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes.
@@ -1993,12 +2048,19 @@ Extract:
   plain weekly schedule with no guaranteed-vs-not distinction is NOT this - leave null in that ordinary
   case, and null if this rule clearly belongs to a DIFFERENT Modality than the one you're extracting).
   Never invent a rule that isn't actually stated.
+- child_discount_percentage: if the source states what a child pays relative to the adult rate for
+  THIS Modality, extract it as a plain percentage OFF the adult price - "children are free" -> 100,
+  "child rate is 50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the
+  DISCOUNT, not the amount they pay). Set to null if no child discount/rate is stated (do not invent a
+  default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
+  Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
+  pricing when a 3rd/4th person is sharing the room.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
+  "price_list": [], "supplements": [], "child_discount_percentage": null, "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "stop_sales": [], "guaranteed_departure_rule": null
 }"""
@@ -2055,6 +2117,7 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
 
     defaults = {
         "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
+        "child_discount_percentage": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None,
     }
@@ -2093,7 +2156,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     data = _call_claude(OPTION_ONLY_SYSTEM_PROMPT, user_content, model, max_tokens=4096)
 
     defaults = {
-        "price_list": [], "pricing_notes": "", "schedule_notes": "",
+        "price_list": [], "pricing_notes": "", "schedule_notes": "", "child_discount_percentage": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None,
         # Defensive: fields builder.py's main_tour_payload construction still
@@ -2155,6 +2218,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "excluded": "", "meeting_point": "", "policy_remarks": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
+        "child_discount_percentage": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }

@@ -110,6 +110,38 @@ def test_stated_minimum_child_age_replaces_the_house_floor(fake_api_client):
     assert result["main_tour_payload"]["maxChildAge"] == 12
 
 
+def test_stated_ceiling_with_no_infant_split_collapses_min_to_zero(fake_api_client):
+    """CONFIRMED HOUSE RULE (product owner, 2026-08-24): "Children under 5 years old are free.
+    Children aged 5.5 years and above are charged as a full adult" -> the whole 0-5 range is one
+    child band (min_child_age=0), not the 2/12 default with under-2s split off as infants."""
+    result = build_closed_tour_payloads(
+        make_pre_config(), minimal_extracted_data(min_child_age=0, max_child_age=5), fake_api_client)
+    assert result["main_tour_payload"]["minChildAge"] == 0
+    assert result["main_tour_payload"]["maxChildAge"] == 5
+
+
+def test_child_discount_percentage_reaches_triple_and_quadruple_price_list_rows(fake_api_client):
+    """CONFIRMED HOUSE RULE (product owner, 2026-08-24): a document-wide "children free"/"50%
+    off" statement must reach the price list's tripleChildPercentageDiscount/
+    quadrupleChildPercentageDiscount - the only fields Travel Compositor has for a child discount
+    on a Closed Tour (there is no equivalent for single/double occupancy)."""
+    result = build_closed_tour_payloads(
+        make_pre_config(),
+        minimal_extracted_data(
+            min_child_age=0, max_child_age=5, child_discount_percentage=100,
+            price_list=[{
+                "startDate": "2027-01-01", "endDate": "2027-03-31",
+                "price": {"singlePrice": {"amount": 500}, "doublePrice": {"amount": 300},
+                          "triplePrice": {"amount": 250}, "quadruplePrice": {"amount": 220}},
+            }]),
+        fake_api_client)
+    price = result["tour_option_payload"]["priceList"][0]["price"]
+    assert price["tripleChildPercentageDiscount"] == 100.0
+    assert price["quadrupleChildPercentageDiscount"] == 100.0
+    # Single/double have no such field in Travel Compositor's schema - nothing to assert there,
+    # this is a platform limitation, not a bug in this tool.
+
+
 def test_no_cancellation_tiers_stated_uses_the_flat_default(fake_api_client):
     result = build_closed_tour_payloads(make_pre_config(), minimal_extracted_data(), fake_api_client)
     ranges = result["main_tour_payload"]["cancellationRanges"]

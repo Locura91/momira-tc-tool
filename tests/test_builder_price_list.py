@@ -109,6 +109,44 @@ def test_empty_input_returns_empty_list():
     assert normalize_price_list(None, "EUR") == []
 
 
+def test_fallback_child_discount_applies_only_to_rows_selling_triple_or_quadruple():
+    """CONFIRMED HOUSE RULE (product owner, 2026-08-24): a document-wide child discount
+    percentage should reach every row's triple/quadruple discount even when the AI didn't repeat
+    it on that specific row - but only where the row actually sells that occupancy (an
+    unsold occupancy can't carry a discount, same as supplements)."""
+    rows = [{"startDate": "2027-01-01", "endDate": "2027-03-31",
+             "price": {"singlePrice": {"amount": 500}, "doublePrice": {"amount": 300},
+                       "triplePrice": {"amount": 250}}}]
+    out = normalize_price_list(rows, "EUR", fallback_child_discount_percentage=50)
+    price = out[0]["price"]
+    assert price["tripleChildPercentageDiscount"] == 50.0
+    assert "quadrupleChildPercentageDiscount" not in price  # no quadruplePrice on this row
+
+
+def test_fallback_child_discount_of_100_means_the_child_is_free():
+    rows = [{"startDate": "2027-01-01", "endDate": "2027-03-31",
+             "price": {"triplePrice": {"amount": 250}, "quadruplePrice": {"amount": 220}}}]
+    out = normalize_price_list(rows, "EUR", fallback_child_discount_percentage=100)
+    price = out[0]["price"]
+    assert price["tripleChildPercentageDiscount"] == 100.0
+    assert price["quadrupleChildPercentageDiscount"] == 100.0
+
+
+def test_a_rows_own_explicit_discount_wins_over_the_fallback():
+    rows = [{"startDate": "2027-01-01", "endDate": "2027-03-31",
+             "price": {"triplePrice": {"amount": 250}, "tripleChildPercentageDiscount": 0}}]
+    out = normalize_price_list(rows, "EUR", fallback_child_discount_percentage=50)
+    # 0 is a real, confirmed "no discount" answer - the fallback must not override it.
+    assert out[0]["price"]["tripleChildPercentageDiscount"] == 0.0
+
+
+def test_no_fallback_given_leaves_missing_discounts_missing():
+    rows = [{"startDate": "2027-01-01", "endDate": "2027-03-31",
+             "price": {"triplePrice": {"amount": 250}}}]
+    out = normalize_price_list(rows, "EUR", fallback_child_discount_percentage=None)
+    assert "tripleChildPercentageDiscount" not in out[0]["price"]
+
+
 @pytest.mark.parametrize("bad_amount", [None, "", "not-a-number", float("nan")])
 def test_unusable_amount_is_treated_as_absent(bad_amount):
     rows = [{"startDate": "2027-01-01", "endDate": "2027-03-31",

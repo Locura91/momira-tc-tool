@@ -173,12 +173,23 @@ def _money_or_none(value, currency):
     return {"amount": amount, "currency": (value.get("currency") or currency or "EUR")}
 
 
-def normalize_price_list(rows, currency):
+def normalize_price_list(rows, currency, fallback_child_discount_percentage=None):
     """Make a price list safe to validate, without changing what it says.
 
     Every occupancy that is priced keeps its number; every one that is blank becomes None
     rather than {}. Rows with no usable price at all are dropped, since a season row that
-    prices nothing cannot be published and would only produce the same error later."""
+    prices nothing cannot be published and would only produce the same error later.
+
+    fallback_child_discount_percentage: CONFIRMED HOUSE RULE (product owner, 2026-08-24) - Travel
+    Compositor's ONLY child-price mechanism on a Closed Tour price list entry is
+    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount (a child as the 3rd/4th person
+    sharing a room); there is no equivalent field for single/double occupancy. When the extraction
+    (or a human) states a document-wide child discount percentage but a given row's own
+    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount is missing, apply this fallback
+    to that row instead of silently leaving the discount off - but ONLY on rows that actually sell
+    triplePrice/quadruplePrice (an occupancy this tour doesn't sell can't carry a discount either,
+    same rule as supplements - see strip_unsold_supplement_occupancies). A row's own explicit value
+    (including 0, meaning "confirmed no discount") always wins over this fallback."""
     out = []
     for row in (rows or []):
         if not isinstance(row, dict):
@@ -195,10 +206,18 @@ def normalize_price_list(rows, currency):
             money = _money_or_none(price.get(key), currency)
             if money is not None:
                 cleaned[key] = money
-        for extra in ("tripleChildPercentageDiscount", "quadrupleChildPercentageDiscount"):
+        for extra, occupancy_key in (
+            ("tripleChildPercentageDiscount", "triplePrice"),
+            ("quadrupleChildPercentageDiscount", "quadruplePrice"),
+        ):
             if price.get(extra) not in (None, ""):
                 try:
                     cleaned[extra] = float(price[extra])
+                except (TypeError, ValueError):
+                    pass
+            elif fallback_child_discount_percentage not in (None, "") and occupancy_key in cleaned:
+                try:
+                    cleaned[extra] = float(fallback_child_discount_percentage)
                 except (TypeError, ValueError):
                     pass
         if not any(k in cleaned for k in _MONEY_KEYS):
@@ -1281,7 +1300,8 @@ def build_closed_tour_payloads(
         # to be published, so the two can never disagree.
         _consistent_supplements, _supplement_notes = strip_unsold_supplement_occupancies(
             extracted_dmc_data.get("supplements", []),
-            normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency))
+            normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
+                                  fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage")))
         supplements_list = build_supplement_vos(_consistent_supplements)
 
         # CONFIRMED REAL RULE (human feedback): cancellation used to be
@@ -1366,7 +1386,8 @@ def build_closed_tour_payloads(
         combined_stop_sales = _merge_stop_sales(combined_stop_sales, indonesia_holiday_stop_sales())
 
     _tour_price_list_sorted = sorted(
-        normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency),
+        normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
+                              fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage")),
         key=lambda p: p.get("startDate", ""))
     tet_overlap = None
     if is_vietnam and _tour_price_list_sorted:
