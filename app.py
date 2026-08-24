@@ -4190,6 +4190,16 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             st.error(f"❌ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
                                     f"field and create this one individually via the normal Create flow instead.")
                             continue
+                        # CONFIRMED REAL GAP (functionality audit, 2026-08-24): render_publish_blockers
+                        # (expired validity window / zero-priced occupancies - see its own docstring)
+                        # was wired into the single-ticket "Publish to Travel Compositor" flow but never
+                        # into THIS batch "Publish all" loop, which is what mass ticket production
+                        # actually uses - an expired rate sheet or a zero-priced occupancy row could
+                        # reach a real POST here with no gate at all. Same check, same place it
+                        # actually matters: right before the real API calls.
+                        if not render_publish_blockers(payloads):
+                            st.error(f"🚫 **{q['ticket_code']}**: skipped - see the error(s) above.")
+                            continue
 
                         creation_payload = dict(payloads["main_ticket_payload"])
                         creation_payload["active"] = True
@@ -4231,6 +4241,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
                                     if mod_payloads["ticket_option_error"]:
                                         show_publish_error(f"prepare **{q['ticket_code']}** modality '{mod['code']}'", mod_payloads["ticket_option_error"])
+                                        continue
+                                    # Same expired-window / zero-priced-occupancy gate as the base
+                                    # modality above - see render_publish_blockers.
+                                    if not render_publish_blockers(mod_payloads):
+                                        st.error(f"🚫 **{q['ticket_code']}** modality '{mod['code']}': skipped - see the error(s) above.")
                                         continue
                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                     if "error" in mod_option_result:
@@ -4306,6 +4321,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     show_publish_error(f"prepare **{fi['ticket_code']}**'s payload", retry_payloads["ticket_option_error"])
                                 elif not retry_payloads["geolocation_resolved"]:
                                     st.error("❌ Geolocation not resolved - fix the City field via the normal Create flow instead.")
+                                elif not render_publish_blockers(retry_payloads):
+                                    pass  # render_publish_blockers already showed the specific error(s)
                                 else:
                                     retry_option_result = client.create_ticket_option(supplier_id, fi["real_code"], retry_payloads["ticket_option_payload"])
                                     if "error" in retry_option_result:
@@ -5415,6 +5432,8 @@ def render_ticket_flow(client):
                                                     mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
                                                     if mod_payloads["ticket_option_error"]:
                                                         show_publish_error(f"prepare modality '{mod['code']}'", mod_payloads["ticket_option_error"], flow="ticket_legacy")
+                                                        continue
+                                                    if not render_publish_blockers(mod_payloads):
                                                         continue
                                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                                     if "error" in mod_option_result:
