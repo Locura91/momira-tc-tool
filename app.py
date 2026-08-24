@@ -2188,93 +2188,17 @@ def render_ticket_language_options(data, key_prefix):
     data["languages"] = chosen or ["EN"]
 
 
-TICKET_EXTRA_COST_COLS = ["Name", "Group (alternatives share one)", "Adult extra", "Child extra", "Infant extra"]
-
-
-def render_ticket_extra_costs(data, key_prefix, base_code="", base_name=""):
-    """A place to note a Ticket's OTHER priced variants - each one a SEPARATE Modality, created
-    one at a time afterward, never here.
-
-    CONFIRMED PRODUCT-OWNER RULE: a Ticket has no supplements. If the same ticket costs more with a
-    German-speaking guide, that is a second Modality at base + surcharge, not a fee bolted onto the
-    first one.
-
-    CONFIRMED REAL REQUEST (product owner, 2026-08-24): "please only allow one Modality creation
-    within Ticket Creation - as the multiple ticket creation is not working yet. I want now to
-    start with the first mass production of tickets and I would like to have a smooth system now
-    running." This screen used to compute and show "N Modalities will be created" from every
-    combination of these rows (build_ticket_modality_combinations) - but Ticket creation (both the
-    single and batch flows) has published exactly ONE Modality since the 2026-08-13 rule cited
-    above, and NEVER read that combinations list. The preview promised something creation didn't
-    do, which is exactly the kind of thing that stops feeling "smooth" during a real production
-    run. Now this only ever names what a human still has to go create afterward, one Modality at a
-    time, via Update/Refresh existing Service -> Ticket -> "Add new Modality to existing Ticket" -
-    matching the message already shown above this section during creation.
-
-    GROUP still matters for that later step: extras sharing a group are alternatives that can never
-    be booked together (a booking has one guide language), so give every guide language the group
-    `Guide language`. Leave the group empty for something independently choosable, like a lunch
-    upgrade. A language offered at the SAME price as the base (not an extra cost) belongs in
-    Language Options above instead - it stays on THIS Modality rather than becoming a new one.
-    """
-    st.markdown("**Extra costs → future Modalities**")
-    st.caption("A Ticket has no supplements. If a document prices a variant of this same excursion "
-              "higher (a different guide language, a vehicle upgrade), note the EXTRA on top of the "
-              "base price here as a reminder - so if the base (English guide) adult price is 40 and "
-              "German costs 50, the extra is 10. **Only the base Modality above is created now** - "
-              "each row here becomes its OWN separate Modality afterward, one at a time, via "
-              "Update/Refresh existing Service -> Ticket -> \"Add new Modality to existing Ticket\".")
-    st.caption("**Group**: extras sharing a group are alternatives and are never combined — give every "
-              "guide language the group `Guide language`. Leave the group empty for an add-on that can "
-              "go with anything (a lunch upgrade).")
-
-    rows = [
-        {"Name": o.get("name", ""), "Group (alternatives share one)": o.get("group", ""),
-         "Adult extra": _safe_float(o.get("adult_price", 0)),
-         "Child extra": _safe_float(o.get("children_price", 0)),
-         "Infant extra": _safe_float(o.get("infant_price", 0))}
-        for o in (data.get("extra_cost_options") or [])
-    ]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=TICKET_EXTRA_COST_COLS)
-
-    def _save(edited_df, data=data):
-        out = []
-        for _, row in edited_df.iterrows():
-            name = _safe_cell_str(row.get("Name")).strip()
-            if not name:
-                continue
-            out.append({
-                "name": name,
-                "group": _safe_cell_str(row.get("Group (alternatives share one)")).strip(),
-                "adult_price": _safe_float(row.get("Adult extra")),
-                "children_price": _safe_float(row.get("Child extra")),
-                "infant_price": _safe_float(row.get("Infant extra")),
-            })
-        data["extra_cost_options"] = out
-
-    editable_table("Extra costs", df, f"{key_prefix}_extra_costs", on_save=_save)
-
-    legacy = [s.get("name") or "(unnamed)" for s in (data.get("supplements") or []) if isinstance(s, dict)]
-    if legacy:
-        st.warning("⚠️ This draft still carries Ticket supplement(s) — " + ", ".join(legacy) + " — from "
-                  "before the rule changed. They will NOT be published. Re-enter them above as extra "
-                  "costs so each becomes a real Modality with its own full price.")
-
-    # CAPPED AT 1 (2026-08-24): see this function's docstring - creation only ever publishes the
-    # base Modality, so this is computed purely to LIST what still needs creating afterward, never
-    # to auto-generate more than one Modality here.
-    combos = build_ticket_modality_combinations(
-        {"adult": data.get("base_adult_price", 0), "children": data.get("base_children_price", 0),
-         "infant": data.get("base_infant_price", 0)},
-        data.get("extra_cost_options") or [], base_code=base_code, base_name=base_name, max_modalities=1)
-    data["generated_modalities"] = combos
-
-    variants = [o for o in (data.get("extra_cost_options") or []) if isinstance(o, dict) and (o.get("name") or "").strip()]
-    if variants:
-        st.info(f"ℹ️ **Only the base Modality will be created now.** {len(variants)} other priced "
-                f"variant(s) noted above still need creating afterward, one at a time: "
-                + ", ".join(f"'{o['name'].strip()}'" for o in variants) + ".")
-    return combos
+# CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "extra costs within tickets are
+# supplement by dates. No need to distinguish that at the app. All Extra costs are Supplement by
+# dates and can also be named all in one like this." This retires the "Extra Costs -> a separate
+# future Modality" section that used to sit here (the render_ticket_extra_costs UI function that
+# lived in this file has been removed entirely; build_ticket_modality_combinations() itself is
+# still defined in builder.py and still covered by its own tests, it's just no longer called from
+# Ticket creation) - every priced extra on a Modality, whatever kind, now goes through
+# render_ticket_modality_supplements_editor's "Supplements by dates" instead, matching Travel
+# Compositor's own single mechanism for this. See that function's docstring (ui_components.py)
+# and build_ticket_supplement_vos' docstring (builder.py) for the full rule, including how an
+# undated row now defaults to the Modality's own validity window instead of being dropped.
 
 
 def get_existing_tour_names(client, supplier_id):
@@ -4117,10 +4041,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         render_ticket_language_options(data, f"mt_{idx}")
 
-        render_ticket_extra_costs(data, f"mt_{idx}",
-                                  base_code=current.get("modality_code") or current.get("ticket_code") or "",
-                                  base_name=data.get("ticket_name") or current.get("label") or "")
-
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): a new Ticket must only ever be created
         # with ONE Modality. Any other Modalities described in the document are surfaced here as
         # information only - never auto-extracted or auto-created - and must be added afterward
@@ -4168,7 +4088,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     # they clarified - resetting its edit-mode flag below covers even that case,
                     # same as every other editable_table field this per-item review renders.
                     mt_field_to_table_key = {
-                        "extra_cost_options": f"_editing_table_mt_{idx}_extra_costs",
                         "includes": f"_editing_table_mt_includes_{idx}",
                         "excludes": f"_editing_table_mt_excludes_{idx}",
                         "meeting_points": f"_editing_table_mt_mp_{idx}",
@@ -5042,7 +4961,6 @@ def render_ticket_flow(client):
                     # build their own table names from the prefix they are handed.
                     _tkg = widget_generation("tk")
                     tk_field_to_table_key = {
-                        "extra_cost_options": f"_editing_table_tk_{_tkg}_extra_costs",
                         "includes": f"_editing_table_{flow_widget_key('tk', 'includes')}",
                         "excludes": f"_editing_table_{flow_widget_key('tk', 'excludes')}",
                         "meeting_points": f"_editing_table_{flow_widget_key('tk', 'meeting_points')}",
@@ -5138,10 +5056,6 @@ def render_ticket_flow(client):
                     "add them afterward via **Update/Refresh existing Service -> Ticket -> \"2: Add "
                     "new Modality to existing Ticket\"**.")
 
-        st.subheader("Extra costs")
-        render_ticket_extra_costs(data, f"tk_{widget_generation('tk')}",
-                                  base_code=st.session_state.get("tk_cfg_modality_code", "") or "",
-                                  base_name=data.get("ticket_name") or "")
 
         if price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
@@ -5186,7 +5100,6 @@ def render_ticket_flow(client):
                     # Same generation-scoping as the box above - see its comment.
                     _tkg2 = widget_generation("tk")
                     tk_field_to_table_key2 = {
-                        "extra_cost_options": f"_editing_table_tk_{_tkg2}_extra_costs",
                         "occupancy_prices": f"_editing_table_tk_{_tkg2}_occupancy",
                         "time_tables": f"_editing_table_{flow_widget_key('tk', 'timetables')}",
                         "stop_sales": f"_editing_table_tk_{_tkg2}_stop_sales",

@@ -1577,21 +1577,23 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         "'changes' object when a concrete edit was requested means you failed the task. Field names and "
         "value shapes must exactly match the current extracted data's own structure (e.g. price_list is "
         "the same array-of-objects shape, operational_days is the same list of weekday names).\n\n"
-        "CONFIRMED REAL BUG THIS AVOIDS - 'generated_modalities' IS NEVER SHOWN AND MUST NEVER BE EDITED: "
-        "a Ticket's list of Modalities-to-be-created is COMPUTED FRESH from base_adult_price/"
-        "base_children_price/base_infant_price plus extra_cost_options every time the screen renders - it "
-        "is a derived preview, not a stored field. A change written to it directly is silently thrown away "
-        "on the very next render, so the human sees a success message and the table looking completely "
-        "unchanged - a real reported failure. When the human asks to remove/add/change a Modality variant "
-        "(e.g. 'delete the French-speaking guide option', 'only one Modality needs to be created'), the "
-        "fix ALWAYS belongs in extra_cost_options instead: remove/add/edit the matching entry there (match "
-        "by its 'name', e.g. an entry named 'French-speaking guide') - removing it from extra_cost_options "
-        "is what makes that Modality stop being generated. If the human names the BASE modality itself "
-        "(no extra), the fix is base_adult_price/base_children_price/base_infant_price. Never put "
-        "'generated_modalities' in the changes object under any circumstances.\n\n"
+        "CONFIRMED REAL CORRECTION (product owner, 2026-08-24) - A TICKET NOW PUBLISHES ONLY ONE MODALITY, "
+        "AND EVERY PRICED EXTRA ON IT IS A 'modality_supplements' ROW: Ticket creation no longer generates "
+        "multiple Modality variants at all - it always publishes exactly one Modality, and every priced "
+        "extra it can carry (a genuinely dated change like a seasonal table or holiday surcharge, AND a "
+        "priced choice like a foreign-language guide or a Seat-in-Coach upgrade) lives together as its own "
+        "row in 'modality_supplements' (each row: name, adult_price_supplement, children_price_supplement, "
+        "infant_price_supplement, start_date, end_date - dates may be blank, meaning the row applies for "
+        "the Modality's whole validity window). When the human asks to remove/add/change one of these "
+        "(e.g. 'delete the French-speaking guide option', 'the holiday surcharge should be 20 not 15'), the "
+        "fix belongs in modality_supplements: remove/add/edit the matching entry there (match by its "
+        "'name', e.g. an entry named 'French-speaking guide'), returning the FULL modality_supplements "
+        "array as it should read afterward, not just the changed row. If the human names the BASE price "
+        "itself (no extra), the fix is base_adult_price/base_children_price/base_infant_price (or "
+        "occupancy_prices/base_service_price - see below) instead.\n\n"
         "TICKET MODALITY PRICING - 'price_type' / 'occupancy_prices' / 'base_service_price' (Tickets "
         "only - a ClosedTour/Hotel/Transfer/Transport modality has no 'price_type' field at all, so "
-        "none of this applies to those): a Ticket Modality's OWN price (as opposed to an extra_cost_options "
+        "none of this applies to those): a Ticket Modality's OWN price (as opposed to a modality_supplements "
         "surcharge - see above) is priced ONE of two ways, and the current extracted data always tells "
         "you which via its 'price_type' field - check it, never guess:\n"
         "  - price_type 'OCCUPANCY': 'occupancy_prices' is a list of {\"occupancy\": <exact integer pax "
@@ -1648,13 +1650,12 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         doc_note = ("\n\n[This document was too long to include in full and has been cut here. "
                     "If the answer depends on a part you cannot see, SAY SO in your summary "
                     "rather than guessing.]")
-    # generated_modalities is a DERIVED preview (recomputed from base_adult_price/
-    # base_children_price/base_infant_price + extra_cost_options on every render, see
-    # render_ticket_extra_costs in app.py) - never a real stored field. Showing it invites the
-    # model to "edit" it directly, which is a no-op that gets silently overwritten on the next
-    # render - a real reported failure ("the AI says it did something, but still all Modalities
-    # are seen"). Excluded here so the model is never tempted; the system prompt above redirects
-    # any such request to extra_cost_options instead.
+    # generated_modalities was a DERIVED preview computed by a UI function (render_ticket_extra_costs
+    # in app.py) that generated multiple Modality-variant candidates for the human to review - that
+    # function was removed entirely on 2026-08-24 (a Ticket now always publishes exactly one Modality,
+    # with every priced extra living in modality_supplements instead), so current_data should never
+    # actually carry this key any more. The exclusion is kept here defensively - a stray/legacy
+    # generated_modalities value must never be echoed back as if it were a real editable field.
     _clarify_source_data = {k: v for k, v in (current_data or {}).items() if k != "generated_modalities"}
     data_json, dropped = _json_within_budget(_clarify_source_data, _CLARIFY_DATA_CHARS)
     data_note = ""
@@ -1732,15 +1733,15 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
             unfiltered. Called after every place changes is set, including the retry."""
             if "generated_modalities" in result["changes"]:
                 del result["changes"]["generated_modalities"]
-                if "extra_cost_options" in result["changes"]:
-                    note = ("(Note: the Modality list shown is computed automatically from the base "
-                            "price and Extra Costs - I edited Extra Costs to make this change take "
-                            "effect, rather than the list itself.)")
+                if "modality_supplements" in result["changes"]:
+                    note = ("(Note: a Ticket no longer generates multiple Modality variants - I edited "
+                            "Supplements by dates to make this change take effect, rather than a "
+                            "Modality list.)")
                 else:
-                    note = ("⚠️ This was NOT applied: the Modality list shown is computed automatically "
-                            "from the base price and Extra Costs, and cannot be edited directly. Please "
-                            "retry, naming the specific Extra Cost option to add/remove/change (e.g. "
-                            "\"delete the French-speaking guide option\").")
+                    note = ("⚠️ This was NOT applied: a Ticket only ever publishes one Modality now, so "
+                            "there is no separate Modality list to edit. Please retry, naming the "
+                            "specific Supplements by dates row to add/remove/change (e.g. \"delete the "
+                            "French-speaking guide supplement\").")
                 result["summary"] = ((result.get("summary") or "").strip() + "\n\n" + note).strip()
 
         _strip_generated_modalities(result)
@@ -2402,11 +2403,10 @@ Extract:
   your excursion and must be included here too.
   GUIDE LANGUAGE RULE (same principle as tours): if a base/standard guide language is mentioned (usually
   English), make sure it's explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are
-  available (e.g. "German/French on request"), do NOT list them here - add each to extra_cost_options
-  instead (see below), with group "Guide language", so each becomes its own Modality. A guide language (or
-  any other extra a customer explicitly CHOOSES between) is never a supplement - it always becomes its own
-  Modality via extra_cost_options. Only a DATED price change that is not a choice (a seasonal price table,
-  a holiday surcharge) belongs in modality_supplements - see that field below.
+  available (e.g. "German/French on request"), do NOT list them here - add each to modality_supplements
+  instead (see below), with a clear name like "German-speaking guide". A guide language that costs EXTRA
+  (or any other priced choice a customer picks) goes there as its own undated entry - see modality_supplements
+  below for the full rule, which now covers both genuinely dated changes and priced choices alike.
   DUAL-LANGUAGE GUIDE RULE: this is a DIFFERENT case from the one above - if the source lists TWO (or
   more) languages joined by "/" or "or" as EQUAL standard options for the guiding/transfer service (e.g.
   "licenced English/German-speaking guiding service", "English or German speaking guide"), that is NOT a
@@ -2424,8 +2424,8 @@ Extract:
   a ticket, as so far only one language is allowed. But often we receive two or more language options for
   the same price." A list of ISO 639-1 two-letter UPPERCASE codes (e.g. ["EN"], or ["EN","DE"] for the
   dual-language case above) for every language this Modality runs in AT THE SAME PRICE - this is a
-  DIFFERENT thing from a language that costs EXTRA (that stays a separate extra_cost_options Modality, per
-  the GUIDE LANGUAGE RULE above - never put a priced-extra language here). Default ["EN"] when only one
+  DIFFERENT thing from a language that costs EXTRA (that goes in modality_supplements instead, per the
+  GUIDE LANGUAGE RULE above - never put a priced-extra language here). Default ["EN"] when only one
   language is stated or implied. Common codes: EN English, DE German, FR French, ES Spanish, IT Italian,
   NL Dutch, PT Portuguese, RU Russian, PL Polish, CS Czech, SK Slovak, HU Hungarian, RO Romanian, SV
   Swedish, NO Norwegian, DA Danish, FI Finnish, EL Greek, TR Turkish, SL Slovenian. If a language is
@@ -2512,70 +2512,63 @@ Extract:
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
 - supplements: ALWAYS an empty list - this is a LEGACY field, kept only so old drafts don't crash. Use
-  modality_supplements below for dated price changes and extra_cost_options below for chosen extras. Never
-  populate this one.
-- extra_cost_options: every EXTRA COST this same ticket can carry - the things that make the identical
-  experience cost more. Each one becomes its own Ticket Modality downstream, priced at the base price PLUS
-  this extra, so extract the EXTRA ON TOP, not the total.
-  {"name": "clear customer-facing label, e.g. 'German-speaking guide'",
-   "group": "the set of MUTUALLY EXCLUSIVE alternatives this belongs to, e.g. 'Guide language' - or \"\" if
-     it is independently choosable alongside anything else, e.g. a lunch upgrade",
-   "adult_price": <the EXTRA per adult, on top of the base>, "children_price": <the EXTRA per child>,
-   "infant_price": <the EXTRA per infant, usually 0>}
-  GROUP IS LOAD-BEARING. Options sharing a group can never be booked together (a booking has ONE guide
-  language), so give every guide language the same group "Guide language". Give an independent add-on an
-  empty group. Getting this wrong produces a sellable "English AND German guide" product, or blocks a
-  genuinely valid combination.
-  CRITICAL - EXTRA, NOT TOTAL: if the base (English) adult price is 40 and the German-guide price is 50,
-  output adult_price: 10. The app adds the base itself. Outputting 50 would sell that modality at 90.
+  modality_supplements below for every priced extra, dated or not. Never populate this one.
+- modality_supplements: CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "extra costs within
+  tickets are supplement by dates. No need to distinguish that at the app. All Extra costs are Supplement
+  by dates and can also be named all in one like this." EVERY extra cost this ticket can carry goes here
+  now, whatever kind it is - a genuinely dated change (a seasonal price table, a holiday surcharge) AND a
+  priced CHOICE the customer picks (a foreign-language guide, a Seat-in-Coach/vehicle upgrade) are the SAME
+  mechanism, matching Travel Compositor's own Modality screen, which has exactly one "Supplements by dates"
+  box for all of it - there is no longer a separate extra_cost_options field or a second Modality for a
+  priced choice.
+  {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
+   "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
+     <the EXTRA per child>, "infant_price_supplement": <usually 0>,
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+  DATES ARE OPTIONAL for a supplement that isn't tied to a specific window (e.g. a foreign-language guide
+  that simply always costs more, whenever booked) - leave start_date/end_date empty in that case; the app
+  fills them in with the Modality's own whole validity window automatically, it does NOT need real dates
+  from you. Only give real dates when the source states a genuine date-restricted window (a season, a
+  holiday) - see the two HOW TO FILL rules below for those cases specifically.
+  CRITICAL - EXTRA, NOT TOTAL, for every entry: if the base (English guide) adult price is 40 and the
+  German-guide price is 50, output adult_price_supplement: 10, not 50. The app adds the base itself.
   CRITICAL - SEPARATE FULL PRICE TABLES: a very common real case is a document with a complete price table
   per guide language (an "English Speaking Guide" table, then a "German Speaking Guide" table with its own
   numbers). Take the FIRST/primary language's table as base_adult_price/base_children_price/
-  base_infant_price, then for every other language output the DIFFERENCE per passenger type here. If the
-  difference is not constant across the table (e.g. it varies by group size), still output your best single
-  figure AND explain the variation with real numbers in pricing_notes so a human can correct it.
+  base_infant_price, then for every OTHER language output the DIFFERENCE per passenger type as its own
+  entry here (undated, per the rule above). If the difference is not constant across the table (e.g. it
+  varies by group size), still output your best single figure AND explain the variation with real numbers
+  in pricing_notes.
   CONFIRMED PRODUCT-OWNER RULE - FLAT PER-GROUP LANGUAGE SURCHARGE (not per-person): some documents instead
   give ONE flat per-day surcharge for the whole group for a foreign-language guide (e.g. "French: $9",
   "German: $47" - a flat add-on, not a per-adult price). Converting a flat group charge into a per-person
   extra can never be exactly correct since it depends how many people are in the group, so orient the
   conversion around 2 PAX specifically (Momira's main target group booking size): output
-  adult_price = <the flat surcharge> / 2 for that language. Say in pricing_notes that this was approximated
-  from a flat per-group surcharge assuming 2 passengers, with the real flat amount, so a human can adjust
-  for a different group size if needed.
+  adult_price_supplement = <the flat surcharge> / 2. Say in pricing_notes that this was approximated from a
+  flat per-group surcharge assuming 2 passengers, with the real flat amount, so a human can adjust for a
+  different group size if needed.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
   CO2 offset contribution", "Carbon footprint compensation") - never add these here or anywhere else. This
   is a deliberate exclusion, not an oversight.
-  PEAK SEASON IS NOT AN EXTRA COST OPTION: a peak-season/holiday surcharge is a date-restricted price
-  change, not a product variant a customer chooses. Never put one here - put it in modality_supplements
-  below instead.
-  Empty list if the document prices no extras at all - never invent one.
-- modality_supplements: every DATED price change to THIS Modality that is NOT a customer choice - the same
-  experience simply costs more during a specific window. This is the confirmed mechanism for a seasonal
-  price table (the same excursion priced higher in a "High"/"Peak" season than in "Normal" season) and for
-  a holiday/peak-date surcharge (e.g. "Tet Holiday guide surcharges are subject to a 100% surcharge").
-  Genuinely different product variants (a foreign-language guide, a Seat-in-Coach option) are NEVER put
-  here - those stay in extra_cost_options above, unchanged.
-  {"name": "clear label, e.g. 'High Season' or 'Tet Holiday Surcharge'",
-   "adult_price_supplement": <the EXTRA per adult on top of base_adult_price during this window>,
-   "children_price_supplement": <the EXTRA per child>, "infant_price_supplement": <usually 0>,
-   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+  A language offered at the SAME price as the base - never an extra - is NOT a supplement at all; put it in
+  languages above instead (see the DUAL-LANGUAGE GUIDE RULE).
   HOW TO FILL THIS FROM A SEASONAL PRICE TABLE: take the LOWEST-priced season (usually "Normal"/"Low") as
   base_adult_price/base_children_price/base_infant_price above. For every OTHER season, output one entry
-  here per passenger type with that season's price MINUS the base price (the extra on top, not the total -
-  same rule as extra_cost_options). If a season is valid for SEVERAL separate non-contiguous date ranges
-  (common on these rate sheets - e.g. "2 Jan - 3 Feb", then "11 Feb - 15 Apr", then "2 May - 1 Sep", all at
-  the identical price), output ONE ENTRY PER DATE RANGE, all sharing that same price delta - never merge
-  them into one wide range, since the gaps between them belong to a DIFFERENT (cheaper or more expensive)
-  season and merging would sell the wrong price during those gaps.
+  here per passenger type with that season's price MINUS the base price (the extra on top, not the total),
+  WITH that season's real start_date/end_date. If a season is valid for SEVERAL separate non-contiguous
+  date ranges (common on these rate sheets - e.g. "2 Jan - 3 Feb", then "11 Feb - 15 Apr", then "2 May - 1
+  Sep", all at the identical price), output ONE ENTRY PER DATE RANGE, all sharing that same price delta -
+  never merge them into one wide range, since the gaps between them belong to a DIFFERENT (cheaper or more
+  expensive) season and merging would sell the wrong price during those gaps.
   HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if the surcharge is stated as a PERCENTAGE of another
-  amount (e.g. "100% surcharge" on a guide-language extra_cost_options entry, meaning the language extra
-  doubles during the holiday), compute the actual currency delta from that other amount and output it here
-  as its own entry with the holiday's own start_date/end_date (e.g. "5-9 February 2027" for Tet) - explain
-  the percentage-of-what calculation in pricing_notes so a human can verify it. If the holiday's dates are
-  not stated (e.g. "Public Holidays (to be advised at time of booking)"), do NOT invent dates - leave that
-  one out of modality_supplements entirely and describe it in pricing_notes instead, since an entry needs
-  both start_date and end_date to publish.
-  Empty list if the document shows no seasonal/dated price variation at all - never invent one.
+  amount (e.g. "100% surcharge" on a guide-language surcharge entry, meaning it doubles during the holiday),
+  compute the actual currency delta from that other amount and output it here as its own entry WITH the
+  holiday's own real start_date/end_date (e.g. "5-9 February 2027" for Tet) - explain the percentage-of-what
+  calculation in pricing_notes so a human can verify it. If the holiday's dates are genuinely not stated
+  (e.g. "Public Holidays (to be advised at time of booking)"), give it NO dates rather than inventing any -
+  per the rule above, an undated entry still publishes, covering the Modality's whole validity window,
+  which is the safer default when the real window is unknown.
+  Empty list if the document prices no extras/seasonal variation at all - never invent one.
 - occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used (this is
   separate from the default Distribution mode). If the source has a group-size-tiered price table
   (columns like "1", "2", "3-5", "6-8"), extract it here instead of forcing it into base_adult_price.
@@ -2603,9 +2596,9 @@ Extract:
 - pricing_notes: leave empty UNLESS something had to be approximated (e.g. a group-size-tiered price
   table forced onto adult/child/infant categories, pricing was genuinely absent from the source, a
   peak-season surcharge amount/date range had to be estimated or its dates were never stated, a
-  Seat-in-Coach price was found (see occupancy_prices above), or an alternative/on-request option needs
-  to become a separate Modality - see extra_cost_options rule above) - explain what, with real numbers
-  where available, so a human can review.
+  Seat-in-Coach price was found (see occupancy_prices above), or an alternative/on-request option was
+  approximated as a modality_supplements entry - see that field's rules above) - explain what, with real
+  numbers where available, so a human can review.
 - release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
   mentioned anywhere in the source (e.g. "must be booked at least 45 days before", "release period: 60
   days", "reservations required 30 days in advance"). DIFFERENT from a cancellation policy (e.g.
@@ -2642,7 +2635,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [],
-  "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "languages": ["EN"],
+  "modality_supplements": [], "pricing_notes": "", "languages": ["EN"],
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
 }"""
 
@@ -2738,7 +2731,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
-        "infant_taxes_amount": 0, "supplements": [], "extra_cost_options": [], "modality_supplements": [],
+        "infant_taxes_amount": 0, "supplements": [], "modality_supplements": [],
         "pricing_notes": "", "stop_sales": [], "image_urls": [], "languages": ["EN"],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
@@ -2938,7 +2931,8 @@ Extract:
   GUIDE LANGUAGE RULE: if a base/standard guide language is mentioned (usually English), make sure it's
   explicitly listed here (e.g. "English-speaking guide"). If OTHER languages are available on request
   (e.g. "German/French on request"), do NOT list them here - the separate Modality/Pricing step turns
-  each into its own Modality. DUAL-LANGUAGE GUIDE RULE: if the source lists TWO (or more) languages joined
+  each into its own modality_supplements entry (a priced extra on the same Modality, not a separate
+  Modality). DUAL-LANGUAGE GUIDE RULE: if the source lists TWO (or more) languages joined
   by "/" or "or" as EQUAL standard options (e.g. "licenced English/German-speaking guiding service"), that
   is NOT a base-language-plus-on-request-extra - keep the includes entry as the source states it. In this
   case the description ALSO MUST clearly state, in plain words, that the tour/transfer can run in EITHER
@@ -3172,52 +3166,47 @@ Extract:
   the same price." A list of ISO 639-1 two-letter UPPERCASE codes (e.g. ["EN"], or ["EN","DE"] when the
   source lists two or more languages as EQUAL standard options at the SAME price - e.g. "licenced English/
   German-speaking guiding service", "English or German speaking guide"). This is a DIFFERENT case from a
-  language that costs EXTRA - that one stays a separate extra_cost_options Modality below, group "Guide
-  language", and must NOT also be listed here. Default ["EN"] when only one language is stated or implied.
+  language that costs EXTRA - that one goes in modality_supplements below instead, and must NOT also be
+  listed here. Default ["EN"] when only one language is stated or implied.
   Common codes: EN English, DE German, FR French, ES Spanish, IT Italian, NL Dutch, PT Portuguese, RU
   Russian, PL Polish, CS Czech, SK Slovak, HU Hungarian, RO Romanian, SV Swedish, NO Norwegian, DA Danish,
   FI Finnish, EL Greek, TR Turkish, SL Slovenian. If a language is mentioned but doesn't match a code
   you're confident of, still include your best-guess code and name it in pricing_notes.
-- extra_cost_options: every EXTRA COST this same ticket can carry - the things that make the identical
-  experience cost more. Each one becomes its own Ticket Modality downstream, priced at the base price PLUS
-  this extra, so extract the EXTRA ON TOP, not the total.
-  {"name": "clear customer-facing label, e.g. 'German-speaking guide'",
-   "group": "the set of MUTUALLY EXCLUSIVE alternatives this belongs to, e.g. 'Guide language' - or \"\" if
-     it is independently choosable alongside anything else, e.g. a lunch upgrade",
-   "adult_price": <the EXTRA per adult, on top of the base>, "children_price": <the EXTRA per child>,
-   "infant_price": <the EXTRA per infant, usually 0>}
-  GROUP IS LOAD-BEARING. Options sharing a group can never be booked together (a booking has ONE guide
-  language), so give every guide language the same group "Guide language". Give an independent add-on an
-  empty group.
+- modality_supplements: CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "extra costs within tickets
+  are supplement by dates. No need to distinguish that at the app. All Extra costs are Supplement by dates."
+  EVERY extra cost this ticket can carry goes here now, whatever kind it is - a genuinely dated change (a
+  seasonal price table, a holiday surcharge) AND a priced CHOICE the customer picks (a foreign-language
+  guide, a Seat-in-Coach/vehicle upgrade) are the SAME mechanism, matching Travel Compositor's own single
+  "Supplements by dates" box.
+  {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
+   "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
+     <the EXTRA per child>, "infant_price_supplement": <usually 0>,
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+  DATES ARE OPTIONAL for a supplement that isn't tied to a specific window (e.g. a foreign-language guide
+  that simply always costs more) - leave start_date/end_date empty; the app fills them in with the
+  Modality's own whole validity window automatically. Only give real dates for a genuine date-restricted
+  window (a season, a holiday).
   CRITICAL - EXTRA, NOT TOTAL: if the base (English) adult price is 40 and the German-guide price is 50,
-  output adult_price: 10. The app adds the base itself.
+  output adult_price_supplement: 10. The app adds the base itself.
   CRITICAL - SEPARATE FULL PRICE TABLES: a very common real case is a document with a complete price table
   per guide language. Take the FIRST/primary language's table as base_adult_price/base_children_price/
-  base_infant_price, then for every other language output the DIFFERENCE per passenger type here.
+  base_infant_price, then for every other language output the DIFFERENCE per passenger type here (undated).
   CONFIRMED PRODUCT-OWNER RULE - FLAT PER-GROUP LANGUAGE SURCHARGE (not per-person): some documents instead
   give ONE flat per-day surcharge for the whole group for a foreign-language guide (e.g. "German: $47" - a
   flat add-on, not a per-adult price). Orient the conversion around 2 PAX specifically: output
-  adult_price = <the flat surcharge> / 2 for that language, and say so in pricing_notes.
+  adult_price_supplement = <the flat surcharge> / 2 for that language, and say so in pricing_notes.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely.
-  PEAK SEASON IS NOT AN EXTRA COST OPTION: a peak-season/holiday surcharge is a date-restricted price
-  change, not a product variant a customer chooses. Put it in modality_supplements below instead.
-  Empty list if the document prices no extras at all - never invent one.
-- modality_supplements: every DATED price change to THIS Modality that is NOT a customer choice - the same
-  experience simply costs more during a specific window (a seasonal price table, a holiday surcharge).
-  Genuinely different product variants are NEVER put here - those stay in extra_cost_options above.
-  {"name": "clear label, e.g. 'High Season' or 'Tet Holiday Surcharge'",
-   "adult_price_supplement": <the EXTRA per adult on top of base_adult_price during this window>,
-   "children_price_supplement": <the EXTRA per child>, "infant_price_supplement": <usually 0>,
-   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+  A language offered at the SAME price as the base is NOT a supplement - put it in languages above instead.
   HOW TO FILL THIS FROM A SEASONAL PRICE TABLE: take the LOWEST-priced season as base_adult_price/
   base_children_price/base_infant_price above. For every OTHER season, output one entry here per
-  passenger type with that season's price MINUS the base price. If a season is valid for SEVERAL separate
-  non-contiguous date ranges, output ONE ENTRY PER DATE RANGE, all sharing that same price delta.
+  passenger type with that season's price MINUS the base price, WITH that season's real dates. If a season
+  is valid for SEVERAL separate non-contiguous date ranges, output ONE ENTRY PER DATE RANGE, all sharing
+  that same price delta.
   HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if stated as a PERCENTAGE, compute the actual
   currency delta and output it here with the holiday's own dates - explain the calculation in
-  pricing_notes. If the holiday's dates are not stated, do NOT invent dates - leave it out and describe it
-  in pricing_notes instead.
-  Empty list if the document shows no seasonal/dated price variation at all - never invent one.
+  pricing_notes. If the holiday's dates are not stated, give it NO dates rather than inventing any - an
+  undated entry still publishes, covering the Modality's whole validity window.
+  Empty list if the document prices no extras/seasonal variation at all - never invent one.
 - occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used. If the
   source has a group-size-tiered price table (columns like "1", "2", "3-5", "6-8"), extract it here
   instead of forcing it into base_adult_price. Each entry is {"occupancy": exact integer headcount,
@@ -3241,7 +3230,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
-  "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
+  "modality_supplements": [], "pricing_notes": "",
   "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": []
 }"""
 
@@ -3282,7 +3271,7 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
-        "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
+        "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         "supplements": [],
     }
@@ -3303,8 +3292,8 @@ one created as its OWN Modality with its own dedicated extraction pass, rather t
 trying to average or approximate across all of them at once.
 
 Only count it as multiple Modalities if they are genuinely separate, fully-priced categories - not just a
-single price table with a few optional extras or a seasonal surcharge (those stay as extra_cost_options /
-modality_supplements on ONE Modality, handled elsewhere).
+single price table with a few optional extras or a seasonal surcharge (those stay as modality_supplements
+on ONE Modality, handled elsewhere).
 
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself. NEVER
@@ -3402,16 +3391,17 @@ when just adding/updating a modality). The source is often just a pricing table 
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days, time_tables,
-modality_supplements (DATED price changes only - a seasonal price table or a holiday surcharge, NOT a
-customer choice - see full prompt's rules on this: each entry is {"name", "adult_price_supplement",
-"children_price_supplement", "infant_price_supplement", "start_date", "end_date"}, both dates required),
+modality_supplements (EVERY priced extra this Modality can carry - a genuinely dated change like a
+seasonal price table or holiday surcharge, AND a priced choice like a foreign-language guide or a
+Seat-in-Coach upgrade, are the SAME mechanism now: each entry is {"name", "adult_price_supplement",
+"children_price_supplement", "infant_price_supplement", "start_date", "end_date"} - dates are OPTIONAL for
+an entry that isn't tied to a specific window; leave them blank and the app defaults them to this
+Modality's own start_date/end_date, only give real dates for a genuine date-restricted window),
 languages (list of ISO 639-1 two-letter UPPERCASE codes this Modality runs in AT THE SAME PRICE, e.g.
 ["EN"], or ["EN","DE"] when the source lists two or more languages as EQUAL standard options at the same
 price - "licenced English/German-speaking guiding service" - default ["EN"]; a language that costs EXTRA
-is NOT a language option here, it stays its own Modality via extra_cost_options), pricing_notes. Never
-exclusive alternatives, different guide languages, or on-request items here - those belong in
-extra_cost_options as their own Modality, and NEVER voluntary carbon offset/emission compensation
-charges, ignore those entirely.
+is NOT a language option here, it goes in modality_supplements instead), pricing_notes. NEVER voluntary
+carbon offset/emission compensation charges, ignore those entirely.
 
 CRITICAL - NEVER include an instruction telling the customer to contact the operator/supplier directly
 (e.g. "contact the operator 48h before to confirm pick-up time") anywhere, including pricing_notes -
@@ -3436,7 +3426,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
   "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
-  "time_tables": [], "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
+  "time_tables": [], "supplements": [], "modality_supplements": [], "pricing_notes": "",
   "languages": ["EN"]
 }"""
 
@@ -3454,7 +3444,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "time_tables": [], "languages": ["EN"],
-        "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
+        "supplements": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",

@@ -443,38 +443,42 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
 def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
     """
     Friendly Name/Start/End/Adult/Child/Infant table for a Ticket Modality's
-    modality_supplements (ContractTicketModalityVO.supplements - a DATED
-    price change to this specific Modality, e.g. a High Season price row or
-    a Tet Holiday guide surcharge).
+    modality_supplements (ContractTicketModalityVO.supplements).
 
     CORRECTED 2026-08-12 (product owner): "Main Ticket information has no
     supplement, Modality of a Ticket has their own supplement." An earlier
     version of this app treated Tickets as having no supplements at all -
-    that was too broad. A genuinely different product a customer CHOOSES
-    (a foreign-language guide, a Seat-in-Coach option) still becomes its own
-    Modality via Extra Costs above, unchanged - this editor is only for a
-    dated price bump on THIS Modality, never a product choice.
+    that was too broad.
 
-    Each row needs both a Start and End Date (TicketSupplementVO has no
-    undated fallback) - a row missing either is silently dropped rather than
-    published, since an undated Ticket supplement can't be told apart from a
-    permanent price rise.
+    CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "extra costs within tickets are
+    supplement by dates. No need to distinguish that at the app. All Extra costs are Supplement
+    by dates and can also be named all in one like this." Reverses the 2026-08-12/13 split that
+    sent a priced CHOICE (a foreign-language guide, a Seat-in-Coach option) to its own separate
+    Modality (the old "Extra Costs" section, now retired) while only a genuinely dated change
+    came here - Travel Compositor's own Modality screen has exactly ONE box for any of this
+    ("Supplements by dates"), so this is now the ONE place for every priced extra on a Modality,
+    whatever kind it is.
 
-    CONFIRMED REAL REQUEST (product owner, 2026-08-24): "we should also call it 'Supplement by
-    date' within the tickets, so the human knows where it goes." Renamed to match Travel
-    Compositor's own Modality screen exactly - it has a "Supplements by dates" box right under
-    the pricing table (same Name/From/To/Adult/Child/Infant columns) - so what the operator
-    sees here and what they'd see if they opened the record in Travel Compositor afterward are
-    now the same words, not two different names for the same thing.
+    CONFIRMED REAL RULE, same message: "Make sure, that supplements can be adjusted by dates
+    within the modality time." A row left with no Start/End no longer vanishes silently - it's
+    filled in with THIS Modality's own validity window (so an always-on extra like a guide
+    surcharge still publishes, just as "on for the Modality's whole life" rather than undated).
+    A row whose own dates reach outside that window gets clipped into it, since a supplement
+    can't be live when its own Modality isn't - see build_ticket_supplement_vos in builder.py,
+    which applies the exact same default-and-clip as a second safety net at build time.
     """
-    with st.expander(f"Supplements by dates ({len(data.get('modality_supplements') or [])} dated price change(s))"):
+    modality_start = (data.get("start_date") or "").strip()
+    modality_end = (data.get("end_date") or "").strip()
+    with st.expander(f"Supplements by dates ({len(data.get('modality_supplements') or [])} priced extra(s))"):
         if help_text:
             st.caption(help_text)
-        st.caption("Each row adds an EXTRA amount on top of this Modality's base price during that date "
-                  "range only - e.g. a High Season row, or a holiday guide surcharge. For a genuinely "
-                  "different product a customer chooses between (another guide language, Seat-in-Coach), "
-                  "use Extra Costs above instead - this is only for the same product costing more on "
-                  "certain dates.")
+        st.caption("Every priced extra on this Modality goes here as its own row - a High Season "
+                  "row, a holiday guide surcharge, a foreign-language guide that costs more, a "
+                  "vehicle/service upgrade - all the same mechanism, matching Travel Compositor's "
+                  "own \"Supplements by dates\" box. Leave Start/End blank to apply a row for this "
+                  "Modality's WHOLE validity window (its own Valid From/Until above) - only fill "
+                  "them in when the extra genuinely applies for a narrower date range, like a "
+                  "single holiday period.")
         supp_rows = [
             {"Name": s.get("name", ""), "Start Date": _disp(s.get("start_date", "")), "End Date": _disp(s.get("end_date", "")),
              "Adult Extra": s.get("adult_price_supplement", 0), "Child Extra": s.get("children_price_supplement", 0),
@@ -484,12 +488,20 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
         supp_df = pd.DataFrame(supp_rows) if supp_rows else pd.DataFrame(
             columns=["Name", "Start Date", "End Date", "Adult Extra", "Child Extra", "Infant Extra"])
 
-        def _save_modality_supplements(edited_df, data=data):
+        def _save_modality_supplements(edited_df, data=data, modality_start=modality_start, modality_end=modality_end):
             new_supplements = []
             for _, row in edited_df.iterrows():
-                start = _iso(_safe_cell_str(row.get("Start Date")))
-                end = _iso(_safe_cell_str(row.get("End Date")))
+                start = _iso(_safe_cell_str(row.get("Start Date"))) or modality_start
+                end = _iso(_safe_cell_str(row.get("End Date"))) or modality_end
+                # Clip into the Modality's own window - a supplement can never outlive (or
+                # pre-date) the Modality it's attached to.
+                if modality_start and start and start < modality_start:
+                    start = modality_start
+                if modality_end and end and end > modality_end:
+                    end = modality_end
                 if not start or not end:
+                    # Only reachable when the Modality's OWN dates aren't set yet either -
+                    # nothing to default to, so this row genuinely can't be saved yet.
                     continue
                 new_supplements.append({
                     "name": _safe_cell_str(row.get("Name")).strip() or "Seasonal surcharge",
@@ -500,7 +512,7 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
                 })
             data["modality_supplements"] = new_supplements
 
-        editable_table("Dated price changes", supp_df, f"{key_prefix}_modality_supplements", on_save=_save_modality_supplements)
+        editable_table("Supplements by dates", supp_df, f"{key_prefix}_modality_supplements", on_save=_save_modality_supplements)
 
 
 def render_cancellation_policy_editor(data, key_prefix, help_text=None):

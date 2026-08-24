@@ -891,7 +891,8 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     return supplements_list
 
 
-def build_ticket_supplement_vos(supplements: List[Dict[str, Any]]) -> List[TicketSupplementVO]:
+def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_start: str = "",
+                                 modality_end: str = "") -> List[TicketSupplementVO]:
     """
     Converts the app's internal flat Ticket-Modality supplement dicts (name/
     adult_price_supplement/children_price_supplement/infant_price_supplement/
@@ -901,23 +902,38 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]]) -> List[Ticke
     treated Tickets as having no supplements at all - wrong. The main Ticket
     record has none, but ContractTicketModalityVO DOES carry its own
     `supplements: List[TicketSupplementVO]`, confirmed against the real
-    schema. This is the mechanism for a DATED price change that is not a
-    customer choice - a seasonal price table where the same excursion costs
-    more in high season, or a holiday/peak-date surcharge (e.g. a Tet Holiday
-    guide-language surcharge) - as opposed to a genuinely different product
-    variant (a foreign-language guide, a Seat-in-Coach option), which still
-    becomes its own Modality via the existing extra-costs mechanism, unchanged.
+    schema.
 
-    Every entry requires startDate/endDate (TicketSupplementVO has no
-    optional-date fallback like ClosedTour's SupplementVO) - an entry with
-    either date missing is skipped rather than published with an empty/
-    always-on date, since an undated Ticket supplement can't be told apart
-    from a permanent price increase.
+    CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "extra costs within tickets are
+    supplement by dates. No need to distinguish that at the app. All Extra costs are Supplement
+    by dates." Reverses the 2026-08-12/13 split that sent a priced CHOICE (a foreign-language
+    guide, a Seat-in-Coach option) to its own separate Modality while only a genuinely dated
+    change (a seasonal table, a holiday surcharge) came here - Travel Compositor's own Ticket
+    Modality screen has exactly ONE mechanism for any of this ("Supplements by dates"), so the
+    app no longer invents a second one. Every priced extra is a supplement now.
+
+    CONFIRMED REAL RULE, same message: "Make sure, that supplements can be adjusted by dates
+    within the modality time." TicketSupplementVO has no optional-date fallback - every entry
+    needs a real startDate/endDate - so rather than silently DROPPING a row that has no dates of
+    its own (the common case for something like a guide-language surcharge that simply always
+    applies), it now defaults to the Modality's OWN start_date/end_date, and any row's dates that
+    reach outside that window get clipped INTO it - a supplement can never be "live" when its own
+    Modality isn't. modality_start/modality_end are the resolved values already used to build
+    this same Modality's startDate/endDate (see build_ticket_payloads), so the two can never
+    silently disagree.
     """
+    m_start = (modality_start or "").strip()
+    m_end = (modality_end or "").strip()
     supplements_list = []
     for s in (supplements or []):
-        start = (s.get("start_date") or "").strip()
-        end = (s.get("end_date") or "").strip()
+        start = (s.get("start_date") or "").strip() or m_start
+        end = (s.get("end_date") or "").strip() or m_end
+        # Clip into the Modality's own window rather than publish a supplement that claims to
+        # be live before the Modality starts or after it ends.
+        if m_start and start < m_start:
+            start = m_start
+        if m_end and end > m_end:
+            end = m_end
         if not start or not end:
             continue
         supplements_list.append(TicketSupplementVO(
@@ -1610,12 +1626,20 @@ def build_ticket_payloads(
         # of a Ticket has their own supplement." An earlier version of this code treated Tickets as
         # having NO supplements at all, which was too broad - the main Ticket record has none, but
         # each Modality (ContractTicketModalityVO) has its own dated supplements list, confirmed
-        # against the real schema. A genuinely different product variant (a foreign-language guide,
-        # a Seat-in-Coach option) still becomes its own Modality via
-        # build_ticket_modality_combinations() - that part is unchanged. This field is for a DATED
-        # price change that is not a customer choice - a seasonal price table or a holiday surcharge -
-        # see build_ticket_supplement_vos()'s docstring.
-        supplements_list = build_ticket_supplement_vos(extracted_ticket_data.get("modality_supplements"))
+        # against the real schema.
+        #
+        # CONFIRMED REAL CORRECTION (product owner, 2026-08-24): "All Extra costs are Supplement by
+        # dates." - a priced CHOICE (a foreign-language guide, a Seat-in-Coach option) is no longer
+        # split off into its own Modality via build_ticket_modality_combinations(); it's a supplement
+        # on THIS Modality like everything else, see build_ticket_supplement_vos()'s docstring. The
+        # resolved start/end computed here are this Modality's own eventual startDate/endDate (same
+        # values used to build ticket_option below) - passed through so an undated supplement
+        # defaults to the Modality's own window instead of being dropped, and a supplement whose own
+        # dates reach outside that window gets clipped into it.
+        _modality_start = start_date_or_today(extracted_ticket_data.get("start_date"))
+        _modality_end = extracted_ticket_data.get("end_date") or ""
+        supplements_list = build_ticket_supplement_vos(
+            extracted_ticket_data.get("modality_supplements"), _modality_start, _modality_end)
 
         # The OLD "supplements" key is legacy - anything still sitting there (an older saved draft,
         # or a model that ignored the prompt and used the wrong field) is deliberately DROPPED rather
@@ -1817,8 +1841,8 @@ def build_ticket_payloads(
             onRequest=pre_config.on_request,
             disallowInfant=bool(extracted_ticket_data.get("disallow_infant", False)),
             disallowAdult=bool(extracted_ticket_data.get("disallow_adult", False)),
-            startDate=start_date_or_today(extracted_ticket_data.get("start_date")),
-            endDate=extracted_ticket_data.get("end_date") or "",
+            startDate=_modality_start,
+            endDate=_modality_end,
             baseAdultPrice=base_adult_price,
             baseChildrenPrice=base_children_price,
             baseInfantPrice=base_infant_price,
