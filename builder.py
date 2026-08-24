@@ -466,6 +466,27 @@ def _with_manual_notes(voucher_text, extracted_data):
     return f"{voucher_text}\n\n{note}".strip() if voucher_text else note
 
 
+def _with_what_to_bring(voucher_text, extracted_data):
+    """Appends the document's own "what to bring"/packing list to whatever voucher text was
+    already built.
+
+    CONFIRMED REAL RULE (product owner, 2026-08-24): "If the document or the URL states
+    something like: Please remember to bring: Passports, Sun Cream, pocket-torch, Tissue, Hat -
+    we should also mention this at the voucher remarks, as this information is great information
+    for the customer." Same rollout pattern as _cancellation_voucher_text - a single shared
+    helper used by every product builder (ClosedTour/Ticket/Transfer/Transport/Hotel) so it can't
+    be added to some products and forgotten on others.
+
+    APPENDED, never substituted: this is additional customer-facing information, not a
+    correction to the cancellation text. Placed AFTER the cancellation text but BEFORE manual
+    notes (manual notes stay last - see _with_manual_notes' own docstring for why)."""
+    items = ((extracted_data or {}).get("what_to_bring") or "").strip()
+    if not items:
+        return voucher_text
+    block = f"What to bring:\n{items}"
+    return f"{voucher_text}\n\n{block}".strip() if voucher_text else block
+
+
 _PRICE_COLUMN_ALIASES = {
     "singleprice": "singlePrice", "single": "singlePrice", "sgl": "singlePrice",
     "doubleprice": "doublePrice", "double": "doublePrice", "dbl": "doublePrice",
@@ -1327,7 +1348,9 @@ def build_closed_tour_payloads(
             description=extracted_dmc_data.get("description") or "",
             hotels=extracted_dmc_data.get("hotels_text") or "",
             voucherRemarks=_with_manual_notes(
-                _cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+                _with_what_to_bring(
+                    _cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+                    extracted_dmc_data),
                 extracted_dmc_data),
             included=extracted_dmc_data.get("included") or "",
             excluded=extracted_dmc_data.get("excluded") or "",
@@ -1593,9 +1616,11 @@ def build_ticket_payloads(
         # _cancellation_voucher_text()'s docstring. `voucher_remarks` (a broader, human-
         # editable field, not cancellation-specific) still wins if a human explicitly set it.
         ticket_cancellation_voucher_text = _with_manual_notes(
-            _cancellation_voucher_text(
-                extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
-            ),
+            _with_what_to_bring(
+                _cancellation_voucher_text(
+                    extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
+                ),
+                extracted_ticket_data),
             extracted_ticket_data,
         )
 
@@ -2002,7 +2027,9 @@ def build_transfer_payload(
         # text from the tiers themselves in that case, instead of dropping it.
         cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transfer_data.get("cancellation_policy_tiers"))
         voucher_text = _with_manual_notes(
-            _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers),
+            _with_what_to_bring(
+                _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers),
+                extracted_transfer_data),
             extracted_transfer_data)
         # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
         # auto-applied to price (e.g. a harbor-only pickup fee on a route that also serves
@@ -2245,9 +2272,27 @@ def start_date_or_today(stated):
 
     Filled here rather than by the AI so it cannot be invented: a hallucinated start date in
     the future makes a product silently unbookable until it arrives, and one in the past is
-    equally invisible in a different way. Today is a fact this code has."""
+    equally invisible in a different way. Today is a fact this code has.
+
+    CONFIRMED REAL BUG (product owner, 2026-08-24): "A starting date of a new created ClosedTour,
+    Ticket or Hotel can be earliest the actual day today. Somehow the starting date is always
+    shown from 2025... this can't be" - a document's OWN stated start date used to pass straight
+    through even when it was in the past (e.g. an old rate sheet literally saying "valid from
+    01.01.2025"). This single Valid From field represents when the PRODUCT ITSELF becomes
+    bookable, being created fresh today - it can never make sense to publish something as valid
+    starting on a date that has already passed, no matter what the document says, so a stated
+    past date is now floored to today exactly like a genuinely missing one already was.
+    CONFIRMED SCOPE: this floor is for Ticket/Transfer/Transport's single Valid From field only -
+    Closed Tour/Hotel's seasonal price_list rows are deliberately NOT touched by this function
+    (see ContractHotelSeasonVO's own "real season validity... NOT a fixed far-future default"
+    rule) - a document listing several consecutive seasons, some already past, extracts correctly
+    that way, and an already-expired season row is harmless since no future booking can ever
+    match its date range anyway."""
     stated = to_iso_date((stated or "").strip())
-    return stated or datetime.date.today().isoformat()
+    today = datetime.date.today().isoformat()
+    if not stated or stated < today:
+        return today
+    return stated
 
 
 def round_duration_up_to_hour(duration_time):
@@ -2694,7 +2739,9 @@ def build_transport_payloads(
         if cancellation_tiers else [ContractTransportCancellationRangeVO()]
     )
     voucher_text = _with_manual_notes(
-        _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers),
+        _with_what_to_bring(
+            _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers),
+            extracted_transport_data),
         extracted_transport_data)
 
     # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
@@ -3242,9 +3289,12 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     # ---- Cancellation text + manual notes -> voucherRemarks only (CONFIRMED: no structured
     # cancellation field exists on Hotel) ----
     voucher_text = _with_manual_notes(
-        _cancellation_voucher_text(
-            extracted.get("cancellation_policy_text"),
-            extracted.get("cancellation_policy_tiers"),
+        _with_what_to_bring(
+            _cancellation_voucher_text(
+                extracted.get("cancellation_policy_text"),
+                extracted.get("cancellation_policy_tiers"),
+            ),
+            extracted,
         ),
         extracted,
     )

@@ -91,6 +91,9 @@ from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
 from date_format import to_iso_date as _iso, to_display_date as _disp, DISPLAY_HINT as _DATE_HINT
+# Widget-key generations - the defence against a widget showing a PREVIOUSLY-reviewed item's
+# value. See widget_state.py's module docstring for the bug class and why it replaces sweeping.
+import widget_state
 from builder import (build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
@@ -790,6 +793,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint)
                     )
                     tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
+                    reset_child_age_band_widgets("mct_main")
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract tour details: {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key="mct_retry_main"):
@@ -831,6 +835,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("Excluded", data, "excluded", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
         editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=80, key_suffix="_main")
+        # CONFIRMED HOUSE RULE (product owner, 2026-08-24): a document's "Please remember to bring"
+        # list is great customer-facing info - it's appended to the voucher remarks at build time
+        # (see builder._with_what_to_bring), and editable here so a human can correct/add to it.
+        editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
+                       widget="text_area", height=80, key_suffix="_main")
         render_cancellation_policy_editor(data, "mct_main")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
@@ -1907,6 +1916,90 @@ def reset_stale_editable_field_widgets(changed_fields, key_suffix=""):
     for field_name in changed_fields:
         st.session_state[f"_editing_{field_name}{key_suffix}"] = False
         st.session_state.pop(f"_widgetval_{field_name}{key_suffix}", None)
+
+
+def new_widget_token():
+    """A token no widget key in this session has used before - see widget_state.py's module
+    docstring for the bug class this exists to close and why it replaces prefix-sweeping.
+    Use bump_widget_generation()/widget_generation() for a whole flow (a fresh extraction), or
+    call this directly to stamp one item that gets rebuilt on its own (the price-refresh
+    re-read)."""
+    return widget_state.new_token(st.session_state)
+
+
+def bump_widget_generation(flow):
+    """Start a new widget generation for `flow` - call wherever the flow REPLACES the data behind
+    its review screen (a fresh extraction, a re-extraction, prefilling from the live record,
+    starting a new batch), never on an ordinary rerun. See widget_state.bump()."""
+    return widget_state.bump(st.session_state, flow)
+
+
+def widget_generation(flow):
+    """`flow`'s current widget generation, for building key prefixes, e.g.
+    key_prefix=f"tk_{widget_generation('tk')}". See widget_state.generation()."""
+    return widget_state.generation(st.session_state, flow)
+
+
+def _tk_clear_geo_confirmation():
+    """Un-confirms the legacy Ticket flow's "I've checked this location" box, for real.
+
+    CONFIRMED REAL BUG (audit, 2026-08-24): seven places set st.session_state.tk_geo_confirmed =
+    False - a new ticket, a re-extraction, and (most importantly) the human CHANGING the
+    coordinates. All seven reset the control flag only. The checkbox's own session_state entry
+    survived, so on the very next render the checkbox re-asserted True and overwrote the flag.
+    A human could change the city and the "✅ I've checked this location on the map" tick would
+    stay on, having verified the PREVIOUS coordinates. That tick is the only thing standing
+    between a wrong location and a published ticket, so it must be cleared, not just the flag."""
+    st.session_state.tk_geo_confirmed = False
+    st.session_state.pop(flow_widget_key("tk", "geo_confirm_checkbox"), None)
+
+
+def flow_widget_key(flow, name):
+    """A widget key scoped to `flow`'s current widget generation. Use it for BOTH the widget's own
+    `key=` and every other reference to that key by name (some AI-clarify handlers pop widget keys
+    deliberately) - see widget_state.key_for()."""
+    return widget_state.key_for(st.session_state, flow, name)
+
+
+def _stamp_proposal_widget_tokens(proposals):
+    """Gives every price-refresh proposal a fresh widget token (see new_widget_token()).
+
+    CONFIRMED REAL BUG (audit, 2026-08-24) - this one publishes wrong prices to LIVE products,
+    two ways in, both fixed by the token:
+      1. "Re-read this route": the AI returns a corrected price and the proposal is replaced in
+         place, but the price box was keyed f"pr_price_{index}_{code}" - unchanged by the rebuild,
+         so it kept showing the OLD number and wrote it straight back into c["new"]. The human
+         asks the AI to re-read, sees the old price, and publishes it. The red/green "matches the
+         live price" hint compares the same stale value, so it renders green and confirms it.
+      2. A SECOND refresh run in the same session: "Start again" clears pr_proposals/pr_routes/
+         pr_raw_text/pr_result but nothing keyed pr_price_*/pr_ok_*, and p["index"] restarts at 0
+         - so run 2's first route showed run 1's first route's price, already ticked as accepted.
+    A token stamped when the proposal is BUILT changes in both cases (rebuild and fresh run) and
+    only in those cases, so a price a human typed during the current review is still preserved."""
+    for p in (proposals or {}).values() if isinstance(proposals, dict) else (proposals or []):
+        if isinstance(p, dict):
+            p["widget_token"] = new_widget_token()
+    return proposals
+
+
+def reset_child_age_band_widgets(key_prefix):
+    """CONFIRMED REAL BUG (product owner, 2026-08-24): "the child age is not really working for
+    ClosedTours, it always gives me the default age from 2 to 12, even though the document and
+    the AI reader reads it correctly." Same widget-staleness trap as
+    reset_stale_editable_field_widgets above, just never covered for render_child_age_band's two
+    st.number_input widgets: they render with a FIXED key ("{key_prefix}_min_child_age" /
+    "{key_prefix}_max_child_age") that has nothing to do with which tour/ticket is currently being
+    reviewed. Streamlit ignores a widget's `value=` argument once session_state already holds an
+    entry for that key - so after reviewing one tour, every SUBSequent tour reviewed on the same
+    screen kept showing the FIRST tour's min/max child age (usually the 2/12 default), no matter
+    what the freshly-extracted `data` dict actually said, and immediately wrote that stale number
+    straight back into `data` since render_child_age_band assigns data[key] = widget value.
+
+    Call this right after a fresh extraction replaces `data` (or `data.update(...)` folds in new
+    modality data carrying its own child_age fields), before render_child_age_band renders again
+    for that same key_prefix, so the freshly extracted band is what actually shows."""
+    st.session_state.pop(f"{key_prefix}_min_child_age", None)
+    st.session_state.pop(f"{key_prefix}_max_child_age", None)
 
 
 def apply_clarify_changes(data, result, currency="EUR"):
@@ -3627,6 +3720,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             render_cancellation_policy_editor(data, f"mt_{idx}")
             editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
             editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
+            # CONFIRMED HOUSE RULE (product owner, 2026-08-24): appended to the voucher remarks at
+            # build time - see builder._with_what_to_bring.
+            editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
+                           widget="text_area", height=80, key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
             # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
             # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
@@ -3810,6 +3907,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
                     data.update(modality_data)
+                    reset_child_age_band_widgets(f"mt_{idx}")
                 # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
                 # ONE Modality. If the document describes other pricing categories for this same
                 # excursion (e.g. a second price table for another guide language), do NOT
@@ -4304,6 +4402,12 @@ def render_ticket_flow(client):
                         # is extracted - see _map_fetched_ticket_to_data()'s docstring.
                         if action == "update_ticket":
                             st.session_state.tk_extracted = _map_fetched_ticket_to_data(fetched)
+                            # Prefilling from the LIVE record replaces the review data just as an
+                            # extraction does - so it needs the same fresh widget generation, or
+                            # every widget still shows the previously-reviewed ticket's values and
+                            # writes them onto this live ticket. (This path was the hole left by
+                            # the first child-age fix, which only covered the extraction paths.)
+                            bump_widget_generation("tk")
                             st.session_state.tk_raw_preview = (
                                 f"(No new document/URL provided - these fields were pre-filled from "
                                 f"the ticket's CURRENT live data on Travel Compositor, code "
@@ -4312,7 +4416,7 @@ def render_ticket_flow(client):
                                 f"blanked out by an incomplete new extraction.)"
                             )
                             st.session_state.tk_payloads = None
-                            st.session_state.tk_geo_confirmed = False
+                            _tk_clear_geo_confirmation()
                             st.session_state.tk_doc_raw_images = []
                             st.session_state.tk_hosted_image_candidates = []
 
@@ -4478,9 +4582,10 @@ def render_ticket_flow(client):
                 if tk_is_option_only:
                     data = extract_ticket_option_only_data(raw_text, human_hint=tk_hint or None)
                     st.session_state.tk_extracted = data
+                    bump_widget_generation("tk")
                     st.session_state.tk_raw_preview = raw_text
                     st.session_state.tk_payloads = None
-                    st.session_state.tk_geo_confirmed = False
+                    _tk_clear_geo_confirmation()
                     st.session_state.tk_doc_raw_images = doc_raw_images
                     st.success("Extraction complete. Review and edit below.")
                 else:
@@ -4500,9 +4605,13 @@ def render_ticket_flow(client):
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
                         st.session_state.tk_extracted = data
+                        # Supersedes the earlier reset_child_age_band_widgets("tk") call: a fresh
+                        # generation re-keys EVERY tk widget built through widget_generation(),
+                        # not just the two child-age boxes.
+                        bump_widget_generation("tk")
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
-                        st.session_state.tk_geo_confirmed = False
+                        _tk_clear_geo_confirmation()
                         _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
                         st.session_state.tk_doc_raw_images = doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
@@ -4557,9 +4666,10 @@ def render_ticket_flow(client):
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
 
                         st.session_state.tk_extracted = data
+                        bump_widget_generation("tk")  # see the sibling extraction path above
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
                         st.session_state.tk_payloads = None
-                        st.session_state.tk_geo_confirmed = False
+                        _tk_clear_geo_confirmation()
                         pending_doc_raw_images = list(st.session_state.get("tk_pending_doc_raw_images", []))
                         pending_doc_image_urls = list(st.session_state.get("tk_pending_doc_images", []))
                         _add_page_images_to_doc_pool(tk_pending_url, pending_doc_raw_images, pending_doc_image_urls)
@@ -4645,6 +4755,9 @@ def render_ticket_flow(client):
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
                 editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80)
+                # CONFIRMED HOUSE RULE (product owner, 2026-08-24) - see builder._with_what_to_bring.
+                editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
+                               widget="text_area", height=80)
                 # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): Manual Notes removed here too, same
                 # reasoning as the batch flow above - every field is directly editable now.
 
@@ -4660,7 +4773,7 @@ def render_ticket_flow(client):
 
                 # CONFIRMED FIX (2026-08-19 audit): same "0 is falsy" trap as the batch Ticket
                 # screen above - now routed through the shared helper instead of a local copy.
-                render_child_age_band(data, key_prefix="tk",
+                render_child_age_band(data, key_prefix=f"tk_{widget_generation('tk')}",
                                       min_key="child_age_min", max_key="child_age_max")
 
                 # Engines (Search Engines to Sell through): always ALL of them - this was
@@ -4679,12 +4792,12 @@ def render_ticket_flow(client):
                 inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_includes(edf, data=data):
                     data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
-                editable_table("Includes", inc_df, "tk_includes", on_save=_save_tk_includes)
+                editable_table("Includes", inc_df, flow_widget_key("tk", "includes"), on_save=_save_tk_includes)
 
                 exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
                 def _save_tk_excludes(edf, data=data):
                     data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
-                editable_table("Excludes", exc_df, "tk_excludes", on_save=_save_tk_excludes)
+                editable_table("Excludes", exc_df, flow_widget_key("tk", "excludes"), on_save=_save_tk_excludes)
 
                 mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
                 mp_df = pd.DataFrame(mp_default)
@@ -4694,15 +4807,21 @@ def render_ticket_flow(client):
                          "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
                         for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
                     ]
-                editable_table("Meeting Points", mp_df, "tk_meeting_points", on_save=_save_tk_mp)
+                editable_table("Meeting Points", mp_df, flow_widget_key("tk", "meeting_points"), on_save=_save_tk_mp)
 
-                if "tk_images_text_value" not in st.session_state:
-                    st.session_state.tk_images_text_value = "\n".join(data.get("image_urls", []))
+                # CONFIRMED REAL BUG (audit, 2026-08-24): this key was a bare literal, so it
+                # survived every re-extraction - ticket #2 published ticket #1's photos. (The
+                # legacy ClosedTour flow always cleared its equivalent field explicitly; Ticket
+                # never did.) Generation-scoped now, so a fresh extraction re-seeds it from the
+                # new data. All three references below must use the SAME expression.
+                _tk_images_key = flow_widget_key("tk", "images_text_value")
+                if _tk_images_key not in st.session_state:
+                    st.session_state[_tk_images_key] = "\n".join(data.get("image_urls", []))
                 if st.session_state.get("_tk_pending_images_update") is not None:
-                    st.session_state.tk_images_text_value = st.session_state._tk_pending_images_update
+                    st.session_state[_tk_images_key] = st.session_state._tk_pending_images_update
                     st.session_state._tk_pending_images_update = None
 
-                images_text = st.text_area("Image URLs (one per line)", key="tk_images_text_value")
+                images_text = st.text_area("Image URLs (one per line)", key=_tk_images_key)
                 data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
 
                 default_tk_img_query = data.get("ticket_name", "") or data.get("city", "")
@@ -4779,21 +4898,22 @@ def render_ticket_flow(client):
                 remember_clarification(clarify_supplier_id(supplier_id), "Ticket", tk_clarify_q, result)
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    # Built from flow_widget_key(), NOT hardcoded "_editing_table_tk_*" strings:
+                    # those tables are generation-scoped now (see new_widget_token()), so a
+                    # literal name here would silently stop matching and this reset would quietly
+                    # do nothing - exactly the drift this bug class keeps coming back through.
+                    # Stop Sales / modality_supplements come from render_*_editor helpers, which
+                    # build their own table names from the prefix they are handed.
+                    _tkg = widget_generation("tk")
                     tk_field_to_table_key = {
-                        "extra_cost_options": "_editing_table_tk_extra_costs",
-                        "includes": "_editing_table_tk_includes",
-                        "excludes": "_editing_table_tk_excludes",
-                        "meeting_points": "_editing_table_tk_meeting_points",
-                        "time_tables": "_editing_table_tk_timetables",
-                        # Stop Sales is now render_stop_sales_editor (an editable_table, see its
-                        # call site above) rather than a raw always-live text_area - reset its
-                        # edit-mode flag the same way as every other table field here.
-                        "stop_sales": "_editing_table_tk_stop_sales",
-                        "modality_supplements": "_editing_table_tk_modality_supplements",
-                        # CONFIRMED REAL GAP: this box (unlike the pricing box below) can also
-                        # return an occupancy_prices correction, but its reset dict never
-                        # included the key for it.
-                        "occupancy_prices": "_editing_table_tk_occupancy",
+                        "extra_cost_options": f"_editing_table_tk_{_tkg}_extra_costs",
+                        "includes": f"_editing_table_{flow_widget_key('tk', 'includes')}",
+                        "excludes": f"_editing_table_{flow_widget_key('tk', 'excludes')}",
+                        "meeting_points": f"_editing_table_{flow_widget_key('tk', 'meeting_points')}",
+                        "time_tables": f"_editing_table_{flow_widget_key('tk', 'timetables')}",
+                        "stop_sales": f"_editing_table_tk_{_tkg}_stop_sales",
+                        "modality_supplements": f"_editing_table_tk_{_tkg}_modality_supplements",
+                        "occupancy_prices": f"_editing_table_tk_{_tkg}_occupancy",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key.get(field_name)
@@ -4804,7 +4924,7 @@ def render_ticket_flow(client):
                     # docstring for why these need the same treatment as table fields.
                     reset_stale_editable_field_widgets(result["changes"])
                     if "operational_days" in result["changes"]:
-                        st.session_state.pop("tk_op_days", None)
+                        st.session_state.pop(flow_widget_key("tk", "op_days"), None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result"):
             r = st.session_state.tk_clarify_result
@@ -4817,7 +4937,7 @@ def render_ticket_flow(client):
         tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
         def _save_tk_timetables(edf, data=data):
             data["time_tables"] = _clean_time_table_rows(edf)
-        editable_table("Start Time(s)", tt_df, "tk_timetables", on_save=_save_tk_timetables)
+        editable_table("Start Time(s)", tt_df, flow_widget_key("tk", "timetables"), on_save=_save_tk_timetables)
         if not data.get("time_tables"):
             st.caption("ℹ️ No start time set yet - optional, but add one if the ticket has a fixed departure time.")
 
@@ -4825,13 +4945,13 @@ def render_ticket_flow(client):
         if data.get("schedule_notes"):
             st.info(f"🔎 {data['schedule_notes']}")
         data["operational_days"] = st.multiselect("Operational Days", ALL_WEEKDAYS,
-                                                   default=data.get("operational_days", ALL_WEEKDAYS), key="tk_op_days")
+                                                   default=data.get("operational_days", ALL_WEEKDAYS), key=flow_widget_key("tk", "op_days"))
         # Same fix and reasoning as the multi-Ticket batch flow's Stop Sales editor (see the
         # "CONFIRMED REAL BUG" comment there): the raw JSON text_area went stale under "Tell AI
         # what to fix" and wasn't an easy way to add one by hand either. render_stop_sales_editor
         # is the same friendly Start/End Date table already used for ClosedTour.
-        render_stop_sales_editor(data, "tk")
-        render_ticket_modality_supplements_editor(data, "tk")
+        render_stop_sales_editor(data, f"tk_{widget_generation('tk')}")
+        render_ticket_modality_supplements_editor(data, f"tk_{widget_generation('tk')}")
 
         num_days = len(data.get("operational_days", []))
         num_stops = len(data.get("stop_sales", []))
@@ -4856,14 +4976,14 @@ def render_ticket_flow(client):
         )
 
         st.subheader(f"Pricing (in {currency or '(set Currency in Step 3)'})")
-        render_ticket_pricing_editor(data, "tk", currency, max_passengers)
+        render_ticket_pricing_editor(data, f"tk_{widget_generation('tk')}", currency, max_passengers)
         price_type = data["price_type"]
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key="tk_start_date"))
+            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=flow_widget_key("tk", "start_date")))
         with dcol2:
-            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key="tk_end_date"))
+            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=flow_widget_key("tk", "end_date")))
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
@@ -4881,7 +5001,7 @@ def render_ticket_flow(client):
                     "new Modality to existing Ticket\"**.")
 
         st.subheader("Extra costs")
-        render_ticket_extra_costs(data, "tk",
+        render_ticket_extra_costs(data, f"tk_{widget_generation('tk')}",
                                   base_code=st.session_state.get("tk_cfg_modality_code", "") or "",
                                   base_name=data.get("ticket_name") or "")
 
@@ -4916,12 +5036,14 @@ def render_ticket_flow(client):
                 st.session_state.tk_clarify_result_pricing = result
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
+                    # Same generation-scoping as the box above - see its comment.
+                    _tkg2 = widget_generation("tk")
                     tk_field_to_table_key2 = {
-                        "extra_cost_options": "_editing_table_tk_extra_costs",
-                        "occupancy_prices": "_editing_table_tk_occupancy",
-                        "time_tables": "_editing_table_tk_timetables",
-                        "stop_sales": "_editing_table_tk_stop_sales",
-                        "modality_supplements": "_editing_table_tk_modality_supplements",
+                        "extra_cost_options": f"_editing_table_tk_{_tkg2}_extra_costs",
+                        "occupancy_prices": f"_editing_table_tk_{_tkg2}_occupancy",
+                        "time_tables": f"_editing_table_{flow_widget_key('tk', 'timetables')}",
+                        "stop_sales": f"_editing_table_tk_{_tkg2}_stop_sales",
+                        "modality_supplements": f"_editing_table_tk_{_tkg2}_modality_supplements",
                     }
                     for field_name in result["changes"]:
                         table_key = tk_field_to_table_key2.get(field_name)
@@ -4929,7 +5051,7 @@ def render_ticket_flow(client):
                             st.session_state[table_key] = False
                     reset_stale_editable_field_widgets(result["changes"])
                     if "operational_days" in result["changes"]:
-                        st.session_state.pop("tk_op_days", None)
+                        st.session_state.pop(flow_widget_key("tk", "op_days"), None)
                 st.rerun()
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
@@ -4987,7 +5109,7 @@ def render_ticket_flow(client):
                                   "region, which can be far from the actual location. Try something more "
                                   "specific - a landmark, neighborhood, or meeting point name - and pick the "
                                   "correct result below.")
-                        tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query")
+                        tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key=flow_widget_key("tk", "geo_search_query"))
                         if st.button("🔎 Search", key="tk_geo_search_btn"):
                             with st.spinner("Searching..."):
                                 st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
@@ -5008,7 +5130,7 @@ def render_ticket_flow(client):
                                         )
                                         st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                                         st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                                        st.session_state.tk_geo_confirmed = False
+                                        _tk_clear_geo_confirmation()
                                         st.session_state.tk_geo_search_results = None
                                         st.rerun()
 
@@ -5032,7 +5154,15 @@ def render_ticket_flow(client):
 
                     st.session_state.tk_geo_confirmed = st.checkbox(
                         "✅ I've checked this location on the map and it's correct for this ticket",
-                        value=st.session_state.get("tk_geo_confirmed", False), key="tk_geo_confirm_checkbox"
+                        value=st.session_state.get("tk_geo_confirmed", False),
+                        # CONFIRMED REAL BUG (audit, 2026-08-24): every place that sets
+                        # tk_geo_confirmed=False (a new ticket, changed coordinates) reset the
+                        # CONTROL flag but not this checkbox's own key, so the box stayed ticked
+                        # and immediately re-asserted True - the one human check between a wrong
+                        # city and a published ticket, silently pre-satisfied. Generation-scoped
+                        # for the cross-ticket case; _tk_clear_geo_confirmation() below handles
+                        # coordinates changing within one ticket.
+                        key=flow_widget_key("tk", "geo_confirm_checkbox")
                     )
                     if not st.session_state.tk_geo_confirmed:
                         st.info("👆 Please verify the location above before publishing.")
@@ -5067,16 +5197,16 @@ def render_ticket_flow(client):
                                     )
                                     st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                                     st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                                    st.session_state.tk_geo_confirmed = False
+                                    _tk_clear_geo_confirmation()
                                     st.session_state.tk_geo_search_results2 = None
                                     st.rerun()
 
                     st.markdown("**Or enter coordinates manually:**")
                     gcol1, gcol2 = st.columns(2)
                     with gcol1:
-                        manual_lat = st.number_input("Latitude", value=None, format="%.6f", key="tk_manual_lat", placeholder="e.g. 27.394900")
+                        manual_lat = st.number_input("Latitude", value=None, format="%.6f", key=flow_widget_key("tk", "manual_lat"), placeholder="e.g. 27.394900")
                     with gcol2:
-                        manual_lng = st.number_input("Longitude", value=None, format="%.6f", key="tk_manual_lng", placeholder="e.g. 33.678400")
+                        manual_lng = st.number_input("Longitude", value=None, format="%.6f", key=flow_widget_key("tk", "manual_lng"), placeholder="e.g. 33.678400")
                     manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
                     if manual_lat == 0 and manual_lng == 0:
                         st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
@@ -5090,7 +5220,7 @@ def render_ticket_flow(client):
                         )
                         st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                         st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                        st.session_state.tk_geo_confirmed = False
+                        _tk_clear_geo_confirmation()
                         st.rerun()
             else:
                 st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "
@@ -8422,7 +8552,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         findings = None
                 if findings is not None:
                     st.session_state.pr_routes = routes
-                    st.session_state.pr_proposals = price_refresh.build_proposals(routes, findings)
+                    st.session_state.pr_proposals = _stamp_proposal_widget_tokens(
+                        price_refresh.build_proposals(routes, findings))
                     st.session_state.pr_raw_text = raw_text
                     st.session_state.pop("pr_result", None)
         st.rerun()
@@ -8467,7 +8598,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
         head = f"**{route.get('name') or route.get('id')}**{_id_suffix(route)}"
         cols = st.columns([1, 6])
         with cols[0]:
-            p["accepted"] = st.checkbox("Yes", value=p["accepted"], key=f"pr_ok_{p['index']}")
+            # Token, not just the index - see _stamp_proposal_widget_tokens for the confirmed bug
+            # (a second run's route #0 arriving already ticked from the previous run's route #0).
+            p["accepted"] = st.checkbox("Yes", value=p["accepted"],
+                                        key=f"pr_ok_{p['index']}_{p.get('widget_token', 'g0')}")
         with cols[1]:
             st.markdown(head)
             # CONFIRMED REAL GAP (product owner): the AI's read price used to be take-it-or-
@@ -8481,7 +8615,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 with pcol2:
                     c["new"] = st.number_input(
                         f"New price ({c['min_pax']}-{c['max_pax']} pax)", min_value=0.0, step=1.0,
-                        value=float(c["new"]), key=f"pr_price_{p['index']}_{c['code']}",
+                        value=float(c["new"]),
+                        # Token, not just index+code - see _stamp_proposal_widget_tokens: without
+                        # it, a re-read's corrected price was displayed as (and published as) the
+                        # old one.
+                        key=f"pr_price_{p['index']}_{c['code']}_{p.get('widget_token', 'g0')}",
                         label_visibility="collapsed")
                 with pcol1:
                     # CONFIRMED REAL REQUEST (product owner): red when the price to apply
@@ -8513,7 +8651,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # every other route in the batch is untouched.
             with st.expander("🤖 Not right? Tell the AI more about this route", expanded=False):
                 route_hint = st.text_input(
-                    "Extra instruction for this route only", key=f"pr_hint_{p['index']}",
+                    "Extra instruction for this route only",
+                    key=f"pr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
                     placeholder="e.g. use the Port Ghalib price, not Marsa Allam")
                 if st.button("🔁 Re-read this route", key=f"pr_reread_{p['index']}",
                              disabled=not route_hint.strip()):
@@ -8528,8 +8667,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             st.error(f"Couldn't re-read this route: {friendly_error_message(e)}")
                             single_finding = None
                     if single_finding is not None:
-                        rebuilt = price_refresh.build_proposals(
-                            st.session_state.pr_routes, {p["index"]: single_finding})
+                        rebuilt = _stamp_proposal_widget_tokens(price_refresh.build_proposals(
+                            st.session_state.pr_routes, {p["index"]: single_finding}))
                         st.session_state.pr_proposals[p["index"]] = rebuilt[p["index"]]
                         st.rerun()
                     elif single_finding is None and route_hint.strip():
@@ -8559,7 +8698,9 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 with mcol2:
                     typed = st.number_input(
                         "New price per person/vehicle", min_value=0.0, step=1.0, value=0.0,
-                        key=f"pr_manual_{p['index']}",
+                        # Token, same reason as the other pr_ widgets - a hand-typed price from a
+                        # previous run must not reappear under a new run's route #0.
+                        key=f"pr_manual_{p['index']}_{p.get('widget_token', 'g0')}",
                         help="The base bracket's new price. The solo bracket is recalculated "
                              "from it using the same minimum-party rule.")
                 with mcol3:
@@ -8576,8 +8717,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                                     "max_pax": widest["max_pax"],
                                                     "price": float(typed),
                                                     "child_price": None, "infant_price": None}]}
-                            rebuilt = price_refresh.build_proposals(
-                                st.session_state.pr_routes, {p["index"]: manual})
+                            rebuilt = _stamp_proposal_widget_tokens(price_refresh.build_proposals(
+                                st.session_state.pr_routes, {p["index"]: manual}))
                             st.session_state.pr_proposals[p["index"]] = rebuilt[p["index"]]
                             st.rerun()
 
@@ -9501,6 +9642,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                         # blank out fields the new source just didn't happen to mention.
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
                     st.session_state.extracted = data
+                    reset_child_age_band_widgets("ct")
                     st.session_state.images_text_value = ""
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
@@ -9562,6 +9704,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
 
                     st.session_state.extracted = data
+                    reset_child_age_band_widgets("ct")
                     st.session_state.images_text_value = ""
                     st.session_state.raw_preview = preview
                     st.session_state.payloads = None
@@ -9653,6 +9796,9 @@ if st.session_state.extracted:
             editable_field("Excluded", data, "excluded", widget="html_list_area", height=120)
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
             editable_field("Policy remarks", data, "policy_remarks", widget="text_area", height=100)
+            # CONFIRMED HOUSE RULE (product owner, 2026-08-24) - see the mct_main copy above.
+            editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
+                           widget="text_area", height=80)
             render_cancellation_policy_editor(data, "legacy_tour")
             editable_field("Nights", data, "nights", widget="number_input")
 

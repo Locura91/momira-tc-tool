@@ -302,6 +302,24 @@ Rules:
   effect into whichever day's paragraph naturally covers the guide/transfer (usually Day 1), e.g. "This
   tour is guided in either English or German." Never leave it ambiguous or worded so it could be read as
   both languages being provided at once - the guest must clearly understand they get ONE of the two.
+- what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
+  what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
+  goes onto the voucher. Watch for headings/phrasings like "Please remember to bring", "What to bring",
+  "What to pack", "Please wear", "Don't forget", "Recommended items", "Essentials", or a bulleted list
+  of items following any of those. Extract as a plain newline-separated list, one item per line, each
+  prefixed with "- " (e.g. "- Passports\n- Sun cream\n- Pocket torch\n- Tissues\n- Hat"). Keep the
+  source's own items and wording, lightly tidied for capitalisation/spelling; do NOT invent items the
+  source doesn't mention, and do NOT pad a short list to look fuller. Empty string if the source says
+  nothing about what to bring.
+  CLOTHING AND DRESS CODES ALWAYS BELONG HERE - CONFIRMED HOUSE RULE (product owner, 2026-08-24):
+  EVERY clothing mention goes in this field, including a strict dress-code REQUIREMENT, not just a
+  friendly packing suggestion. So "shoulders and knees must be covered to enter the temple", "long
+  trousers required", "no swimwear in the restaurant" and "bring a scarf for temple visits" ALL belong
+  here. Keep a requirement's mandatory wording intact when you list it (e.g. "- Shoulders and knees must
+  be covered to enter the temple") so the customer can see it is a rule, not a tip - the traveller reads
+  this list before packing, which is exactly when a dress code is still actionable.
+  WHAT DOES *NOT* BELONG HERE: anything the supplier PROVIDES (that's `included`) and anything the
+  customer must PAY for (that's excluded/supplements).
 - policy_remarks: include genuinely relevant NON-MONETARY policy info such as age restrictions/supervision
   requirements, payment/deposit schedule, or other booking terms. CRITICAL - CONFIRMED RULE: NEVER include
   any child discount PERCENTAGE or fee here (e.g. "children under 12 pay 50%", "child rate is 70% of
@@ -487,6 +505,7 @@ Output this exact JSON structure:
   "excluded": "",
   "meeting_point": "",
   "policy_remarks": "",
+  "what_to_bring": "",
   "cancellation_policy_tiers": [],
   "cancellation_policy_text": "",
   "itinerary_destinations": [],
@@ -555,6 +574,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "excluded": {"type": "string"},
         "meeting_point": {"type": "string"},
         "policy_remarks": {"type": "string"},
+        "what_to_bring": {"type": "string"},
         "cancellation_policy_tiers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "cancellation_policy_text": {"type": "string"},
         "itinerary_destinations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
@@ -573,7 +593,7 @@ EXTRACTION_TOOL_SCHEMA = {
     },
     "required": [
         "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
-        "excluded", "meeting_point", "policy_remarks", "cancellation_policy_tiers",
+        "excluded", "meeting_point", "policy_remarks", "what_to_bring", "cancellation_policy_tiers",
         "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
         "min_child_age", "max_child_age", "child_discount_percentage", "operational_days",
         "schedule_notes", "pricing_notes", "stop_sales", "price_list", "release_days_mentions",
@@ -2215,7 +2235,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     # Defensive defaults in case the model omits a key
     defaults = {
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
-        "excluded": "", "meeting_point": "", "policy_remarks": "",
+        "excluded": "", "meeting_point": "", "policy_remarks": "", "what_to_bring": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
         "child_discount_percentage": None,
@@ -2398,6 +2418,24 @@ Extract:
   ambiguous or worded so it could be read as both languages being provided at once - the guest must
   clearly understand they get ONE of the two.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
+  what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
+  goes onto the voucher. Watch for headings/phrasings like "Please remember to bring", "What to bring",
+  "What to pack", "Please wear", "Don't forget", "Recommended items", "Essentials", or a bulleted list
+  of items following any of those. Extract as a plain newline-separated string, one item per line, each
+  prefixed with "- " (e.g. "- Passports\n- Sun cream\n- Pocket torch\n- Tissues\n- Hat"). Keep the
+  source's own items and wording, lightly tidied for capitalisation/spelling; do NOT invent items the
+  source doesn't mention, and do NOT pad a short list to look fuller. Empty string if the source says
+  nothing about what to bring.
+  CLOTHING AND DRESS CODES ALWAYS BELONG HERE - CONFIRMED HOUSE RULE (product owner, 2026-08-24):
+  EVERY clothing mention goes in this field, including a strict dress-code REQUIREMENT, not just a
+  friendly packing suggestion. So "shoulders and knees must be covered to enter the temple", "long
+  trousers required", "no swimwear in the restaurant" and "bring a scarf for temple visits" ALL belong
+  here. Keep a requirement's mandatory wording intact when you list it (e.g. "- Shoulders and knees must
+  be covered to enter the temple") so the customer can see it is a rule, not a tip - the traveller reads
+  this list before packing, which is exactly when a dress code is still actionable.
+  WHAT DOES *NOT* BELONG HERE: anything the supplier PROVIDES (that's `includes`) and anything the
+  customer must PAY for (that's excludes/supplements).
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
   fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
   place name so it can be properly located. If the source only says pickup is from the guest's own
@@ -2582,7 +2620,7 @@ Extract:
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
   "activity_type": "", "is_private": false, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "occupancy_prices": [],
@@ -2678,7 +2716,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     # the fix for the confirmed real bug where a permissive schema let a whole extraction come
     # back with every field silently empty).
     defaults = {
-        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "is_private": False, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 2, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
@@ -2892,6 +2930,24 @@ Extract:
   case the description ALSO MUST clearly state, in plain words, that the tour/transfer can run in EITHER
   English OR German - work one clear sentence to that effect into the description.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
+  what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
+  goes onto the voucher. Watch for headings/phrasings like "Please remember to bring", "What to bring",
+  "What to pack", "Please wear", "Don't forget", "Recommended items", "Essentials", or a bulleted list
+  of items following any of those. Extract as a plain newline-separated string, one item per line, each
+  prefixed with "- " (e.g. "- Passports\n- Sun cream\n- Pocket torch\n- Tissues\n- Hat"). Keep the
+  source's own items and wording, lightly tidied for capitalisation/spelling; do NOT invent items the
+  source doesn't mention, and do NOT pad a short list to look fuller. Empty string if the source says
+  nothing about what to bring.
+  CLOTHING AND DRESS CODES ALWAYS BELONG HERE - CONFIRMED HOUSE RULE (product owner, 2026-08-24):
+  EVERY clothing mention goes in this field, including a strict dress-code REQUIREMENT, not just a
+  friendly packing suggestion. So "shoulders and knees must be covered to enter the temple", "long
+  trousers required", "no swimwear in the restaurant" and "bring a scarf for temple visits" ALL belong
+  here. Keep a requirement's mandatory wording intact when you list it (e.g. "- Shoulders and knees must
+  be covered to enter the temple") so the customer can see it is a rule, not a tip - the traveller reads
+  this list before packing, which is exactly when a dress code is still actionable.
+  WHAT DOES *NOT* BELONG HERE: anything the supplier PROVIDES (that's `includes`) and anything the
+  customer must PAY for (that's excludes/supplements).
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
   fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
   place name so it can be properly located. If the source only says pickup is from the guest's own
@@ -2927,7 +2983,7 @@ Extract:
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
   "activity_type": "", "is_private": false,
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
@@ -2974,7 +3030,7 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
     defaults = {
-        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "is_private": False,
         "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": "",
@@ -3371,7 +3427,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action
-        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "disallow_adult": False, "disallow_children": False, "disallow_infant": False,
         "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "image_urls": [],
