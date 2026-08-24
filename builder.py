@@ -38,6 +38,12 @@ DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you
 # pricing tiers (Transfer today, Transport once built).
 _MAX_OCCUPANCY_PAX = 9
 
+# CONFIRMED STANDING RULE (product owner, 2026-08-24): "if no specific [cancellation policy is]
+# mentioned, leave the standardized Cancellation policy to 30 days or prior for 100% refund. It
+# cannot be better than this." Applies universally, same "for all services" scope as the pax cap
+# above - see _cancellation_ranges_from_tiers for where it's enforced as a floor, not a ceiling.
+_MIN_FULL_REFUND_NOTICE_DAYS = 30
+
 
 def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, max_cap=_MAX_OCCUPANCY_PAX):
     """
@@ -355,7 +361,27 @@ def _cancellation_ranges_from_tiers(tiers):
         cleaned.append((int(days), refund_pct))
     if not cleaned:
         return None
-    cleaned.sort(key=lambda pair: pair[0], reverse=True)
+
+    # CONFIRMED STANDING RULE (product owner, 2026-08-24): "if no specific [policy is]
+    # mentioned, leave the standardized Cancellation policy to 30 days or prior for 100%
+    # refund. It cannot be better than this." Momira's 30-day/100%-refund default (see
+    # _DEFAULT_CANCELLATION_VOUCHER_TEXT / CancellationRange()'s own default) is a FLOOR, not
+    # just a fallback for when a document says nothing - a document offering a full refund on
+    # SHORTER notice than 30 days must not be published as stated, since that undercuts the
+    # house standard. A document that is stricter (more days required, or a lower refund at
+    # the same days) is a real, intentional supplier term and is always honored as-is - only a
+    # 100%-refund tier priced at fewer than 30 days gets pushed out to 30.
+    floored = [
+        (_MIN_FULL_REFUND_NOTICE_DAYS if refund_pct >= 100.0 and days < _MIN_FULL_REFUND_NOTICE_DAYS else days,
+         refund_pct)
+        for days, refund_pct in cleaned
+    ]
+    # Flooring two different stated tiers up to the same day count would otherwise publish two
+    # contradictory ranges for day 30 - keep the more generous (higher) refund for that day.
+    merged_by_day = {}
+    for days, refund_pct in floored:
+        merged_by_day[days] = max(refund_pct, merged_by_day.get(days, -1.0))
+    cleaned = sorted(merged_by_day.items(), key=lambda pair: pair[0], reverse=True)
     return cleaned
 
 
@@ -1614,13 +1640,24 @@ def build_ticket_payloads(
         # CONFIRMED REAL RULE (product owner): the cancellation policy that actually applies
         # (document-stated, or our standing default) must always reach the voucher - see
         # _cancellation_voucher_text()'s docstring. `voucher_remarks` (a broader, human-
-        # editable field, not cancellation-specific) still wins if a human explicitly set it.
+        # editable field, not cancellation-specific) still wins as the BASE text if set.
+        #
+        # CONFIRMED REAL BUG (audit, 2026-08-24): the datasheet used to short-circuit the whole
+        # composition - `voucher_remarks or <composed text>` - so whenever voucher_remarks was
+        # non-empty the packing list and the standing supplier notes were both discarded. That was
+        # the COMMON case, not an edge case: ticket extraction copies cancellation_policy_text into
+        # voucher_remarks for every ticket whose document states a policy (ai_extractor.py ~2810).
+        # The result was one record publishing two contradictory versions of its own remarks - the
+        # modality's composed one, and a truncated customer-facing one on the datasheet.
+        # Composing from whichever base applies fixes both: the human's text still wins over the
+        # cancellation default, and what-to-bring/manual notes are appended either way.
+        _ticket_voucher_base = (
+            (extracted_ticket_data.get("voucher_remarks") or "").strip()
+            or _cancellation_voucher_text(
+                extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers)
+        )
         ticket_cancellation_voucher_text = _with_manual_notes(
-            _with_what_to_bring(
-                _cancellation_voucher_text(
-                    extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers
-                ),
-                extracted_ticket_data),
+            _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
             extracted_ticket_data,
         )
 
@@ -1629,7 +1666,10 @@ def build_ticket_payloads(
             description=extracted_ticket_data.get("description") or "",
             meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
             departureTime=time_tables_list[0] if time_tables_list else "",
-            voucherRemarks=extracted_ticket_data.get("voucher_remarks") or ticket_cancellation_voucher_text,
+            # The composed text (see _ticket_voucher_base above) - NOT a bare voucher_remarks
+            # short-circuit, which used to drop the packing list and standing notes here while the
+            # modality remarks on the same record kept them.
+            voucherRemarks=ticket_cancellation_voucher_text,
             includes=extracted_ticket_data.get("includes") or [],
             excludes=extracted_ticket_data.get("excludes") or [],
             activityType=extracted_ticket_data.get("activity_type"),
@@ -1785,7 +1825,17 @@ def build_ticket_payloads(
             baseServicePrice=base_service_price,
             occupancyPrices=occupancy_prices,
             priceType=selected_price_type,
-            maxPassengers=pre_config.max_passengers,
+            # CONFIRMED REAL BUG (audit, 2026-08-24): this was the one place the 9-pax platform
+            # cap ("applies for all services", see _MAX_OCCUPANCY_PAX at the top of this file)
+            # escaped - ClosedTour enforces it in its schema validator, Transfer/Transport/Hotel
+            # all clip, and Ticket clips its price ROWS (effective_occupancy_cap) but published
+            # maxPassengers straight from the dropdown, which offers up to 20. The result was a
+            # ticket advertising maxPassengers=15 with occupancy prices only up to 9 - Travel
+            # Compositor offering a group size that has no rate behind it. This is the mirror of
+            # the real TC error already quoted above ("Number of passengers in occupancy is
+            # greater than max passengers allowed"): the cap was applied to one side only.
+            maxPassengers=min(_safe_int(pre_config.max_passengers, fallback=_MAX_OCCUPANCY_PAX),
+                              _MAX_OCCUPANCY_PAX),
             minPassengers=pre_config.min_passengers,
             # Confirmed by product owner: infant = 0-2, child = 2-12,
             # internationally standard, same for Tickets and ClosedTours.
@@ -1837,6 +1887,22 @@ def build_ticket_payloads(
             extracted_ticket_data.get("base_children_price", 0),
             extracted_ticket_data.get("base_infant_price", 0),
         ]),
+        # CONFIRMED RULE (product owner, 2026-08-24): an expired document blocks publish rather
+        # than being silently floored/inverted - see expired_validity_window()'s docstring. Takes
+        # the document's OWN stated dates, not the floored startDate on the payload above.
+        "expired_validity_error": expired_validity_window(
+            extracted_ticket_data.get("start_date"), extracted_ticket_data.get("end_date")),
+        # CONFIRMED RULE (product owner, 2026-08-24): "block publish, like Hotel does" - a Ticket
+        # must never go live with an occupancy row priced at 0.00. The pricing editor materializes
+        # rows 1..cap defaulting to 0, so a document that prices only 1-4 pax used to leave 5-9
+        # bookable at zero. Named here, blocked at the publish gate in app.py.
+        "zero_priced_occupancies": [
+            int(row.get("occupancy"))
+            for row in (occupancy_prices or [])
+            if isinstance(row, dict) and row.get("occupancy") is not None
+            and not _safe_float((row.get("price") or {}).get("amount"
+                ) if isinstance(row.get("price"), dict) else row.get("amount"), fallback=0.0)
+        ],
     }
 
 
@@ -2233,6 +2299,9 @@ def build_transfer_payload(
         "is_zone_based": is_zone_based,
         "existing_transfer_id": existing_transfer_id,
         "synthesized_solo_tier": synthesized_solo_tier,
+        # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
+        "expired_validity_error": expired_validity_window(
+            extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),
     }
 
 
@@ -2287,12 +2356,64 @@ def start_date_or_today(stated):
     (see ContractHotelSeasonVO's own "real season validity... NOT a fixed far-future default"
     rule) - a document listing several consecutive seasons, some already past, extracts correctly
     that way, and an already-expired season row is harmless since no future booking can ever
-    match its date range anyway."""
+    match its date range anyway.
+
+    NOTE (2026-08-24): flooring the START alone was not enough and briefly made things worse - on a
+    fully-expired rate sheet ("valid 01.01.2025 - 31.12.2025") it produced startDate=today with the
+    document's 2025 endDate, an INVERTED, permanently unbookable window that published with no
+    error. See expired_validity_window(), which is the guard for that case: an expired document is
+    a real-world problem for a human to resolve (get the new rate sheet), not something this
+    function can paper over by inventing dates the supplier never agreed to."""
     stated = to_iso_date((stated or "").strip())
     today = datetime.date.today().isoformat()
     if not stated or stated < today:
         return today
     return stated
+
+
+def expired_validity_window(stated_start, stated_end):
+    """The reason this document cannot be published, or None if its validity window is usable.
+
+    CONFIRMED RULE (product owner, 2026-08-24): "block publish, tell the operator". An expired
+    contract is a real-world problem a human has to resolve - get the new rate sheet, or confirm
+    the dates - and every automatic alternative guesses at something the supplier never agreed to:
+    keeping the past window publishes a product nobody can book, and flooring both ends invents a
+    validity period out of thin air.
+
+    THE BUG THIS CLOSES (confirmed by execution): start_date_or_today floors a past START to
+    today, but nothing floored or checked the END, and no builder anywhere compared the two. A
+    2025 rate sheet therefore built startDate=2026-08-24 with endDate=2025-12-31 - inverted,
+    permanently unbookable, and published with no error at all.
+
+    Deliberately takes the document's OWN stated dates, not the floored start: the question being
+    asked is "is this document still valid?", which the floored value can no longer answer (it is
+    always today or later by construction).
+
+    Returns a human-readable reason string, or None when the window is fine. An unparseable or
+    absent end date is NOT treated as expired - an open-ended validity is normal and is handled
+    downstream (the house 2049 convention); only a date that genuinely reads as being in the past
+    blocks publish."""
+    today = datetime.date.today().isoformat()
+    end = to_iso_date((stated_end or "").strip())
+    start = to_iso_date((stated_start or "").strip())
+    # Only a well-formed ISO date can be compared - to_iso_date passes unrecognised text through
+    # unchanged, so anything that isn't YYYY-MM-DD is treated as "not stated" rather than guessed at.
+    def _iso_or_none(value):
+        try:
+            datetime.date.fromisoformat(value)
+            return value
+        except (TypeError, ValueError):
+            return None
+    end_iso, start_iso = _iso_or_none(end), _iso_or_none(start)
+    if end_iso and end_iso < today:
+        return (f"This document's validity ended on {end_iso}, which is in the past"
+                f"{f' (it ran from {start_iso})' if start_iso else ''}. Publishing it would create "
+                f"a product nobody can book. Get the supplier's current rate sheet, or correct the "
+                f"validity dates below, before publishing.")
+    if start_iso and end_iso and end_iso < start_iso:
+        return (f"This document's validity window ends ({end_iso}) before it starts ({start_iso}). "
+                f"Correct the dates below before publishing.")
+    return None
 
 
 def round_duration_up_to_hour(duration_time):
@@ -3015,6 +3136,9 @@ def build_transport_payloads(
         "supplier_id": pre_config.supplier_id,
         "transport_payload": transport_payload,
         "transport_error": transport_error,
+        # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
+        "expired_validity_error": expired_validity_window(
+            extracted_transport_data.get("start_date"), extracted_transport_data.get("end_date")),
         "transport_name": transport_name,
         "departure_name": departure_name,
         "arrival_name": arrival_name,
@@ -3288,11 +3412,21 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     # ---- Cancellation text + manual notes -> voucherRemarks only (CONFIRMED: no structured
     # cancellation field exists on Hotel) ----
+    # CONFIRMED REAL CRASH (audit, 2026-08-24): this passed the extractor's RAW tier shape
+    # ([{"days": 30, "fee_percentage": 25}]) straight into _cancellation_voucher_text, which
+    # expects the CONVERTED (days, refund_pct) pairs that _cancellation_ranges_from_tiers
+    # produces - every other builder converts first (ClosedTour 1336, Ticket 1609, Transfer 2028,
+    # Transport 2736). Iterating a dict yields its KEYS, so the helper computed
+    # 100.0 - "fee_percentage" -> TypeError. The call sits OUTSIDE this function's try/except and
+    # app.py's call site is unguarded, so a hotel with stated cancellation tiers but no prose
+    # summary (exactly what happens when a human types tiers into the cancellation editor without
+    # also writing a summary) crashed the app with a raw traceback and could never be published.
+    # Converting here also restores the fee->refund inversion Hotel was silently skipping.
     voucher_text = _with_manual_notes(
         _with_what_to_bring(
             _cancellation_voucher_text(
                 extracted.get("cancellation_policy_text"),
-                extracted.get("cancellation_policy_tiers"),
+                _cancellation_ranges_from_tiers(extracted.get("cancellation_policy_tiers")),
             ),
             extracted,
         ),
@@ -3305,8 +3439,16 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     hotel_kwargs = dict(
         providerCode=pre_config.provider_code,
         hotelname=extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or "",
-        latitude=extracted.get("latitude", (existing_hotel_snapshot or {}).get("latitude")),
-        longitude=extracted.get("longitude", (existing_hotel_snapshot or {}).get("longitude")),
+        # CONFIRMED REAL BUG (audit, 2026-08-24): `.get(key, fallback)` is the wrong idiom here -
+        # it only falls back when the key is ABSENT, and the hotel extractor ALWAYS sets these two
+        # keys, to None when the document states no coordinates ("null otherwise - do NOT
+        # estimate"). So the key was present, the snapshot fallback never fired, and a PUT (which
+        # replaces the record) wiped a live hotel's map position on EVERY price refresh. Every
+        # neighbouring field on this payload already uses the `or` form for exactly this reason.
+        # Unrecoverable in-tool once lost: the Hotel screen has no lat/long field and, unlike
+        # Ticket/Transfer/ClosedTour, the Hotel flow never calls geocode().
+        latitude=extracted.get("latitude") or (existing_hotel_snapshot or {}).get("latitude"),
+        longitude=extracted.get("longitude") or (existing_hotel_snapshot or {}).get("longitude"),
         address=HotelAddressVO(
             address=address_data.get("address") or existing_address.get("address"),
             locationName=address_data.get("location_name") or existing_address.get("locationName"),

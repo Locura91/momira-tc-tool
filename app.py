@@ -1982,6 +1982,43 @@ def _stamp_proposal_widget_tokens(proposals):
     return proposals
 
 
+def render_publish_blockers(payloads):
+    """Shows every hard publish blocker on a built payload set, and returns True only if there are
+    none. Shared by all product flows so a new blocker is added in one place.
+
+    CONFIRMED RULES (product owner, 2026-08-24), both chosen explicitly over the silent
+    alternatives:
+
+    EXPIRED DOCUMENT -> block, don't guess. A rate sheet whose validity has entirely passed used
+    to publish an INVERTED window (start floored to today, end still in the past): permanently
+    unbookable, and reported as success. The alternatives were both worse - keeping the past window
+    publishes something nobody can book, and flooring both ends invents a validity period the
+    supplier never agreed to. An expired contract is a real-world problem for a human to resolve.
+
+    ZERO-PRICED OCCUPANCY -> block, don't publish free inventory. Hotel already refuses to publish
+    zero-priced rooms and Transport deactivates unpriced options; Ticket was the one product that
+    would happily leave occupancies 5-9 bookable at 0.00 because its pricing editor materializes
+    every row up to the cap with a default of 0.
+
+    Returns True when clear, so callers can write `can_publish = ... and render_publish_blockers(p)`.
+    """
+    ok = True
+    expired = (payloads or {}).get("expired_validity_error")
+    if expired:
+        st.error(f"🚫 {expired}")
+        ok = False
+    zero_rows = (payloads or {}).get("zero_priced_occupancies") or []
+    if zero_rows:
+        pretty = ", ".join(str(n) for n in zero_rows)
+        st.error(
+            f"🚫 These occupancies have no price (0.00) and would be sellable for free: **{pretty}**. "
+            f"Enter a real price for each, or reduce Max Passengers so they aren't offered at all, "
+            f"before publishing."
+        )
+        ok = False
+    return ok
+
+
 def reset_child_age_band_widgets(key_prefix):
     """CONFIRMED REAL BUG (product owner, 2026-08-24): "the child age is not really working for
     ClosedTours, it always gives me the default age from 2 to 12, even though the document and
@@ -2000,6 +2037,28 @@ def reset_child_age_band_widgets(key_prefix):
     for that same key_prefix, so the freshly extracted band is what actually shows."""
     st.session_state.pop(f"{key_prefix}_min_child_age", None)
     st.session_state.pop(f"{key_prefix}_max_child_age", None)
+
+
+def floor_start_date_for_new_data(data, widget_key=None):
+    """CONFIRMED RULE (product owner, 2026-08-24, re-raised specifically for Modalities): "the
+    earliest start date can be only the actual day of today, whenever the human is entering the
+    tour/ticket/modality. It cannot be in the past." builder.start_date_or_today already floors a
+    past start_date at BUILD time (see its docstring), but that only fixes what gets PUBLISHED -
+    the "Valid From" text_input widgets (mt_start_date_*, tk's flow_widget_key start_date) were
+    still handed the RAW extracted date as their `value=`, so a document dated e.g. 2025 kept
+    showing 2025 on screen even though the eventual published record would be correct. That is
+    exactly the appearance-of-a-bug the earlier date fix was meant to end. Extracting a NEW
+    Modality (extract_ticket_modality_data) hands back its own start_date, folded in via
+    data.update(...) - a second, separate place the same raw-date-from-2025 problem can re-enter.
+
+    Call this right after fresh extraction data (whether a whole new item or just a new Modality's
+    data.update(...)) lands in `data`, before the "Valid From" widget renders it. Pass widget_key
+    to also drop that widget's stale session_state entry when its key does NOT already change
+    between extractions (Ticket's per-index mt_start_date_{idx} key doesn't; flows that already
+    re-key on every extraction via bump_widget_generation don't need this)."""
+    data["start_date"] = builder_start_date_or_today(data.get("start_date"))
+    if widget_key:
+        st.session_state.pop(widget_key, None)
 
 
 def apply_clarify_changes(data, result, currency="EUR"):
@@ -3908,6 +3967,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         return
                     data.update(modality_data)
                     reset_child_age_band_widgets(f"mt_{idx}")
+                    floor_start_date_for_new_data(data, widget_key=f"mt_start_date_{idx}")
                 # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
                 # ONE Modality. If the document describes other pricing categories for this same
                 # excursion (e.g. a second price table for another guide language), do NOT
@@ -4078,7 +4138,16 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if mt_price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
         elif mt_price_type == "OCCUPANCY":
-            price_valid = bool(data.get("occupancy_prices")) and any(o.get("amount", 0) for o in data.get("occupancy_prices", []))
+            # CONFIRMED RULE (product owner, 2026-08-24): EVERY offered occupancy needs a real
+            # price, not just one of them. `any(...)` passed a table where rows 1-4 were priced and
+            # 5-9 were left at the editor's default of 0, publishing those as free. See
+            # render_publish_blockers.
+            _occ_rows = data.get("occupancy_prices") or []
+            _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
+            price_valid = bool(_occ_rows) and not _zero_occ
+            if _zero_occ:
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                         f"these would be sellable for free. Enter a price for each, or remove the row.")
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
@@ -4581,6 +4650,7 @@ def render_ticket_flow(client):
 
                 if tk_is_option_only:
                     data = extract_ticket_option_only_data(raw_text, human_hint=tk_hint or None)
+                    floor_start_date_for_new_data(data)
                     st.session_state.tk_extracted = data
                     bump_widget_generation("tk")
                     st.session_state.tk_raw_preview = raw_text
@@ -4604,6 +4674,7 @@ def render_ticket_flow(client):
                         data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
+                        floor_start_date_for_new_data(data)
                         st.session_state.tk_extracted = data
                         # Supersedes the earlier reset_child_age_band_widgets("tk") call: a fresh
                         # generation re-keys EVERY tk widget built through widget_generation(),
@@ -4665,6 +4736,7 @@ def render_ticket_flow(client):
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
 
+                        floor_start_date_for_new_data(data)
                         st.session_state.tk_extracted = data
                         bump_widget_generation("tk")  # see the sibling extraction path above
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
@@ -5008,7 +5080,16 @@ def render_ticket_flow(client):
         if price_type == "SERVICE":
             price_valid = bool(data.get("base_service_price", 0))
         elif price_type == "OCCUPANCY":
-            price_valid = bool(data.get("occupancy_prices")) and any(o.get("amount", 0) for o in data.get("occupancy_prices", []))
+            # CONFIRMED RULE (product owner, 2026-08-24): EVERY offered occupancy needs a real
+            # price, not just one of them. `any(...)` passed a table where rows 1-4 were priced and
+            # 5-9 were left at the editor's default of 0, publishing those as free. See
+            # render_publish_blockers.
+            _occ_rows = data.get("occupancy_prices") or []
+            _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
+            price_valid = bool(_occ_rows) and not _zero_occ
+            if _zero_occ:
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                         f"these would be sellable for free. Enter a price for each, or remove the row.")
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
         if not price_valid:
@@ -5256,6 +5337,14 @@ def render_ticket_flow(client):
             # permanently unpublishable. Only require geolocation confirmation when this
             # publish action actually writes the main ticket (create / update_ticket).
             can_publish = not payloads["main_ticket_error"] and not payloads["ticket_option_error"]
+            # CONFIRMED RULES (product owner, 2026-08-24), both "block publish, tell the operator":
+            #  1. An EXPIRED document must not publish - it used to silently produce an inverted,
+            #     unbookable date window (startDate floored to today, endDate still in the past).
+            #  2. A ticket must never go live with an occupancy priced at 0.00 - the pricing editor
+            #     materializes rows 1..cap defaulting to 0, so a document pricing only 1-4 pax left
+            #     5-9 bookable for free. Hotel already hard-blocks this; Ticket was the last product
+            #     that didn't.
+            can_publish = can_publish and render_publish_blockers(payloads)
             if not tk_is_option_only:
                 can_publish = can_publish and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
                 if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
@@ -6148,7 +6237,11 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
             publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transfer")
-            publish_disabled = bool(build_result.get("transfer_error")) or not match_checked or not dates_ok or not geoloc_ok
+            # CONFIRMED RULE (product owner, 2026-08-24): an expired document blocks publish
+            # rather than silently producing an inverted date window - see render_publish_blockers.
+            publish_disabled = (bool(build_result.get("transfer_error")) or not match_checked
+                                or not dates_ok or not geoloc_ok
+                                or not render_publish_blockers(build_result))
             if st.button(publish_label, type="primary", key=f"xtf_publish_{idx}", disabled=publish_disabled):
                 with st.spinner("Publishing to Travel Compositor..."):
                     try:
@@ -6926,8 +7019,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
 
             publish_label = (f"🚀 Publish — UPDATE existing transport {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transport")
+            # CONFIRMED RULE (product owner, 2026-08-24) - see render_publish_blockers.
             publish_disabled = (bool(build_result.get("transport_error")) or not match_checked or not dates_ok
-                                or not bases_ok or not option_actions or bool(option_errors))
+                                or not bases_ok or not option_actions or bool(option_errors)
+                                or not render_publish_blockers(build_result))
             if st.button(publish_label, type="primary", key=f"xtp_publish_{idx}", disabled=publish_disabled):
                 with st.spinner("Publishing to Travel Compositor..."):
                     try:
@@ -8565,10 +8660,28 @@ def render_price_refresh_flow(client, preselected_kind=None):
     changed = [p for p in proposals if p["status"] == "changed"]
     unchanged = [p for p in proposals if p["status"] == "unchanged"]
     absent = [p for p in proposals if p["status"] == "not_in_document"]
+    blocked = [p for p in proposals if p["status"] == "blocked_unreadable"]
 
     st.subheader("2 — Check the new prices")
     st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
-              f"{len(absent)} not found in it.")
+              f"{len(absent)} not found in it."
+              + (f" · {len(blocked)} could not be read" if blocked else ""))
+
+    # CONFIRMED REAL BUG (audit, 2026-08-24): routes with an unreadable option used to be filtered
+    # out of this screen silently, while their remaining options were repriced around a base
+    # computed from whatever happened to load - see build_proposals. They are now named here and
+    # can never be accepted, so the operator knows to re-run rather than trusting a partial result.
+    if blocked:
+        st.error(
+            f"🚫 **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
+            f"been left untouched. This is usually a temporary API hiccup - re-run the price refresh "
+            f"for this supplier and they should load. They are not repriced, because the base price "
+            f"is shared across a transport's modalities: repricing the ones that did load would "
+            f"silently move the price of the one that didn't."
+        )
+        for p in blocked:
+            names = ", ".join(str(c) for c in (p.get("unreadable_options") or []) if c) or "unknown option(s)"
+            st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}** — couldn't read: `{names}`")
 
     # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
     # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a

@@ -468,12 +468,33 @@ def build_proposals(routes: List[Dict[str, Any]],
             status = "not_in_document"
         else:
             status = "unchanged"
+        # CONFIRMED REAL BUG (audit, 2026-08-24): an option whose live price could not be READ
+        # must block this whole route, not be quietly skipped.
+        #
+        # WHY THE WHOLE ROUTE: rebuild_prices derives ONE base price for the transport from the
+        # WIDEST bracket and then expresses every other option as a supplement relative to it. It
+        # used to compute that base from the SURVIVING options only, so a single transient GET
+        # failure (and GETs are deliberately never retried - see api_client._request) had two
+        # silent effects: the unread option kept its old supplement against a NEW base, becoming a
+        # price nobody chose, and if the failed option happened to BE the widest bracket, the base
+        # was taken from a narrower one - often the 1-pax solo rate - repricing every modality on
+        # the transport. baseChildrenPrice/baseInfantPrice are then scaled by base/old_base, so the
+        # error compounds into the child prices too.
+        #
+        # Nothing surfaced any of this: every UI site filters fetch_failed out without a word, and
+        # apply_proposals reported success. stop_sales_tool.py (~500) already handles the identical
+        # "couldn't read it" case correctly - naming it and excluding it from Apply - and this is
+        # that same treatment.
+        unreadable = [o.get("code") for o in route["options"] if o.get("fetch_failed")]
+        if unreadable:
+            status = "blocked_unreadable"
         proposals.append({
             "index": i, "route": route, "finding": finding, "changes": changes,
             "unchanged": unchanged, "missing": missing, "status": status,
             "currency_changed": currency_changed,
+            "unreadable_options": unreadable,
             # Only genuine changes are pre-ticked. An accept-all button must not sweep up a
-            # route the document never mentioned.
+            # route the document never mentioned - nor one we couldn't fully read.
             "accepted": status == "changed",
         })
     return proposals
@@ -528,6 +549,14 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     the base, or the reverse, would silently reprice every OTHER modality on the transport."""
     if route.get("kind") == KIND_TRANSFER:
         return _rebuild_transfer_prices(route, new_unit_prices)
+    # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
+    # Refusing here as well as at the proposal stage is deliberate belt-and-braces: this function
+    # is what actually computes the shared base price, so it is the place where repricing every
+    # other modality around an unread option would happen. A partial read can never produce a safe
+    # rebuild, so it produces nothing at all.
+    if any(o.get("fetch_failed") for o in route["options"]):
+        return {"transport": None, "options": [],
+                "blocked": "Some of this route's live option prices could not be read."}
     options = [o for o in route["options"] if not o.get("fetch_failed")]
     if not options:
         return {"transport": None, "options": []}
@@ -577,7 +606,13 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
         new_prices = {c["code"]: c["new"] for c in proposal["changes"]}
         payloads = rebuild_prices(route, new_prices)
         if not payloads["transport"]:
-            out["failed"].append({"name": route.get("name"), "detail": "no readable modalities"})
+            out["failed"].append({
+                "name": route.get("name"),
+                # rebuild_prices names WHY when it refused on purpose (some option prices were
+                # unreadable), rather than reporting the same "no readable modalities" for both
+                # "this route has nothing" and "this route could not be safely repriced".
+                "detail": payloads.get("blocked") or "no readable modalities",
+            })
             continue
         updater = (client.update_transfer if route.get("kind") == KIND_TRANSFER
                    else client.update_transport)
