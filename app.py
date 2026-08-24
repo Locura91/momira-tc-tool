@@ -34,7 +34,16 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "FREEIMAGE_API_KEY", "PIXABAY_API_KEY",
+                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "PIXABAY_API_KEY",
+                 # R2 (Cloudflare) image hosting - see r2_client.py's module docstring. Replaces
+                 # the old FREEIMAGE_API_KEY entry that used to be here (freeimage_client.py is
+                 # gone - r2_client.py is the only image-hosting path now). Without these five
+                 # listed here, a correctly-filled Streamlit Secrets R2_* value would never
+                 # actually reach os.environ - this whitelist is the only thing that copies
+                 # st.secrets into os.environ, so a key missing here silently behaves as if it
+                 # were never set, even though it's right there in Secrets.
+                 "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME",
+                 "R2_PUBLIC_BASE_URL",
                  # Translation Sync tool (merged in from momira-translation-sync). Loaded here,
                  # before translation_tool is imported, so its engines see the env they expect.
                  # TRANSLATION_PROVIDER picks gemini (default, cheapest) or claude.
@@ -106,7 +115,7 @@ from pixabay_client import search_images as search_images_pixabay
 # CONFIRMED (product owner, 2026-08-22): switched from freeimage_client (free third-party
 # public host) to r2_client (private Cloudflare R2 bucket you own) - see r2_client.py's module
 # docstring for why and for the one-time setup this requires.
-from r2_client import upload_images as upload_images_freeimage
+from r2_client import upload_images as upload_images_r2
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
@@ -653,7 +662,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             for i, (img_bytes, ext) in enumerate(embedded_images):
                                 doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                             try:
-                                doc_image_urls.extend(upload_images_freeimage(embedded_images))
+                                doc_image_urls.extend(upload_images_r2(embedded_images))
                             except Exception:
                                 pass
                         os.remove(tmp_path)
@@ -3369,7 +3378,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             for i, (img_bytes, ext) in enumerate(embedded_images):
                                 doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                             try:
-                                doc_image_urls.extend(upload_images_freeimage(embedded_images))
+                                doc_image_urls.extend(upload_images_r2(embedded_images))
                             except Exception:
                                 pass
                         os.remove(tmp_path)
@@ -4452,7 +4461,7 @@ def render_ticket_flow(client):
                         for i, (img_bytes, ext) in enumerate(embedded_images):
                             doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                         try:
-                            doc_image_urls.extend(upload_images_freeimage(embedded_images))
+                            doc_image_urls.extend(upload_images_r2(embedded_images))
                         except Exception:
                             pass
                     os.remove(tmp_path)
@@ -9425,7 +9434,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                         doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                     with st.spinner(f"Trying to auto-upload {len(embedded_images)} image(s) from {uploaded.name}..."):
                         try:
-                            new_urls = upload_images_freeimage(embedded_images)
+                            new_urls = upload_images_r2(embedded_images)
                             doc_image_urls.extend(new_urls)
                             if new_urls:
                                 st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")

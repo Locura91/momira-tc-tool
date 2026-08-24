@@ -185,8 +185,8 @@ def get_page_image_bytes(target_url: str) -> list:
     CONFIRMED REAL BUG (reported: URL-scraped images showed as broken/blank
     in the app's picker, while document-embedded images worked fine): the
     two picture sources used to be treated differently - document images
-    are downloaded once during extraction and re-hosted via freeimage.host
-    (always a working, HTTPS-served URL), but URL-scraped images were
+    are downloaded once during extraction and re-hosted via R2 (your private
+    Cloudflare bucket - always a working, HTTPS-served URL), but URL-scraped images were
     instead handed to the browser as a raw hotlink straight back to the
     ORIGINAL source site. Two real things break that in practice: (1) mixed
     content blocking - this app is served over HTTPS, and modern browsers
@@ -198,7 +198,7 @@ def get_page_image_bytes(target_url: str) -> list:
     from other domains/referrers. Downloading server-side here sidesteps
     both, since the browser then never talks to the original source site at
     all for these images - only to Streamlit itself (raw bytes) or to
-    freeimage.host (a reliable, always-HTTPS host), exactly like document
+    R2 (a reliable, always-HTTPS host you control), exactly like document
     images already do.
 
     Returns [(filename, bytes), ...] - the SAME shape as the app's

@@ -44,8 +44,8 @@ from web_extractor import get_page_image_bytes
 # second, independent distribution channel outside your control. Same interface, drop-in swap -
 # see r2_client.py's module docstring for the one-time Cloudflare setup this requires.
 from r2_client import (
-    upload_images as upload_images_freeimage,
-    upload_images_with_errors as upload_images_freeimage_with_errors,
+    upload_images as upload_images_r2,
+    upload_images_with_errors as upload_images_r2_with_errors,
 )
 from ai_extractor import friendly_error_message
 
@@ -871,7 +871,7 @@ def _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls):
     downloaded image goes into doc_raw_images (renders via raw bytes -
     st.image() never has the browser fetch anything, so this always works
     regardless of the source site's own HTTPS/hotlink situation) AND gets
-    an upload attempt to freeimage.host so it can also show up pre-hosted,
+    an upload attempt to R2 (your private bucket) so it can also show up pre-hosted,
     one click away, instead of needing a manual "Upload & Add" - matching
     the exact fallback pattern document images already use.
     """
@@ -885,7 +885,7 @@ def _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls):
         return
     doc_raw_images.extend(page_images_bytes)
     try:
-        doc_image_urls.extend(upload_images_freeimage(
+        doc_image_urls.extend(upload_images_r2(
             [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg") for fname, img_bytes in page_images_bytes]
         ))
     except Exception:
@@ -920,7 +920,7 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
     """
     Shows a thumbnail grid for images extracted from an uploaded document
     (raw bytes, not yet hosted anywhere). Each has its own 'Upload & Add'
-    button (uploads via freeimage.host, then adds the resulting URL) plus a
+    button (uploads via R2, then adds the resulting URL) plus a
     download button as a guaranteed fallback if upload isn't set up/fails.
     Returns a newly-added URL if an upload just succeeded this run, else None.
     """
@@ -955,8 +955,8 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
                 # upload_images) preserves the real reason for each failure instead of a bare
                 # print() nobody sees on Streamlit Cloud - a human clicking this button IS
                 # watching the result, so show them the actual cause (missing/invalid
-                # FREEIMAGE_API_KEY, freeimage.host down, rate-limited, etc).
-                url, errors = upload_images_freeimage_with_errors(
+                # R2 credentials, R2 down, boto3 not installed, etc).
+                url, errors = upload_images_r2_with_errors(
                     [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg")])
                 if url:
                     newly_added_url = url[0]
@@ -964,7 +964,7 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
                 elif errors:
                     # NOT friendly_error_message() here - that's written for Anthropic AI-call
                     # errors ("Something went wrong while talking to the AI service...") and
-                    # would mislabel a freeimage.host hosting failure as an AI problem. The raw
+                    # would mislabel an R2 hosting failure as an AI problem. The raw
                     # message from upload_image() is already written for a human to read.
                     st.error(f"Upload failed: {errors[0]}")
                 else:
