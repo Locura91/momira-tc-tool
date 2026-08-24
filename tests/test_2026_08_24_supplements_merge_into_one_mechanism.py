@@ -107,3 +107,45 @@ def test_payload_build_clips_a_supplement_that_overshoots_the_modality_window():
     supp = result["ticket_option_payload"]["supplements"][0]
     assert supp["startDate"] == "2027-03-01"
     assert supp["endDate"] == "2027-09-30"
+
+
+# ---------------------------------------------------------------------------
+# CONFIRMED REAL-WORLD PROOF (product owner, 2026-08-24): a live GET
+# /tickets/51758/LXR-T2/LXR05 response with exactly two supplements ("Christmas
+# and NYE": +15/+15, 2026-12-22 to 2027-01-03; "Easter surcharge": +15/+15,
+# 2027-03-25 to 2027-03-31) on an OCCUPANCY-priced Modality. Reproducing the same
+# input through our own builder must produce the identical supplements shape -
+# this pins the wire format against a real, already-accepted Travel Compositor
+# payload rather than just our own assumptions about the schema.
+# ---------------------------------------------------------------------------
+
+def test_matches_real_travel_compositor_occupancy_ticket_with_two_supplements():
+    data = minimal_ticket_data(modality_supplements=[
+        {"name": "Christmas and NYE", "adult_price_supplement": 15, "children_price_supplement": 15,
+         "infant_price_supplement": 0, "start_date": "2026-12-22", "end_date": "2027-01-03"},
+        {"name": "Easter surcharge", "adult_price_supplement": 15, "children_price_supplement": 15,
+         "infant_price_supplement": 0, "start_date": "2027-03-25", "end_date": "2027-03-31"},
+    ])
+    data["start_date"] = "2026-08-24"
+    data["end_date"] = "2027-10-31"
+    data["price_type"] = "OCCUPANCY"
+    data["occupancy_prices"] = [{"occupancy": 1, "amount": 95.0}]
+
+    result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
+    option = result["ticket_option_payload"]
+
+    assert option["priceType"] == "OCCUPANCY"
+    assert len(option["supplements"]) == 2
+
+    christmas, easter = option["supplements"]
+    assert christmas["adultPriceSupplement"] == 15.0
+    assert christmas["childrenPriceSupplement"] == 15.0
+    assert christmas["infantPriceSupplement"] == 0.0
+    assert christmas["startDate"] == "2026-12-22"
+    assert christmas["endDate"] == "2027-01-03"
+    assert christmas["translations"]["EN"]["name"] == "Christmas and NYE"
+
+    assert easter["adultPriceSupplement"] == 15.0
+    assert easter["startDate"] == "2027-03-25"
+    assert easter["endDate"] == "2027-03-31"
+    assert easter["translations"]["EN"]["name"] == "Easter surcharge"

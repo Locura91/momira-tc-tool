@@ -5000,6 +5000,24 @@ def render_ticket_flow(client):
             st.info(f"🔎 {data['schedule_notes']}")
         data["operational_days"] = st.multiselect("Operational Days", ALL_WEEKDAYS,
                                                    default=data.get("operational_days", ALL_WEEKDAYS), key=flow_widget_key("tk", "op_days"))
+
+        # CONFIRMED REAL BUG (product owner, 2026-08-24 - "surcharges are not working correctly"):
+        # Valid From/Valid Until used to be set FURTHER DOWN the script (after the pricing editor),
+        # while render_ticket_modality_supplements_editor was called up here - a classic Streamlit
+        # ordering bug. render_ticket_modality_supplements_editor reads data["start_date"]/
+        # data["end_date"] to default undated supplement rows and clip out-of-window dates, but at
+        # the point it ran, those two fields still held whatever was in `data` BEFORE this render's
+        # Valid From/Until edit took effect (Streamlit widgets only update `data` at the line they're
+        # called, and that line ran later) - a full script rerun behind. The table shown to the human,
+        # and what got saved into modality_supplements on edit, was defaulted/clipped against a STALE
+        # Modality window, not the one they'd just typed. Moved here, ABOVE both the Stop Sales and
+        # Supplements editors, so both always see this render's real Valid From/Valid Until.
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=flow_widget_key("tk", "start_date")))
+        with dcol2:
+            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=flow_widget_key("tk", "end_date")))
+
         # Same fix and reasoning as the multi-Ticket batch flow's Stop Sales editor (see the
         # "CONFIRMED REAL BUG" comment there): the raw JSON text_area went stale under "Tell AI
         # what to fix" and wasn't an easy way to add one by hand either. render_stop_sales_editor
@@ -5035,11 +5053,9 @@ def render_ticket_flow(client):
         render_ticket_pricing_editor(data, f"tk_{widget_generation('tk')}", currency, max_passengers)
         price_type = data["price_type"]
 
-        dcol1, dcol2 = st.columns(2)
-        with dcol1:
-            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=flow_widget_key("tk", "start_date")))
-        with dcol2:
-            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=flow_widget_key("tk", "end_date")))
+        # Valid From/Valid Until now render further up the page (right before the Stop Sales and
+        # Supplements by dates editors, which both depend on data["start_date"]/data["end_date"] being
+        # fresh for THIS render) - see the "CONFIRMED REAL BUG" comment there. Kept out of this spot.
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
