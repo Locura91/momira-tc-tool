@@ -133,7 +133,7 @@ import price_refresh
 # app. Its own sync engines and API client live in separate modules (translator.py,
 # state_store.py, sync_*.py, travelcompositor_api.py) and are untouched - see
 # translation_tool.py's docstring for what changed at the UI layer and why.
-from translation_tool import render_translation_tool
+from translation_tool import render_translation_tool, DEFAULT_TARGET_LANGUAGES
 # The Supplier Discovery & Outreach tool, merged in from the standalone
 # momira-suppliersearch-mail app (originally React + Express). Its discovery/vetting
 # and email engines were ported to Python in outreach_discovery.py and
@@ -2145,27 +2145,88 @@ def render_clarify_result(result, review_hint="review above before continuing"):
         st.info(summary)
 
 
+# EN first (the base language every ticket has by default), then the same 19 codes the
+# Translation tool already offers, so there's one shared list of language codes across the app
+# rather than two that could drift apart.
+TICKET_LANGUAGE_OPTIONS = ["EN"] + DEFAULT_TARGET_LANGUAGES
+LANGUAGE_CODE_NAMES = {
+    "EN": "English", "FR": "French", "SL": "Slovenian", "PL": "Polish", "DE": "German",
+    "SK": "Slovak", "HU": "Hungarian", "NL": "Dutch", "ES": "Spanish", "TR": "Turkish",
+    "RU": "Russian", "NO": "Norwegian", "SV": "Swedish", "RO": "Romanian", "CS": "Czech",
+    "EL": "Greek", "FI": "Finnish", "PT": "Portuguese", "DA": "Danish", "IT": "Italian",
+}
+
+
+def render_ticket_language_options(data, key_prefix):
+    """Which language(s) this Modality runs in, at the SAME price - Travel Compositor's own
+    "Language Options" tab on the Modality screen.
+
+    CONFIRMED REAL GAP (product owner, 2026-08-24): "we must include the language options within
+    a ticket, as so far only one language is allowed. But often we receive two or more language
+    options for the same price, if so, we must include it within the modality." The schema
+    (ContractTicketModalityVO.languages) and builder.py already accepted a real list here - it
+    was extraction and the UI that never surfaced it, so every ticket silently published as
+    English-only even when a document listed "English/German-speaking guide" as equal standard
+    options. See ai_extractor.py's `languages` field rule for the extraction side (and how it's
+    kept distinct from a language that costs EXTRA, which stays its own Modality via Extra Costs
+    below, unchanged).
+
+    Editable here too, independent of what extraction found, since a human reading the source
+    directly may catch a language the AI missed or want to add one the document didn't spell out
+    explicitly (e.g. "and other languages on request at no extra charge").
+    """
+    current = [c for c in (data.get("languages") or ["EN"]) if c in TICKET_LANGUAGE_OPTIONS] or ["EN"]
+    chosen = st.multiselect(
+        "Language Options (offered at this SAME price)",
+        TICKET_LANGUAGE_OPTIONS,
+        default=current,
+        format_func=lambda code: f"{code} — {LANGUAGE_CODE_NAMES.get(code, code)}",
+        key=f"{key_prefix}_languages",
+        help="A language that costs MORE than the base price is a different product, not a language "
+             "option here - enter that as its own row under Extra Costs below instead.",
+    )
+    data["languages"] = chosen or ["EN"]
+
+
 TICKET_EXTRA_COST_COLS = ["Name", "Group (alternatives share one)", "Adult extra", "Child extra", "Infant extra"]
 
 
 def render_ticket_extra_costs(data, key_prefix, base_code="", base_name=""):
-    """The Ticket answer to 'this costs more if...' - one Modality per combination, no supplements.
+    """A place to note a Ticket's OTHER priced variants - each one a SEPARATE Modality, created
+    one at a time afterward, never here.
 
     CONFIRMED PRODUCT-OWNER RULE: a Ticket has no supplements. If the same ticket costs more with a
     German-speaking guide, that is a second Modality at base + surcharge, not a fee bolted onto the
-    first one. Confirmed follow-up: with several extras, generate EVERY combination.
+    first one.
 
-    GROUP is what makes "every combination" safe. Extras sharing a group are alternatives that can
-    never be booked together (a booking has one guide language), so each group contributes at most
-    one option. Leave the group empty for something independently choosable, like a lunch upgrade.
+    CONFIRMED REAL REQUEST (product owner, 2026-08-24): "please only allow one Modality creation
+    within Ticket Creation - as the multiple ticket creation is not working yet. I want now to
+    start with the first mass production of tickets and I would like to have a smooth system now
+    running." This screen used to compute and show "N Modalities will be created" from every
+    combination of these rows (build_ticket_modality_combinations) - but Ticket creation (both the
+    single and batch flows) has published exactly ONE Modality since the 2026-08-13 rule cited
+    above, and NEVER read that combinations list. The preview promised something creation didn't
+    do, which is exactly the kind of thing that stops feeling "smooth" during a real production
+    run. Now this only ever names what a human still has to go create afterward, one Modality at a
+    time, via Update/Refresh existing Service -> Ticket -> "Add new Modality to existing Ticket" -
+    matching the message already shown above this section during creation.
+
+    GROUP still matters for that later step: extras sharing a group are alternatives that can never
+    be booked together (a booking has one guide language), so give every guide language the group
+    `Guide language`. Leave the group empty for something independently choosable, like a lunch
+    upgrade. A language offered at the SAME price as the base (not an extra cost) belongs in
+    Language Options above instead - it stays on THIS Modality rather than becoming a new one.
     """
-    st.markdown("**Extra costs → Modalities**")
-    st.caption("A Ticket has no supplements. Every extra cost below becomes its own Modality, priced "
-              "at the base price **plus** that extra — so enter the EXTRA, not the total. If the "
-              "base (English guide) adult price is 40 and German costs 50, the extra is 10.")
+    st.markdown("**Extra costs → future Modalities**")
+    st.caption("A Ticket has no supplements. If a document prices a variant of this same excursion "
+              "higher (a different guide language, a vehicle upgrade), note the EXTRA on top of the "
+              "base price here as a reminder - so if the base (English guide) adult price is 40 and "
+              "German costs 50, the extra is 10. **Only the base Modality above is created now** - "
+              "each row here becomes its OWN separate Modality afterward, one at a time, via "
+              "Update/Refresh existing Service -> Ticket -> \"Add new Modality to existing Ticket\".")
     st.caption("**Group**: extras sharing a group are alternatives and are never combined — give every "
               "guide language the group `Guide language`. Leave the group empty for an add-on that can "
-              "go with anything (a lunch upgrade). Every valid combination is generated below.")
+              "go with anything (a lunch upgrade).")
 
     rows = [
         {"Name": o.get("name", ""), "Group (alternatives share one)": o.get("group", ""),
@@ -2199,25 +2260,20 @@ def render_ticket_extra_costs(data, key_prefix, base_code="", base_name=""):
                   "before the rule changed. They will NOT be published. Re-enter them above as extra "
                   "costs so each becomes a real Modality with its own full price.")
 
+    # CAPPED AT 1 (2026-08-24): see this function's docstring - creation only ever publishes the
+    # base Modality, so this is computed purely to LIST what still needs creating afterward, never
+    # to auto-generate more than one Modality here.
     combos = build_ticket_modality_combinations(
         {"adult": data.get("base_adult_price", 0), "children": data.get("base_children_price", 0),
          "infant": data.get("base_infant_price", 0)},
-        data.get("extra_cost_options") or [], base_code=base_code, base_name=base_name)
+        data.get("extra_cost_options") or [], base_code=base_code, base_name=base_name, max_modalities=1)
     data["generated_modalities"] = combos
 
-    if len(combos) > 1:
-        st.markdown(f"**{len(combos)} Modalities will be created:**")
-        st.dataframe(pd.DataFrame([
-            {"Code": c["code"], "Name": c["name"], "Adult": c["adult_price"],
-             "Child": c["children_price"], "Infant": c["infant_price"],
-             "Extras": ", ".join(c["extras"]) or "— base —"} for c in combos
-        ]), width="stretch", hide_index=True)
-        if combos[0].get("dropped"):
-            st.warning(f"⚠️ {combos[0]['dropped']} further combination(s) were NOT generated — the app "
-                      f"caps this at {len(combos)} Modalities per ticket. The base and the simplest "
-                      f"combinations were kept. Remove an extra cost, or create the remaining ones by hand.")
-    elif data.get("extra_cost_options"):
-        st.info("Only the base Modality is generated — every extra cost row needs a Name to count.")
+    variants = [o for o in (data.get("extra_cost_options") or []) if isinstance(o, dict) and (o.get("name") or "").strip()]
+    if variants:
+        st.info(f"ℹ️ **Only the base Modality will be created now.** {len(variants)} other priced "
+                f"variant(s) noted above still need creating afterward, one at a time: "
+                + ", ".join(f"'{o['name'].strip()}'" for o in variants) + ".")
     return combos
 
 
@@ -3968,6 +4024,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     data.update(modality_data)
                     reset_child_age_band_widgets(f"mt_{idx}")
                     floor_start_date_for_new_data(data, widget_key=f"mt_start_date_{idx}")
+                    # Same fixed-key staleness as the child-age boxes above (see
+                    # reset_child_age_band_widgets' docstring) - the languages multiselect is
+                    # keyed on this same positional slot, so a fresh Modality extraction needs
+                    # its stale selection cleared too, or a re-used slot shows the PREVIOUS
+                    # item's language picks instead of this one's freshly extracted default.
+                    st.session_state.pop(f"mt_{idx}_languages", None)
                 # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
                 # ONE Modality. If the document describes other pricing categories for this same
                 # excursion (e.g. a second price table for another guide language), do NOT
@@ -4052,6 +4114,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # supplements (a seasonal price row, a holiday guide surcharge) - only the main Ticket
         # record has none. See render_ticket_modality_supplements_editor's docstring.
         render_ticket_modality_supplements_editor(data, f"mt_{idx}")
+
+        render_ticket_language_options(data, f"mt_{idx}")
 
         render_ticket_extra_costs(data, f"mt_{idx}",
                                   base_code=current.get("modality_code") or current.get("ticket_code") or "",
@@ -5024,6 +5088,8 @@ def render_ticket_flow(client):
         # is the same friendly Start/End Date table already used for ClosedTour.
         render_stop_sales_editor(data, f"tk_{widget_generation('tk')}")
         render_ticket_modality_supplements_editor(data, f"tk_{widget_generation('tk')}")
+
+        render_ticket_language_options(data, f"tk_{widget_generation('tk')}")
 
         num_days = len(data.get("operational_days", []))
         num_stops = len(data.get("stop_sales", []))

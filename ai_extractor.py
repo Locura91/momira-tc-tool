@@ -2416,7 +2416,21 @@ Extract:
   words, that the tour/transfer can run in EITHER English OR German - work one clear sentence to that
   effect into the description, e.g. "This transfer is guided in either English or German." Never leave it
   ambiguous or worded so it could be read as both languages being provided at once - the guest must
-  clearly understand they get ONE of the two.
+  clearly understand they get ONE of the two. ALSO list every one of these equal-price languages in the
+  `languages` field below (see its own rule) - the includes/description sentence is for the customer to
+  read, `languages` is the structured field Travel Compositor's own "Language Options" tab is built from,
+  and both must agree.
+- languages: CONFIRMED REAL GAP (product owner, 2026-08-24): "we must include the language options within
+  a ticket, as so far only one language is allowed. But often we receive two or more language options for
+  the same price." A list of ISO 639-1 two-letter UPPERCASE codes (e.g. ["EN"], or ["EN","DE"] for the
+  dual-language case above) for every language this Modality runs in AT THE SAME PRICE - this is a
+  DIFFERENT thing from a language that costs EXTRA (that stays a separate extra_cost_options Modality, per
+  the GUIDE LANGUAGE RULE above - never put a priced-extra language here). Default ["EN"] when only one
+  language is stated or implied. Common codes: EN English, DE German, FR French, ES Spanish, IT Italian,
+  NL Dutch, PT Portuguese, RU Russian, PL Polish, CS Czech, SK Slovak, HU Hungarian, RO Romanian, SV
+  Swedish, NO Norwegian, DA Danish, FI Finnish, EL Greek, TR Turkish, SL Slovenian. If a language is
+  mentioned but doesn't match a code you're confident of, still include your best-guess code and name it
+  in pricing_notes so a human can correct it - never silently drop a stated language.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
 - what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
   what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
@@ -2628,7 +2642,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [],
-  "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
+  "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "languages": ["EN"],
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
 }"""
 
@@ -2725,7 +2739,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
         "adult_taxes_amount": 0, "child_taxes_amount": 0,
         "infant_taxes_amount": 0, "supplements": [], "extra_cost_options": [], "modality_supplements": [],
-        "pricing_notes": "", "stop_sales": [], "image_urls": [],
+        "pricing_notes": "", "stop_sales": [], "image_urls": [], "languages": ["EN"],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
     }
@@ -3153,6 +3167,17 @@ Extract:
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
+- languages: CONFIRMED REAL GAP (product owner, 2026-08-24): "we must include the language options within
+  a ticket, as so far only one language is allowed. But often we receive two or more language options for
+  the same price." A list of ISO 639-1 two-letter UPPERCASE codes (e.g. ["EN"], or ["EN","DE"] when the
+  source lists two or more languages as EQUAL standard options at the SAME price - e.g. "licenced English/
+  German-speaking guiding service", "English or German speaking guide"). This is a DIFFERENT case from a
+  language that costs EXTRA - that one stays a separate extra_cost_options Modality below, group "Guide
+  language", and must NOT also be listed here. Default ["EN"] when only one language is stated or implied.
+  Common codes: EN English, DE German, FR French, ES Spanish, IT Italian, NL Dutch, PT Portuguese, RU
+  Russian, PL Polish, CS Czech, SK Slovak, HU Hungarian, RO Romanian, SV Swedish, NO Norwegian, DA Danish,
+  FI Finnish, EL Greek, TR Turkish, SL Slovenian. If a language is mentioned but doesn't match a code
+  you're confident of, still include your best-guess code and name it in pricing_notes.
 - extra_cost_options: every EXTRA COST this same ticket can carry - the things that make the identical
   experience cost more. Each one becomes its own Ticket Modality downstream, priced at the base price PLUS
   this extra, so extract the EXTRA ON TOP, not the total.
@@ -3215,7 +3240,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "child_age_min": 2, "child_age_max": 12, "disallow_adult": false, "disallow_children": false,
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
-  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0,
+  "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
   "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
   "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": []
 }"""
@@ -3256,7 +3281,7 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
         "disallow_infant": False,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
-        "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0,
+        "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
         "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         "supplements": [],
@@ -3380,8 +3405,12 @@ start_date, end_date (this modality's validity window), operational_days, time_t
 modality_supplements (DATED price changes only - a seasonal price table or a holiday surcharge, NOT a
 customer choice - see full prompt's rules on this: each entry is {"name", "adult_price_supplement",
 "children_price_supplement", "infant_price_supplement", "start_date", "end_date"}, both dates required),
-pricing_notes. Never exclusive alternatives, different guide languages, or on-request items here - those
-belong in extra_cost_options as their own Modality, and NEVER voluntary carbon offset/emission compensation
+languages (list of ISO 639-1 two-letter UPPERCASE codes this Modality runs in AT THE SAME PRICE, e.g.
+["EN"], or ["EN","DE"] when the source lists two or more languages as EQUAL standard options at the same
+price - "licenced English/German-speaking guiding service" - default ["EN"]; a language that costs EXTRA
+is NOT a language option here, it stays its own Modality via extra_cost_options), pricing_notes. Never
+exclusive alternatives, different guide languages, or on-request items here - those belong in
+extra_cost_options as their own Modality, and NEVER voluntary carbon offset/emission compensation
 charges, ignore those entirely.
 
 CRITICAL - NEVER include an instruction telling the customer to contact the operator/supplier directly
@@ -3407,7 +3436,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
   "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
-  "time_tables": [], "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": ""
+  "time_tables": [], "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "",
+  "languages": ["EN"]
 }"""
 
 
@@ -3423,7 +3453,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "time_tables": [],
+        "time_tables": [], "languages": ["EN"],
         "supplements": [], "extra_cost_options": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         # Defensive - fields main ticket payload construction still reads even if unused for this action

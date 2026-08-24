@@ -459,8 +459,15 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
     undated fallback) - a row missing either is silently dropped rather than
     published, since an undated Ticket supplement can't be told apart from a
     permanent price rise.
+
+    CONFIRMED REAL REQUEST (product owner, 2026-08-24): "we should also call it 'Supplement by
+    date' within the tickets, so the human knows where it goes." Renamed to match Travel
+    Compositor's own Modality screen exactly - it has a "Supplements by dates" box right under
+    the pricing table (same Name/From/To/Adult/Child/Infant columns) - so what the operator
+    sees here and what they'd see if they opened the record in Travel Compositor afterward are
+    now the same words, not two different names for the same thing.
     """
-    with st.expander(f"Seasonal / Holiday Supplements ({len(data.get('modality_supplements') or [])} dated price change(s))"):
+    with st.expander(f"Supplements by dates ({len(data.get('modality_supplements') or [])} dated price change(s))"):
         if help_text:
             st.caption(help_text)
         st.caption("Each row adds an EXTRA amount on top of this Modality's base price during that date "
