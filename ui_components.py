@@ -38,7 +38,12 @@ from builder import (
 # boundary and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from web_extractor import get_page_image_bytes
-from freeimage_client import (
+# CONFIRMED (product owner, 2026-08-22): switched from freeimage_client (a free third-party
+# public image host, no access control) to r2_client (a private Cloudflare R2 bucket you own) -
+# these document images are licensed "for the website only" and a third-party public host is a
+# second, independent distribution channel outside your control. Same interface, drop-in swap -
+# see r2_client.py's module docstring for the one-time Cloudflare setup this requires.
+from r2_client import (
     upload_images as upload_images_freeimage,
     upload_images_with_errors as upload_images_freeimage_with_errors,
 )

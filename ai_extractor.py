@@ -127,7 +127,22 @@ Rules:
 - description MUST be formatted as day-by-day HTML using this EXACT pattern (confirmed against a real published tour) - one block per day, each day title in bold, separated by an empty paragraph:
   <p><strong>Day 1: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p>...
   Keep going for every day in the itinerary. Regardless of how the source presents each day - a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), a bare bullet list, or already flowing prose - always REWRITE it into natural, engaging, SEO-strong flowing sentences for that day's paragraph, not a copy of the raw format. Use ONLY facts, places, and activities that are actually present in the source - never invent or add details, opening hours, prices, or claims that aren't there. The goal is better PROSE, not more information.
-  LENGTH LIMIT: keep each day's paragraph to 3-4 sentences MAXIMUM (roughly 60-90 words) - pick the most compelling highlights rather than listing everything mentioned. This is a firm limit, not a suggestion - shorter, punchier prose reads better anyway and keeps the response fast to generate.
+  LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap):
+  aim for roughly 120-180 words per day's paragraph (about 6-9 sentences) - use the fuller end of that
+  range whenever the source actually gives enough real material to draw from, rather than defaulting to
+  the shorter end. This is meaningfully longer than a summary - the goal is SEO-substantial copy that
+  reads like a genuine day-by-day travel guide, not a bare fact list. Still governed by the never-invent
+  rule above: expand by drawing out and elaborating on what the source DOES state (the destination's
+  character, what a moment on the day would look/feel like, why a stop matters) - never by adding facts,
+  numbers, or claims that aren't there. A day with very little source material can run shorter than the
+  target rather than being padded with invented detail, but treat that as the exception, not the norm.
+  SEO CRAFT (CONFIRMED, product owner, 2026-08-22): naturally work the day's key place names and activity
+  names into the prose more than once across the paragraph (e.g. don't just say "the temple" throughout -
+  reuse "the temple's name" a second time), rather than relying on pronouns after the first mention - this
+  is genuine, natural phrasing, never keyword-stuffing (no unnatural repetition, no dropping a name into a
+  sentence where it doesn't fit). Vary each day's opening sentence structure so consecutive days don't all
+  start the same way (avoid "Today you will..." on every single day). If the source mentions a notable
+  nearby landmark, region, or context for a stop, weave that in as color rather than dropping it.
   MEAL CODES: if the source indicates which meals are included each day (e.g. "[B, L, D]", "[-, L, D]", "Breakfast and lunch included"), add the SAME meal codes in parentheses right after that day's title, e.g. "Day 1: Short title (B, L)". Only include codes for meals actually mentioned for that day - if a day has no meals mentioned, add nothing in parentheses. Use these codes: B=Breakfast, L=Lunch, D=Dinner, P=Picnic (add other single-letter codes only if the source uses a different one you can map clearly). At the very END of the full description (after the last day's closing </p><p><br></p>), add ONE final legend paragraph explaining only the codes actually used anywhere in the description, e.g.: <p><em>B = Breakfast | L = Lunch | D = Dinner</em></p>. Omit any code not actually used. If the source gives no meal information at all, skip both the parenthetical codes and the legend entirely.
   PACKAGE-WIDE PRE-ARRIVAL ADVISORY: if the source mentions an advisory, instruction, or strong
   recommendation that affects the WHOLE package/booking rather than a single day - most commonly
@@ -2261,11 +2276,23 @@ Extract:
   a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
   actually present in the source - never invent details, ratings, superlatives, or claims that aren't
   there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
-  true. Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+  true. Format: <p>paragraph(s)</p>.
+  LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap): aim for
+  4-6 paragraphs - use the fuller end of that range whenever the source gives enough real material,
+  rather than defaulting to the shorter end. This is meaningfully more substantial than a summary - the
+  goal is SEO-substantial copy, not a brief blurb. Expand by drawing out and elaborating on what the
+  source DOES state (what the experience involves moment to moment, the character of the location, why a
+  stop or inclusion matters) - never by adding facts, numbers, or claims that aren't there.
+  SEO CRAFT (CONFIRMED, product owner, 2026-08-22): naturally work the excursion's key place names and
+  activity names into the prose more than once across the paragraphs (reuse the specific name rather than
+  relying only on pronouns after the first mention) - this is genuine, natural phrasing, never
+  keyword-stuffing (no unnatural repetition, no dropping a name into a sentence where it doesn't fit).
+  Vary sentence openers rather than starting every paragraph the same way. If the source mentions a
+  notable nearby landmark, region, or context, weave that in as color rather than dropping it.
   NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
   with no marketing copy still states enough real facts to write from - the activity itself, the city,
-  what's included, the duration, the schedule, the meeting point. Build 1-2 honest paragraphs from
-  whatever real facts the source DOES give rather than returning an empty string - the rule above against
+  what's included, the duration, the schedule, the meeting point. Build honest paragraphs from whatever
+  real facts the source DOES give rather than returning an empty string - the rule above against
   inventing details means never adding a fact that isn't there, not leaving the field blank when facts
   exist to write from. Only if the source is so minimal that even a single true sentence cannot be
   written (essentially never in practice) should this be short rather than empty.
@@ -2748,11 +2775,23 @@ Extract:
   a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
   actually present in the source - never invent details, ratings, superlatives, or claims that aren't
   there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
-  true. Format: <p>paragraph(s)</p> - keep it to 2-4 short paragraphs maximum.
+  true. Format: <p>paragraph(s)</p>.
+  LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap): aim for
+  4-6 paragraphs - use the fuller end of that range whenever the source gives enough real material,
+  rather than defaulting to the shorter end. This is meaningfully more substantial than a summary - the
+  goal is SEO-substantial copy, not a brief blurb. Expand by drawing out and elaborating on what the
+  source DOES state (what the experience involves moment to moment, the character of the location, why a
+  stop or inclusion matters) - never by adding facts, numbers, or claims that aren't there.
+  SEO CRAFT (CONFIRMED, product owner, 2026-08-22): naturally work the excursion's key place names and
+  activity names into the prose more than once across the paragraphs (reuse the specific name rather than
+  relying only on pronouns after the first mention) - this is genuine, natural phrasing, never
+  keyword-stuffing (no unnatural repetition, no dropping a name into a sentence where it doesn't fit).
+  Vary sentence openers rather than starting every paragraph the same way. If the source mentions a
+  notable nearby landmark, region, or context, weave that in as color rather than dropping it.
   NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
   with no marketing copy still states enough real facts to write from - the activity itself, the city,
-  what's included, the duration, the schedule, the meeting point. Build 1-2 honest paragraphs from
-  whatever real facts the source DOES give rather than returning an empty string - the rule above against
+  what's included, the duration, the schedule, the meeting point. Build honest paragraphs from whatever
+  real facts the source DOES give rather than returning an empty string - the rule above against
   inventing details means never adding a fact that isn't there, not leaving the field blank when facts
   exist to write from. Only if the source is so minimal that even a single true sentence cannot be
   written (essentially never in practice) should this be short rather than empty.

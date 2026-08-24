@@ -103,7 +103,10 @@ from ui_components import (
 from web_extractor import get_page_text, get_page_image_bytes
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
-from freeimage_client import upload_images as upload_images_freeimage
+# CONFIRMED (product owner, 2026-08-22): switched from freeimage_client (free third-party
+# public host) to r2_client (private Cloudflare R2 bucket you own) - see r2_client.py's module
+# docstring for why and for the one-time setup this requires.
+from r2_client import upload_images as upload_images_freeimage
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
