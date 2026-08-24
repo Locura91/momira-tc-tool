@@ -68,6 +68,16 @@ drop-in replacement - only the import line in app.py / ui_components.py needs to
 import os
 import uuid
 import mimetypes
+from dotenv import load_dotenv
+
+# CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
+# nothing was actually loading the .env file into the process environment - the old
+# freeimage_client.py called load_dotenv() itself, and nothing replaced that call when this
+# module took over. Without this, a perfectly correct local .env file would silently never be
+# read (os.getenv returns None for everything, surfacing as "Missing R2 credential(s)" even
+# though the file is right there) - self-contained here so it doesn't depend on some other
+# module in the app having already called it first.
+load_dotenv()
 
 _EXT_TO_CONTENT_TYPE = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
