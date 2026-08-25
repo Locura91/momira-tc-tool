@@ -378,27 +378,29 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
     retry/timeout logic is unrelated to that and stays in place - HTTPError (which a 432 is) is
     deliberately NOT retried above, so it never amplified the burst that caused the 432s.
 
-    AUTOMATIC FALLBACK TO GEMINI (added 2026-08-25, same day): once the 432s were traced to a
-    genuine Tavily plan usage-limit exhaustion (confirmed by the response body - see
-    _raise_for_status_with_body), the product owner asked for a second free-tier provider rather
-    than just pacing requests: "what is a free tool I could use for only this search? Could I
-    use Gemini Free Tier?" - see _search_with_gemini_grounding's own docstring for why that's a
-    good fit. CONFIRMED PRODUCT-OWNER CHOICE: automatic, not manual - "try Tavily first; if it
-    fails, retry with Gemini" for that same call, with no human having to switch anything. The
-    primary provider is still picked exactly as before (Tavily, then SerpAPI); Gemini is tried
-    ONLY after the primary has genuinely failed (including its own transient-error retry above),
-    and only once, and never against itself - if Gemini IS the primary (the only key configured)
-    and it fails, that failure is raised as-is, same as any other provider failing with no
-    fallback left."""
-    def _primary_name() -> str:
-        if os.getenv("TAVILY_API_KEY"):
-            return "tavily"
-        if os.getenv("SERPAPI_API_KEY"):
-            return "serpapi"
-        if os.getenv("GEMINI_API_KEY"):
-            return "gemini"
-        return "mock"
+    AUTOMATIC FALLBACK CHAIN, Tavily -> SerpAPI -> Gemini (built 2026-08-25, same day, in two
+    steps): once the 432s were traced to a genuine Tavily plan usage-limit exhaustion (confirmed
+    by the response body - see _raise_for_status_with_body), the product owner asked for a
+    second free-tier provider rather than just pacing requests, and specifically named Gemini's
+    free tier (checked against Google's own pricing page - see _search_with_gemini_grounding's
+    own docstring). A Gemini-only fallback then hit a SECOND real limit the very next run: its
+    free tier isn't just 500 requests/day, it's ALSO capped at just 5 requests per MINUTE for
+    gemini-2.5-flash (confirmed by the actual 429 RESOURCE_EXHAUSTED error, which named that
+    exact quota) - and since Tavily's quota was still exhausted, nearly EVERY search call was
+    falling through to Gemini, blowing straight past 5/minute on a Country Scope run. Product
+    owner's confirmed choice: add SerpAPI (already wired in, free 250 searches/month, no
+    per-minute limit reported) as a middle step, so Gemini is only reached once BOTH a real
+    search API has failed - a true last resort, not the de facto primary.
 
+    Every provider with a key configured is tried, in this fixed order: Tavily, then SerpAPI,
+    then Gemini - each with its own existing transient-error retry (see above) before moving on
+    to the next. A provider with no key set is skipped entirely (never counted as "tried and
+    failed"). If NONE of the three keys are set, the mock provider runs instead (unchanged, no
+    fallback chain - mock is for "no keys configured", never used after a REAL provider fails,
+    since silently substituting demo data for a genuine search failure would be worse than
+    surfacing the failure). If every configured provider in the chain fails, the LAST one's
+    error is what propagates - visible to the user exactly as before (see
+    _run_provider_search_with_diagnostics)."""
     def _run(name: str) -> List[Dict[str, Any]]:
         if name == "tavily":
             return _search_with_tavily(query, domains, max_results)
@@ -414,13 +416,20 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             return _run(name)
 
-    primary = _primary_name()
-    try:
-        return _call_with_transient_retry(primary)
-    except Exception:
-        if primary != "gemini" and os.getenv("GEMINI_API_KEY"):
-            return _run("gemini")
-        raise
+    chain = [name for name, env_key in
+            (("tavily", "TAVILY_API_KEY"), ("serpapi", "SERPAPI_API_KEY"),
+             ("gemini", "GEMINI_API_KEY"))
+            if os.getenv(env_key)]
+    if not chain:
+        return _run("mock")
+
+    last_error: Optional[Exception] = None
+    for name in chain:
+        try:
+            return _call_with_transient_retry(name)
+        except Exception as e:
+            last_error = e
+    raise last_error
 
 
 def run_provider_search(source: str, query: str, country: str, keyword: str,

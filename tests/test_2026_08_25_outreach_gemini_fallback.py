@@ -10,6 +10,14 @@ requests/day, no credit card required. GEMINI_API_KEY is already a config key th
 CONFIRMED PRODUCT-OWNER CHOICE: automatic fallback (try Tavily first; on failure, retry with
 Gemini for that same call), not a manual switch, and not Gemini-as-primary.
 
+FOLLOW-UP THE SAME DAY: a Gemini-only fallback then hit a second real limit - its free tier is
+ALSO capped at just 5 requests/MINUTE for gemini-2.5-flash (confirmed by the actual 429
+RESOURCE_EXHAUSTED error), and since Tavily's plan quota was still exhausted, nearly every call
+was falling through to Gemini and blowing straight past that limit. Product owner: "I have
+SERPAPI Key with me" - confirmed choice was to insert SerpAPI as a middle step: Tavily -> SerpAPI
+-> Gemini, each tried in order, so Gemini is reached only once BOTH real search APIs have
+failed. See the chain tests at the bottom of this file.
+
 _search_with_gemini_grounding builds {"title","url","snippet"} results from Gemini's grounding
 metadata (a generated answer + cited source chunks), not a plain results array like Tavily/
 SerpAPI - these tests use a fake genai client (via the injectable _get_gemini_client) rather
@@ -223,3 +231,99 @@ def test_serpapi_primary_also_falls_back_to_gemini(monkeypatch):
                         lambda q, d, m: [{"title": "Gemini saved it", "url": "https://x.com", "snippet": ""}])
     result = od._select_and_run_provider("dmc_country", "q", "Morocco", "tours", [], 5)
     assert result == [{"title": "Gemini saved it", "url": "https://x.com", "snippet": ""}]
+
+
+# ---------------------------------------------------------------------------
+# Three-way chain: Tavily -> SerpAPI -> Gemini (2026-08-25, same day, after the 5 RPM finding)
+# ---------------------------------------------------------------------------
+
+def test_full_chain_falls_through_tavily_and_serpapi_to_gemini(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "fake-tavily-key")
+    monkeypatch.setenv("SERPAPI_API_KEY", "fake-serpapi-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+
+    calls = []
+
+    def tavily_boom(q, d, m):
+        calls.append("tavily")
+        raise requests.exceptions.HTTPError("432 plan usage limit exceeded")
+
+    def serpapi_boom(q, d, m):
+        calls.append("serpapi")
+        raise requests.exceptions.HTTPError("429 rate limited")
+
+    def gemini_ok(q, d, m):
+        calls.append("gemini")
+        return [{"title": "Gemini saved it", "url": "https://x.com", "snippet": ""}]
+
+    monkeypatch.setattr(od, "_search_with_tavily", tavily_boom)
+    monkeypatch.setattr(od, "_search_with_serpapi", serpapi_boom)
+    monkeypatch.setattr(od, "_search_with_gemini_grounding", gemini_ok)
+
+    result = od._select_and_run_provider("dmc_country", "q", "Morocco", "tours", [], 5)
+    assert calls == ["tavily", "serpapi", "gemini"]  # tried in this exact order, no skips
+    assert result == [{"title": "Gemini saved it", "url": "https://x.com", "snippet": ""}]
+
+
+def test_serpapi_succeeding_stops_the_chain_before_gemini(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "fake-tavily-key")
+    monkeypatch.setenv("SERPAPI_API_KEY", "fake-serpapi-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+
+    def tavily_boom(q, d, m):
+        raise requests.exceptions.HTTPError("432 plan usage limit exceeded")
+
+    def serpapi_ok(q, d, m):
+        return [{"title": "SerpAPI result", "url": "https://y.com", "snippet": ""}]
+
+    def gemini_should_not_be_called(q, d, m):
+        raise AssertionError("Gemini must not be reached when SerpAPI already succeeded")
+
+    monkeypatch.setattr(od, "_search_with_tavily", tavily_boom)
+    monkeypatch.setattr(od, "_search_with_serpapi", serpapi_ok)
+    monkeypatch.setattr(od, "_search_with_gemini_grounding", gemini_should_not_be_called)
+
+    result = od._select_and_run_provider("dmc_country", "q", "Morocco", "tours", [], 5)
+    assert result == [{"title": "SerpAPI result", "url": "https://y.com", "snippet": ""}]
+
+
+def test_all_three_configured_and_all_three_fail_raises_the_last_error(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "fake-tavily-key")
+    monkeypatch.setenv("SERPAPI_API_KEY", "fake-serpapi-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+
+    monkeypatch.setattr(od, "_search_with_tavily",
+                        lambda q, d, m: (_ for _ in ()).throw(requests.exceptions.HTTPError("tavily 432")))
+    monkeypatch.setattr(od, "_search_with_serpapi",
+                        lambda q, d, m: (_ for _ in ()).throw(requests.exceptions.HTTPError("serpapi 429")))
+    monkeypatch.setattr(od, "_search_with_gemini_grounding",
+                        lambda q, d, m: (_ for _ in ()).throw(
+                            requests.exceptions.HTTPError("gemini 429 RESOURCE_EXHAUSTED")))
+
+    try:
+        od._select_and_run_provider("dmc_country", "q", "Morocco", "tours", [], 5)
+        assert False, "expected an error to propagate once every provider in the chain failed"
+    except requests.exceptions.HTTPError as e:
+        assert "gemini" in str(e)  # the LAST provider tried is what's surfaced
+
+
+def test_a_provider_with_no_key_is_skipped_entirely_not_counted_as_failed(monkeypatch):
+    """SerpAPI is unset here - it must never be attempted, even indirectly, so the chain goes
+    straight from a failing Tavily to Gemini."""
+    monkeypatch.setenv("TAVILY_API_KEY", "fake-tavily-key")
+    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+
+    def tavily_boom(q, d, m):
+        raise requests.exceptions.HTTPError("432 plan usage limit exceeded")
+
+    def serpapi_should_not_be_called(q, d, m):
+        raise AssertionError("SerpAPI must not be called - no SERPAPI_API_KEY is configured")
+
+    monkeypatch.setattr(od, "_search_with_tavily", tavily_boom)
+    monkeypatch.setattr(od, "_search_with_serpapi", serpapi_should_not_be_called)
+    monkeypatch.setattr(od, "_search_with_gemini_grounding",
+                        lambda q, d, m: [{"title": "Gemini", "url": "https://x.com", "snippet": ""}])
+
+    result = od._select_and_run_provider("dmc_country", "q", "Morocco", "tours", [], 5)
+    assert result == [{"title": "Gemini", "url": "https://x.com", "snippet": ""}]
