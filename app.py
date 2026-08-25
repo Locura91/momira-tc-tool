@@ -2300,6 +2300,127 @@ def get_existing_ticket_codes(client, supplier_id):
     return cache[supplier_id]
 
 
+def get_existing_ticket_modality_codes(client, supplier_id):
+    """
+    CONFIRMED REAL REQUEST (product owner, 2026-08-24): "check if the ticket number from the
+    supplier has been already added. the supplier often provides a ticket code and this must
+    be the modality code for the ticket... we can avoid double tickets in the travel c system."
+
+    A supplier's own reference code for a specific excursion/service (e.g. "LXR05") becomes this
+    app's Modality Code, per the app's own convention - but the CONTAINER Ticket record around it
+    gets an arbitrary, human-chosen Ticket Code (e.g. "LXR-T2") that has no relationship to the
+    supplier's code at all. That means the existing Ticket-Code uniqueness check
+    (check_code_availability) can never catch the real duplicate this creates: the same supplier
+    product, re-imported from the same or a re-sent document, published a second time under a
+    DIFFERENT Ticket Code wrapper with the identical Modality Code inside it.
+
+    Fetches every existing Ticket for this supplier (get_existing_ticket_codes), then GETs each
+    one individually to read its `modalityCodes` list (confirmed field on the real GET
+    /tickets/{supplierId}/{ticketCode} response - see the "Existing modality codes" display this
+    app already showed on the Update/Add-modality screen before this check existed). This is
+    O(N) GET calls for N existing tickets, all uncached the first time - unavoidable, since the
+    list endpoint itself doesn't carry each ticket's modality codes. Cached per supplier_id in
+    session_state so it only costs this once per supplier per session, exactly like
+    get_existing_ticket_codes()/get_existing_tour_names() already do.
+
+    A single failed per-ticket GET is skipped rather than aborting the whole sweep (GETs don't
+    auto-retry - api_client._request) - but that means a real duplicate COULD be missed if the
+    one ticket that actually holds it happened to fail. Returns (items, warning) where items is
+    [{"ticket_code", "ticket_name", "modality_code"}, ...] (best-effort, always returned even on
+    partial failure) and warning is None on full success or a string naming how many tickets
+    couldn't be checked, so callers can tell the human this check may be incomplete rather than
+    silently presenting a partial sweep as a clean "not a duplicate".
+    """
+    if "_existing_modality_codes_cache" not in st.session_state:
+        st.session_state._existing_modality_codes_cache = {}
+    cache = st.session_state._existing_modality_codes_cache
+    if supplier_id in cache:
+        return cache[supplier_id]
+
+    tickets, list_error = get_existing_ticket_codes(client, supplier_id)
+    if list_error is not None:
+        cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing tickets")
+        return cache[supplier_id]
+
+    items = []
+    failed = 0
+    for t in tickets:
+        t_code = (t.get("code") or "").strip()
+        if not t_code:
+            continue
+        try:
+            result = client.get_ticket(supplier_id, t_code)
+        except Exception:
+            result = None
+        if not isinstance(result, dict) or "error" in result:
+            failed += 1
+            continue
+        for m_code in (result.get("modalityCodes") or []):
+            m_code = (m_code or "").strip()
+            if m_code:
+                items.append({"ticket_code": t_code, "ticket_name": t.get("name") or t_code, "modality_code": m_code})
+
+    warning = f"{failed} of {len(tickets)} existing ticket(s) couldn't be checked - this duplicate check may be incomplete." if failed else None
+    cache[supplier_id] = (items, warning)
+    return cache[supplier_id]
+
+
+def check_modality_code_availability(client, supplier_id, modality_code, ignore_ticket_code=None):
+    """
+    Cross-checks a candidate Modality Code against every Modality Code already published for
+    this supplier's tickets - see get_existing_ticket_modality_codes()'s docstring for why this
+    catches a class of duplicate the Ticket-Code check alone cannot.
+
+    `ignore_ticket_code`: when adding/updating a modality on a ticket the human is already
+    working WITH (action in add_option/update_option), that ticket's own existing modality
+    codes are expected matches, not duplicates - pass its code here to exclude it from the
+    comparison so re-saving a ticket's own modality never triggers a false "already used".
+
+    Returns {"exists": bool, "ticket_code": str, "ticket_name": str} | None. None means the
+    code is either blank or the check couldn't be completed with confidence (matches
+    check_code_availability's own "None = inconclusive, don't call it available" convention).
+    """
+    clean_code = (modality_code or "").strip()
+    if not clean_code:
+        return None
+    items, warning = get_existing_ticket_modality_codes(client, supplier_id)
+    if warning is not None and not items:
+        return None
+    clean_code_lower = clean_code.lower()
+    ignore_lower = (ignore_ticket_code or "").strip().lower()
+    match = next(
+        (it for it in items
+         if it["modality_code"].strip().lower() == clean_code_lower
+         and it["ticket_code"].strip().lower() != ignore_lower),
+        None
+    )
+    if match:
+        return {"exists": True, "ticket_code": match["ticket_code"], "ticket_name": match["ticket_name"]}
+    if warning is not None:
+        # Some tickets couldn't be checked - a partial "not found" isn't confident enough to
+        # call available outright, but IS worth surfacing so a human can decide (unlike
+        # check_code_availability's binary case, a partial sweep still has real signal).
+        return {"exists": False, "ticket_code": None, "ticket_name": None, "incomplete": warning}
+    return {"exists": False, "ticket_code": None, "ticket_name": None}
+
+
+def render_modality_code_availability_check(client, supplier_id, modality_code, ignore_ticket_code=None):
+    """Same immediate-feedback pattern as render_code_availability_check, for Modality Codes -
+    see check_modality_code_availability()'s docstring for what this actually catches."""
+    result = check_modality_code_availability(client, supplier_id, modality_code, ignore_ticket_code)
+    if result is None:
+        return
+    if result["exists"]:
+        st.error(f"🚫 Modality Code `{(modality_code or '').strip()}` is ALREADY USED by ticket "
+                f"**{result['ticket_name']}** (`{result['ticket_code']}`) for this supplier. If the "
+                f"supplier's own reference code is the same, this looks like the same product being "
+                f"added again - double-check before continuing, or use an Update/Add-modality action "
+                f"on the existing ticket instead.")
+    elif result.get("incomplete"):
+        st.warning(f"⚠️ `{(modality_code or '').strip()}` wasn't found among this supplier's existing "
+                  f"modality codes, but {result['incomplete']}")
+
+
 def get_existing_hotel_names(client, supplier_id):
     """
     Hotel equivalent of get_existing_tour_names()/get_existing_ticket_codes() - fetches and
@@ -3640,6 +3761,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         missing_codes = []
         new_queue = []
         seen_ticket_codes = {}
+        seen_modality_codes = {}
         for cand in candidates:
             if not cand["selected"]:
                 continue
@@ -3649,11 +3771,17 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 missing_codes.append(cand["label"] or "(unnamed excursion)")
                 continue
             seen_ticket_codes.setdefault(code, []).append(cand["label"] or "(unnamed excursion)")
+            seen_modality_codes.setdefault(mod_code.lower(), []).append(cand["label"] or "(unnamed excursion)")
             new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code,
                              "modality_name": (cand.get("modality_name") or mod_code).strip(), "data": None,
                              "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
 
         duplicate_codes = {code: labels for code, labels in seen_ticket_codes.items() if len(labels) > 1}
+        # CONFIRMED REAL REQUEST (product owner, 2026-08-24): two rows in the SAME batch sharing a
+        # Modality Code is a strong signal the same supplier product got detected/entered twice -
+        # block it here, same severity as a duplicate Ticket Code, rather than only warning about
+        # it against Travel Compositor's existing tickets below.
+        duplicate_modality_codes = {mc: labels for mc, labels in seen_modality_codes.items() if len(labels) > 1}
 
         if missing_codes:
             st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
@@ -3662,6 +3790,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             for code, labels in duplicate_codes.items():
                 st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
                         f"- each Ticket needs its own unique code.")
+        if duplicate_modality_codes:
+            for mc, labels in duplicate_modality_codes.items():
+                st.error(f"🚫 Modality Code `{mc}` is used by more than one selected excursion ({', '.join(labels)}) "
+                        f"- this usually means the same supplier product was detected/entered twice. Give each "
+                        f"a distinct Modality Code, or untick the duplicate.")
 
         for q in new_queue:
             existing_check = check_code_availability(client, "ticket", supplier_id, q["ticket_code"])
@@ -3669,8 +3802,19 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.error(f"🚫 Ticket Code `{q['ticket_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
                         f"by an existing ticket (\"{existing_check.get('name') or '(unnamed)'}\") - choose a "
                         f"different code before publishing, or this will fail.")
+            # CONFIRMED REAL REQUEST (product owner, 2026-08-24): the supplier's own code is often
+            # reused as this Modality Code - see check_modality_code_availability's docstring for
+            # why this catches a duplicate the Ticket-Code check above cannot.
+            mod_check = check_modality_code_availability(client, supplier_id, q["modality_code"])
+            if mod_check and mod_check["exists"]:
+                st.warning(f"⚠️ Modality Code `{q['modality_code']}` ({q['label'] or '(unnamed)'}) is ALREADY "
+                          f"USED by existing ticket **{mod_check['ticket_name']}** (`{mod_check['ticket_code']}`) "
+                          f"for this supplier - if that's the same supplier product, this would create a "
+                          f"duplicate. Double-check before continuing.")
+            elif mod_check and mod_check.get("incomplete"):
+                st.caption(f"ℹ️ Modality Code `{q['modality_code']}`: {mod_check['incomplete']}")
 
-        ready_to_review = new_queue and not missing_codes and not duplicate_codes
+        ready_to_review = new_queue and not missing_codes and not duplicate_codes and not duplicate_modality_codes
         st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
                   "Fix the issues above before continuing.")
 
@@ -4512,6 +4656,17 @@ def render_ticket_flow(client):
             default_modality = st.session_state.get("tk_check_modality_pick", "") if action == "update_option" else ""
             label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
             modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard 7 Days", key="tk_modality_code")
+            # CONFIRMED REAL REQUEST (product owner, 2026-08-24): the supplier's own code is often
+            # reused as this Modality Code, and the same product can get re-imported under a
+            # DIFFERENT (arbitrary, human-chosen) Ticket Code - the Ticket-Code check above can't
+            # catch that. See check_modality_code_availability's docstring. For "update_option"/
+            # "add_option", the ticket being worked on right now is excluded from the comparison
+            # (via ignore_ticket_code) - its own existing modality is an expected match there, not
+            # a duplicate; a match on any OTHER ticket still warns.
+            if action in ("update_option", "add_option"):
+                render_modality_code_availability_check(client, supplier_id, modality_code_in, existing_ticket_code_in)
+            else:
+                render_modality_code_availability_check(client, supplier_id, modality_code_in)
         if "on_request" in needed:
             on_request_in = st.checkbox("On Request", value=False, key="tk_on_request")
         if "release_days" in needed:
@@ -4756,25 +4911,45 @@ def render_ticket_flow(client):
             else:
                 tkpv_missing = [s["label"] for s in tkpv_selection if s["selected"] and (not s["ticket_code"].strip() or not s["modality_code"].strip())]
                 tkpv_codes_seen = {}
+                tkpv_mod_codes_seen = {}
                 for s in tkpv_selection:
                     if s["selected"] and s["ticket_code"].strip():
                         tkpv_codes_seen.setdefault(s["ticket_code"].strip(), []).append(s["label"])
+                    if s["selected"] and s["modality_code"].strip():
+                        tkpv_mod_codes_seen.setdefault(s["modality_code"].strip().lower(), []).append(s["label"])
                 tkpv_dupes = {c: labs for c, labs in tkpv_codes_seen.items() if len(labs) > 1}
+                # CONFIRMED REAL REQUEST (product owner, 2026-08-24) - same rationale as the sibling
+                # candidate-selection screen: two rows sharing a Modality Code usually means the
+                # same supplier product was detected twice.
+                tkpv_mod_dupes = {c: labs for c, labs in tkpv_mod_codes_seen.items() if len(labs) > 1}
                 tkpv_existing = []
+                tkpv_mod_existing = []
                 for s in tkpv_selection:
                     if s["selected"] and s["ticket_code"].strip():
                         existing_check = check_code_availability(client, "ticket", supplier_id, s["ticket_code"])
                         if existing_check and existing_check["exists"]:
                             tkpv_existing.append(s["ticket_code"].strip())
+                    if s["selected"] and s["modality_code"].strip():
+                        mod_check = check_modality_code_availability(client, supplier_id, s["modality_code"])
+                        if mod_check and mod_check["exists"]:
+                            tkpv_mod_existing.append(
+                                f"{s['modality_code'].strip()} (already on ticket {mod_check['ticket_code']})")
 
                 if tkpv_missing:
                     st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
                 elif tkpv_dupes:
                     st.error(f"🚫 These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
+                elif tkpv_mod_dupes:
+                    st.error(f"🚫 These Modality Codes are used by more than one selected excursion - give each "
+                            f"a distinct one: {list(tkpv_mod_dupes.keys())}")
                 elif tkpv_existing:
                     st.error(f"🚫 These Ticket Codes are ALREADY TAKEN by existing tickets - choose different "
                             f"ones: {tkpv_existing}")
                 else:
+                    if tkpv_mod_existing:
+                        st.warning(f"⚠️ These Modality Codes are already used by an existing ticket for this "
+                                  f"supplier - double-check these aren't the same product added again: "
+                                  f"{tkpv_mod_existing}")
                     tk_pending_url = st.session_state.get("tk_pending_url")
                     new_mt_queue = [
                         {"label": s["label"], "ticket_code": s["ticket_code"].strip(), "modality_code": s["modality_code"].strip(),
