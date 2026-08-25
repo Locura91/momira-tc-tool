@@ -48,9 +48,13 @@ def test_discover_suppliers_is_faster_running_concurrently_than_the_slowest_sing
 
     def slow_fake(source, query, country, keyword, domains, max_results):
         time.sleep(0.05)
-        return []
+        return [], None
 
-    monkeypatch.setattr(od, "run_provider_search", slow_fake)
+    # discover_suppliers' query fan-out calls _run_provider_search_with_diagnostics (added
+    # 2026-08-25 to distinguish a provider error from a genuine no-results - see that
+    # function's own docstring), not the plain run_provider_search - patch the one actually
+    # used by the code under test.
+    monkeypatch.setattr(od, "_run_provider_search_with_diagnostics", slow_fake)
     t0 = time.time()
     od.discover_suppliers("Kenya", "Nairobi", "safari tours")
     elapsed = time.time() - t0
@@ -72,9 +76,10 @@ def test_query_results_land_in_query_order_even_when_later_queries_finish_first(
         time.sleep(0.01 * (len(queries) - idx))
         return [{"title": f"Business {idx} safari Kenya", "url": f"https://business{idx}.example.com",
                  "snippet": f"A wonderful safari tours operator in Kenya, Nairobi. rated 4.8 stars, "
-                            f"250 reviews. Contact: info@business{idx}.example.com"}]
+                            f"250 reviews. Contact: info@business{idx}.example.com"}], None
 
-    monkeypatch.setattr(od, "run_provider_search", fake_run_provider_search)
+    # Same note as the test above - the fan-out calls _run_provider_search_with_diagnostics.
+    monkeypatch.setattr(od, "_run_provider_search_with_diagnostics", fake_run_provider_search)
     # AI verification would need a live Claude call - keep this test to the rule-based pipeline.
     monkeypatch.setattr(od, "is_ai_verification_enabled", lambda: False)
     result = od.discover_suppliers("Kenya", "Nairobi", "safari tours")

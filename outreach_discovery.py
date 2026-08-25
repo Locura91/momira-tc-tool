@@ -260,6 +260,40 @@ def run_provider_search(source: str, query: str, country: str, keyword: str,
         return []
 
 
+def _run_provider_search_with_diagnostics(source: str, query: str, country: str, keyword: str,
+                                          domains: Optional[List[str]], max_results: int
+                                          ) -> "tuple[List[Dict[str, Any]], Optional[str]]":
+    """CONFIRMED REAL INCIDENT (2026-08-25): a Morocco Country Scope run (40 combinations) came
+    back with "0 raw results" for every single one - real to the person who saw it as "not a
+    single supplier found, that can't be" for a country with plenty of real DMCs/guides. The
+    breakdown panel this feeds correctly distinguishes a search problem from a filter problem
+    (see this module's docstring), but "0 raw" was itself ambiguous in a second way it never
+    accounted for: run_provider_search() swallows EVERY exception (a bad/expired API key, a rate
+    limit, a network failure, a malformed provider response) and returns an empty list either
+    way - printed to a server console the person using this tool never sees. "The provider
+    genuinely found nothing for this query" and "every single call to the provider failed with
+    an error" were indistinguishable from inside the app, and only the second one means the tool
+    itself is broken right now (an expired/rate-limited key would fail identically for EVERY
+    query, not just Morocco's - which is exactly what the reported all-zero, 40-combination
+    result looks like).
+
+    Same provider selection as run_provider_search - kept as a SEPARATE function rather than
+    changing that one's return shape, since run_provider_search's plain "-> list" contract has
+    existing callers (see its own module docstring's pipeline step 2) that expect a bare list
+    back no matter what. This sibling is used only by discover_suppliers' own query fan-out,
+    where the caller can actually do something useful with the distinction."""
+    domains = domains or []
+    try:
+        if os.getenv("TAVILY_API_KEY"):
+            return _search_with_tavily(query, domains, max_results), None
+        if os.getenv("SERPAPI_API_KEY"):
+            return _search_with_serpapi(query, domains, max_results), None
+        return _search_with_mock_provider(source, country, keyword), None
+    except Exception as e:
+        print(f"[outreach_discovery] provider search failed for \"{query}\": {e}")
+        return [], f"{source}: {e}"
+
+
 # ============================================================================
 # 3. SIGNAL PARSING - rating / review count / handles out of raw text
 # ============================================================================
@@ -1341,16 +1375,28 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     report(f"Searching {len(queries)} source(s)…")
     with ThreadPoolExecutor(max_workers=min(len(queries), _search_concurrency())) as pool:
         results_per_query = list(pool.map(
-            lambda q: run_provider_search(q["source"], q["query"], country, keyword,
-                                          q["domains"], q["max_results"]),
+            lambda q: _run_provider_search_with_diagnostics(q["source"], q["query"], country, keyword,
+                                                             q["domains"], q["max_results"]),
             queries,
         ))
-    for q, results in zip(queries, results_per_query):
+    # CONFIRMED REAL INCIDENT (2026-08-25): see _run_provider_search_with_diagnostics' own
+    # docstring - every provider call failing with an error (bad/expired key, rate limit,
+    # network issue) used to look IDENTICAL to "the provider genuinely found nothing", both as
+    # raw_count == 0. Collecting the errors here lets the caller tell the two apart instead of
+    # reporting a plausible-but-wrong "no suppliers exist" conclusion.
+    provider_errors = []
+    for q, (results, error) in zip(queries, results_per_query):
+        if error:
+            provider_errors.append(error)
         for raw in results:
             candidates.append(parse_signals(raw, q["source"]))
 
     raw_count = len(candidates)
-    report(f"{raw_count} raw result(s) found. Filtering…")
+    if provider_errors:
+        report(f"{raw_count} raw result(s) found ({len(provider_errors)} of {len(queries)} "
+               f"source(s) failed with an error). Filtering…")
+    else:
+        report(f"{raw_count} raw result(s) found. Filtering…")
 
     relevance_tokens = build_relevance_tokens(country, keyword)
     drop_log: List[Dict[str, Any]] = []
@@ -1500,5 +1546,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
             "no_contact_dropped": no_contact_dropped,
             "final": len(suppliers),
             "used_mock_provider": not (os.getenv("TAVILY_API_KEY") or os.getenv("SERPAPI_API_KEY")),
+            "provider_error_count": len(provider_errors),
+            "provider_error_sample": provider_errors[0] if provider_errors else None,
         },
     }

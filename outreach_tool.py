@@ -283,9 +283,18 @@ def _merge_one_job_result(merged, seen, stats, label, result, drop_log=None):
     real businesses, rejected them) without re-running as a single search instead. Now every
     combination's full stats and drop_log merge in, so the same breakdown lights up here too."""
     for key in ("raw", "after_prefilter", "after_vetting", "after_dedupe",
-                "ai_dropped", "no_contact_dropped", "final"):
+                "ai_dropped", "no_contact_dropped", "final", "provider_error_count"):
         stats[key] = stats.get(key, 0) + result["stats"].get(key, 0)
     stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
+    # CONFIRMED REAL INCIDENT (2026-08-25): a Morocco run came back "0 raw results" across all
+    # 40 combinations - which reads as "no suppliers exist for Morocco" but can just as easily
+    # mean every single search call failed (bad/expired API key, rate limit, network issue) -
+    # see outreach_discovery._run_provider_search_with_diagnostics' own docstring. Keep the
+    # FIRST error message seen across the whole run as a representative sample, not every one -
+    # 40 combinations x up to 10 queries each failing identically would otherwise flood this
+    # into an unreadable wall of repeated text.
+    if not stats.get("provider_error_sample"):
+        stats["provider_error_sample"] = result["stats"].get("provider_error_sample")
     if drop_log is not None:
         for entry in result.get("drop_log") or []:
             tagged = dict(entry)
@@ -353,6 +362,7 @@ def _init_queue_run(queue):
     st.session_state.or_queue_stats = {
         "raw": 0, "after_prefilter": 0, "after_vetting": 0, "after_dedupe": 0,
         "ai_dropped": 0, "no_contact_dropped": 0, "final": 0, "used_mock_provider": False,
+        "provider_error_count": 0, "provider_error_sample": None,
     }
     st.session_state.or_queue_drop_log = []
     st.session_state.or_queue_failures = []
@@ -544,6 +554,25 @@ def _render_review_and_send():
                 f"that point is below; run the rest later if you want the remaining "
                 f"{stats['total_planned'] - stats['searched']}.")
 
+    # CONFIRMED REAL INCIDENT (2026-08-25): a Morocco Country Scope run came back "0 raw
+    # results" across all 40 combinations - which reads as "no suppliers exist for Morocco" but
+    # can just as easily mean the search provider itself failed on every single call (expired/
+    # invalid API key, rate limit, network issue). Those two situations used to be
+    # indistinguishable from inside the app - see outreach_discovery._run_provider_search_with_
+    # diagnostics' own docstring. This is checked and shown BEFORE the generic "no suppliers
+    # survived filtering" message below, since it's the more specific, more actionable diagnosis
+    # when it applies: "found nothing" (a genuine market question) vs. "the search is broken
+    # right now" (a config/connectivity problem, fixable without touching any filter).
+    if stats.get("provider_error_count"):
+        st.error(
+            f"⚠️ **{stats['provider_error_count']} search call(s) failed with an error** instead "
+            f"of genuinely finding no results — this looks like a problem with the search "
+            f"provider itself (an expired/invalid API key, rate limiting, or a network issue), "
+            f"not a real absence of suppliers. Sample error: `{stats.get('provider_error_sample')}`. "
+            f"Check `TAVILY_API_KEY`/`SERPAPI_API_KEY` and the provider's own dashboard for quota/"
+            f"rate-limit status before concluding there's nothing to find here."
+        )
+
     if not suppliers:
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
 
@@ -722,6 +751,8 @@ def _render_review_and_send():
             scol2.metric("After merging duplicates", stats["after_dedupe"])
             scol3.metric("Dropped by AI check", stats["ai_dropped"])
             scol3.metric("Dropped: no way to contact", stats["no_contact_dropped"])
+            if stats.get("provider_error_count"):
+                scol3.metric("Search calls that errored", stats["provider_error_count"])
         else:
             st.caption("This breakdown is only available for a single Country/City/Keyword search - a "
                        "combination run merges several searches together, so there's no single "
