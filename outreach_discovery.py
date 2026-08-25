@@ -182,6 +182,31 @@ def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]
 # ============================================================================
 # 2. PLUGGABLE SEARCH PROVIDERS
 # ============================================================================
+def _raise_for_status_with_body(res: "requests.Response") -> None:
+    """Like Response.raise_for_status(), but the raised error's message carries the response
+    BODY, not just the bare status line.
+
+    CONFIRMED REAL GAP (product owner, 2026-08-25, recurring after the concurrency revert):
+    "60 search call(s) failed... Sample error: `dmc_city: 432 Client Error:  for url:
+    https://api.tavily.com/search`". A bare requests.raise_for_status() message is only ever
+    the status line - it never includes what the provider actually SAID, and Tavily/SerpAPI
+    both return a JSON body explaining exactly why a call failed (an invalid/expired key, a
+    plan's usage limit reached, a malformed request) whenever they return a non-2xx status.
+    Without the body, "432" alone forces a guess between rate limiting, a WAF/anti-bot layer,
+    or a broken API key - three problems with three different fixes (wait it out, slow down
+    requests, or replace the key) - each time this happens. Surfacing the body turns that
+    guess into a fact the operator can act on immediately, without needing a developer to add
+    print statements and reproduce it."""
+    try:
+        res.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        body = (res.text or "").strip()
+        if body:
+            raise requests.exceptions.HTTPError(f"{e} — response body: {body[:500]}",
+                                                response=res) from e
+        raise
+
+
 def _search_with_tavily(query: str, domains: List[str], max_results: int) -> List[Dict[str, Any]]:
     payload = {
         "api_key": os.getenv("TAVILY_API_KEY"),
@@ -193,7 +218,7 @@ def _search_with_tavily(query: str, domains: List[str], max_results: int) -> Lis
     if domains:
         payload["include_domains"] = domains
     res = requests.post("https://api.tavily.com/search", json=payload, timeout=SEARCH_REQUEST_TIMEOUT_S)
-    res.raise_for_status()
+    _raise_for_status_with_body(res)
     data = res.json()
     return [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content")}
             for r in (data.get("results") or [])]
@@ -208,7 +233,7 @@ def _search_with_serpapi(query: str, domains: List[str], max_results: int) -> Li
         params={"q": scoped, "api_key": os.getenv("SERPAPI_API_KEY"), "num": max_results},
         timeout=SEARCH_REQUEST_TIMEOUT_S,
     )
-    res.raise_for_status()
+    _raise_for_status_with_body(res)
     data = res.json()
     return [{"title": r.get("title"), "url": r.get("link"), "snippet": r.get("snippet") or ""}
             for r in (data.get("organic_results") or [])]
