@@ -55,6 +55,7 @@ MODULE_BUILD = "2026-08-21-rollover-closed-check"
 
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -133,6 +134,37 @@ def _enrichment_concurrency() -> int:
         return max(1, int(os.getenv("ENRICHMENT_CONCURRENCY") or "6"))
     except ValueError:
         return 6
+
+
+def _search_call_delay_s() -> float:
+    """Deliberate pacing between successive Tavily/SerpAPI calls in discover_suppliers' own
+    query fan-out (which is already sequential/non-concurrent - see that function's own
+    comment on the 2026-08-25 concurrency revert).
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25), same day: after the concurrency revert, a
+    Morocco Country Scope run still failed every one of its 60 search calls - this time with
+    Tavily's own error body (now visible via _raise_for_status_with_body) reading "This request
+    exceeds your plan's set usage limit." Product owner: "we have to change the search time
+    again to 20 seconds per field" - the same "slower but reliable" trade already explicitly
+    accepted once this same day for the earlier burst-triggered 432s ("The time for the search
+    was much longer, but thats okay."). A deliberate pause between calls slows how fast this
+    tool consumes the provider's usage budget, on top of already being sequential.
+
+    NOTE this does not by itself fix a genuine PLAN-LEVEL quota being exhausted (the account
+    running out of purchased search credits for its billing period) - only a rate-style limit
+    that resets over time. Tavily's own error message ("upgrade your plan or contact
+    support@tavily.com") reads like the former; this pacing is a real mitigation either way
+    (it can't hurt, and does help if the limit is rate-based) but is not a substitute for
+    checking the Tavily dashboard.
+
+    Read at call time (not import time), same pattern as _min_rating/_enrichment_concurrency,
+    so an env var set after import (Streamlit secrets) is honored. Default 20s, matching the
+    number given verbatim; set SEARCH_CALL_DELAY_S=0 to disable (used by the test suite - a
+    real 20s per call would make it untestable)."""
+    try:
+        return max(0.0, float(os.getenv("SEARCH_CALL_DELAY_S") or "20"))
+    except ValueError:
+        return 20.0
 
 
 # ============================================================================
@@ -1441,12 +1473,21 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     # much longer, but that's okay." Back to one query at a time; _run_provider_search_with_
     # diagnostics (error visibility) and the longer SEARCH_REQUEST_TIMEOUT_S / retry-once
     # logic in _select_and_run_provider are kept - neither is implicated in the 432s.
+    #
+    # PACED (2026-08-25, same day, CONFIRMED REAL RECURRENCE): even sequential, a Morocco run
+    # still failed every one of its 60 calls - this time with Tavily's OWN error body (see
+    # _raise_for_status_with_body) reading "This request exceeds your plan's set usage limit."
+    # Product owner: "we have to change the search time again to 20 seconds per field." See
+    # _search_call_delay_s's own docstring for the full story and its caveat (this paces
+    # requests; it does not by itself fix a plan-level quota that's genuinely exhausted).
     report(f"Searching {len(queries)} source(s)…")
-    results_per_query = [
-        _run_provider_search_with_diagnostics(q["source"], q["query"], country, keyword,
-                                               q["domains"], q["max_results"])
-        for q in queries
-    ]
+    delay_s = _search_call_delay_s()
+    results_per_query = []
+    for i, q in enumerate(queries):
+        if i > 0 and delay_s > 0:
+            time.sleep(delay_s)
+        results_per_query.append(_run_provider_search_with_diagnostics(
+            q["source"], q["query"], country, keyword, q["domains"], q["max_results"]))
     # CONFIRMED REAL INCIDENT (2026-08-25): see _run_provider_search_with_diagnostics' own
     # docstring - every provider call failing with an error (bad/expired key, rate limit,
     # network issue) used to look IDENTICAL to "the provider genuinely found nothing", both as

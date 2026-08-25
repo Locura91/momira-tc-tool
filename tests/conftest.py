@@ -24,6 +24,13 @@ os.environ.pop("DATABASE_URL", None)
 for _key in ("TRAVELC_USERNAME", "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY"):
     os.environ.pop(_key, None)
 
+# outreach_discovery._search_call_delay_s() defaults to a real 20-second pause between search
+# calls (CONFIRMED PRODUCT-OWNER REQUEST, 2026-08-25 - see that function's own docstring) - fine
+# in production, but a test that exercises discover_suppliers()'s multi-query fan-out would
+# otherwise take minutes instead of milliseconds. Disabled for the whole suite; a test that
+# specifically wants to verify the pacing itself can override this with monkeypatch.setenv.
+os.environ["SEARCH_CALL_DELAY_S"] = "0"
+
 import pytest
 
 
