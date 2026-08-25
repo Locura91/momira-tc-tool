@@ -1336,3 +1336,61 @@ class TravelCompositorAPI:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
+
+
+# ============================================================================
+# SHARED ERROR TRANSLATION - a raw TC error dict -> a message a human can act on
+# ============================================================================
+def describe_tc_fetch_error(detail: Any, entity_label: str = "this record") -> str:
+    """CONFIRMED REAL INCIDENT (2026-08-25): translating Closed Tour TNR-01 (supplier 50370)
+    failed with `{"error": 400, "message": "{\\"error\\":[\\"java.lang.NullPointerException:
+    Cannot invoke \\\\\\"com.tr2.entity.AgeRange.getMin()\\\\\\" because \\\\\\"ageRange\\\\\\"
+    is null\\"],\\"status\\":\\"BAD_REQUEST\\"}"}` - Travel Compositor's own server threw an
+    unhandled Java exception (a genuine NullPointerException, not a validation error) while
+    reading that specific record's data and returned it wrapped in a 400 rather than the more
+    accurate 500. That is a bug on Travel Compositor's side in a piece of data already stored on
+    their server, not anything this tool sent or anything wrong with the closed tour code entered
+    - a plain GET, no payload, fails identically no matter what calls it.
+
+    Any caller that gets a `{"status": "fetch_failed", ...}` result (sync_closed_tour.py and
+    its siblings all use this exact shape - see that module's own fetch_failed returns) should
+    route the `detail` dict through this before showing it, instead of leaving a human staring at
+    a raw nested-JSON Java stack trace with no idea whether it's their mistake or not.
+
+    General on purpose, not Closed-Tour-specific: the same "TC's own server 500/400'd with an
+    internal exception, wrapped in our own generic fetch_failed shape" pattern can happen on any
+    product's GET, so any future caller gets the same translation for free."""
+    if not isinstance(detail, dict):
+        return (f"Travel Compositor's server returned an unexpected error while fetching "
+                f"{entity_label}. Try again in a moment - if it keeps happening, contact "
+                f"Travel Compositor support.")
+
+    raw_message = detail.get("message") or ""
+    # `message` is itself often a JSON-encoded string (TC nests its own error body as text
+    # inside the outer one) - fall back to the raw string if it doesn't parse, since either way
+    # we're about to substring-search it for known exception signatures.
+    try:
+        import json as _json_module
+        parsed = _json_module.loads(raw_message) if isinstance(raw_message, str) else raw_message
+        inner_text = " ".join(parsed.get("error") or []) if isinstance(parsed, dict) else str(parsed)
+    except (ValueError, TypeError):
+        inner_text = str(raw_message)
+
+    if "NullPointerException" in inner_text or "nullpointerexception" in inner_text.lower():
+        return (f"Travel Compositor's own server hit an internal error (a NullPointerException) "
+                f"while trying to read {entity_label} - this is a bug in data already stored on "
+                f"their side, not a mistake in what was entered here or anything this tool sent. "
+                f"The record can't be fetched at all until Travel Compositor fixes it, so "
+                f"translating/updating it here isn't possible in the meantime. Contact Travel "
+                f"Compositor support with this exact error (see 'Full result' below) and the "
+                f"supplier/code involved, and ask them to check that record's data on their end.")
+
+    status_code = detail.get("error")
+    if status_code and int(status_code) >= 500:
+        return (f"Travel Compositor's server had an internal error (HTTP {status_code}) while "
+                f"fetching {entity_label}. This is usually temporary - try again in a moment. If "
+                f"it keeps happening, contact Travel Compositor support.")
+
+    return (f"Travel Compositor's server rejected the request for {entity_label} "
+            f"(HTTP {status_code or '?'}). See 'Full result' below for the exact message - if it "
+            f"isn't self-explanatory, contact Travel Compositor support.")

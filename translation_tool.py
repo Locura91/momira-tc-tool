@@ -61,6 +61,7 @@ from sync_transport import (
 )
 from sync_hotel import sync_hotel, fetch_all_hotels
 from sync_closed_tour import sync_closed_tour
+from api_client import describe_tc_fetch_error
 
 
 # Reduced from 30 to 19 target languages per the product owner: removed
@@ -412,6 +413,8 @@ def render_translation_tool():
                 hotel = api.get_hotel(supplier_id, provider_code)
                 if isinstance(hotel, dict) and "error" in hotel:
                     results = [{"status": "fetch_failed", "provider_code": provider_code, "detail": hotel}]
+                    st.error(f"❌ {describe_tc_fetch_error(hotel, f'hotel {provider_code!r}')}")
+                    log_message(f"   ❌ Fetch failed: {provider_code}")
                 else:
                     results = [sync_hotel(api, translator, store, supplier_id, hotel, target_languages,
                                            dry_run=False, force=force)]
@@ -433,7 +436,8 @@ def render_translation_tool():
 
                     full_hotel = api.get_hotel(supplier_id, this_code)
                     if isinstance(full_hotel, dict) and "error" in full_hotel:
-                        log_message(f"   ❌ Failed to fetch full details for {this_code}")
+                        log_message(f"   ❌ Failed to fetch full details for {this_code}: "
+                                    f"{describe_tc_fetch_error(full_hotel, f'hotel {this_code!r}')}")
                         results.append({"status": "fetch_failed", "provider_code": this_code, "detail": full_hotel})
                         continue
 
@@ -459,6 +463,15 @@ def render_translation_tool():
             if result.get("status") == "not_found":
                 st.error(f"❌ {result.get('reason', 'Closed tour not found.')}")
                 log_message(f"   ❌ Not found: {closed_tour_code}")
+            elif result.get("status") == "fetch_failed":
+                # CONFIRMED REAL INCIDENT (2026-08-25): TNR-01/supplier 50370 failed with a raw
+                # Java NullPointerException nested in the error body - see
+                # api_client.describe_tc_fetch_error's own docstring for the full incident and
+                # why this is a bug on Travel Compositor's side, not this tool's or the code
+                # entered. Surfaced here the same way not_found already is, instead of leaving
+                # the human to decode a raw stack trace themselves in the "Full result" expander.
+                st.error(f"❌ {describe_tc_fetch_error(result.get('detail'), f'closed tour {closed_tour_code!r}')}")
+                log_message(f"   ❌ Fetch failed: {closed_tour_code}")
             else:
                 log_message(f"   → {result.get('status', 'unknown')}")
             results = [result]
