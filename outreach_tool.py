@@ -455,17 +455,33 @@ def _render_search():
         st.caption("Results are merged into one list, with duplicates removed - the same operator "
                    "often appears under several of them. Once running, a **Stop the search** "
                    "button lets you cut it short and keep whatever's been found up to that point.")
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "the human shall be able to edit the
+        # list and remove single combinations. Because some combinations are not really needed
+        # or double requested." A plain st.dataframe is read-only, so this is a data_editor with
+        # num_rows="dynamic" instead - select a row and press the trash icon (or Delete on the
+        # keyboard) to drop it before running. Nothing here touches the checkboxes back on the
+        # country screen; it only edits the list that's about to run.
+        st.caption("Don't need one of these? Select its row below and remove it - only what's "
+                   "left in the table runs.")
+        edited_df = st.data_editor(pd.DataFrame(queue), use_container_width=True, hide_index=True,
+                                   num_rows="dynamic", key="or_queue_editor")
+        run_queue = [row for row in edited_df.to_dict("records") if str(row.get("country", "")).strip()]
+        removed = len(queue) - len(run_queue)
+        if removed:
+            st.caption(f"{removed} combination(s) removed from this run - {len(run_queue)} will search.")
         qcol1, qcol2 = st.columns([1, 1])
         with qcol1:
-            go = st.button("▶️ Run them now", type="primary", key="or_queue_run")
+            go = st.button(f"▶️ Run them now" + (f" ({len(run_queue)})" if removed else ""),
+                          type="primary", key="or_queue_run", disabled=not run_queue)
         with qcol2:
             if st.button("⬅️ Back to the country list", key="or_queue_back"):
                 st.session_state.pop("or_queue", None)
+                st.session_state.pop("or_queue_editor", None)
                 st.session_state[_PHASE_KEY] = "scope"
                 st.rerun()
-        st.dataframe(pd.DataFrame(queue), use_container_width=True, hide_index=True)
         if go:
-            _init_queue_run(queue)
+            _init_queue_run(run_queue)
+            st.session_state.pop("or_queue_editor", None)
             st.rerun()
         return
 
