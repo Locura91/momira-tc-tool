@@ -282,14 +282,30 @@ def _search_with_gemini_grounding(query: str, domains: List[str], max_results: i
 
     Used as an automatic FALLBACK when the primary provider (Tavily, or SerpAPI when Tavily
     isn't configured) fails - see _select_and_run_provider - rather than a manual switch; it can
-    also serve as the primary itself when GEMINI_API_KEY is the only search-provider key set."""
+    also serve as the primary itself when GEMINI_API_KEY is the only search-provider key set.
+
+    TIMEOUT (2026-08-25): unlike _search_with_tavily/_search_with_serpapi, this call originally
+    had no client-side timeout at all, so a single stalled/slow Gemini call could run
+    indefinitely - directly reported by the product owner as "each search combination is taking
+    around 1 to 3 minutes". A grounded generate_content call is inherently slower than a plain
+    search-results API (it's a full LLM turn plus a live Google Search, not a single lookup), so
+    some slowdown vs. Tavily/SerpAPI is expected and not itself a bug - but with no ceiling, one
+    slow call could stall an entire discovery run. Capped it at the SAME budget the other two
+    providers already use (SEARCH_REQUEST_TIMEOUT_S) via http_options - NOT a bare "timeout" key,
+    see translator.py's module docstring for why that bare key fails validation entirely."""
     client = _get_gemini_client()
     model = os.getenv("GEMINI_SEARCH_MODEL") or os.getenv("GEMINI_MODEL") or GEMINI_SEARCH_MODEL
     domain_hint = f" Restrict results to these domains only: {', '.join(domains)}." if domains else ""
     prompt = (f"Search the web for: {query}.{domain_hint} List the real businesses or pages you "
              f"find, one per source, with their name and a short description of each.")
     response = client.models.generate_content(
-        model=model, contents=prompt, config={"tools": [{"google_search": {}}]})
+        model=model,
+        contents=prompt,
+        config={
+            "tools": [{"google_search": {}}],
+            "http_options": {"timeout": SEARCH_REQUEST_TIMEOUT_S * 1000},
+        },
+    )
 
     candidates = getattr(response, "candidates", None) or []
     if not candidates:

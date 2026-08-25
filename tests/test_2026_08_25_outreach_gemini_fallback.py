@@ -93,6 +93,29 @@ def test_a_chunk_with_no_url_is_skipped(monkeypatch):
     assert results[0]["url"] == "https://real.com"
 
 
+def test_generate_content_is_called_with_a_client_side_timeout(monkeypatch):
+    """CONFIRMED PRODUCT-OWNER REPORT (2026-08-25): "now each search combination is taking
+    around 1 to 3 minutes when I search for outreach Mails, is that normal?" - traced to
+    _search_with_gemini_grounding's generate_content call having NO client-side timeout at all,
+    unlike _search_with_tavily/_search_with_serpapi (both pass timeout=SEARCH_REQUEST_TIMEOUT_S).
+    Fixed by adding http_options={"timeout": <ms>} to the call - NOT a bare "timeout" key, which
+    fails pydantic validation entirely (see translator.py's module docstring for that exact
+    bug). This test locks in that the timeout is actually passed through to the SDK call, capped
+    at the same SEARCH_REQUEST_TIMEOUT_S budget the other two providers already use."""
+    seen_config = {}
+
+    def fake_generate_content(model, contents, config):
+        seen_config.update(config)
+        return _ns(candidates=[])
+
+    client = _ns(models=_ns(generate_content=fake_generate_content))
+    monkeypatch.setattr(od, "_get_gemini_client", lambda: client)
+
+    od._search_with_gemini_grounding("tours", [], 10)
+
+    assert seen_config.get("http_options") == {"timeout": od.SEARCH_REQUEST_TIMEOUT_S * 1000}
+
+
 def test_results_are_capped_at_max_results(monkeypatch):
     chunks = [_ns(web=_ns(uri=f"https://site{i}.com", title=f"Site {i}")) for i in range(5)]
     grounding = _ns(grounding_chunks=chunks, grounding_supports=[])
