@@ -265,13 +265,32 @@ _PER_COMBINATION_RESULTS = 1
 _MAX_MERGED_RESULTS = 30
 
 
-def _merge_one_job_result(merged, seen, stats, label, result):
+def _merge_one_job_result(merged, seen, stats, label, result, drop_log=None):
     """Fold one combination's search result into the running merged list/seen-set/stats -
     pulled out as its own function so it's the same code whether a full queue runs straight
-    through or is processed one job per Streamlit rerun (see _process_one_queued_job)."""
-    for key in ("raw", "after_prefilter", "final"):
-        stats[key] += result["stats"].get(key, 0)
+    through or is processed one job per Streamlit rerun (see _process_one_queued_job).
+
+    CONFIRMED REAL GAP (product owner report, 2026-08-25: "the results for South Korea were
+    actually very bad - no local DMC and no local tour guide at all"): a Country Scope run
+    (many combinations) used to only merge `raw`/`after_prefilter`/`final` and drop every
+    combination's own `drop_log` on the floor - the "How N raw results became M" breakdown that
+    already answers exactly this question ("did the search find nothing, or find things and
+    filter them out?") was only ever populated for a single Country/City/Keyword search, per the
+    UI's own `if "after_vetting" in stats` check in _render_review_and_send(). A bad-results
+    report from the combination flow (the flow the product owner's own 2026-08-16 request made
+    the default entry point) was previously undiagnosable - there was no way to tell a real
+    search-recall problem (the provider found nothing) from an over-aggressive filter (found
+    real businesses, rejected them) without re-running as a single search instead. Now every
+    combination's full stats and drop_log merge in, so the same breakdown lights up here too."""
+    for key in ("raw", "after_prefilter", "after_vetting", "after_dedupe",
+                "ai_dropped", "no_contact_dropped", "final"):
+        stats[key] = stats.get(key, 0) + result["stats"].get(key, 0)
     stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
+    if drop_log is not None:
+        for entry in result.get("drop_log") or []:
+            tagged = dict(entry)
+            tagged["combination"] = label
+            drop_log.append(tagged)
     for supplier in result["suppliers"]:
         domain = om.extract_domain(supplier.get("website") or supplier.get("listingUrl") or "")
         fingerprint = domain or (supplier.get("name") or "").strip().lower()
@@ -284,7 +303,7 @@ def _merge_one_job_result(merged, seen, stats, label, result):
         merged.append(supplier)
 
 
-def _finalize_queue_result(merged, stats, failures, stopped_early=False, searched=0, total=0):
+def _finalize_queue_result(merged, stats, failures, drop_log=None, stopped_early=False, searched=0, total=0):
     """The second dedupe pass + cap + reporting, run once after every job that's GOING to run
     has run - whether that's the whole queue or however much got through before Stop was
     pressed. CONFIRMED RULE (product owner, 2026-08-16): "give the human one button that says
@@ -317,7 +336,7 @@ def _finalize_queue_result(merged, stats, failures, stopped_early=False, searche
         stats["searched"] = searched
         stats["total_planned"] = total
 
-    return {"suppliers": merged, "stats": stats}
+    return {"suppliers": merged, "stats": stats, "drop_log": drop_log or []}
 
 
 def _init_queue_run(queue):
@@ -331,7 +350,11 @@ def _init_queue_run(queue):
     st.session_state.or_queue_pos = 0
     st.session_state.or_queue_merged = []
     st.session_state.or_queue_seen = set()
-    st.session_state.or_queue_stats = {"raw": 0, "after_prefilter": 0, "final": 0, "used_mock_provider": False}
+    st.session_state.or_queue_stats = {
+        "raw": 0, "after_prefilter": 0, "after_vetting": 0, "after_dedupe": 0,
+        "ai_dropped": 0, "no_contact_dropped": 0, "final": 0, "used_mock_provider": False,
+    }
+    st.session_state.or_queue_drop_log = []
     st.session_state.or_queue_failures = []
     st.session_state.or_queue_stopped = False
 
@@ -348,7 +371,8 @@ def _process_one_queued_job():
                                        job.get("keyword", "") or job["country"],
                                        max_results=_PER_COMBINATION_RESULTS)
         _merge_one_job_result(st.session_state.or_queue_merged, st.session_state.or_queue_seen,
-                              st.session_state.or_queue_stats, label, result)
+                              st.session_state.or_queue_stats, label, result,
+                              drop_log=st.session_state.or_queue_drop_log)
     except Exception as e:
         st.session_state.or_queue_failures.append(f"{label}: {e}")
     st.session_state.or_queue_pos = pos + 1
@@ -394,6 +418,7 @@ def _render_search():
         result = _finalize_queue_result(
             st.session_state.or_queue_merged, st.session_state.or_queue_stats,
             st.session_state.or_queue_failures,
+            drop_log=st.session_state.or_queue_drop_log,
             stopped_early=st.session_state.get("or_queue_stopped", False),
             searched=st.session_state.or_queue_pos, total=total,
         )
