@@ -69,7 +69,22 @@ from outreach_memory import (extract_domain as _extract_domain, get_blocklist,
                              add_domain_to_blocklist, remove_domain_from_blocklist,
                              is_blocked)
 
-REQUEST_TIMEOUT_S = 15  # increased from 8 to handle slower contact pages
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "the tool needs more time to find the correct
+# email address" - raised again (was 8, then 15) after a real report of bad/empty results that
+# traced partly to requests timing out before a genuine email was found. A small local tour
+# operator's own site is often slow, and scrape_website_contact() can chain up to three fetches
+# per candidate (homepage, then a Contact or Impressum/Terms subpage) - each one hitting this
+# same ceiling.
+REQUEST_TIMEOUT_S = 25
+
+# Tavily/SerpAPI search calls get their OWN, separate (and longer) timeout - "advanced" search
+# depth genuinely trades speed for quality even without contention, and per product-owner
+# hypothesis (2026-08-25, after a Morocco run came back "0 raw results" across 40 combinations):
+# "I think it is too short time for the AI to search for one combination." Kept apart from
+# REQUEST_TIMEOUT_S above (tuned for scraping) rather than sharing one constant, so tuning one
+# doesn't quietly change the other. See _select_and_run_provider's own docstring for the retry
+# that goes with this.
+SEARCH_REQUEST_TIMEOUT_S = 30
 
 
 # ============================================================================
@@ -189,7 +204,7 @@ def _search_with_tavily(query: str, domains: List[str], max_results: int) -> Lis
     }
     if domains:
         payload["include_domains"] = domains
-    res = requests.post("https://api.tavily.com/search", json=payload, timeout=REQUEST_TIMEOUT_S)
+    res = requests.post("https://api.tavily.com/search", json=payload, timeout=SEARCH_REQUEST_TIMEOUT_S)
     res.raise_for_status()
     data = res.json()
     return [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content")}
@@ -203,7 +218,7 @@ def _search_with_serpapi(query: str, domains: List[str], max_results: int) -> Li
     res = requests.get(
         "https://serpapi.com/search.json",
         params={"q": scoped, "api_key": os.getenv("SERPAPI_API_KEY"), "num": max_results},
-        timeout=REQUEST_TIMEOUT_S,
+        timeout=SEARCH_REQUEST_TIMEOUT_S,
     )
     res.raise_for_status()
     data = res.json()
@@ -246,15 +261,42 @@ def _search_with_mock_provider(source: str, country: str, keyword: str) -> List[
     return results
 
 
-def run_provider_search(source: str, query: str, country: str, keyword: str,
-                        domains: Optional[List[str]] = None, max_results: int = 10) -> List[Dict[str, Any]]:
-    domains = domains or []
-    try:
+def _select_and_run_provider(source: str, query: str, country: str, keyword: str,
+                             domains: List[str], max_results: int) -> List[Dict[str, Any]]:
+    """The actual provider dispatch, shared by run_provider_search and its diagnostics-
+    returning sibling below - factored out once so the retry behaviour here only has to be
+    written and tested in one place, not duplicated across both callers.
+
+    CONFIRMED PRODUCT-OWNER HYPOTHESIS (2026-08-25, after the Morocco "0 raw results across 40
+    combinations" report): "I think it is too short time for the AI to search for one
+    combination." A single slow or contended request timing out used to mean that ENTIRE
+    query's results vanished silently - unlike a failed website scrape (which only costs one
+    candidate's contact info, already best-effort by design - see _fetch_and_parse), a failed
+    SEARCH call loses every candidate that query would have found: often 1/7th to 1/10th of one
+    combination's total recall, gone with no record beyond a server-console print. Retried once
+    on a timeout/connection error before giving up (not on other errors - a bad key or a 4xx
+    fails identically twice, so retrying there only wastes time), and given its own longer
+    budget (SEARCH_REQUEST_TIMEOUT_S) than scraping gets, since Tavily's "advanced" search_depth
+    already trades speed for quality even without contention - and the 2026-08-25 concurrency
+    change (up to _search_concurrency() queries in flight at once) adds real contention on top
+    of that, competing for the same outbound bandwidth."""
+    def _call():
         if os.getenv("TAVILY_API_KEY"):
             return _search_with_tavily(query, domains, max_results)
         if os.getenv("SERPAPI_API_KEY"):
             return _search_with_serpapi(query, domains, max_results)
         return _search_with_mock_provider(source, country, keyword)
+
+    try:
+        return _call()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        return _call()
+
+
+def run_provider_search(source: str, query: str, country: str, keyword: str,
+                        domains: Optional[List[str]] = None, max_results: int = 10) -> List[Dict[str, Any]]:
+    try:
+        return _select_and_run_provider(source, query, country, keyword, domains or [], max_results)
     except Exception as e:
         print(f"[outreach_discovery] provider search failed for \"{query}\": {e}")
         return []
@@ -277,18 +319,14 @@ def _run_provider_search_with_diagnostics(source: str, query: str, country: str,
     query, not just Morocco's - which is exactly what the reported all-zero, 40-combination
     result looks like).
 
-    Same provider selection as run_provider_search - kept as a SEPARATE function rather than
-    changing that one's return shape, since run_provider_search's plain "-> list" contract has
-    existing callers (see its own module docstring's pipeline step 2) that expect a bare list
-    back no matter what. This sibling is used only by discover_suppliers' own query fan-out,
-    where the caller can actually do something useful with the distinction."""
-    domains = domains or []
+    Same provider selection (via _select_and_run_provider, retry included) as run_provider_search
+    - kept as a SEPARATE function rather than changing that one's return shape, since
+    run_provider_search's plain "-> list" contract has existing callers (see its own module
+    docstring's pipeline step 2) that expect a bare list back no matter what. This sibling is
+    used only by discover_suppliers' own query fan-out, where the caller can actually do
+    something useful with the distinction."""
     try:
-        if os.getenv("TAVILY_API_KEY"):
-            return _search_with_tavily(query, domains, max_results), None
-        if os.getenv("SERPAPI_API_KEY"):
-            return _search_with_serpapi(query, domains, max_results), None
-        return _search_with_mock_provider(source, country, keyword), None
+        return _select_and_run_provider(source, query, country, keyword, domains or [], max_results), None
     except Exception as e:
         print(f"[outreach_discovery] provider search failed for \"{query}\": {e}")
         return [], f"{source}: {e}"
@@ -816,8 +854,18 @@ def pick_best_email(emails: List[str]) -> Optional[str]:
 
 
 def _fetch_and_parse(url: str) -> BeautifulSoup:
-    res = requests.get(url, timeout=REQUEST_TIMEOUT_S, headers=_SCRAPE_HEADERS)
-    res.raise_for_status()
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "the tool needs more time to find the
+    correct email address." This is the one shared fetch every scrape call site goes through -
+    a candidate's own homepage, its Contact/Impressum/Terms subpages, an aggregator listing
+    page, and an outbound link followed FROM one - so retrying it once here (on a timeout or
+    connection error only; a 404/403/etc. genuinely won't succeed on a second try) covers all of
+    them without needing the same retry written at each call site."""
+    try:
+        res = requests.get(url, timeout=REQUEST_TIMEOUT_S, headers=_SCRAPE_HEADERS)
+        res.raise_for_status()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        res = requests.get(url, timeout=REQUEST_TIMEOUT_S, headers=_SCRAPE_HEADERS)
+        res.raise_for_status()
     return BeautifulSoup(res.text, "html.parser")
 
 
