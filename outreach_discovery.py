@@ -117,30 +117,18 @@ def _max_candidates() -> int:
     return max(configured, _max_results() + 10)
 
 
-def _search_concurrency() -> int:
-    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "make the mail outreach faster... for the
-    searching." The 7-10 provider queries per discover_suppliers() call, and every per-candidate
-    website/Instagram fetch below, used to run one at a time - each is an independent HTTP call
-    to a different source/URL with no shared state between them, so there was nothing keeping
-    them sequential except the original port's own choice (see this module's docstring: a prior
-    decision made for a SINGLE search behind a spinner, not for the country-scope flow's 30+
-    combinations each re-running this same bundle). Running them concurrently instead is a pure
-    speed change - same requests, same results, same downstream filtering - not a behaviour
-    change, which is why it's safe under this module's own "identical behaviour" porting rule.
-    Read at call time (not import time), same pattern as _min_rating/_max_results, so an env var
-    set after import (Streamlit secrets) is picked up; kept deliberately modest by default so a
-    search doesn't hammer a rate-limited provider or a supplier's own small website all at once."""
-    try:
-        return max(1, int(os.getenv("SEARCH_CONCURRENCY") or "6"))
-    except ValueError:
-        return 6
-
-
 def _enrichment_concurrency() -> int:
-    """Same rule as _search_concurrency, for the per-candidate website/Instagram scraping pass
-    in enrich_from_website - a separate knob since scraping a supplier's own (often small,
-    unhardened) website deserves its own, possibly more conservative, concurrency cap than
-    hitting a paid search API."""
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "make the mail outreach faster... for the
+    searching." Originally paired with an equivalent _search_concurrency() knob for the
+    provider-query fan-out in discover_suppliers() - that one was REVERTED the same day after
+    bursting concurrent connections at Tavily's single search endpoint triggered non-standard
+    "432" errors (see discover_suppliers' own comment for the incident). This knob, for the
+    per-candidate website/Instagram scraping pass in enrich_from_website, was NOT reverted: it
+    hits N distinct supplier-owned domains once each rather than repeatedly bursting one shared
+    API endpoint, so it doesn't share that failure mode. Read at call time (not import time),
+    same pattern as _min_rating/_max_results, so an env var set after import (Streamlit secrets)
+    is picked up; kept deliberately modest by default so a search doesn't hammer a supplier's
+    own small website all at once."""
     try:
         return max(1, int(os.getenv("ENRICHMENT_CONCURRENCY") or "6"))
     except ValueError:
@@ -277,9 +265,11 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
     on a timeout/connection error before giving up (not on other errors - a bad key or a 4xx
     fails identically twice, so retrying there only wastes time), and given its own longer
     budget (SEARCH_REQUEST_TIMEOUT_S) than scraping gets, since Tavily's "advanced" search_depth
-    already trades speed for quality even without contention - and the 2026-08-25 concurrency
-    change (up to _search_concurrency() queries in flight at once) adds real contention on top
-    of that, competing for the same outbound bandwidth."""
+    already trades speed for quality even without contention. NOTE: the query fan-out that calls
+    this is no longer concurrent (see discover_suppliers' own comment) - a brief concurrency
+    change here triggered non-standard "432" errors from Tavily, reverted the same day. This
+    retry/timeout logic is unrelated to that and stays in place - HTTPError (which a 432 is) is
+    deliberately NOT retried above, so it never amplified the burst that caused the 432s."""
     def _call():
         if os.getenv("TAVILY_API_KEY"):
             return _search_with_tavily(query, domains, max_results)
@@ -1414,19 +1404,24 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     queries = build_queries(country, city, keyword)
     candidates: List[Dict[str, Any]] = []
 
-    # CONFIRMED (2026-08-25, see _search_concurrency's docstring for the full rationale):
-    # these queries are independent HTTP calls with no shared state, run concurrently instead
-    # of one at a time. ThreadPoolExecutor.map (not as_completed) is used specifically because
-    # it returns results in the SAME ORDER as `queries`, so `candidates` ends up built in
-    # exactly the order the old sequential loop produced - same downstream tie-breaking in the
-    # sort/dedupe passes below, only the wall-clock time changes.
+    # REVERTED (2026-08-25, CONFIRMED REAL INCIDENT): these queries were briefly run
+    # concurrently via a ThreadPoolExecutor (a same-day speed change), but bursting up to
+    # 6 simultaneous connections at one search endpoint,
+    # repeated once per place/theme combination across a 20-40 combination Country Scope
+    # run, triggered non-standard "432 Client Error" responses from Tavily - not a
+    # documented Tavily status code (their own docs only mention 429 for rate limiting),
+    # and consistent in shape with an intermediary (WAF/anti-bot layer) blocking bursts of
+    # concurrent requests rather than Tavily itself. Product owner: "we have to change it
+    # back, as we had always results and now nothing any more. The time for the search was
+    # much longer, but that's okay." Back to one query at a time; _run_provider_search_with_
+    # diagnostics (error visibility) and the longer SEARCH_REQUEST_TIMEOUT_S / retry-once
+    # logic in _select_and_run_provider are kept - neither is implicated in the 432s.
     report(f"Searching {len(queries)} source(s)…")
-    with ThreadPoolExecutor(max_workers=min(len(queries), _search_concurrency())) as pool:
-        results_per_query = list(pool.map(
-            lambda q: _run_provider_search_with_diagnostics(q["source"], q["query"], country, keyword,
-                                                             q["domains"], q["max_results"]),
-            queries,
-        ))
+    results_per_query = [
+        _run_provider_search_with_diagnostics(q["source"], q["query"], country, keyword,
+                                               q["domains"], q["max_results"])
+        for q in queries
+    ]
     # CONFIRMED REAL INCIDENT (2026-08-25): see _run_provider_search_with_diagnostics' own
     # docstring - every provider call failing with an error (bad/expired key, rate limit,
     # network issue) used to look IDENTICAL to "the provider genuinely found nothing", both as
@@ -1546,11 +1541,12 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
             deduped = surviving
             ai_dropped = before - len(deduped)
 
-    # Same concurrency rationale as the query fan-out above (see _search_concurrency's
-    # docstring) - each candidate's website/Instagram scrape is independent of every other
-    # candidate's, so this no longer waits for one supplier's site to respond before starting
-    # the next. Order-preserving map(), same reason: `enriched` must line up with `deduped`
-    # index-for-index exactly as the old sequential loop left it.
+    # NOT reverted alongside the query fan-out above (see that comment for the incident) -
+    # this hits N distinct supplier-owned domains once each, not one shared API endpoint
+    # repeatedly, so it doesn't share the burst-triggered-432s failure mode. Each candidate's
+    # website/Instagram scrape is independent of every other candidate's, so this doesn't wait
+    # for one supplier's site to respond before starting the next. Order-preserving map():
+    # `enriched` must line up with `deduped` index-for-index exactly as a sequential loop would.
     report(f"Looking up contact details for {len(deduped)} candidate(s)…")
     if deduped:
         with ThreadPoolExecutor(max_workers=min(len(deduped), _enrichment_concurrency())) as pool:

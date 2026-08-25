@@ -562,6 +562,41 @@ _ENTRANCE_FEE_TITLE_SUFFIX = " (Entrance fees not included)"
 _ENTRANCE_FEE_VOUCHER_BULLET = "• Entrance fees are NOT included in this price."
 
 
+# Canonical ISO 639-1 code -> display name for the languages a Ticket Modality can offer at the
+# same price. Single source of truth: app.py's Language Options multiselect imports this same
+# dict (as LANGUAGE_CODE_NAMES) rather than keeping its own copy, so the codes shown to a human
+# while editing and the names written into a published ticket's Includes (see
+# same_price_language_includes_line below) can never drift apart.
+LANGUAGE_CODE_NAMES = {
+    "EN": "English", "FR": "French", "SL": "Slovenian", "PL": "Polish", "DE": "German",
+    "SK": "Slovak", "HU": "Hungarian", "NL": "Dutch", "ES": "Spanish", "TR": "Turkish",
+    "RU": "Russian", "NO": "Norwegian", "SV": "Swedish", "RO": "Romanian", "CS": "Czech",
+    "EL": "Greek", "FI": "Finnish", "PT": "Portuguese", "DA": "Danish", "IT": "Italian",
+}
+
+
+def same_price_language_includes_line(languages):
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "whenever there are one or more language[s]
+    for the same price (and therefore for the base modality) available, then we just write 'You
+    can choose between Language A-speaking Guide or Language B-speaking Guide'." Only meaningful
+    with 2+ languages - a single-language Modality has nothing to choose between, so this returns
+    None (no line added) when `languages` has fewer than two entries.
+
+    Deliberately built here, deterministically, rather than left to the AI to phrase in the
+    source document's own words - this is the one place the exact customer-facing wording is
+    guaranteed to match every ticket, regardless of how (or whether) the supplier's own document
+    described the language choice."""
+    names = [LANGUAGE_CODE_NAMES.get(c, c) for c in (languages or []) if c]
+    if len(names) < 2:
+        return None
+    guides = [f"{n}-speaking Guide" for n in names]
+    if len(guides) == 2:
+        joined = f"{guides[0]} or {guides[1]}"
+    else:
+        joined = ", ".join(guides[:-1]) + f" or {guides[-1]}"
+    return f"You can choose between {joined}"
+
+
 def _ticket_name_with_entrance_fee_notice(name, extracted_data):
     """CONFIRMED REAL RULE (product owner, 2026-08-24): "if the Ticket description from the
     supplier says, no Entrance fees included, this information must be stated in the Title
@@ -1750,6 +1785,12 @@ def build_ticket_payloads(
         pre_config.days_available_before_release, extracted_ticket_data.get("release_days_mentions")
     )
 
+    # Computed here, BEFORE either try block below, so it's available to both the main-ticket
+    # datasheet build (which uses it for the Includes line) and the ticket_option build further
+    # down (its own separate try/except) - a NameError from one falling out of scope if the other
+    # try raised first would be a worse bug than the one this whole change is fixing.
+    _ticket_languages = extracted_ticket_data.get("languages") or ["EN"]
+
     main_ticket_error = None
     main_ticket_payload = None
     try:
@@ -1775,10 +1816,48 @@ def build_ticket_payloads(
         # values used to build ticket_option below) - passed through so an undated supplement
         # defaults to the Modality's own window instead of being dropped, and a supplement whose own
         # dates reach outside that window gets clipped into it.
+        #
+        # REVERSED IN PART (2026-08-25, CONFIRMED REAL INCIDENT): "different languages are always a
+        # problem within creating a ticket. Travel C logic would add every single language up and
+        # the price would be too high and absolutely wrong... other languages must have other
+        # modalities." A priced CHOICE row (is_priced_choice=True - the human ticks "Needs own
+        # Modality?" in the editor, or the AI flags it at extraction) is a different product, not a
+        # date-based change on THIS Modality, and ticket creation still only ever publishes one
+        # Modality - so it must NOT reach supplements_list, where it would stack onto the base price
+        # as if it were just another date-window surcharge. It's excluded here and named out loud
+        # (excluded_language_choice_extras below) instead of silently dropped, same "never silent"
+        # pattern as _ignored_ticket_supplements right below.
         _modality_start = start_date_or_today(extracted_ticket_data.get("start_date"))
         _modality_end = extracted_ticket_data.get("end_date") or ""
+        _all_modality_supplements = [
+            s for s in (extracted_ticket_data.get("modality_supplements") or []) if isinstance(s, dict)
+        ]
+        _dated_modality_supplements = [s for s in _all_modality_supplements if not s.get("is_priced_choice")]
+        excluded_language_choice_extras = [
+            str(s.get("name") or "").strip() for s in _all_modality_supplements if s.get("is_priced_choice")
+        ]
+        excluded_language_choice_extras = [n for n in excluded_language_choice_extras if n]
         supplements_list = build_ticket_supplement_vos(
-            extracted_ticket_data.get("modality_supplements"), _modality_start, _modality_end)
+            _dated_modality_supplements, _modality_start, _modality_end)
+
+        # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
+        # an End date earlier than today's date." A dated supplement (a season, a holiday
+        # surcharge - is_priced_choice=false) whose own End Date has already passed can never
+        # apply to any future booking - publishing it is dead weight at best and, if a human
+        # later reads the date as "this is currently active", actively misleading. Checked against
+        # the RESOLVED endDate (after build_ticket_supplement_vos' own default-into-modality-window
+        # and clip-into-modality-window logic above), not the raw extracted value, so a blank
+        # end_date that correctly defaulted to a future modality window is never flagged - only a
+        # genuine explicit-or-clipped past date is. Named out loud (never silently dropped or
+        # silently published) and BLOCKS PUBLISH via render_publish_blockers (app.py), same
+        # "expired data is a human problem, not a guessing game" precedent as
+        # expired_validity_window for the whole ticket's own validity window.
+        _today_iso = datetime.date.today().isoformat()
+        expired_dated_supplements = [
+            f"{(s.translations.get('EN').name if s.translations.get('EN') else '') or 'Unnamed supplement'} "
+            f"(ended {s.endDate})"
+            for s in supplements_list if s.endDate and s.endDate < _today_iso
+        ]
 
         # The OLD "supplements" key is legacy - anything still sitting there (an older saved draft,
         # or a model that ignored the prompt and used the wrong field) is deliberately DROPPED rather
@@ -1837,6 +1916,21 @@ def build_ticket_payloads(
         _ticket_display_name = _ticket_name_with_entrance_fee_notice(
             extracted_ticket_data.get("ticket_name"), extracted_ticket_data)
 
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "whenever there are one or more language
+        # for the same price... then we just write 'You can choose between Language A-speaking
+        # Guide or Language B-speaking Guide'" in Includes. Built from the SAME `languages` list
+        # that publishes on the Modality below, so the sentence can never disagree with what
+        # Travel Compositor's own Language Options actually offer. Skipped if an existing Includes
+        # line already says as much (a human-written or AI-extracted line already covering it),
+        # so this never doubles up on the same information worded two different ways.
+        # (_ticket_languages itself is computed above, before this try block - see that comment.)
+        _ticket_includes = [strip_stray_html(i) for i in (extracted_ticket_data.get("includes") or [])]
+        _language_choice_line = same_price_language_includes_line(_ticket_languages)
+        if _language_choice_line and not any(
+            "choose between" in (i or "").lower() for i in _ticket_includes
+        ):
+            _ticket_includes.append(_language_choice_line)
+
         datasheet_en = TicketDatasheetEN(
             name=_ticket_display_name,
             # strip_stray_html: same 2026-08-25 rule as the voucher text - description, meeting
@@ -1850,7 +1944,7 @@ def build_ticket_payloads(
             # short-circuit, which used to drop the packing list and standing notes here while the
             # modality remarks on the same record kept them.
             voucherRemarks=ticket_cancellation_voucher_text,
-            includes=[strip_stray_html(i) for i in (extracted_ticket_data.get("includes") or [])],
+            includes=_ticket_includes,
             excludes=[strip_stray_html(e) for e in (extracted_ticket_data.get("excludes") or [])],
             activityType=extracted_ticket_data.get("activity_type"),
         )
@@ -2030,7 +2124,7 @@ def build_ticket_payloads(
             **dict(zip(("childAgeMin", "childAgeMax"), resolve_child_age_band(
                 extracted_ticket_data.get("child_age_min"), extracted_ticket_data.get("child_age_max"),
                 2, 12))),
-            languages=extracted_ticket_data.get("languages") or ["EN"],
+            languages=_ticket_languages,
             timeTables=time_tables_list,
             duration=_safe_float(extracted_ticket_data.get("duration", 0)),
             durationType=extracted_ticket_data.get("duration_type", "HOURS"),
@@ -2050,6 +2144,15 @@ def build_ticket_payloads(
         "ticket_option_error": ticket_option_error,
         # Named out loud rather than dropped in silence - see the supplements block above.
         "ignored_ticket_supplements": [n for n in _ignored_ticket_supplements if n],
+        # CONFIRMED REAL INCIDENT (2026-08-25): priced-choice rows (a foreign-language guide,
+        # a vehicle upgrade - see the "Needs own Modality?" comment above supplements_list)
+        # excluded from THIS Modality's price, named out loud so the human sets each one up as
+        # its own Modality afterward instead of it silently vanishing.
+        "excluded_language_choice_extras": excluded_language_choice_extras,
+        # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
+        # an End date earlier than today's date." Blocks publish via render_publish_blockers
+        # (app.py) - see the comment above supplements_list for the full rule.
+        "expired_dated_supplements": expired_dated_supplements,
         "geolocation_resolved": geoloc.get("valid", False),
         "geolocation_source": geoloc.get("source"),
         "geolocation_name": geoloc.get("name"),

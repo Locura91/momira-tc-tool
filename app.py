@@ -85,6 +85,7 @@ from builder import build_transport_payloads
 from builder import transport_type_is_confirmed_match
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
 from builder import build_ticket_modality_combinations
+from builder import LANGUAGE_CODE_NAMES
 from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shape
 from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
@@ -104,7 +105,8 @@ import ai_extractor as ai_extractor_module
 # Shared Streamlit building blocks used by all five product-type flows (ClosedTour, Ticket,
 # Transfer, Transport, Hotel) - see ui_components.py's module docstring.
 from ui_components import (
-    editable_table, editable_field, render_stop_sales_editor, render_cancellation_policy_editor,
+    editable_table, editable_field, merge_what_to_bring_into_voucher_remarks,
+    render_stop_sales_editor, render_cancellation_policy_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
     render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
@@ -2000,6 +2002,11 @@ def render_publish_blockers(payloads):
     would happily leave occupancies 5-9 bookable at 0.00 because its pricing editor materializes
     every row up to the cap with a default of 0.
 
+    EXPIRED DATED SUPPLEMENT -> block (product owner, 2026-08-25): "A Peak Season surcharge can
+    never have an End date earlier than today's date." A Ticket Modality's dated supplement
+    (a season, a holiday surcharge) whose own End Date has already passed can never apply to any
+    future booking - see build_ticket_payloads' expired_dated_supplements for the full rule.
+
     Returns True when clear, so callers can write `can_publish = ... and render_publish_blockers(p)`.
     """
     ok = True
@@ -2014,6 +2021,15 @@ def render_publish_blockers(payloads):
             f"🚫 These occupancies have no price (0.00) and would be sellable for free: **{pretty}**. "
             f"Enter a real price for each, or reduce Max Passengers so they aren't offered at all, "
             f"before publishing."
+        )
+        ok = False
+    expired_supplements = (payloads or {}).get("expired_dated_supplements") or []
+    if expired_supplements:
+        pretty = ", ".join(str(n) for n in expired_supplements)
+        st.error(
+            f"🚫 These dated supplements already ended, before today: **{pretty}**. A supplement "
+            f"whose End Date is in the past can never apply to a future booking - correct the "
+            f"date (e.g. move it to next year's window) or remove the row before publishing."
         )
         ok = False
     return ok
@@ -2149,12 +2165,10 @@ def render_clarify_result(result, review_hint="review above before continuing"):
 # Translation tool already offers, so there's one shared list of language codes across the app
 # rather than two that could drift apart.
 TICKET_LANGUAGE_OPTIONS = ["EN"] + DEFAULT_TARGET_LANGUAGES
-LANGUAGE_CODE_NAMES = {
-    "EN": "English", "FR": "French", "SL": "Slovenian", "PL": "Polish", "DE": "German",
-    "SK": "Slovak", "HU": "Hungarian", "NL": "Dutch", "ES": "Spanish", "TR": "Turkish",
-    "RU": "Russian", "NO": "Norwegian", "SV": "Swedish", "RO": "Romanian", "CS": "Czech",
-    "EL": "Greek", "FI": "Finnish", "PT": "Portuguese", "DA": "Danish", "IT": "Italian",
-}
+# LANGUAGE_CODE_NAMES now lives in builder.py (imported above) - it's also the source for the
+# "You can choose between X-speaking Guide or Y-speaking Guide" Includes line build_ticket_
+# payloads writes for a multi-language Modality, so there's exactly one code->name mapping
+# instead of two that could quietly drift apart.
 
 
 def render_ticket_language_options(data, key_prefix):
@@ -2168,12 +2182,19 @@ def render_ticket_language_options(data, key_prefix):
     was extraction and the UI that never surfaced it, so every ticket silently published as
     English-only even when a document listed "English/German-speaking guide" as equal standard
     options. See ai_extractor.py's `languages` field rule for the extraction side (and how it's
-    kept distinct from a language that costs EXTRA, which stays its own Modality via Extra Costs
-    below, unchanged).
+    kept distinct from a language that costs EXTRA, which needs its own Modality - see the
+    "Needs own Modality?" note below).
 
     Editable here too, independent of what extraction found, since a human reading the source
     directly may catch a language the AI missed or want to add one the document didn't spell out
     explicitly (e.g. "and other languages on request at no extra charge").
+
+    CONFIRMED REAL INCIDENT (2026-08-25): "different languages are always a problem within
+    creating a ticket. Travel C logic would add every single language up and the price would be
+    too high." Whatever is selected HERE publishes as this SAME Modality's price - never add a
+    language here just because the document mentions it, if it actually costs more. Two or more
+    languages selected here also get one line added to Includes automatically ("You can choose
+    between X-speaking Guide or Y-speaking Guide" - see builder.same_price_language_includes_line).
     """
     current = [c for c in (data.get("languages") or ["EN"]) if c in TICKET_LANGUAGE_OPTIONS] or ["EN"]
     chosen = st.multiselect(
@@ -2183,7 +2204,9 @@ def render_ticket_language_options(data, key_prefix):
         format_func=lambda code: f"{code} — {LANGUAGE_CODE_NAMES.get(code, code)}",
         key=f"{key_prefix}_languages",
         help="A language that costs MORE than the base price is a different product, not a language "
-             "option here - enter that as its own row under Extra Costs below instead.",
+             "option here - enter it as a row under \"Supplements by dates\" below and tick "
+             "\"Needs own Modality?\" instead. It will be excluded from this Modality's price and "
+             "reported so you can set it up as its own Modality afterward.",
     )
     data["languages"] = chosen or ["EN"]
 
@@ -2199,6 +2222,15 @@ def render_ticket_language_options(data, key_prefix):
 # Compositor's own single mechanism for this. See that function's docstring (ui_components.py)
 # and build_ticket_supplement_vos' docstring (builder.py) for the full rule, including how an
 # undated row now defaults to the Modality's own validity window instead of being dropped.
+#
+# PARTIALLY REVERSED (2026-08-25, CONFIRMED REAL INCIDENT): merging a priced CHOICE (a foreign-
+# language guide, a vehicle upgrade) into the SAME "Supplements by dates" table as a genuinely
+# dated change let it stack onto this Modality's price as if it were just another date-window
+# surcharge - wrong, and expensive. The table itself is still the one place to enter either kind
+# (no separate "Extra Costs" UI came back), but a row now carries an is_priced_choice flag (the
+# "Needs own Modality?" checkbox) - checked rows are excluded from what publishes on THIS
+# Modality (build_ticket_payloads' excluded_language_choice_extras) rather than added to its
+# price, since Ticket creation still only ever publishes one Modality at a time.
 
 
 def get_existing_tour_names(client, supplier_id):
@@ -3902,11 +3934,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.error("🚫 Description is empty - fill it in above before continuing.")
             render_cancellation_policy_editor(data, f"mt_{idx}")
             editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
-            editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80, key_suffix=f"_{idx}")
-            # CONFIRMED HOUSE RULE (product owner, 2026-08-24): appended to the voucher remarks at
-            # build time - see builder._with_what_to_bring.
-            editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
-                           widget="text_area", height=80, key_suffix=f"_{idx}")
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Voucher Remarks" and "What to
+            # bring" combined into one editable box - see merge_what_to_bring_into_voucher_
+            # remarks' docstring; they always ended up concatenated at publish time anyway.
+            merge_what_to_bring_into_voucher_remarks(data)
+            editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
+                           "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
             # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
             # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
@@ -5001,10 +5034,12 @@ def render_ticket_flow(client):
                 editable_field("City", data, "city", widget="text_input")
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
-                editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks", widget="text_area", height=80)
-                # CONFIRMED HOUSE RULE (product owner, 2026-08-24) - see builder._with_what_to_bring.
-                editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
-                               widget="text_area", height=80)
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Voucher Remarks" and "What to
+                # bring" combined into one editable box - see merge_what_to_bring_into_voucher_
+                # remarks' docstring; they always ended up concatenated at publish time anyway.
+                merge_what_to_bring_into_voucher_remarks(data)
+                editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
+                               "voucher_remarks", widget="text_area", height=100)
                 # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): Manual Notes removed here too, same
                 # reasoning as the batch flow above - every field is directly editable now.
 
