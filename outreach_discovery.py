@@ -249,6 +249,78 @@ def _search_with_serpapi(query: str, domains: List[str], max_results: int) -> Li
             for r in (data.get("organic_results") or [])]
 
 
+GEMINI_SEARCH_MODEL = "gemini-2.5-flash"
+
+
+def _get_gemini_client():
+    """Factored out to a single call so tests can monkeypatch it instead of the real
+    google-genai SDK (already a project dependency - see translator.py's GeminiTranslator,
+    which uses the identical genai.Client(api_key=...) pattern)."""
+    from google import genai
+    return genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+
+def _search_with_gemini_grounding(query: str, domains: List[str], max_results: int) -> List[Dict[str, Any]]:
+    """Google Search results via Gemini's "Grounding with Google Search" tool.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25), after Tavily's own error body (see
+    _raise_for_status_with_body) confirmed a genuine plan usage-limit exhaustion: "what is a
+    free tool I could use for only this search? Could I use Gemini Free Tier?" - checked
+    against Google's own official pricing page: Gemini 2.5 Flash's free tier includes Grounding
+    with Google Search, free up to 500 requests/day, no credit card required for a Google AI
+    Studio key - a far bigger free allowance than Tavily's or SerpAPI's free tiers. GEMINI_API_KEY
+    is already a config key this codebase uses (see translator.py's GeminiTranslator, for
+    translation) - the same key works here.
+
+    UNLIKE Tavily/SerpAPI, this is not a raw search-results endpoint - it is a generated answer
+    WITH grounding metadata (the source chunks/URLs Gemini actually drew on). The candidate list
+    here is reconstructed from that metadata rather than a results array: one entry per grounding
+    chunk (title + URL), with its snippet built from whichever grounding-support text segments
+    cite that chunk (falling back to the title alone when a chunk has no supporting segment) -
+    the closest equivalent this provider can give to the same {"title", "url", "snippet"} shape
+    every other provider in this module returns.
+
+    Used as an automatic FALLBACK when the primary provider (Tavily, or SerpAPI when Tavily
+    isn't configured) fails - see _select_and_run_provider - rather than a manual switch; it can
+    also serve as the primary itself when GEMINI_API_KEY is the only search-provider key set."""
+    client = _get_gemini_client()
+    model = os.getenv("GEMINI_SEARCH_MODEL") or os.getenv("GEMINI_MODEL") or GEMINI_SEARCH_MODEL
+    domain_hint = f" Restrict results to these domains only: {', '.join(domains)}." if domains else ""
+    prompt = (f"Search the web for: {query}.{domain_hint} List the real businesses or pages you "
+             f"find, one per source, with their name and a short description of each.")
+    response = client.models.generate_content(
+        model=model, contents=prompt, config={"tools": [{"google_search": {}}]})
+
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return []
+    grounding = getattr(candidates[0], "grounding_metadata", None)
+    if grounding is None:
+        return []
+    chunks = getattr(grounding, "grounding_chunks", None) or []
+    supports = getattr(grounding, "grounding_supports", None) or []
+
+    snippets_by_chunk: Dict[int, List[str]] = {}
+    for support in supports:
+        segment = getattr(support, "segment", None)
+        segment_text = ((getattr(segment, "text", "") or "").strip()) if segment else ""
+        if not segment_text:
+            continue
+        for idx in (getattr(support, "grounding_chunk_indices", None) or []):
+            snippets_by_chunk.setdefault(idx, []).append(segment_text)
+
+    results = []
+    for i, chunk in enumerate(chunks[:max_results]):
+        web = getattr(chunk, "web", None)
+        url = ((getattr(web, "uri", "") or "").strip()) if web else ""
+        if not url:
+            continue
+        title = ((getattr(web, "title", "") or "").strip()) if web else ""
+        snippet = " ".join(snippets_by_chunk.get(i, [])).strip() or title
+        results.append({"title": title, "url": url, "snippet": snippet})
+    return results
+
+
 _MOCK_SEED_NAMES = [
     "Blue Horizon", "Coral Coast", "Sunset Bay", "Island Breeze", "Reef Runner",
     "Wanderlust", "True North", "Local Roots", "Wave Chaser", "Trailblazer",
@@ -304,18 +376,51 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
     this is no longer concurrent (see discover_suppliers' own comment) - a brief concurrency
     change here triggered non-standard "432" errors from Tavily, reverted the same day. This
     retry/timeout logic is unrelated to that and stays in place - HTTPError (which a 432 is) is
-    deliberately NOT retried above, so it never amplified the burst that caused the 432s."""
-    def _call():
+    deliberately NOT retried above, so it never amplified the burst that caused the 432s.
+
+    AUTOMATIC FALLBACK TO GEMINI (added 2026-08-25, same day): once the 432s were traced to a
+    genuine Tavily plan usage-limit exhaustion (confirmed by the response body - see
+    _raise_for_status_with_body), the product owner asked for a second free-tier provider rather
+    than just pacing requests: "what is a free tool I could use for only this search? Could I
+    use Gemini Free Tier?" - see _search_with_gemini_grounding's own docstring for why that's a
+    good fit. CONFIRMED PRODUCT-OWNER CHOICE: automatic, not manual - "try Tavily first; if it
+    fails, retry with Gemini" for that same call, with no human having to switch anything. The
+    primary provider is still picked exactly as before (Tavily, then SerpAPI); Gemini is tried
+    ONLY after the primary has genuinely failed (including its own transient-error retry above),
+    and only once, and never against itself - if Gemini IS the primary (the only key configured)
+    and it fails, that failure is raised as-is, same as any other provider failing with no
+    fallback left."""
+    def _primary_name() -> str:
         if os.getenv("TAVILY_API_KEY"):
-            return _search_with_tavily(query, domains, max_results)
+            return "tavily"
         if os.getenv("SERPAPI_API_KEY"):
+            return "serpapi"
+        if os.getenv("GEMINI_API_KEY"):
+            return "gemini"
+        return "mock"
+
+    def _run(name: str) -> List[Dict[str, Any]]:
+        if name == "tavily":
+            return _search_with_tavily(query, domains, max_results)
+        if name == "serpapi":
             return _search_with_serpapi(query, domains, max_results)
+        if name == "gemini":
+            return _search_with_gemini_grounding(query, domains, max_results)
         return _search_with_mock_provider(source, country, keyword)
 
+    def _call_with_transient_retry(name: str) -> List[Dict[str, Any]]:
+        try:
+            return _run(name)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            return _run(name)
+
+    primary = _primary_name()
     try:
-        return _call()
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-        return _call()
+        return _call_with_transient_retry(primary)
+    except Exception:
+        if primary != "gemini" and os.getenv("GEMINI_API_KEY"):
+            return _run("gemini")
+        raise
 
 
 def run_provider_search(source: str, query: str, country: str, keyword: str,

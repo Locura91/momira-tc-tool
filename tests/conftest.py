@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # a real DATABASE_URL - tests must be able to run offline, with no credentials, anywhere.
 os.environ["PLATFORM_STORE_PATH"] = tempfile.mktemp(suffix=".db")
 os.environ.pop("DATABASE_URL", None)
-for _key in ("TRAVELC_USERNAME", "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY"):
+for _key in ("TRAVELC_USERNAME", "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
     os.environ.pop(_key, None)
 
 import pytest
