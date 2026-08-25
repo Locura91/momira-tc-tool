@@ -21,9 +21,9 @@ client have no equivalent here.
 Steps 3, 4 and 5 were then merged at the product owner's request once real
 sending was verified working: reviewing the list, editing the template and
 sending are one continuous task, and splitting them across screens meant
-scrolling back and forth to check what you were about to send. The preview and
-the dry run are still available - as an expander and an optional button - but
-neither is a gate you have to pass through any more.
+scrolling back and forth to check what you were about to send. The preview
+(the "addresses that would receive this" expander) is still available, but
+isn't a gate you have to pass through any more.
 
 NOT PORTED: `server/services/db.js`, the JSON-file store that persisted
 sessions/suppliers/campaigns server-side. Streamlit's session state holds the
@@ -37,6 +37,15 @@ were both removed as requested, so what remains is deliberately minimal but not
 nothing: the button states the exact recipient count, and a single confirmation
 sits next to it. One click, no ceremony, but not something you can trigger by
 misreading a screen.
+
+CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "remove the button Dry run at the supplier
+outreach, I don't need it any more." The standalone "🧪 Dry run instead" button (and the
+"Dry run - N would send, N skipped" result panel it populated) is gone from
+_render_review_and_send() - the "addresses that would receive this" expander above the Send
+button already covers the same "see before you send" need without a second button. dispatch_batch
+itself still supports dry_run=True (oe.dispatch_batch's own signature/docstring) - only this UI's
+button to reach it was removed, not the underlying capability, in case a future screen or a
+script still wants it.
 """
 
 # Stamped on every delivery. app.py compares this against its own build string and says
@@ -767,11 +776,6 @@ def _render_review_and_send():
         send_clicked = st.button(f"📨 Send to {len(sendable)} supplier(s)", type="primary",
                                  disabled=not confirmed, use_container_width=True)
 
-    # Optional preview run - available, never required.
-    if st.button("🧪 Dry run instead (builds everything, sends nothing)"):
-        st.session_state.or_dry_log = oe.dispatch_batch(selected, session, template, dry_run=True)
-        st.rerun()
-
     if send_clicked:
         progress_box = st.empty()
         live = []
@@ -804,15 +808,7 @@ def _render_review_and_send():
         st.session_state.pop("or_confirm_real", None)
 
         progress_box.empty()
-        st.session_state.pop("or_dry_log", None)
         st.rerun()
-
-    dry_log = st.session_state.get("or_dry_log")
-    if dry_log:
-        would = sum(1 for e in dry_log if e["status"] == "would_send")
-        skipped = sum(1 for e in dry_log if e["status"] == "skipped")
-        st.info(f"Dry run — **{would}** would send, **{skipped}** skipped. Nothing was sent.")
-        st.dataframe(_log_dataframe(dry_log), use_container_width=True, hide_index=True)
 
     send_log = st.session_state.get("or_send_log")
     if send_log:

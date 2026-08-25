@@ -56,6 +56,7 @@ MODULE_BUILD = "2026-08-21-rollover-closed-check"
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -99,6 +100,36 @@ def _max_candidates() -> int:
     except ValueError:
         configured = 30
     return max(configured, _max_results() + 10)
+
+
+def _search_concurrency() -> int:
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "make the mail outreach faster... for the
+    searching." The 7-10 provider queries per discover_suppliers() call, and every per-candidate
+    website/Instagram fetch below, used to run one at a time - each is an independent HTTP call
+    to a different source/URL with no shared state between them, so there was nothing keeping
+    them sequential except the original port's own choice (see this module's docstring: a prior
+    decision made for a SINGLE search behind a spinner, not for the country-scope flow's 30+
+    combinations each re-running this same bundle). Running them concurrently instead is a pure
+    speed change - same requests, same results, same downstream filtering - not a behaviour
+    change, which is why it's safe under this module's own "identical behaviour" porting rule.
+    Read at call time (not import time), same pattern as _min_rating/_max_results, so an env var
+    set after import (Streamlit secrets) is picked up; kept deliberately modest by default so a
+    search doesn't hammer a rate-limited provider or a supplier's own small website all at once."""
+    try:
+        return max(1, int(os.getenv("SEARCH_CONCURRENCY") or "6"))
+    except ValueError:
+        return 6
+
+
+def _enrichment_concurrency() -> int:
+    """Same rule as _search_concurrency, for the per-candidate website/Instagram scraping pass
+    in enrich_from_website - a separate knob since scraping a supplier's own (often small,
+    unhardened) website deserves its own, possibly more conservative, concurrency cap than
+    hitting a paid search API."""
+    try:
+        return max(1, int(os.getenv("ENRICHMENT_CONCURRENCY") or "6"))
+    except ValueError:
+        return 6
 
 
 # ============================================================================
@@ -1301,10 +1332,20 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     queries = build_queries(country, city, keyword)
     candidates: List[Dict[str, Any]] = []
 
-    for q in queries:
-        report(f"Searching {q['source']}…")
-        results = run_provider_search(q["source"], q["query"], country, keyword,
-                                      q["domains"], q["max_results"])
+    # CONFIRMED (2026-08-25, see _search_concurrency's docstring for the full rationale):
+    # these queries are independent HTTP calls with no shared state, run concurrently instead
+    # of one at a time. ThreadPoolExecutor.map (not as_completed) is used specifically because
+    # it returns results in the SAME ORDER as `queries`, so `candidates` ends up built in
+    # exactly the order the old sequential loop produced - same downstream tie-breaking in the
+    # sort/dedupe passes below, only the wall-clock time changes.
+    report(f"Searching {len(queries)} source(s)…")
+    with ThreadPoolExecutor(max_workers=min(len(queries), _search_concurrency())) as pool:
+        results_per_query = list(pool.map(
+            lambda q: run_provider_search(q["source"], q["query"], country, keyword,
+                                          q["domains"], q["max_results"]),
+            queries,
+        ))
+    for q, results in zip(queries, results_per_query):
         for raw in results:
             candidates.append(parse_signals(raw, q["source"]))
 
@@ -1411,11 +1452,17 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
             deduped = surviving
             ai_dropped = before - len(deduped)
 
+    # Same concurrency rationale as the query fan-out above (see _search_concurrency's
+    # docstring) - each candidate's website/Instagram scrape is independent of every other
+    # candidate's, so this no longer waits for one supplier's site to respond before starting
+    # the next. Order-preserving map(), same reason: `enriched` must line up with `deduped`
+    # index-for-index exactly as the old sequential loop left it.
     report(f"Looking up contact details for {len(deduped)} candidate(s)…")
-    enriched = []
-    for i, c in enumerate(deduped, 1):
-        report(f"Looking up contact details ({i}/{len(deduped)}): {c.get('name')}")
-        enriched.append(enrich_from_website(c))
+    if deduped:
+        with ThreadPoolExecutor(max_workers=min(len(deduped), _enrichment_concurrency())) as pool:
+            enriched = list(pool.map(enrich_from_website, deduped))
+    else:
+        enriched = []
 
     suppliers = [to_supplier_record(c, country, keyword) for c in enriched]
     # Suppliers with absolutely no way to reach them are dropped, but a listing
