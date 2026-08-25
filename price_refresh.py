@@ -44,11 +44,22 @@ import ai_extractor
 import transfer_matcher
 import transport_matcher
 
-# The two product types this flow can refresh. Both are priced per occupancy and both arrive
-# on the same kind of rate sheet, but they store the numbers very differently - see
-# load_supplier_products() and rebuild_prices().
+# The product types this flow can refresh. Transport/Transfer are priced per occupancy and both
+# arrive on the same kind of rate sheet, but they store the numbers very differently - see
+# load_supplier_products() and rebuild_prices(). Ticket (added 2026-08-25, Phase 1 of the
+# product-owner's request: "the next developement must be done, when we are talking about
+# updating Tickets or ClosedTours for the new Seasons with new prices... Could we plan this the
+# same for Tickets and closedtours") is deliberately its OWN pipeline (load_supplier_tickets /
+# lookup_ticket_prices / build_ticket_proposals / rebuild_ticket_prices / apply_ticket_proposals)
+# rather than another branch bolted onto the Transport/Transfer functions above - see the
+# Ticket section further down for why: matching is by exact CODE instead of fuzzy place-name
+# matching, a "route" is a (ticket, modality) pair rather than a single record, and the PUT
+# shape (one Modality, whole) is different again from either Transport or Transfer. It still
+# reuses bracket_price_for() and the same finding/proposal SHAPE as the functions above, so a
+# human reviewing either screen sees the same "old -> new, accept or reject" pattern.
 KIND_TRANSPORT = "Transport"
 KIND_TRANSFER = "Transfer"
+KIND_TICKET = "Ticket"
 
 PRICE_LOOKUP_SYSTEM_PROMPT = """You are reading a supplier's rate sheet to find the NEW PRICE for routes that
 already exist in a booking system. You are NOT deciding which products exist - that list is given to you and
@@ -313,6 +324,127 @@ def load_supplier_products(client, supplier_id: str, kind: str,
     return load_supplier_transports(client, supplier_id, progress=progress)
 
 
+# ----------------------------------------------------------------------
+# Ticket (Phase 1, 2026-08-25): reading what is already live
+# ----------------------------------------------------------------------
+# CONFIRMED SCOPE (product owner, AskUserQuestion 2026-08-25): Ticket only for now (ClosedTour
+# is a separate later follow-up); a Peak Season supplement is ALWAYS ADDED and never replaces
+# an existing one (Phase 2, not built here); percentage surcharges compute as 15% of the base
+# adult/child price (Phase 2, not built here); existing language-choice supplement prices CAN
+# also be refreshed (Phase 3, not built here). THIS pass covers base/occupancy price only:
+# load an existing Ticket Modality's live occupancyPrices from Travel Compositor, match it to
+# the document by its own CODE, diff, let a human accept/reject/edit, and apply.
+TICKET_SUPPORTED_PRICE_TYPE = "OCCUPANCY"
+
+
+def _ticket_price_type_supported(price_type: Optional[str]) -> bool:
+    """OCCUPANCY is the only Modality pricing mode this phase understands - its per-headcount
+    occupancyPrices table maps directly onto the rate sheet's per-group-size brackets. A
+    DISTRIBUTION (flat per-adult/child regardless of group size) or SERVICE (one flat total)
+    Modality is NOT guessed at - it is listed and named as unsupported, consistent with this
+    codebase's established "block rather than guess" rule (see build_proposals' blocked_
+    unreadable handling above)."""
+    return (price_type or TICKET_SUPPORTED_PRICE_TYPE) == TICKET_SUPPORTED_PRICE_TYPE
+
+
+def _ticket_occupancy_options(modality: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """A live Modality's occupancyPrices, split into adult and child option lists.
+
+    CONFIRMED REAL WIRE SHAPE (captured GET response): occupancyPrices is a FLAT list mixing
+    adult and child rows - an adult row is {"occupancy": n, "amount": <price>}, a child row at
+    the SAME occupancy carries an extra "ageRange": {"min": ..., "max": ...} key, which is the
+    only thing that distinguishes it. There is no separate child array.
+
+    Each row is expressed as an EXACT-headcount bracket (min_pax == max_pax == occupancy) so
+    the existing bracket_price_for() - built for Transport/Transfer's brackets - can be reused
+    unchanged for Ticket prices too; an exact-headcount bracket is just a zero-width range."""
+    adult, child = [], []
+    for row in (modality.get("occupancyPrices") or []):
+        if not isinstance(row, dict):
+            continue
+        occ = int(_num(row.get("occupancy"), 0))
+        if occ <= 0:
+            continue
+        entry = {"code": f"occ{occ}", "min_pax": occ, "max_pax": occ,
+                 "unit_price": round(_num(row.get("amount")), 2), "name": f"{occ} pax",
+                 "raw": dict(row)}
+        (child if isinstance(row.get("ageRange"), dict) else adult).append(entry)
+    return (sorted(adult, key=lambda o: o["min_pax"]), sorted(child, key=lambda o: o["min_pax"]))
+
+
+def load_supplier_tickets(client, supplier_id: str,
+                          progress: Optional[Callable[[int, int, str], None]] = None
+                          ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Every (Ticket, Modality) pair this supplier has, with its current occupancy prices.
+
+    One "route" per live Modality - like Transport, the list endpoint gives only each Ticket's
+    modalityCodes, so each Modality needs its own GET (see sync_ticket.fetch_all_tickets /
+    fetch_all_tickets's own paging pattern, reused here for the same reason: a supplier can
+    have more tickets than one page)."""
+    try:
+        data = client.get_tickets(supplier_id, first=0, limit=200)
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    tickets = data.get("tickets", []) if isinstance(data, dict) else (data or [])
+    tickets = [t for t in tickets if isinstance(t, dict)]
+
+    pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+    total_tickets = pagination.get("totalResults", len(tickets))
+    first = 200
+    while len(tickets) < total_tickets:
+        try:
+            more = client.get_tickets(supplier_id, first=first, limit=200)
+        except Exception:
+            break
+        more_list = more.get("tickets", []) if isinstance(more, dict) else []
+        if not more_list:
+            break
+        tickets.extend(t for t in more_list if isinstance(t, dict))
+        first += 200
+
+    total_modalities = sum(len(t.get("modalityCodes") or []) for t in tickets) or 1
+    out = []
+    done = 0
+    for ticket in tickets:
+        ticket_code = ticket.get("code")
+        ticket_name = ticket.get("name") or ((ticket.get("datasheets") or {}).get("EN") or {}).get("name", "") \
+            or ticket_code
+        currency = ticket.get("currency") or "EUR"
+        for modality_code in (ticket.get("modalityCodes") or []):
+            done += 1
+            if progress:
+                progress(done, total_modalities, f"{ticket_name} — {modality_code}")
+            try:
+                opt = client.get_ticket_option(supplier_id, ticket_code, modality_code)
+            except Exception as e:
+                opt = {"error": type(e).__name__, "message": str(e)}
+            if not isinstance(opt, dict) or "error" in opt:
+                out.append({"kind": KIND_TICKET, "id": f"{ticket_code}/{modality_code}",
+                           "ticket_code": ticket_code, "modality_code": modality_code,
+                           "name": f"{ticket_name} — {modality_code}", "currency": currency,
+                           "price_type": None, "fetch_failed": True,
+                           "options": [], "child_options": [], "raw": None})
+                continue
+            price_type = opt.get("priceType") or TICKET_SUPPORTED_PRICE_TYPE
+            adult_options, child_options = _ticket_occupancy_options(opt)
+            out.append({
+                "kind": KIND_TICKET,
+                "id": f"{ticket_code}/{modality_code}",
+                "ticket_code": ticket_code,
+                "modality_code": modality_code,
+                "name": f"{ticket_name} — {modality_code}",
+                "currency": currency,
+                "price_type": price_type,
+                "fetch_failed": False,
+                "options": adult_options,
+                "child_options": child_options,
+                "raw": opt,
+            })
+    return out, None
+
+
 def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
     """Departure and arrival as readable place names.
 
@@ -390,6 +522,133 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
             "confidence": str(item.get("confidence") or "low").lower(),
             "note": str(item.get("note") or "").strip(),
         }
+    return findings
+
+
+# ----------------------------------------------------------------------
+# Ticket (Phase 1): asking the document for each ticket's price, by CODE
+# ----------------------------------------------------------------------
+# Unlike Transport/Transfer, a Ticket route does not need place-name/airport-code matching at
+# all - the rate sheet states the same code the live product already has (e.g. "ALX-01"), so
+# matching is exact-string, not fuzzy. The AI's job shrinks further than it already was: find
+# the row for a KNOWN code, report its price per bracket.
+TICKET_PRICE_LOOKUP_SYSTEM_PROMPT = """You are reading a supplier's rate sheet to find the NEW PRICE for tickets/
+excursions that already exist in a booking system. You are NOT deciding which tickets exist - that list is given
+to you, by its own CODE, and it is correct. Your only job is to find each code's price in the document.
+
+You will be given a numbered list of TICKETS, each with its own CODE, name, and the passenger-count brackets it
+is sold in, then the document. For each ticket, find the row whose code MATCHES (the document usually states the
+code directly, e.g. "ALX-01", "SHM-04" - match it exactly, ignoring case/whitespace differences only) and report
+the price for each bracket.
+
+You may also be given an OPERATOR INSTRUCTION - a human typed this in their own words to point you at part of
+the document. Match it by meaning; it only narrows which tickets you report as found, never a reason to report
+one "found": false that the document genuinely prices.
+
+PRICES:
+- Report the number exactly as the document states it for each pax-count column/bracket (e.g. "1 pax", "2-3
+  pax", "4-6 pax"). Never convert a currency, never apply a discount, never interpolate a bracket the document
+  does not price.
+- "child_price": ONLY set this when the document gives a genuinely SEPARATE child/infant price for that
+  bracket (a distinct column or a stated child rate). If the document prices only one figure per bracket with
+  no visible child/infant split, leave "child_price" null - never guess or assume a child discount.
+- If the document does not price a code at all, say so with "found": false. A ticket the supplier dropped this
+  season should not be guessed at.
+- If you are unsure which row a code matches, set "confidence": "low" and say why in "note".
+
+Output ONLY valid JSON, no markdown fences:
+{
+  "routes": [
+    {"index": 0,
+     "found": true,
+     "matched_row": "the document's own wording for the row you used, quoted",
+     "currency": "the currency code if the document states one, else empty",
+     "minimum_pax": 1,
+     "brackets": [{"min_pax": 1, "max_pax": 1, "price": 45.0, "child_price": null, "infant_price": null}],
+     "confidence": "high",
+     "note": ""}
+  ]
+}
+Report every ticket you were given, in the same order, including the ones you did not find."""
+
+
+def lookup_ticket_prices(routes: List[Dict[str, Any]], raw_text: str,
+                         model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
+    """Find each known Ticket's price-per-bracket in the document. Returns {route index: finding}.
+
+    DEDUPES by ticket_code before calling the AI: several live Modalities can share one Ticket
+    code (adult/child variants, different languages, different group-size structures), and the
+    document prices that code ONCE - asking once per unique code and fanning the same finding
+    back out to every route sharing it avoids N identical (and potentially disagreeing) AI
+    calls for what is really one lookup."""
+    if not routes or not (raw_text or "").strip():
+        return {}
+    code_to_indices: Dict[str, List[int]] = {}
+    codes_seen: List[str] = []
+    for i, route in enumerate(routes):
+        code = route.get("ticket_code") or ""
+        if not code:
+            continue
+        code_to_indices.setdefault(code, []).append(i)
+        if code not in codes_seen:
+            codes_seen.append(code)
+    if not codes_seen:
+        return {}
+
+    described = []
+    for ci, code in enumerate(codes_seen):
+        first_route = routes[code_to_indices[code][0]]
+        all_brackets = sorted({(o["min_pax"], o["max_pax"])
+                               for idx in code_to_indices[code] for o in routes[idx]["options"]})
+        brackets_desc = ", ".join(f"{mn}-{mx} pax" for mn, mx in all_brackets) or "no brackets recorded"
+        described.append(
+            f"{ci}. code: {code} | name: {first_route.get('name') or '(unnamed)'} | "
+            f"brackets: {brackets_desc} | currency now: {first_route.get('currency') or '?'}")
+    instruction = f"OPERATOR INSTRUCTION: {human_hint.strip()}\n\n" if (human_hint or "").strip() else ""
+    user_content = (f"{instruction}TICKETS TO PRICE:\n" + "\n".join(described) +
+                    f"\n\n--- DOCUMENT ---\n{raw_text}")
+    data = ai_extractor._call_claude(TICKET_PRICE_LOOKUP_SYSTEM_PROMPT, user_content, model,
+                                     max_tokens=8192, input_schema=PRICE_LOOKUP_TOOL_SCHEMA) or {}
+    by_code_index = {}
+    for item in (data.get("routes") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ci = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= ci < len(codes_seen)):
+            continue
+        brackets = []
+        for b in (item.get("brackets") or []):
+            if not isinstance(b, dict):
+                continue
+            price = _num(b.get("price"), fallback=-1.0)
+            if price < 0:
+                continue
+            brackets.append({
+                "min_pax": int(_num(b.get("min_pax"), 1)),
+                "max_pax": int(_num(b.get("max_pax"), 1)),
+                "price": round(price, 2),
+                "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
+                "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+            })
+        by_code_index[ci] = {
+            "found": bool(item.get("found")) and bool(brackets),
+            "matched_row": str(item.get("matched_row") or "").strip(),
+            "currency": str(item.get("currency") or "").strip().upper(),
+            "minimum_pax": int(_num(item.get("minimum_pax"), 1)) or 1,
+            "brackets": sorted(brackets, key=lambda b: b["min_pax"]),
+            "confidence": str(item.get("confidence") or "low").lower(),
+            "note": str(item.get("note") or "").strip(),
+        }
+    findings = {}
+    for ci, code in enumerate(codes_seen):
+        finding = by_code_index.get(ci) or {"found": False, "brackets": [], "confidence": "low",
+                                            "note": "", "matched_row": "", "minimum_pax": 1,
+                                            "currency": ""}
+        for idx in code_to_indices[code]:
+            findings[idx] = finding
     return findings
 
 
@@ -498,6 +757,151 @@ def build_proposals(routes: List[Dict[str, Any]],
             "accepted": status == "changed",
         })
     return proposals
+
+
+def build_ticket_proposals(routes: List[Dict[str, Any]],
+                           findings: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One proposal per live (Ticket, Modality): what it costs now, and what it would become.
+
+    Modelled on build_proposals() above (same statuses, same accept-by-default-only-when-
+    changed rule) with two Ticket-specific additions: a route whose Modality could not be read
+    is reported as blocked_unreadable (like build_proposals' own unreadable-option rule, just
+    for the whole route since there is only one "option" here - the Modality itself), and a
+    route whose priceType this phase doesn't understand (DISTRIBUTION/SERVICE) is reported as
+    unsupported_price_type rather than silently skipped or guessed at.
+
+    Each change also carries "child_old"/"child_new": a child/infant price at the SAME bracket
+    moves alongside the adult price (see rebuild_ticket_prices) exactly like Transport already
+    scales baseChildrenPrice/baseInfantPrice with the adult base - it is reported here so the
+    review screen can show it, but is never a separate accept/reject choice of its own."""
+    proposals = []
+    for i, route in enumerate(routes):
+        finding = findings.get(i) or {"found": False, "brackets": [], "confidence": "low",
+                                      "note": "", "matched_row": "", "minimum_pax": 1,
+                                      "currency": ""}
+        if route.get("fetch_failed"):
+            proposals.append({
+                "index": i, "route": route, "finding": finding, "changes": [],
+                "unchanged": 0, "missing": 0, "status": "blocked_unreadable",
+                "currency_changed": False,
+                "unreadable_options": [route.get("modality_code")], "accepted": False,
+            })
+            continue
+        if not _ticket_price_type_supported(route.get("price_type")):
+            proposals.append({
+                "index": i, "route": route, "finding": finding, "changes": [],
+                "unchanged": 0, "missing": 0, "status": "unsupported_price_type",
+                "currency_changed": False, "unreadable_options": [], "accepted": False,
+            })
+            continue
+
+        child_by_code = {c["code"]: c for c in (route.get("child_options") or [])}
+        changes, unchanged, missing = [], 0, 0
+        for option in route["options"]:
+            new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
+                                          finding.get("minimum_pax", 1))
+            child_price_from_doc = None
+            for b in (finding.get("brackets") or []):
+                if b["min_pax"] <= option["max_pax"] and b["max_pax"] >= option["min_pax"] \
+                        and b.get("child_price") is not None:
+                    child_price_from_doc = b["child_price"]
+                    break
+            if new_price is None:
+                if child_price_from_doc is None:
+                    missing += 1
+                    continue
+                new_price = option["unit_price"]  # only the child moves; adult stays as-is
+            adult_changed = abs(new_price - option["unit_price"]) >= 0.005
+            if not adult_changed and child_price_from_doc is None:
+                unchanged += 1
+                continue
+            child_row = child_by_code.get(option["code"])
+            changes.append({
+                "code": option["code"], "min_pax": option["min_pax"], "max_pax": option["max_pax"],
+                "old": option["unit_price"], "new": new_price, "name": option.get("name", ""),
+                "child_old": child_row["unit_price"] if child_row else None,
+                "child_new": child_price_from_doc,
+            })
+        currency_changed = bool(finding.get("currency")) and \
+            finding["currency"] != str(route.get("currency") or "").upper()
+        if changes:
+            status = "changed"
+        elif not finding.get("found"):
+            status = "not_in_document"
+        elif missing and not unchanged:
+            status = "not_in_document"
+        else:
+            status = "unchanged"
+        proposals.append({
+            "index": i, "route": route, "finding": finding, "changes": changes,
+            "unchanged": unchanged, "missing": missing, "status": status,
+            "currency_changed": currency_changed, "unreadable_options": [],
+            "accepted": status == "changed",
+        })
+    return proposals
+
+
+def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """New prices onto a Ticket Modality, keeping everything else - structure, dates, languages,
+    supplements - exactly as it is. Same rule as Transfer/Transport (CONFIRMED PRODUCT-OWNER
+    RULE): only the numbers move; startDate/endDate are never touched here.
+
+    baseAdultPrice is deliberately left UNTOUCHED for an OCCUPANCY Modality: builder.py already
+    treats it as a required-but-inert placeholder outside DISTRIBUTION mode (a harmless 1.0 when
+    creating one) - the real per-headcount prices live entirely in occupancyPrices, which is
+    what this function actually rewrites."""
+    payload = json.loads(json.dumps(route["raw"]))
+    resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
+    resolved_child = {c["code"]: round(float(c["child_new"]), 2)
+                      for c in changes if c.get("child_new") is not None}
+    adult_by_code = {o["code"]: o for o in route["options"]}
+
+    new_rows = []
+    for row in (payload.get("occupancyPrices") or []):
+        if not isinstance(row, dict):
+            new_rows.append(row)
+            continue
+        code = f"occ{int(_num(row.get('occupancy'), 0))}"
+        row = dict(row)
+        if isinstance(row.get("ageRange"), dict):
+            if code in resolved_child:
+                row["amount"] = resolved_child[code]
+            elif code in resolved_adult and adult_by_code.get(code, {}).get("unit_price", 0) > 0:
+                # No explicit child price in the document for this bracket - move the child
+                # price with the adult price, same ratio-scaling rule Transport already uses
+                # for baseChildrenPrice/baseInfantPrice, rather than leaving it stale.
+                ratio = resolved_adult[code] / adult_by_code[code]["unit_price"]
+                row["amount"] = round(_num(row.get("amount")) * ratio, 2)
+        elif code in resolved_adult:
+            row["amount"] = resolved_adult[code]
+        new_rows.append(row)
+    payload["occupancyPrices"] = new_rows
+    return payload
+
+
+def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
+                           progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Push the accepted Ticket price proposals. Each Modality is PUT back whole, with only its
+    occupancyPrices changed - same belt-and-braces shape as apply_proposals() above."""
+    accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
+    for n, proposal in enumerate(accepted):
+        route = proposal["route"]
+        if progress:
+            progress(n + 1, len(accepted), route.get("name", ""))
+        payload = rebuild_ticket_prices(route, proposal["changes"])
+        payload["code"] = route.get("modality_code")
+        try:
+            res = client.update_ticket_option(supplier_id, route.get("ticket_code"), payload)
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": route.get("name"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+                continue
+            out["updated"].append({"name": route.get("name"), "changes": proposal["changes"]})
+        except Exception as e:
+            out["failed"].append({"name": route.get("name"),
+                                  "detail": ai_extractor.friendly_error_message(e)})
+    return out
 
 
 def _rebuild_transfer_prices(route: Dict[str, Any],

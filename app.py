@@ -8523,8 +8523,10 @@ def render_update_refresh_flow(client):
                        horizontal=True, key="ur_service_choice")
     st.caption("**Transfer / Transport**: matches a new rate sheet's rows against your EXISTING "
               "Travel Compositor products and updates them - nothing is ever created here. "
-              "**ClosedTour / Hotel / Ticket**: pick the exact existing one from the list below, "
-              "then what kind of update this is - nothing is created here either.")
+              "**Ticket**: either a bulk price refresh across every Ticket for a supplier (same "
+              "idea as Transfer/Transport), or pick one exact Ticket to update by hand. "
+              "**ClosedTour / Hotel**: pick the exact existing one from the list below, then "
+              "what kind of update this is - nothing is created here either.")
 
     if service in (price_refresh.KIND_TRANSPORT, price_refresh.KIND_TRANSFER):
         # CONFIRMED REAL BUG (reported by product owner, with screenshot): setting
@@ -8536,7 +8538,22 @@ def render_update_refresh_flow(client):
         render_price_refresh_flow(client, preselected_kind=service)
         return
 
-    if service in ("ClosedTour", "Hotel", "Ticket"):
+    if service == price_refresh.KIND_TICKET:
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Could we plan this the same for
+        # Tickets and closedtours... Easiest part would be starting with Ticket" - a bulk price
+        # refresh across many Tickets at once, same shape as the Transfer/Transport flow above,
+        # ADDED alongside (not replacing) the existing pick-one-Ticket flow below.
+        ticket_mode = st.radio(
+            "What kind of Ticket update is this?",
+            ["Bulk price refresh from a rate sheet", "Update one Ticket by hand"],
+            horizontal=True, key="ur_ticket_mode")
+        if ticket_mode == "Bulk price refresh from a rate sheet":
+            render_ticket_price_refresh_flow(client)
+            return
+        _render_update_refresh_coded_service(client, service)
+        return
+
+    if service in ("ClosedTour", "Hotel"):
         _render_update_refresh_coded_service(client, service)
         return
 
@@ -9284,6 +9301,268 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
         if st.button("🆕 Start again", key="pr_new"):
             for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
+def render_ticket_price_refresh_flow(client):
+    """Update the occupancy prices of Tickets that already exist, from a new rate sheet - Phase
+    1 of the product-owner's request (2026-08-25): "the next developement must be done, when we
+    are talking about updating Tickets or ClosedTours for the new Seasons with new prices... The
+    logic we have build for transfers and transports are great... Could we plan this the same
+    for Tickets and closedtours." Explicitly scoped to base/occupancy price only, per "yes,
+    please start with phase 1" - a Peak Season supplement is never added here (Phase 2) and an
+    existing language-choice supplement's own price is never touched here (Phase 3).
+
+    Same review pattern as render_price_refresh_flow (Transfer/Transport) above: the list of
+    Tickets/Modalities comes from Travel Compositor, the document is only asked what each known
+    CODE now costs, and nothing but occupancyPrices ever changes - dates, languages, supplements
+    and modality structure are left exactly as they are."""
+    st.header("🎟️ Refresh Ticket prices from a rate sheet")
+    st.caption("For a rate sheet covering Tickets that already exist. The list of Tickets/"
+              "Modalities comes from Travel Compositor, not from the document — the document is "
+              "only asked what each known CODE now costs. Nothing is created, and **only the "
+              "occupancy prices change** — dates, languages, supplements and modality structure "
+              "are left exactly as they are. Phase 1 only: Peak Season supplements and "
+              "language-choice supplement prices are not touched by this screen yet.")
+
+    if st.session_state.suppliers_cache is None:
+        with st.spinner("Loading supplier list…"):
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception as e:
+                st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.session_state.suppliers_cache = []
+    momira = [x for x in (st.session_state.suppliers_cache or [])
+              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_")]
+    supplier_id = None
+    if momira:
+        options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
+                   for x in momira}
+        supplier_id = options[st.selectbox("Supplier", list(options.keys()), key="tpr_supplier")]
+    else:
+        st.error("Could not load the supplier list from Travel Compositor.")
+        with st.expander("⚠️ Emergency manual entry"):
+            supplier_id = st.text_input("Supplier ID (numeric)", key="tpr_supplier_manual").strip()
+
+    st.subheader("1 — The new rate sheet")
+    url = st.text_input("Rate sheet URL (optional)", key="tpr_url")
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx"],
+                             accept_multiple_files=True, key="tpr_files")
+    hint = st.text_input("Instruction (optional)", key="tpr_hint",
+                         placeholder="e.g. only the Alexandria tours section")
+
+    if st.button("🔍 Read prices for this supplier's Tickets", type="primary",
+                 disabled=not supplier_id, key="tpr_read"):
+        raw_parts = []
+        if url:
+            page_text, page_err = _fetch_url_text_safe(url)
+            if page_text is not None:
+                raw_parts.append(page_text)
+            else:
+                st.warning(f"⚠️ Couldn't fetch that URL: {page_err}.")
+        for uploaded in (files or []):
+            suffix = os.path.splitext(uploaded.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded.getbuffer())
+                tmp_path = tmp.name
+            raw_parts.append(extract_raw_text(tmp_path))
+            os.remove(tmp_path)
+        if not raw_parts:
+            st.error("No document to read — upload a rate sheet or give a URL.")
+        else:
+            raw_text = "\n\n".join(raw_parts)
+            bar = st.progress(0.0, text="Reading this supplier's Tickets from Travel Compositor…")
+
+            def _tick(done, total, name):
+                bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
+
+            routes, err = price_refresh.load_supplier_tickets(client, supplier_id, progress=_tick)
+            bar.empty()
+            if err:
+                st.error(f"Couldn't read this supplier's Tickets: {err}")
+            elif not routes:
+                st.warning("This supplier has no Tickets yet. Create them with "
+                           "**Upload & Update Products → Ticket** first; this flow only updates "
+                           "what already exists.")
+            else:
+                with st.spinner(f"Looking up prices for {len(routes)} Modality(ies) in the document…"):
+                    try:
+                        findings = price_refresh.lookup_ticket_prices(routes, raw_text, human_hint=hint)
+                    except Exception as e:
+                        st.error(f"Couldn't read the document: {friendly_error_message(e)}")
+                        findings = None
+                if findings is not None:
+                    st.session_state.tpr_routes = routes
+                    st.session_state.tpr_proposals = _stamp_proposal_widget_tokens(
+                        price_refresh.build_ticket_proposals(routes, findings))
+                    st.session_state.tpr_raw_text = raw_text
+                    st.session_state.pop("tpr_result", None)
+        st.rerun()
+
+    proposals = st.session_state.get("tpr_proposals")
+    if not proposals:
+        return
+
+    changed = [p for p in proposals if p["status"] == "changed"]
+    unchanged = [p for p in proposals if p["status"] == "unchanged"]
+    absent = [p for p in proposals if p["status"] == "not_in_document"]
+    blocked = [p for p in proposals if p["status"] == "blocked_unreadable"]
+    unsupported = [p for p in proposals if p["status"] == "unsupported_price_type"]
+
+    st.subheader("2 — Check the new prices")
+    st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
+              f"document · {len(absent)} not found in it."
+              + (f" · {len(blocked)} could not be read" if blocked else "")
+              + (f" · {len(unsupported)} not OCCUPANCY-priced (unsupported)" if unsupported else ""))
+
+    if blocked:
+        st.error(f"🚫 **{len(blocked)} Modality(ies) could not be fully read from Travel "
+                f"Compositor** and have been left untouched. Re-run the price refresh and they "
+                f"should load.")
+        for p in blocked:
+            st.markdown(f"- **{p['route'].get('name') or '(unnamed)'}**")
+
+    if unsupported:
+        with st.expander(f"⚠️ {len(unsupported)} Modality(ies) not supported yet "
+                         f"(DISTRIBUTION/SERVICE pricing)"):
+            st.caption("This screen only refreshes OCCUPANCY-priced Modalities (a per-headcount "
+                      "table) so far. A DISTRIBUTION (flat per-adult/child) or SERVICE (one flat "
+                      "total) Modality is listed here rather than guessed at — update it by hand "
+                      "for now.")
+            for p in unsupported:
+                route = p["route"]
+                st.markdown(f"- **{route.get('name') or '(unnamed)'}** — priceType "
+                           f"`{route.get('price_type') or '?'}`")
+
+    acol1, acol2 = st.columns([1, 4])
+    with acol1:
+        if st.button("✅ Accept all", key="tpr_accept_all", use_container_width=True):
+            for p in proposals:
+                p["accepted"] = p["status"] == "changed"
+            st.rerun()
+    with acol2:
+        if st.button("Clear all", key="tpr_clear_all"):
+            for p in proposals:
+                p["accepted"] = False
+            st.rerun()
+
+    for p in changed:
+        route = p["route"]
+        finding = p["finding"]
+        head = f"**{route.get('name')}**  ·  `{route.get('ticket_code')}/{route.get('modality_code')}`"
+        cols = st.columns([1, 6])
+        with cols[0]:
+            p["accepted"] = st.checkbox("Yes", value=p["accepted"],
+                                        key=f"tpr_ok_{p['index']}_{p.get('widget_token', 'g0')}")
+        with cols[1]:
+            st.markdown(head)
+            for c in p["changes"]:
+                pcol1, pcol2 = st.columns([3, 2])
+                with pcol2:
+                    c["new"] = st.number_input(
+                        f"New adult price ({c['min_pax']} pax)", min_value=0.0, step=1.0,
+                        value=float(c["new"]),
+                        key=f"tpr_price_{p['index']}_{c['code']}_{p.get('widget_token', 'g0')}",
+                        label_visibility="collapsed")
+                with pcol1:
+                    _ccy = route.get('currency') or ''
+                    if abs(c["new"] - c["old"]) < 0.005:
+                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :green[**{c['new']}**] {_ccy}  ·  "
+                                   f"*matches the live price*")
+                    else:
+                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :red[**{c['new']}**] {_ccy}")
+                    if c.get("child_new") is not None:
+                        st.caption(f"child at {c['min_pax']} pax: "
+                                  f"{c.get('child_old') if c.get('child_old') is not None else '?'} → "
+                                  f"{c['child_new']} {_ccy} (from the document)")
+                    elif c.get("child_old") is not None:
+                        st.caption(f"child at {c['min_pax']} pax moves with the adult price "
+                                  f"(document gave no separate child price)")
+            bits = []
+            if finding.get("matched_row"):
+                bits.append(f"from the row *“{finding['matched_row']}”*")
+            if finding.get("confidence") and finding["confidence"] != "high":
+                bits.append(f"**{finding['confidence']} confidence**")
+            if finding.get("note"):
+                bits.append(finding["note"])
+            if p.get("currency_changed"):
+                bits.append(f"⚠️ the document says **{finding['currency']}** but this Ticket is "
+                            f"**{route.get('currency')}** — the price is applied as-is, not converted")
+            if bits:
+                st.caption("  ·  ".join(bits))
+            with st.expander("🤖 Not right? Tell the AI more about this Ticket", expanded=False):
+                route_hint = st.text_input(
+                    "Extra instruction for this Ticket only",
+                    key=f"tpr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
+                    placeholder="e.g. use the half-day price, not the full-day one")
+                if st.button("🔁 Re-read this Ticket", key=f"tpr_reread_{p['index']}",
+                             disabled=not route_hint.strip()):
+                    with st.spinner("Re-reading this Ticket..."):
+                        combined_hint = "\n".join(
+                            x for x in [(hint or "").strip(), route_hint.strip()] if x)
+                        try:
+                            single_finding = price_refresh.lookup_ticket_prices(
+                                [route], st.session_state.tpr_raw_text, human_hint=combined_hint
+                            ).get(0)
+                        except Exception as e:
+                            st.error(f"Couldn't re-read this Ticket: {friendly_error_message(e)}")
+                            single_finding = None
+                    if single_finding is not None:
+                        rebuilt = _stamp_proposal_widget_tokens(price_refresh.build_ticket_proposals(
+                            st.session_state.tpr_routes, {p["index"]: single_finding}))
+                        st.session_state.tpr_proposals[p["index"]] = rebuilt[p["index"]]
+                        st.rerun()
+                    elif single_finding is None and route_hint.strip():
+                        st.warning("The AI didn't find this code in the document even with the "
+                                  "extra instruction - the current price is left as it was.")
+
+    if unchanged:
+        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
+            for p in unchanged:
+                route = p["route"]
+                price_bits = ", ".join(f"{o['min_pax']} pax: {o['unit_price']}"
+                                       for o in (route.get("options") or []))
+                st.markdown(f"- **{route.get('name')}**  ·  :green[{price_bits}] "
+                           f"{route.get('currency') or ''}")
+    if absent:
+        with st.expander(f"❓ {len(absent)} not found in the document"):
+            st.caption("The document may price these under a code nobody matched, or the "
+                      "supplier may have dropped them.")
+            for p in absent:
+                route = p["route"]
+                st.markdown(f"- **{route.get('name')}**  ·  `{route.get('ticket_code')}/"
+                           f"{route.get('modality_code')}`")
+
+    st.subheader("3 — Apply")
+    accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    st.warning(f"This changes prices on **{len(accepted)} live Ticket Modality(ies)** for "
+               f"supplier {supplier_id}. Nothing else is touched.")
+    if st.button(f"🚀 Update {len(accepted)} Modality(ies)", type="primary",
+                 disabled=not accepted, key="tpr_apply"):
+        bar = st.progress(0.0, text="Updating…")
+
+        def _tick2(done, total, name):
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
+
+        st.session_state.tpr_result = price_refresh.apply_ticket_proposals(
+            client, supplier_id, proposals, progress=_tick2)
+        bar.empty()
+        st.rerun()
+
+    result = st.session_state.get("tpr_result")
+    if result:
+        if result["updated"]:
+            st.success(f"✅ {len(result['updated'])} Modality(ies) repriced.")
+            for u in result["updated"]:
+                st.write(f"- {u['name']}: " + ", ".join(
+                    f"{c['min_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
+        if result["failed"]:
+            st.error(f"❌ {len(result['failed'])} failed:")
+            for f in result["failed"]:
+                st.write(f"- **{f.get('name')}**: {f.get('detail')}")
+        if st.button("🆕 Start again", key="tpr_new"):
+            for key in ("tpr_proposals", "tpr_routes", "tpr_raw_text", "tpr_result"):
                 st.session_state.pop(key, None)
             st.rerun()
 
