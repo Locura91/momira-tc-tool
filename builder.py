@@ -7,6 +7,7 @@ MODULE_BUILD = "2026-08-21-rollover-closed-check"
 import math
 import datetime
 import re
+import html as _html_module
 from typing import Dict, Any, List, Optional
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
@@ -470,6 +471,45 @@ def _locked_on_update(existing_snapshot, field, fallback, label=""):
     return current, True
 
 
+_STRAY_HTML_BLOCK_BREAK_RE = re.compile(r"</?\s*(?:p|div|br|li|ul|ol|h[1-6]|tr|table)\s*/?\s*>", re.IGNORECASE)
+_STRAY_HTML_TAG_RE = re.compile(r"<[^<>]+>")
+
+
+def strip_stray_html(text):
+    """CONFIRMED REAL RULE (product owner, 2026-08-25): "in no text never shall i see this html
+    code styles: </p>. We have to be more careful." Plain-text customer-facing fields (a Ticket's
+    Voucher Remarks, description, name, meeting point summary, and the equivalent fields on every
+    other product) must never carry raw HTML markup - unlike ClosedTour's included/excluded,
+    which genuinely IS meant to be HTML (Travel Compositor's own API expects `<ul><li>` there, see
+    that field's own extraction rule) - this is for every field that ISN'T that.
+
+    A stray `<p>`/`</p>`/`<br>` etc. can reach a plain-text field from more than one place: a
+    web-sourced document (get_page_text already strips tags via BeautifulSoup, but a copy-pasted
+    snippet or a differently-fetched page might not have gone through it), or the model itself
+    echoing HTML-formatting habits it was explicitly told to use for a DIFFERENT field (like
+    ClosedTour's included/excluded) into this one instead. Rather than relying only on "the
+    prompt says plain text" - which the fields already mostly say, and it still got through - this
+    is a code-level safety net applied at the point every product's voucher text is finalized.
+
+    Block-level tags become a newline FIRST (so removing "</p><p>" doesn't just weld two
+    paragraphs together with no separation left behind), then every remaining tag is stripped
+    outright, HTML entities are decoded (&amp; -> &, &nbsp; -> a real space), and the whitespace
+    that stripping can leave behind (3+ blank lines, runs of spaces/tabs) is collapsed. Safe to
+    call on text that never had any HTML in it - it's a no-op in that case."""
+    if not text:
+        return text
+    text = _STRAY_HTML_BLOCK_BREAK_RE.sub("\n", text)
+    text = _STRAY_HTML_TAG_RE.sub("", text)
+    text = _html_module.unescape(text)
+    # &nbsp; decodes to U+00A0 (a real, but non-breaking, space) - normalize it to an ordinary
+    # space so it collapses like any other whitespace below instead of surviving as an
+    # invisible-but-different character customer-facing text should never carry.
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _with_manual_notes(voucher_text, extracted_data):
     """Appends the human's manual notes to whatever voucher text was already built.
 
@@ -485,11 +525,16 @@ def _with_manual_notes(voucher_text, extracted_data):
     the note last since it's the more recent and more specific information.
 
     Applied through the extracted-data dict rather than a new function parameter so the
-    five builders' signatures (and every caller of them) stay unchanged."""
+    five builders' signatures (and every caller of them) stay unchanged.
+
+    This is also the LAST step in every one of the five products' voucher-text composition
+    (see the docstring on strip_stray_html) - stripping stray HTML here right before returning
+    means whatever fed into this (the document's own extracted text, what-to-bring, the
+    cancellation policy, this note itself) all get cleaned in one place, for every product,
+    rather than needing the same fix repeated five times."""
     note = ((extracted_data or {}).get("manual_notes") or "").strip()
-    if not note:
-        return voucher_text
-    return f"{voucher_text}\n\n{note}".strip() if voucher_text else note
+    combined = f"{voucher_text}\n\n{note}".strip() if (voucher_text and note) else (voucher_text or note)
+    return strip_stray_html(combined)
 
 
 def _with_what_to_bring(voucher_text, extracted_data):
@@ -529,7 +574,7 @@ def _ticket_name_with_entrance_fee_notice(name, extracted_data):
     this on the same data (e.g. a "rebuild payload" click) would append the suffix again every
     time. This returns a fresh display string computed from the unmodified base name instead,
     used only for what actually gets published."""
-    base = (name or "").strip()
+    base = strip_stray_html((name or "").strip())
     if not (extracted_data or {}).get("entrance_fees_excluded"):
         return base
     if base.lower().endswith(_ENTRANCE_FEE_TITLE_SUFFIX.strip().lower()):
@@ -1475,10 +1520,14 @@ def build_closed_tour_payloads(
         # here always, silently dropping the document's own stated cancellation policy from
         # the voucher entirely - see _cancellation_voucher_text()'s docstring for the full
         # rule and the cross-product inconsistency this fixes.
+        # strip_stray_html applied to every plain-text field below EXCEPT included/excluded -
+        # those two are deliberately HTML (Travel Compositor's own API expects `<ul><li>` there,
+        # see that field's own extraction rule / strip_stray_html's docstring).
+        _tour_display_name = strip_stray_html(extracted_dmc_data.get("tour_name") or "")
         datasheet_en = DatasheetEN(
-            name=extracted_dmc_data.get("tour_name") or "",
-            description=extracted_dmc_data.get("description") or "",
-            hotels=extracted_dmc_data.get("hotels_text") or "",
+            name=_tour_display_name,
+            description=strip_stray_html(extracted_dmc_data.get("description") or ""),
+            hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
             voucherRemarks=_with_manual_notes(
                 _with_what_to_bring(
                     _cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
@@ -1486,9 +1535,9 @@ def build_closed_tour_payloads(
                 extracted_dmc_data),
             included=extracted_dmc_data.get("included") or "",
             excluded=extracted_dmc_data.get("excluded") or "",
-            meetingPoint=extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT,
+            meetingPoint=strip_stray_html(extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT),
             remarksTitle="Policy",
-            remarksDescription=extracted_dmc_data.get("policy_remarks") or ""
+            remarksDescription=strip_stray_html(extracted_dmc_data.get("policy_remarks") or "")
         )
 
         main_tour = ContractClosedTourVO(
@@ -1496,7 +1545,7 @@ def build_closed_tour_payloads(
             userId=pre_config.user_id,
             code=main_tour_code_guess,
             providerCode=pre_config.provider_code,
-            name=extracted_dmc_data.get("tour_name") or "",
+            name=_tour_display_name,
             datasheets=build_datasheets(datasheet_en),
             images=extracted_dmc_data.get("image_urls") or [],
             itinerary=validated_itinerary,
@@ -1790,15 +1839,19 @@ def build_ticket_payloads(
 
         datasheet_en = TicketDatasheetEN(
             name=_ticket_display_name,
-            description=extracted_ticket_data.get("description") or "",
-            meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
+            # strip_stray_html: same 2026-08-25 rule as the voucher text - description, meeting
+            # point, and includes/excludes are plain customer-facing text too, and none of them
+            # flow through _with_manual_notes (which only wraps the voucher text), so each needs
+            # its own pass here.
+            description=strip_stray_html(extracted_ticket_data.get("description") or ""),
+            meetingPoint=strip_stray_html(extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby"),
             departureTime=time_tables_list[0] if time_tables_list else "",
             # The composed text (see _ticket_voucher_base above) - NOT a bare voucher_remarks
             # short-circuit, which used to drop the packing list and standing notes here while the
             # modality remarks on the same record kept them.
             voucherRemarks=ticket_cancellation_voucher_text,
-            includes=extracted_ticket_data.get("includes") or [],
-            excludes=extracted_ticket_data.get("excludes") or [],
+            includes=[strip_stray_html(i) for i in (extracted_ticket_data.get("includes") or [])],
+            excludes=[strip_stray_html(e) for e in (extracted_ticket_data.get("excludes") or [])],
             activityType=extracted_ticket_data.get("activity_type"),
         )
 
@@ -2205,10 +2258,12 @@ def build_transfer_payload(
         # extraction phrased the route slightly differently than the original one did.
         transfer_name, _name_inherited = _locked_on_update(
             existing_transfer_snapshot, "name", generated_transfer_name)
+        transfer_name = strip_stray_html(transfer_name)
         existing_datasheet_en = ((existing_transfer_snapshot or {}).get("datasheets") or {}).get("EN") or {}
         effective_description, _description_inherited = _locked_on_update(
             {"description": existing_datasheet_en.get("description")} if existing_datasheet_en else None,
             "description", extracted_transfer_data.get("description") or "")
+        effective_description = strip_stray_html(effective_description)
 
         # CONFIRMED FALLBACK RULE (product owner decision): when the document states no
         # specific cancellation terms, fall back to the same 30-day/100%-refund default
@@ -2231,11 +2286,15 @@ def build_transfer_payload(
         location_note = extracted_transfer_data.get("location_notes") or ""
         if location_note:
             voucher_text = f"{voucher_text}\n\n{location_note}" if voucher_text else location_note
+        # location_note is appended AFTER _with_manual_notes' own strip_stray_html pass, so it
+        # needs its own pass here too - otherwise stray markup in that one field would slip
+        # through despite every other voucher-text ingredient being covered.
+        voucher_text = strip_stray_html(voucher_text)
 
         datasheet_en = TransferDescriptorVO(
             name=transfer_name,
             description=effective_description,
-            pickupDescription=extracted_transfer_data.get("pickup_information") or "",
+            pickupDescription=strip_stray_html(extracted_transfer_data.get("pickup_information") or ""),
             voucherRemarks=voucher_text,
         )
 
@@ -3045,6 +3104,7 @@ def build_transport_payloads(
     # silently reword an already-live listing.
     transport_name, _transport_name_inherited = _locked_on_update(
         existing_transport_snapshot, "name", generated_transport_name)
+    transport_name = strip_stray_html(transport_name)
 
     # CONFIRMED (via real Swagger): ContractTransportDataSheetVO only has name/description - no
     # dedicated voucherRemarks-style field the way ClosedTour/Ticket/Transfer have. The
@@ -3053,14 +3113,16 @@ def build_transport_payloads(
     # The house one-sentence description, unless a human has edited it on the review screen.
     # `description_is_custom` is set there; without it, re-rendering would silently overwrite
     # an edit with the template again.
-    description_text = (extracted_transport_data.get("description") or "").strip()
+    description_text = strip_stray_html((extracted_transport_data.get("description") or "").strip())
     if not extracted_transport_data.get("description_is_custom"):
         description_text = transport_description(
             extracted_transport_data.get("service_name"), departure_name, arrival_name)
     full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
     # CONFIRMED from the real live record: the EN description is HTML ("<p>...</p>"), not plain
     # text. Sent as plain text it renders as one unbroken run wherever Travel Compositor
-    # expects markup.
+    # expects markup. description_text/voucher_text are stripped of any STRAY markup above/
+    # upstream first, so the "<" check below only ever fires on the deliberate <p> wrap this
+    # code itself adds on a second pass (e.g. rebuild) - never on leftover supplier junk.
     if full_description and "<" not in full_description:
         full_description = "".join(f"<p>{para.strip()}</p>"
                                    for para in full_description.split("\n\n") if para.strip())
@@ -3380,8 +3442,15 @@ def _map_price_type(hint):
 def _translation_list(text, language="EN"):
     """Wraps a single text string into Hotel's [TranslationVO] shape ({language, description}
     pairs) - used for descriptions/voucherRemarks/offer&supplement names. Returns [] for blank
-    text so an empty field isn't sent as a meaningless single empty-string entry."""
-    clean = (text or "").strip()
+    text so an empty field isn't sent as a meaningless single empty-string entry.
+
+    Routed through strip_stray_html here (rather than at each of the many call sites) so every
+    Hotel plain-text field that flows through this one shared helper - descriptions,
+    voucherRemarks, offer/supplement names - gets the same 2026-08-25 no-raw-HTML guarantee the
+    other four products have, in one place. voucherRemarks text arriving here has usually
+    already been through strip_stray_html once (via _with_manual_notes) - a second pass on
+    already-clean text is a no-op."""
+    clean = strip_stray_html((text or "").strip())
     if not clean:
         return []
     return [TranslationVO(language=language, description=clean)]
@@ -3565,7 +3634,7 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     hotel_kwargs = dict(
         providerCode=pre_config.provider_code,
-        hotelname=extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or "",
+        hotelname=strip_stray_html(extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or ""),
         # CONFIRMED REAL BUG (audit, 2026-08-24): `.get(key, fallback)` is the wrong idiom here -
         # it only falls back when the key is ABSENT, and the hotel extractor ALWAYS sets these two
         # keys, to None when the document states no coordinates ("null otherwise - do NOT
