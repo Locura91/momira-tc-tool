@@ -2432,6 +2432,15 @@ Extract:
   mentioned but doesn't match a code you're confident of, still include your best-guess code and name it
   in pricing_notes so a human can correct it - never silently drop a stated language.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- entrance_fees_excluded: CONFIRMED HOUSE RULE (product owner, 2026-08-24): true ONLY if the source
+  explicitly states that entrance/admission fees to the site(s)/attraction(s) visited are NOT
+  included in the price (e.g. "entrance fees not included", "excludes entrance fees to monuments",
+  "admission fees payable locally", "entrance tickets not included", "site entry fees excluded").
+  This is separate from the general `excludes` list above - flag it here TOO (in addition to listing
+  it in excludes as normal) because the app surfaces it in two extra, more prominent places
+  precisely because it is easy for a customer to miss otherwise: appended to the Ticket's own title
+  in parentheses, and as its own bullet point at the top of the Voucher Remarks. Default false when
+  the source doesn't mention entrance fees at all, or when it says they ARE included/covered.
 - what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
   what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
   goes onto the voucher. Watch for headings/phrasings like "Please remember to bring", "What to bring",
@@ -2521,6 +2530,12 @@ Extract:
   mechanism, matching Travel Compositor's own Modality screen, which has exactly one "Supplements by dates"
   box for all of it - there is no longer a separate extra_cost_options field or a second Modality for a
   priced choice.
+  CONFIRMED REAL RULE (product owner, 2026-08-24): "within the supplement name, please do not
+  write any % to it and never a price, because the client can see that information and he
+  should not see it." This `name` is customer-facing (shown on the voucher) - NEVER include a
+  percentage (e.g. "+15%") or a currency amount (e.g. "$15", "15 EUR") in it, even though the
+  numbers behind the surcharge belong in adult_price_supplement/pricing_notes. Correct: "Tet
+  Holiday Surcharge". Wrong: "Tet Holiday Surcharge (+15%)", "Easter surcharge $15".
   {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
    "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
      <the EXTRA per child>, "infant_price_supplement": <usually 0>,
@@ -2627,7 +2642,7 @@ Extract:
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "entrance_fees_excluded": false, "what_to_bring": "",
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
   "activity_type": "", "is_private": false, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
   "occupancy_prices": [],
@@ -2723,7 +2738,8 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     # the fix for the confirmed real bug where a permissive schema let a whole extraction come
     # back with every field silently empty).
     defaults = {
-        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "entrance_fees_excluded": False, "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "is_private": False, "base_adult_price": 0, "base_children_price": 0, "base_infant_price": 0,
         "child_age_min": 2, "child_age_max": 12, "disallow_adult": False, "disallow_children": False,
@@ -2938,6 +2954,15 @@ Extract:
   case the description ALSO MUST clearly state, in plain words, that the tour/transfer can run in EITHER
   English OR German - work one clear sentence to that effect into the description.
 - excludes: a LIST of plain strings (not HTML) - each a short exclusion. Empty list if none mentioned.
+- entrance_fees_excluded: CONFIRMED HOUSE RULE (product owner, 2026-08-24): true ONLY if the source
+  explicitly states that entrance/admission fees to the site(s)/attraction(s) visited are NOT
+  included in the price (e.g. "entrance fees not included", "excludes entrance fees to monuments",
+  "admission fees payable locally", "entrance tickets not included", "site entry fees excluded").
+  This is separate from the general `excludes` list above - flag it here TOO (in addition to listing
+  it in excludes as normal) because the app surfaces it in two extra, more prominent places
+  precisely because it is easy for a customer to miss otherwise: appended to the Ticket's own title
+  in parentheses, and as its own bullet point at the top of the Voucher Remarks. Default false when
+  the source doesn't mention entrance fees at all, or when it says they ARE included/covered.
 - what_to_bring: CONFIRMED HOUSE RULE (product owner, 2026-08-24): if the source tells the traveller
   what to BRING or WEAR, extract that list here - it is genuinely useful customer-facing information and
   goes onto the voucher. Watch for headings/phrasings like "Please remember to bring", "What to bring",
@@ -2991,7 +3016,7 @@ Extract:
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
+  "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "entrance_fees_excluded": false, "what_to_bring": "",
   "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
   "activity_type": "", "is_private": false,
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
@@ -3038,7 +3063,8 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
     defaults = {
-        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
+        "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [],
+        "entrance_fees_excluded": False, "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",
         "activity_type": None, "is_private": False,
         "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": "",
@@ -3178,6 +3204,12 @@ Extract:
   seasonal price table, a holiday surcharge) AND a priced CHOICE the customer picks (a foreign-language
   guide, a Seat-in-Coach/vehicle upgrade) are the SAME mechanism, matching Travel Compositor's own single
   "Supplements by dates" box.
+  CONFIRMED REAL RULE (product owner, 2026-08-24): "within the supplement name, please do not
+  write any % to it and never a price, because the client can see that information and he
+  should not see it." This `name` is customer-facing (shown on the voucher) - NEVER include a
+  percentage (e.g. "+15%") or a currency amount (e.g. "$15", "15 EUR") in it, even though the
+  numbers behind the surcharge belong in adult_price_supplement/pricing_notes. Correct: "Tet
+  Holiday Surcharge". Wrong: "Tet Holiday Surcharge (+15%)", "Easter surcharge $15".
   {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
    "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
      <the EXTRA per child>, "infant_price_supplement": <usually 0>,
@@ -3396,7 +3428,9 @@ seasonal price table or holiday surcharge, AND a priced choice like a foreign-la
 Seat-in-Coach upgrade, are the SAME mechanism now: each entry is {"name", "adult_price_supplement",
 "children_price_supplement", "infant_price_supplement", "start_date", "end_date"} - dates are OPTIONAL for
 an entry that isn't tied to a specific window; leave them blank and the app defaults them to this
-Modality's own start_date/end_date, only give real dates for a genuine date-restricted window),
+Modality's own start_date/end_date, only give real dates for a genuine date-restricted window. `name` is
+customer-facing (shown on the voucher) - NEVER include a percentage or currency amount in it, e.g. "Tet
+Holiday Surcharge" not "Tet Holiday Surcharge (+15%)"),
 languages (list of ISO 639-1 two-letter UPPERCASE codes this Modality runs in AT THE SAME PRICE, e.g.
 ["EN"], or ["EN","DE"] when the source lists two or more languages as EQUAL standard options at the same
 price - "licenced English/German-speaking guiding service" - default ["EN"]; a language that costs EXTRA

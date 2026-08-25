@@ -513,6 +513,46 @@ def _with_what_to_bring(voucher_text, extracted_data):
     return f"{voucher_text}\n\n{block}".strip() if voucher_text else block
 
 
+_ENTRANCE_FEE_TITLE_SUFFIX = " (Entrance fees not included)"
+_ENTRANCE_FEE_VOUCHER_BULLET = "• Entrance fees are NOT included in this price."
+
+
+def _ticket_name_with_entrance_fee_notice(name, extracted_data):
+    """CONFIRMED REAL RULE (product owner, 2026-08-24): "if the Ticket description from the
+    supplier says, no Entrance fees included, this information must be stated in the Title
+    within (), as this information is very important." Ticket-only (the request named tickets
+    specifically) - see extracted_data["entrance_fees_excluded"] (ai_extractor.py) for how the
+    fact itself gets detected.
+
+    Never mutates extracted_data["ticket_name"] itself - the title shown back to the human in
+    the editable Name field must stay exactly what they typed/what was extracted, or re-running
+    this on the same data (e.g. a "rebuild payload" click) would append the suffix again every
+    time. This returns a fresh display string computed from the unmodified base name instead,
+    used only for what actually gets published."""
+    base = (name or "").strip()
+    if not (extracted_data or {}).get("entrance_fees_excluded"):
+        return base
+    if base.lower().endswith(_ENTRANCE_FEE_TITLE_SUFFIX.strip().lower()):
+        # Already there verbatim (e.g. the AI echoed it into the name itself) - don't double up.
+        return base
+    return f"{base}{_ENTRANCE_FEE_TITLE_SUFFIX}" if base else base
+
+
+def _with_entrance_fee_notice(voucher_text, extracted_data):
+    """Same rule as _ticket_name_with_entrance_fee_notice above, for the Voucher Remarks side:
+    "...and it shall be displayed as a bullet point at the Voucher Remark, as this information
+    is very important." PREPENDED rather than appended, unlike _with_what_to_bring/
+    _with_manual_notes - deliberately the FIRST thing a human or customer reads in the voucher
+    text, since a missing entrance fee is exactly the kind of detail that gets missed if it's
+    buried under the cancellation policy and packing list."""
+    if not (extracted_data or {}).get("entrance_fees_excluded"):
+        return voucher_text
+    voucher_text = (voucher_text or "").strip()
+    if _ENTRANCE_FEE_VOUCHER_BULLET in voucher_text:
+        return voucher_text
+    return f"{_ENTRANCE_FEE_VOUCHER_BULLET}\n\n{voucher_text}".strip() if voucher_text else _ENTRANCE_FEE_VOUCHER_BULLET
+
+
 _PRICE_COLUMN_ALIASES = {
     "singleprice": "singlePrice", "single": "singlePrice", "sgl": "singlePrice",
     "doubleprice": "doublePrice", "double": "doublePrice", "dbl": "doublePrice",
@@ -891,6 +931,56 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     return supplements_list
 
 
+_SUPPLEMENT_NAME_PRICE_PATTERNS = [
+    # "(+15%)", "(15%)", "+15 %", "15%" - percentage figures, with or without a leading +/-
+    # sign or surrounding parens/spaces.
+    re.compile(r"\(?\s*[+-]?\d+(?:[.,]\d+)?\s*%\s*\)?"),
+    # A currency symbol glued to a number in either order: "$15", "15$", "€15.50", "15 EUR",
+    # "USD 15" - covers the common symbols/codes this app already uses (see CURRENCY_OPTIONS).
+    re.compile(r"\(?\s*[$€£]\s*\d+(?:[.,]\d+)?\s*\)?"),
+    re.compile(r"\(?\s*\d+(?:[.,]\d+)?\s*[$€£]\s*\)?"),
+    re.compile(r"\(?\s*(?:USD|EUR|GBP|CHF)\s*\d+(?:[.,]\d+)?\s*\)?", re.IGNORECASE),
+    re.compile(r"\(?\s*\d+(?:[.,]\d+)?\s*(?:USD|EUR|GBP|CHF)\s*\)?", re.IGNORECASE),
+]
+
+
+def sanitize_supplement_name(name):
+    """CONFIRMED REAL RULE (product owner, 2026-08-24): "within the supplement name, please do
+    not write any% to it and never a price, because the client can see that information and he
+    should not see it." A Ticket Modality's Supplements-by-dates entries publish their `name` as
+    customer-facing text (TicketSupplementTranslation.name, shown on the voucher/booking) - the
+    percentage or currency figure behind a surcharge (e.g. an AI-composed "Tet Holiday Surcharge
+    (+15%)", or a human typing "Easter surcharge $15" straight from the supplier's own contract
+    wording) is exactly the kind of internal pricing detail that must never reach the customer.
+
+    Strips percentage figures ("15%", "(+15%)") and currency amounts (symbol or 3-letter code,
+    either side of the number: "$15", "15 EUR") out of the name, then tidies up whatever
+    separator punctuation is left behind (a stray "()", a dangling " - ", double spaces) so the
+    result still reads as a clean label rather than leaving visible seams. Falls back to
+    "Seasonal surcharge" if stripping leaves nothing usable, matching build_ticket_supplement_vos'
+    own existing blank-name fallback.
+
+    Applied in TWO places, same dual-safety-net pattern as the Modality-window date defaulting/
+    clipping: render_ticket_modality_supplements_editor (ui_components.py) cleans it the moment a
+    human saves the table, so what's shown on screen always matches what will publish; this
+    function is called again here as the final, unconditional check right before the wire
+    payload is built, so a name that reached this point some other way (straight from AI
+    extraction, or a future code path that never goes through the UI editor) still can't leak
+    pricing."""
+    text = (name or "").strip()
+    if not text:
+        return text
+    for pattern in _SUPPLEMENT_NAME_PRICE_PATTERNS:
+        text = pattern.sub(" ", text)
+    # Tidy up what stripping can leave behind: an empty "()", a dangling "-"/"," separator that
+    # used to connect the label to the now-removed figure, doubled-up whitespace.
+    text = re.sub(r"\(\s*\)", " ", text)
+    text = re.sub(r"[-,]\s*$", "", text.strip())
+    text = re.sub(r"^\s*[-,]", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" -,")
+    return text or "Seasonal surcharge"
+
+
 def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_start: str = "",
                                  modality_end: str = "") -> List[TicketSupplementVO]:
     """
@@ -942,7 +1032,7 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
             infantPriceSupplement=_safe_float(s.get("infant_price_supplement", 0)),
             startDate=start,
             endDate=end,
-            translations={"EN": TicketSupplementTranslation(name=s.get("name") or "Seasonal surcharge")},
+            translations={"EN": TicketSupplementTranslation(name=sanitize_supplement_name(s.get("name")))},
         ))
     return supplements_list
 
@@ -1680,13 +1770,26 @@ def build_ticket_payloads(
             or _cancellation_voucher_text(
                 extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers)
         )
-        ticket_cancellation_voucher_text = _with_manual_notes(
-            _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
+        # CONFIRMED REAL RULE (product owner, 2026-08-24): "if the Ticket description from the
+        # supplier says, no Entrance fees included, this information must be stated in the Title
+        # within (), and it shall be displayed as a bullet point at the Voucher Remark, as this
+        # information is very important." Applied to BOTH the composed voucher text (see
+        # _with_entrance_fee_notice - prepended, so it's the very first thing a human/customer
+        # reads) and the display name below (see _ticket_name_with_entrance_fee_notice - never
+        # mutates extracted_ticket_data itself, so the editable Name field never grows a second
+        # suffix on a rebuild).
+        ticket_cancellation_voucher_text = _with_entrance_fee_notice(
+            _with_manual_notes(
+                _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
+                extracted_ticket_data,
+            ),
             extracted_ticket_data,
         )
+        _ticket_display_name = _ticket_name_with_entrance_fee_notice(
+            extracted_ticket_data.get("ticket_name"), extracted_ticket_data)
 
         datasheet_en = TicketDatasheetEN(
-            name=extracted_ticket_data.get("ticket_name") or "",
+            name=_ticket_display_name,
             description=extracted_ticket_data.get("description") or "",
             meetingPoint=extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby",
             departureTime=time_tables_list[0] if time_tables_list else "",
@@ -1701,7 +1804,7 @@ def build_ticket_payloads(
 
         main_ticket_kwargs = dict(
             code=pre_config.ticket_code,
-            name=extracted_ticket_data.get("ticket_name", ""),
+            name=_ticket_display_name,
             geolocation=GeolocationVO(
                 latitude=geoloc.get("latitude") if geoloc.get("latitude") is not None else None,
                 longitude=geoloc.get("longitude") if geoloc.get("longitude") is not None else None,

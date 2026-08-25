@@ -31,7 +31,7 @@ import pandas as pd
 
 from builder import (
     coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
-    resolve_ticket_child_price_ratio,
+    resolve_ticket_child_price_ratio, sanitize_supplement_name,
 )
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts the ISO wire format, so every screen converts at the
@@ -504,7 +504,7 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
                     # nothing to default to, so this row genuinely can't be saved yet.
                     continue
                 new_supplements.append({
-                    "name": _safe_cell_str(row.get("Name")).strip() or "Seasonal surcharge",
+                    "name": sanitize_supplement_name(_safe_cell_str(row.get("Name"))),
                     "start_date": start, "end_date": end,
                     "adult_price_supplement": _safe_float(row.get("Adult Extra")),
                     "children_price_supplement": _safe_float(row.get("Child Extra")),
