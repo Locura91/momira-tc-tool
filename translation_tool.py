@@ -207,18 +207,35 @@ def render_translation_tool():
 
     st.header("Translate — Step 4: Languages & run")
 
-    # The old "Test set (FR, DE) vs all languages" chooser was removed at the product
-    # owner's request - the full language set is always what's wanted now, and offering a
-    # two-language mode mainly created a way to think a product was done when 17 languages
-    # were still missing. TEST_LANGUAGES no longer exists here; the standalone run_sync_*
-    # CLI scripts keep their own copies for ad-hoc runs.
-    target_languages = DEFAULT_TARGET_LANGUAGES
+    # The old "Test set (FR, DE) vs all languages" chooser was removed at the product owner's
+    # request - a two-language MODE mainly created a way to think a product was done when 17
+    # languages were still missing, since picking "test set" looked like a normal, complete
+    # choice rather than a deliberately partial one.
+    #
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "on default all languages are marked, but
+    # when translating a service or holiday package, the human [can] still unmark single
+    # languages, if he doesn't want to translate it in all languages." This is a different shape
+    # from the old toggle - not a second complete "mode" to reach for by mistake, but a defaults-
+    # to-everything checklist where leaving something out takes a deliberate uncheck. Every
+    # target_language below is pre-ticked; nothing is skipped unless a human consciously removes
+    # it, which is the same safety property the old toggle's removal was protecting.
+    target_languages = st.multiselect(
+        "Target languages", options=DEFAULT_TARGET_LANGUAGES, default=DEFAULT_TARGET_LANGUAGES,
+        key="tr_target_languages",
+        help="All 19 languages are selected by default. Untick any you don't want translated "
+             "for this run - e.g. a supplier only sells in a few markets.",
+    )
     force = st.checkbox("Force re-translate", value=False, key="tr_force",
                          help="Ignores the tracker and re-translates everything, even content already "
                               "done. Normally leave this off - the tracker is what makes re-running "
                               "cheap and safe.")
 
-    st.write(f"**Target languages ({len(target_languages)}):** {', '.join(target_languages)}")
+    if len(target_languages) < len(DEFAULT_TARGET_LANGUAGES):
+        missing = [l for l in DEFAULT_TARGET_LANGUAGES if l not in target_languages]
+        st.caption(f"**{len(target_languages)}** of {len(DEFAULT_TARGET_LANGUAGES)} language(s) "
+                   f"selected — skipping: {', '.join(missing)}.")
+    else:
+        st.write(f"**Target languages ({len(target_languages)}):** {', '.join(target_languages)}")
     st.warning("⚠️ Live mode — translations are written straight into Travel Compositor.")
     if force:
         st.warning("🔁 Force re-translate is ON — the tracker is ignored, so everything is translated again.")
@@ -232,6 +249,10 @@ def render_translation_tool():
         log_placeholder.text("\n".join(st.session_state.tr_log_lines[-200:]))
 
     if not st.button("🚀 Translate now", type="primary", key="tr_run"):
+        return
+
+    if not target_languages:
+        st.error("Untick fewer languages, or pick at least one — nothing was selected to translate into.")
         return
 
     if entity_type != "Holiday Packages" and not supplier_id:
