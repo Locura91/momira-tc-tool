@@ -618,6 +618,39 @@ def _ticket_name_with_entrance_fee_notice(name, extracted_data):
     return f"{base}{_ENTRANCE_FEE_TITLE_SUFFIX}" if base else base
 
 
+def _strip_bullet_points(text):
+    """Removes a leading bullet/list marker ("•", "-", or "*", followed by a space) from the
+    start of each line, without touching anything else on the line.
+
+    CONFIRMED PRODUCT-OWNER RULE (2026-08-25): "please in the Remarks of Modality within Ticket,
+    no Bullet points." ticket_cancellation_voucher_text (see build_ticket_payloads) is composed
+    from several pieces that DO use bullet/list markers on purpose elsewhere - the entrance-fee
+    notice is deliberately "displayed as a bullet point" on the customer-facing Voucher Remarks
+    (see _with_entrance_fee_notice's own docstring: "this information is very important"), and a
+    synthesized cancellation policy lists one "- " line per tier (see _cancellation_voucher_text).
+    Those stay exactly as they are on the Voucher Remarks field (TicketDatasheetEN.voucherRemarks)
+    - only the Ticket MODALITY's own separate Remarks field (ContractTicketModalityVO.remarks,
+    Travel Compositor's per-modality "Condition"/Remarks screen) gets this plain-line version, so
+    the same underlying information still reaches both places, just without a marker character on
+    the modality screen specifically.
+
+    Only strips a marker that's genuinely a LIST marker - at the very start of the line (after
+    any leading whitespace), followed by a space - so "3-5 people" or "2 * 3" are never touched;
+    only "- Free cancellation..." or "• Entrance fees..." are."""
+    if not text:
+        return text
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        match = re.match(r"^[•\-*]\s+(.*)$", stripped)
+        if match:
+            leading_ws = line[:len(line) - len(stripped)]
+            lines.append(leading_ws + match.group(1))
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _with_entrance_fee_notice(voucher_text, extracted_data):
     """Same rule as _ticket_name_with_entrance_fee_notice above, for the Voucher Remarks side:
     "...and it shall be displayed as a bullet point at the Voucher Remark, as this information
@@ -2083,7 +2116,14 @@ def build_ticket_payloads(
             # CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same
             # thing - see TicketHumanPreConfig.modality_name's docstring. Falls back to
             # modality_code when no separate name was given (no supplier reference code appended).
-            remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code, remarks=ticket_cancellation_voucher_text)},
+            #
+            # CONFIRMED PRODUCT-OWNER RULE (2026-08-25): "please in the Remarks of Modality
+            # within Ticket, no Bullet points." Same underlying text as the Voucher Remarks
+            # above, but with any "•"/"-"/"*" list markers stripped - see _strip_bullet_points'
+            # docstring for exactly what keeps its bullets (Voucher Remarks) vs. what doesn't
+            # (this field).
+            remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code,
+                                        remarks=_strip_bullet_points(ticket_cancellation_voucher_text))},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,

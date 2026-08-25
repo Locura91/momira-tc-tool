@@ -69,16 +69,22 @@ def test_entrance_fees_bullet_is_first_line_of_the_composed_voucher_text():
     assert "Free cancellation up to 30 days before arrival." in voucher
 
 
-def test_entrance_fees_bullet_also_reaches_the_modality_remarks():
-    """Voucher Remarks and the Modality's own remarks must never diverge - see the 2026-08-24
-    audit fix this builds on (build_ticket_payloads composes ONE text used for both)."""
+def test_entrance_fees_notice_reaches_both_voucher_remarks_and_modality_remarks():
+    """Voucher Remarks and the Modality's own remarks are composed from the SAME underlying text
+    (see the 2026-08-24 audit fix this builds on) - the entrance-fee notice reaches both, but as
+    of 2026-08-25 ("please in the Remarks of Modality within Ticket, no Bullet points") the
+    Modality's own Remarks field gets the bullet marker stripped while Voucher Remarks keeps it -
+    see _strip_bullet_points' docstring in builder.py for the full rule."""
     data = minimal_ticket_data()
     data["entrance_fees_excluded"] = True
     result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
     main_voucher = result["main_ticket_payload"]["datasheets"]["EN"]["voucherRemarks"]
     modality_remarks = result["ticket_option_payload"]["remarks"]["EN"]["remarks"]
-    assert main_voucher == modality_remarks
-    assert modality_remarks.startswith("• Entrance fees are NOT included in this price.")
+    assert main_voucher.startswith("• Entrance fees are NOT included in this price.")
+    assert modality_remarks.startswith("Entrance fees are NOT included in this price.")
+    assert "•" not in modality_remarks
+    # Same content otherwise - only the modality's own copy loses its leading bullet marker.
+    assert main_voucher[2:] == modality_remarks
 
 
 # ---------------------------------------------------------------------------
