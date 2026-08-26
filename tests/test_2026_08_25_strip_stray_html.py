@@ -162,11 +162,11 @@ def test_closed_tour_description_is_left_as_deliberate_day_by_day_html(fake_api_
     run together as one plain-text block). Root cause: description was being run through
     strip_stray_html here, same as genuinely-plain-text fields - but ai_extractor.py's own
     ClosedTour prompt explicitly requires day-by-day HTML for this field
-    (`<p><strong>Day 1: ...</strong></p><p>...</p><p><br></p>...`), the same kind of deliberate
+    (`<p><strong>Day 1: ...</strong><br>...</p><p><br></p>...`), the same kind of deliberate
     HTML included/excluded already got an exception for (see the test right below). This test
     previously (incorrectly) asserted description got stripped down to plain text."""
-    day_by_day = ("<p><strong>Day 1: Arrival</strong></p><p>Welcome to the tour.</p><p><br></p>"
-                 "<p><strong>Day 2: Departure</strong></p><p>Safe travels home.</p>")
+    day_by_day = ("<p><strong>Day 1: Arrival</strong><br>Welcome to the tour.</p><p><br></p>"
+                 "<p><strong>Day 2: Departure</strong><br>Safe travels home.</p>")
     result = build_closed_tour_payloads(
         make_tour_pre_config(),
         minimal_tour_data(description=day_by_day),

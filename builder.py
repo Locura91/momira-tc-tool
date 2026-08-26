@@ -1593,8 +1593,9 @@ def build_closed_tour_payloads(
         # Compositor's own API expects `<ul><li>` there (see that field's own extraction rule /
         # strip_stray_html's docstring); description because ai_extractor.py's own ClosedTour
         # prompt explicitly requires day-by-day HTML there
-        # (`<p><strong>Day 1: ...</strong></p><p>...</p><p><br></p>...`, see the "description MUST
-        # be formatted as day-by-day HTML" rule).
+        # (`<p><strong>Day 1: ...</strong><br>...</p><p><br></p>...`, see the "description MUST
+        # be formatted as day-by-day HTML" rule - title and its own paragraph text share ONE <p>,
+        # joined by <br>, since 2026-08-26's follow-up fix; see that rule's own comment for why).
         #
         # CONFIRMED BUG FIX (2026-08-26, product owner report: "The day by day tour description
         # is a bit wrong. Often one more space than needed and sometimes the text just written as

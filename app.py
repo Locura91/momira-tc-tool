@@ -1388,10 +1388,16 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 )
                 preview_payloads = build_closed_tour_payloads(preview_pre_config, combined_data, client)
             except Exception as e:
-                st.error(f"⚠️ Couldn't preview this tour's destinations - most likely the Tour Code "
-                        f"`{tour['tour_code']}` doesn't match the required format (3 letters, a dash, then "
-                        f"a number, e.g. 'BKK-1'). Details: {str(e)[:300]}. Publishing below will also fail "
-                        f"until fixed - go back and correct the Tour Code.")
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): a real Tour Code ("Rak-2") was
+                # rejected here for not matching a strict "XXX-Number" shape - "is not needed, it
+                # is just a style and the app must still be able to publish this tour." The
+                # underlying HumanPreConfig.provider_code validator (schemas.py) no longer
+                # enforces that shape (see its own comment), so this message no longer assumes
+                # that's the cause - a Tour Code just needs to be non-blank and free of '/'/'\\'
+                # now, matching every other product's code field.
+                st.error(f"⚠️ Couldn't preview this tour's destinations for Tour Code "
+                        f"`{tour['tour_code']}`. Details: {str(e)[:300]}. Publishing below will also "
+                        f"fail until fixed - go back and correct the Tour Code.")
             mct_has_unresolved = False
             if preview_payloads:
                 for res in preview_payloads.get("itinerary_resolution", []):

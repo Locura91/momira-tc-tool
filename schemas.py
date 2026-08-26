@@ -50,8 +50,24 @@ class HumanPreConfig(BaseModel):
 
     @validator("provider_code")
     def validate_provider_code(cls, v):
-        if not re.match(r"^[A-Z]{3}-\d+$", v):
-            raise ValueError("providerCode must strictly follow the format 'XXX-Number' (e.g., ASW-1)")
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): a real Tour Code ("Rak-2") was blocked
+        # from publishing by this validator for not matching strict "XXX-Number" (3 UPPERCASE
+        # letters, dash, digits) - "is not needed, it is just a style and the app must still be
+        # able to publish this tour." No other product's code field enforces a shape like this
+        # at all (TicketHumanPreConfig.ticket_code, TransferHumanPreConfig/TransportHumanPreConfig's
+        # equivalents, and HotelHumanPreConfig.provider_code are all free strings) - this was a
+        # ClosedTour-only leftover, not a genuine Travel Compositor API requirement, and there is
+        # no CONFIRMED note anywhere explaining it as one.
+        #
+        # Still worth guarding: this code gets embedded directly into a URL path
+        # (api_client.create_closed_tour_option: f".../closedtour/{supplier_id}/{closed_tour_code}"),
+        # so a slash/backslash would genuinely break that lookup - same reasoning
+        # TicketHumanPreConfig.modality_code's own "no_slash_in_modality_code" validator already
+        # uses. Kept that one real constraint, dropped the arbitrary case/shape requirement.
+        if not v or not v.strip():
+            raise ValueError("Tour Code cannot be blank")
+        if "/" in v or "\\" in v:
+            raise ValueError("Tour Code cannot contain '/' or '\\' - it becomes part of a URL and breaks lookups")
         return v
 
     @validator("min_pax")

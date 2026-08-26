@@ -124,8 +124,21 @@ Rules:
   operator. This applies EVERYWHERE such an instruction could appear - description, included/excluded,
   meeting point, policy/remarks, schedule/pricing notes, anywhere - silently drop/omit it entirely rather
   than including, paraphrasing, or softening it. This is a deliberate exclusion, not an oversight.
-- description MUST be formatted as day-by-day HTML using this EXACT pattern (confirmed against a real published tour) - one block per day, each day title in bold, separated by an empty paragraph:
-  <p><strong>Day 1: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong></p><p>Description of what happens on this day.</p><p><br></p>...
+- description MUST be formatted as day-by-day HTML using this EXACT pattern - one block per day, each
+  day title in bold directly above its own paragraph text (title and text joined by a single <br> INSIDE
+  the same <p> - NOT two separate <p> tags for the title and the text), with a genuinely empty paragraph
+  between one day and the next:
+  <p><strong>Day 1: Short title for the day</strong><br>Description of what happens on this day.</p><p><br></p><p><strong>Day 2: Short title for the day</strong><br>Description of what happens on this day.</p><p><br></p>...
+  CONFIRMED REAL BUG FIX (2026-08-26, product owner report, with a screenshot of the live published
+  page): the day title and its own paragraph text used to be two separate <p> tags
+  (`<p><strong>Day 1: ...</strong></p><p>Description...</p>`) - harmless-looking, but Travel
+  Compositor's live customer-facing page renders every <p> with its own vertical margin, so that
+  produced an unwanted gap between a day's title and its own text (while still looking fine inside the
+  admin editor, which is why this wasn't caught earlier). Putting the title and its paragraph in ONE <p>
+  joined by <br> keeps them visually together no matter what margin the page applies to <p> tags -
+  verified by rendering both versions with real browser default paragraph margins side by side. The
+  blank line BETWEEN days must still be its own separate, genuinely empty <p><br></p> - do not merge
+  that one into either day's own paragraph.
   Keep going for every day in the itinerary. Regardless of how the source presents each day - a time-by-time schedule (e.g. "12:00pm Embarkation, 2:00pm Visit temple"), a bare bullet list, or already flowing prose - always REWRITE it into natural, engaging, SEO-strong flowing sentences for that day's paragraph, not a copy of the raw format. Use ONLY facts, places, and activities that are actually present in the source - never invent or add details, opening hours, prices, or claims that aren't there. The goal is better PROSE, not more information.
   LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap):
   aim for roughly 120-180 words per day's paragraph (about 6-9 sentences) - use the fuller end of that
