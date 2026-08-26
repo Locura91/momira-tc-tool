@@ -556,6 +556,107 @@ def _log_dataframe(log):
     } for e in log])
 
 
+def _clean_text_cell(value):
+    """Blank/whitespace-only/None all normalize to None - the shape every other field on a
+    supplier record already uses for "nothing here", so a cleared cell in the table reads the
+    same way a field the search never found does."""
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _clean_rating_cell(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _new_supplier_from_table_row(row):
+    """A row added directly in the review table's own blank row - same shape
+    to_supplier_record() produces (see outreach_discovery.py), same as the "Add a supplier by
+    hand" expander above the table. Returns None for a still-blank placeholder row (no name
+    typed yet), not a real add."""
+    name = _clean_text_cell(row.get("Name"))
+    if not name:
+        return None
+    email = _clean_text_cell(row.get("Email"))
+    return {
+        "id": f"manual-{uuid.uuid4().hex[:10]}",
+        "name": name,
+        "email": email,
+        "social": _clean_text_cell(row.get("Social")),
+        "socialPlatform": None,
+        "website": _clean_text_cell(row.get("Website")),
+        "listingUrl": _clean_text_cell(row.get("Listing")),
+        "listingSource": None,
+        "selectionReason": _clean_text_cell(row.get("Why selected"))
+                           or "Added by hand, not found by the automated search.",
+        "reviewSummary": "Added manually.",
+        "rating": _clean_rating_cell(row.get("Rating")),
+        "reviewCount": None,
+        "sources": [],
+        "selected": bool(row.get("Send")) if row.get("Send") is not None else bool(email),
+        "isMock": False,
+        "addedManually": True,
+    }
+
+
+def _apply_review_table_edits(suppliers, diff):
+    """Fold the review table's edits back onto the real supplier records.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "it must be possible to change all field...
+    also it must be possible to add more partners to the list." Every column is now editable
+    and num_rows="dynamic" lets a row be added or removed directly in the table - which means
+    the OLD approach ("loop over the original list, update row i from the edited dataframe by
+    position") silently breaks: an added row has no original object at that index, and a
+    deleted row shifts every later index by one so "row i" no longer means the same supplier.
+
+    Streamlit's own fix for this is to read the editor widget's diff instead of its output
+    dataframe: `diff` is `st.session_state[<data_editor key>]`, shaped
+    `{"edited_rows": {int_row_index: {column: new_value}}, "added_rows": [{column: value}, ...],
+    "deleted_rows": [int_row_index, ...]}` - each keyed against the ORIGINAL row positions, so
+    it stays correct regardless of what got added/removed elsewhere in the same edit.
+
+    Pulled out as its own pure function (same reasoning as _merge_one_job_result/
+    _finalize_queue_result above) so this can be unit tested without a running Streamlit
+    script - see test_outreach_tool_queue.py's own docstring for that convention."""
+    deleted = set(diff.get("deleted_rows") or [])
+    edits = diff.get("edited_rows") or {}
+    added = diff.get("added_rows") or []
+
+    rebuilt = []
+    for i, s in enumerate(suppliers):
+        if i in deleted:
+            continue
+        changes = edits.get(i) or {}
+        if "Send" in changes:
+            s["selected"] = bool(changes["Send"])
+        if "Name" in changes:
+            s["name"] = _clean_text_cell(changes["Name"]) or s["name"]  # a supplier always needs a name
+        if "Email" in changes:
+            s["email"] = _clean_text_cell(changes["Email"])
+        if "Website" in changes:
+            s["website"] = _clean_text_cell(changes["Website"])
+        if "Social" in changes:
+            s["social"] = _clean_text_cell(changes["Social"])
+        if "Listing" in changes:
+            s["listingUrl"] = _clean_text_cell(changes["Listing"])
+        if "Rating" in changes:
+            s["rating"] = _clean_rating_cell(changes["Rating"])
+        if "Why selected" in changes:
+            s["selectionReason"] = _clean_text_cell(changes["Why selected"]) or s["selectionReason"]
+        rebuilt.append(s)
+
+    for row in added:
+        new_supplier = _new_supplier_from_table_row(row)
+        if new_supplier:
+            rebuilt.append(new_supplier)
+
+    return rebuilt
+
+
 def _render_review_and_send():
     result = st.session_state.or_result
     session = st.session_state.or_session
@@ -629,35 +730,30 @@ def _render_review_and_send():
             st.markdown("<div style='height: 1.7rem'></div>", unsafe_allow_html=True)
             add_manual = st.button("Add", key="or_manual_add", disabled=not manual_name.strip())
         if add_manual:
-            suppliers.append({
-                "id": f"manual-{uuid.uuid4().hex[:10]}",
-                "name": manual_name.strip(),
-                "email": manual_email.strip() or None,
-                "social": None,
-                "socialPlatform": None,
-                "website": manual_link.strip() or None,
-                "listingUrl": None,
-                "listingSource": None,
-                "selectionReason": "Added by hand, not found by the automated search.",
-                "reviewSummary": "Added manually.",
-                "rating": None,
-                "reviewCount": None,
-                "sources": [],
-                # Same rule the automated results already follow: only pre-tick when there's a
-                # real email to send to - see to_supplier_record's own comment on this.
-                "selected": bool(manual_email.strip()),
-                "isMock": False,
-                "addedManually": True,
-            })
-            result["suppliers"] = suppliers
-            st.session_state.or_result = result
+            # Same builder the review table's own "add a row directly" path uses (see
+            # _apply_review_table_edits below) - one shape for a hand-added supplier, however
+            # it was entered.
+            new_supplier = _new_supplier_from_table_row(
+                {"Name": manual_name, "Email": manual_email, "Website": manual_link})
+            if new_supplier:
+                suppliers.append(new_supplier)
+                result["suppliers"] = suppliers
+                st.session_state.or_result = result
             for k in ("or_manual_name", "or_manual_email", "or_manual_link"):
                 st.session_state.pop(k, None)
             st.rerun()
 
     # ---- Results table ----
-    st.caption("Untick anyone you don't want to contact. You can also edit the **Name** or **Email** fields directly "
-               "— corrections are saved back to the supplier list.")
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "it must be possible to change all field
+    # ... also it must be possible to add more partners to the list." Previously only Send/
+    # Name/Email were editable and rows could only be added via the "Add a supplier by hand"
+    # expander above. Now every column is editable, and num_rows="dynamic" lets a row be added
+    # (or removed) directly in the table too - the expander stays as the guided, one-field-at-
+    # a-time alternative for anyone who prefers it; both paths end up in the same list.
+    st.caption("Untick anyone you don't want to contact. Every field here is editable — corrections "
+               "are saved back to the supplier list. Add a new partner directly by filling in the "
+               "blank row at the bottom, or remove one by selecting its row and pressing the trash "
+               "icon.")
     if any(s.get("alreadyContacted") for s in suppliers):
         st.caption("🔁 Rows marked **Contacted before** were already emailed in an earlier session and have "
                    "been pre-unticked, per \"we can contact each supplier only once\" — re-tick one only if "
@@ -676,30 +772,31 @@ def _render_review_and_send():
             "Why selected": s["selectionReason"],
         } for s in suppliers])
 
-        edited = st.data_editor(
+        st.data_editor(
             df, use_container_width=True, hide_index=True, key="or_editor",
+            num_rows="dynamic",
             column_config={
                 "Send": st.column_config.CheckboxColumn("Send", help="Rows ticked here will be emailed."),
                 "Name": st.column_config.TextColumn("Name", help="Editable — correct the supplier name if needed."),
                 "Email": st.column_config.TextColumn("Email", help="Editable — add one the search missed."),
                 "Rating": st.column_config.NumberColumn("Rating", format="%.1f"),
-                "Website": st.column_config.LinkColumn("Website"),
-                "Social": st.column_config.LinkColumn("Social"),
-                "Listing": st.column_config.LinkColumn("Listing"),
+                "Website": st.column_config.LinkColumn("Website", help="Editable."),
+                "Social": st.column_config.LinkColumn("Social", help="Editable."),
+                "Listing": st.column_config.LinkColumn("Listing", help="Editable."),
                 "Contacted before": st.column_config.TextColumn(
-                    "Contacted before", help="Already emailed in an earlier session — pre-unticked."),
-                "Why selected": st.column_config.TextColumn("Why selected", width="large"),
+                    "Contacted before", help="Already emailed in an earlier session — pre-unticked. "
+                                             "Computed by the platform, not something to hand-edit."),
+                "Why selected": st.column_config.TextColumn("Why selected", width="large", help="Editable."),
             },
-            # Only the read‑only columns remain disabled – Name is now editable
-            disabled=["Website", "Social", "Listing", "Rating", "Contacted before", "Why selected"],
+            # "Contacted before" is a computed marker (see the docstring above it), not real
+            # supplier data - everything else is editable.
+            disabled=["Contacted before"],
         )
 
-        # Fold the operator's edits back onto the real records, matched by row order.
-        for i, s in enumerate(suppliers):
-            if i < len(edited):
-                s["selected"] = bool(edited.iloc[i]["Send"])
-                s["name"] = str(edited.iloc[i]["Name"]).strip() or s["name"]  # update name
-                s["email"] = (str(edited.iloc[i]["Email"]).strip() or None)
+        # Fold the operator's edits back onto the real records - see _apply_review_table_edits'
+        # own docstring for why this reads the editor's diff rather than comparing dataframes.
+        suppliers = _apply_review_table_edits(suppliers, st.session_state.get("or_editor") or {})
+        result["suppliers"] = suppliers
 
         # ---- LEARNING: Block domains of unticked suppliers ----
         st.divider()
