@@ -258,11 +258,22 @@ def _render_country_scope():
 # as two rows that both get ticked and both get an email.
 #
 # CONFIRMED RULE (product owner, 2026-08-16): "search per each combination only one supplier, so
-# the search is faster." _PER_COMBINATION_RESULTS=1 is passed to discover_suppliers so each
-# combination's own AI-verification and website-enrichment work (the slow parts) only ever runs
+# the search is faster." _PER_COMBINATION_RESULTS=1 was passed to discover_suppliers so each
+# combination's own AI-verification and website-enrichment work (the slow parts) only ever ran
 # on its single best-rated candidate instead of up to _max_candidates() of them - see that
 # function's max_results docstring for exactly where the time is saved.
-_PER_COMBINATION_RESULTS = 1
+#
+# CHANGED (2026-08-26, CONFIRMED PRODUCT-OWNER REQUEST): "the results are very bad" - one
+# candidate per combination meant one bad/mismatched pick sank that whole combination with
+# nothing to fall back to. Raised to 3. Cost check before raising this: AI verification is
+# ALREADY one batched call per combination covering every surviving candidate together (see
+# verify_candidates), not one call per candidate, so this does not multiply that cost. Only
+# per-candidate website enrichment scales with this number, and it already runs concurrently
+# (ThreadPoolExecutor, see discover_suppliers) rather than one at a time - so 3 candidates costs
+# noticeably less than 3x the wall-clock time of 1, not the full 3x a naive read of the old
+# comment above would suggest. Revisit upward again if 3 still feels thin, but each step up
+# does add some real time and more rows to review per combination.
+_PER_COMBINATION_RESULTS = 3
 _MAX_MERGED_RESULTS = 30
 
 
