@@ -56,6 +56,7 @@ MODULE_BUILD = "2026-08-21-rollover-closed-check"
 import csv
 import io
 import os
+import uuid
 import streamlit as st
 import pandas as pd
 
@@ -591,6 +592,57 @@ def _render_review_and_send():
 
     if not suppliers:
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
+
+    # ---- Manual add ----
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "if the outreach is not good, the human
+    # must be able to add manual searches to the list with names, Email and Links." The
+    # automated chain (Tavily -> SerpAPI -> Gemini) can come back thin, wrong, or empty when a
+    # provider is quota-exhausted or a search genuinely misses a good match - rather than being
+    # blocked by that, a human who already knows (or just found by hand, e.g. asking ChatGPT/
+    # Gemini directly) a real supplier can add it straight into this same list. It joins the
+    # table below exactly like anything the search found: editable, tickable to send, and
+    # blockable later - no separate manual-entries list to keep track of.
+    with st.expander("➕ Add a supplier by hand", expanded=not suppliers):
+        st.caption("Know a supplier the search missed, or found one faster yourself? Add it here - "
+                   "Name is required; Email and Link are both optional but a row needs an email "
+                   "before it can actually be sent.")
+        mcol1, mcol2, mcol3, mcol4 = st.columns([2, 2, 2, 1])
+        with mcol1:
+            manual_name = st.text_input("Name", key="or_manual_name", placeholder="Supplier name")
+        with mcol2:
+            manual_email = st.text_input("Email", key="or_manual_email", placeholder="name@example.com")
+        with mcol3:
+            manual_link = st.text_input("Link", key="or_manual_link",
+                                        placeholder="Website, listing, or social link")
+        with mcol4:
+            st.markdown("<div style='height: 1.7rem'></div>", unsafe_allow_html=True)
+            add_manual = st.button("Add", key="or_manual_add", disabled=not manual_name.strip())
+        if add_manual:
+            suppliers.append({
+                "id": f"manual-{uuid.uuid4().hex[:10]}",
+                "name": manual_name.strip(),
+                "email": manual_email.strip() or None,
+                "social": None,
+                "socialPlatform": None,
+                "website": manual_link.strip() or None,
+                "listingUrl": None,
+                "listingSource": None,
+                "selectionReason": "Added by hand, not found by the automated search.",
+                "reviewSummary": "Added manually.",
+                "rating": None,
+                "reviewCount": None,
+                "sources": [],
+                # Same rule the automated results already follow: only pre-tick when there's a
+                # real email to send to - see to_supplier_record's own comment on this.
+                "selected": bool(manual_email.strip()),
+                "isMock": False,
+                "addedManually": True,
+            })
+            result["suppliers"] = suppliers
+            st.session_state.or_result = result
+            for k in ("or_manual_name", "or_manual_email", "or_manual_link"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
     # ---- Results table ----
     st.caption("Untick anyone you don't want to contact. You can also edit the **Name** or **Email** fields directly "
