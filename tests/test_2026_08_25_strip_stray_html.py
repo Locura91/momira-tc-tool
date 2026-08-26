@@ -97,14 +97,27 @@ def test_ticket_name_never_carries_stray_html():
     assert result["main_ticket_payload"]["name"] == "Luxor Highlights Tour"
 
 
-def test_ticket_description_and_meeting_point_never_carry_stray_html():
+def test_ticket_meeting_point_never_carries_stray_html():
     data = minimal_ticket_data()
-    data["description"] = "<p>A lovely tour.</p>"
     data["meeting_point_summary"] = "Hotel Lobby<br>Main entrance"
     result = build_ticket_payloads(make_ticket_pre_config(), data, _FakeAPI())
     datasheet = result["main_ticket_payload"]["datasheets"]["EN"]
-    assert datasheet["description"] == "A lovely tour."
     assert "<" not in datasheet["meetingPoint"]
+
+
+def test_ticket_description_is_left_as_deliberate_html():
+    """CONFIRMED BUG FIX (2026-08-26, product owner report: description formatting was "a bit
+    wrong... sometimes the text just written as plain text"): a Ticket's description is a
+    deliberate single HTML block per TicketDatasheetEN's own schema comment ("HTML, same
+    day-by-day-style rules don't apply") and ai_extractor.py's own prompt ("Format:
+    <p>paragraph(s)</p>") - stripping it here was the same class of bug as ClosedTour's
+    description below, just for Tickets. This test previously (incorrectly) asserted it got
+    stripped."""
+    data = minimal_ticket_data()
+    data["description"] = "<p>A lovely tour.</p>"
+    result = build_ticket_payloads(make_ticket_pre_config(), data, _FakeAPI())
+    datasheet = result["main_ticket_payload"]["datasheets"]["EN"]
+    assert datasheet["description"] == "<p>A lovely tour.</p>"
 
 
 def test_ticket_includes_and_excludes_list_items_never_carry_stray_html():
@@ -132,15 +145,34 @@ def test_entrance_fee_title_suffix_still_appends_correctly_onto_stripped_name():
 # remarks) - included/excluded must stay untouched, they're deliberately HTML
 # ---------------------------------------------------------------------------
 
-def test_closed_tour_name_and_description_never_carry_stray_html(fake_api_client):
+def test_closed_tour_name_never_carries_stray_html(fake_api_client):
     result = build_closed_tour_payloads(
         make_tour_pre_config(),
-        minimal_tour_data(tour_name="<p>Test Nile Cruise</p>", description="A lovely test cruise.</p>"),
+        minimal_tour_data(tour_name="<p>Test Nile Cruise</p>"),
         fake_api_client,
     )
     payload = result["main_tour_payload"]
     assert payload["name"] == "Test Nile Cruise"
-    assert payload["datasheets"]["EN"]["description"] == "A lovely test cruise."
+
+
+def test_closed_tour_description_is_left_as_deliberate_day_by_day_html(fake_api_client):
+    """CONFIRMED BUG FIX (2026-08-26, product owner report: "The day by day tour description is
+    a bit wrong. Often one more space than needed and sometimes the text just written as plain
+    text" - with a real example showing every <p>/<strong> day-header tag missing, everything
+    run together as one plain-text block). Root cause: description was being run through
+    strip_stray_html here, same as genuinely-plain-text fields - but ai_extractor.py's own
+    ClosedTour prompt explicitly requires day-by-day HTML for this field
+    (`<p><strong>Day 1: ...</strong></p><p>...</p><p><br></p>...`), the same kind of deliberate
+    HTML included/excluded already got an exception for (see the test right below). This test
+    previously (incorrectly) asserted description got stripped down to plain text."""
+    day_by_day = ("<p><strong>Day 1: Arrival</strong></p><p>Welcome to the tour.</p><p><br></p>"
+                 "<p><strong>Day 2: Departure</strong></p><p>Safe travels home.</p>")
+    result = build_closed_tour_payloads(
+        make_tour_pre_config(),
+        minimal_tour_data(description=day_by_day),
+        fake_api_client,
+    )
+    assert result["main_tour_payload"]["datasheets"]["EN"]["description"] == day_by_day
 
 
 def test_closed_tour_included_excluded_are_left_as_deliberate_html(fake_api_client):

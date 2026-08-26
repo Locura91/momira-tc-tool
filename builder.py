@@ -1588,13 +1588,27 @@ def build_closed_tour_payloads(
         # here always, silently dropping the document's own stated cancellation policy from
         # the voucher entirely - see _cancellation_voucher_text()'s docstring for the full
         # rule and the cross-product inconsistency this fixes.
-        # strip_stray_html applied to every plain-text field below EXCEPT included/excluded -
-        # those two are deliberately HTML (Travel Compositor's own API expects `<ul><li>` there,
-        # see that field's own extraction rule / strip_stray_html's docstring).
+        # strip_stray_html applied to every plain-text field below EXCEPT included/excluded AND
+        # description - those are deliberately HTML. included/excluded because Travel
+        # Compositor's own API expects `<ul><li>` there (see that field's own extraction rule /
+        # strip_stray_html's docstring); description because ai_extractor.py's own ClosedTour
+        # prompt explicitly requires day-by-day HTML there
+        # (`<p><strong>Day 1: ...</strong></p><p>...</p><p><br></p>...`, see the "description MUST
+        # be formatted as day-by-day HTML" rule).
+        #
+        # CONFIRMED BUG FIX (2026-08-26, product owner report: "The day by day tour description
+        # is a bit wrong. Often one more space than needed and sometimes the text just written as
+        # plain text"): description WAS being run through strip_stray_html here, same as the
+        # genuinely-plain-text fields below it - stripping every <p>/<strong>/<br> the day-by-day
+        # format depends on, collapsing the whole thing into one run-on paragraph with no bold day
+        # headers and irregular leftover spacing where the block tags used to be (strip_stray_html
+        # turns `</p><p>` into a single newline, which then gets whitespace-collapsed). This is
+        # exactly what strip_stray_html's own docstring already carves an exception for -
+        # included/excluded - description just wasn't added to that exception when it was written.
         _tour_display_name = strip_stray_html(extracted_dmc_data.get("tour_name") or "")
         datasheet_en = DatasheetEN(
             name=_tour_display_name,
-            description=strip_stray_html(extracted_dmc_data.get("description") or ""),
+            description=extracted_dmc_data.get("description") or "",
             hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
             voucherRemarks=_with_manual_notes(
                 _with_what_to_bring(
@@ -1966,11 +1980,19 @@ def build_ticket_payloads(
 
         datasheet_en = TicketDatasheetEN(
             name=_ticket_display_name,
-            # strip_stray_html: same 2026-08-25 rule as the voucher text - description, meeting
-            # point, and includes/excludes are plain customer-facing text too, and none of them
-            # flow through _with_manual_notes (which only wraps the voucher text), so each needs
-            # its own pass here.
-            description=strip_stray_html(extracted_ticket_data.get("description") or ""),
+            # strip_stray_html: same 2026-08-25 rule as the voucher text - meeting point and
+            # includes/excludes are plain customer-facing text too, and none of them flow through
+            # _with_manual_notes (which only wraps the voucher text), so each needs its own pass
+            # here.
+            #
+            # description is deliberately NOT stripped - CONFIRMED BUG FIX (2026-08-26, same
+            # report/root cause as ClosedTour's description field above): per TicketDatasheetEN's
+            # own schema comment ("HTML, same day-by-day-style rules don't apply (single
+            # description block)") and ai_extractor.py's own Ticket prompt ("description: a SINGLE
+            # HTML block... Format: <p>paragraph(s)</p>"), a Ticket's description is meant to carry
+            # real `<p>` structure, not stray HTML. Stripping it here flattened every paragraph
+            # into one run-on block with no formatting, same bug as ClosedTour's description had.
+            description=extracted_ticket_data.get("description") or "",
             meetingPoint=strip_stray_html(extracted_ticket_data.get("meeting_point_summary") or "Hotel Lobby"),
             departureTime=time_tables_list[0] if time_tables_list else "",
             # The composed text (see _ticket_voucher_base above) - NOT a bare voucher_remarks
