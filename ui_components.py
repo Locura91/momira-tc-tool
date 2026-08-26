@@ -1255,3 +1255,60 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
     else:
         st.caption(f"👶 Children are **{low}–{high}**; under {low} counts as an infant. Raise the "
                    f"minimum if the document states one (e.g. \"children from 7 years\" → 7).")
+
+
+def render_extra_child_notice(data, key_prefix):
+    """"Extra child allowed" + per-occupancy max-extra-child numbers for ONE ClosedTour Modality -
+    detected from the document, editable by hand, shown as a MANUAL reminder rather than a payload
+    field.
+
+    CONFIRMED REAL LIMITATION (product owner, 2026-08-26): Travel Compositor's own Modality screen has
+    an "Extra child allowed" checkbox plus a "Max [bracket] extra child" number next to each occupancy
+    price - screenshots confirmed the exact labels and layout. But a real GET on a live option that has
+    both set (RAK-2/StandardPrivate) came back with NEITHER field in the JSON response, only the same
+    singlePrice/doublePrice/triplePrice/quadruplePrice + tripleChildPercentageDiscount/
+    quadrupleChildPercentageDiscount already modeled in schemas.py - so this is genuinely admin-screen-
+    only today, with no confirmed API field to write to. This widget therefore only computes and shows
+    the recommended numbers (house default Single=1/Double=2/Triple=2, unless this Modality's own
+    document/URL stated different numbers - CONFIRMED house rule, product owner) so a human can type
+    them into Travel Compositor by hand after publishing, and lets a human override the detected
+    allowed/not-allowed and the numbers directly, same as every other AI-extracted field on this
+    screen.
+
+    `data` is the Modality's own extracted-data dict (must have "price_list" and may have
+    "extra_child_allowed"/"extra_child_max_overrides" - both get written back here on edit)."""
+    from builder import compute_extra_child_plan  # local import - ui_components must not import builder at module load
+
+    raw_allowed = data.get("extra_child_allowed")
+    data["extra_child_allowed"] = st.checkbox(
+        "👶 Extra child allowed", value=bool(raw_allowed) if raw_allowed is not None else True,
+        key=f"{key_prefix}_extra_child_allowed",
+        help="Detected from the document/URL - untick if this Modality does not allow adding a child "
+             "on top of its normal adult occupancy.")
+
+    overrides = data.get("extra_child_max_overrides")
+    if not isinstance(overrides, dict):
+        overrides = {}
+        data["extra_child_max_overrides"] = overrides
+
+    plan = compute_extra_child_plan(data["extra_child_allowed"], data.get("price_list"), overrides)
+    if not data["extra_child_allowed"]:
+        st.caption("No extra child on this Modality - nothing to enter in Travel Compositor.")
+        return
+    if not plan["brackets"]:
+        st.caption("👶 Extra child allowed - add at least one occupancy price above to see the "
+                   "recommended per-bracket numbers.")
+        return
+
+    st.caption("Travel Compositor's API doesn't accept this field today (confirmed against a real "
+              "example) - after publishing, tick **Extra child allowed** in Travel Compositor's own "
+              "Modality screen and enter these numbers by hand:")
+    cols = st.columns(len(plan["brackets"]))
+    override_key_by_label = {"Single": "single", "Double": "double", "Triple": "triple", "Quadruple": "quadruple"}
+    for col, bracket in zip(cols, plan["brackets"]):
+        with col:
+            override_key = override_key_by_label[bracket["label"]]
+            new_value = st.number_input(
+                f"Max {bracket['label'].lower()} extra child", min_value=0, max_value=4,
+                value=int(bracket["max_extra_child"]), key=f"{key_prefix}_max_{override_key}_extra_child")
+            overrides[override_key] = new_value

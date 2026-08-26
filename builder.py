@@ -879,6 +879,59 @@ def sold_occupancies(price_list):
     return sold
 
 
+# CONFIRMED HOUSE RULE (product owner, 2026-08-26): "Single is max one child, double is max 2 child
+# and triple is max 2 child - only if not different stated." Quadruple has no stated house default -
+# left at 0 (matches the one real example seen: RAK-2/StandardPrivate's own Quadruple bracket showed
+# "Max quadruple extra child" = 0 in Travel Compositor's screen).
+_EXTRA_CHILD_HOUSE_DEFAULTS = {"singlePrice": 1, "doublePrice": 2, "triplePrice": 2, "quadruplePrice": 0}
+_EXTRA_CHILD_OVERRIDE_KEYS = {"singlePrice": "single", "doublePrice": "double",
+                              "triplePrice": "triple", "quadruplePrice": "quadruple"}
+
+
+def compute_extra_child_plan(extra_child_allowed, price_list, overrides=None):
+    """The recommended "Extra child allowed" + per-bracket max-extra-child numbers for a ClosedTour
+    Modality, computed for display only.
+
+    CONFIRMED REAL LIMITATION (product owner, 2026-08-26): Travel Compositor's own Modality screen has
+    an "Extra child allowed" checkbox plus a "Max [bracket] extra child" number next to each occupancy
+    price - but a real GET on a live option that has both set (RAK-2/StandardPrivate) came back with
+    NEITHER field in the JSON, only the same singlePrice/doublePrice/triplePrice/quadruplePrice +
+    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount already modeled in schemas.py. So
+    this is genuinely admin-screen-only today - there is no confirmed API field to write these to. This
+    function only computes what a human should go type into that screen after publishing; it is not
+    sent to Travel Compositor.
+
+    Only occupancies this tour actually sells (per sold_occupancies) get a number - an occupancy with
+    no price can't have an extra child either, same "occupancies must agree" rule used elsewhere
+    (strip_unsold_supplement_occupancies).
+
+    overrides: the document's own stated max-extra-child numbers, if any, keyed "single"/"double"/
+    "triple"/"quadruple" (see ai_extractor.py's extra_child_max_overrides) - a bracket's own explicit
+    value (including 0) always wins over the house default; a missing/None value falls back to it.
+
+    Returns {"allowed": bool, "brackets": [{"label": "Single", "max_extra_child": 1}, ...]} - brackets
+    only lists occupancies this tour sells, empty if extra_child_allowed is false."""
+    allowed = bool(extra_child_allowed)
+    sold = sold_occupancies(price_list)
+    overrides = overrides if isinstance(overrides, dict) else {}
+    brackets = []
+    if allowed:
+        for money_key, default_count in _EXTRA_CHILD_HOUSE_DEFAULTS.items():
+            if money_key not in sold:
+                continue
+            override_key = _EXTRA_CHILD_OVERRIDE_KEYS[money_key]
+            stated = overrides.get(override_key)
+            try:
+                count = int(stated) if stated not in (None, "") else default_count
+            except (TypeError, ValueError):
+                count = default_count
+            brackets.append({
+                "label": money_key.replace("Price", "").capitalize(),
+                "max_extra_child": count,
+            })
+    return {"allowed": allowed, "brackets": brackets}
+
+
 _SUPPLEMENT_OCCUPANCY_FIELDS = {
     "singlePrice": "single_price", "doublePrice": "double_price",
     "triplePrice": "triple_price", "quadruplePrice": "quadruple_price",
@@ -1723,6 +1776,14 @@ def build_closed_tour_payloads(
         "tet_holiday_note": tet_holiday_reminder_note() if is_vietnam else None,
         "effective_release_days": effective_release_days,
         "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
+        # Manual-only reminder - see compute_extra_child_plan's docstring for why this can't be sent
+        # to the API. Computed from the SAME sorted price list about to be published, so it can never
+        # recommend a bracket this Modality doesn't actually sell.
+        "extra_child_plan": compute_extra_child_plan(
+            extracted_dmc_data.get("extra_child_allowed", True),
+            _tour_price_list_sorted,
+            extracted_dmc_data.get("extra_child_max_overrides"),
+        ),
     }
 
 def build_ticket_payloads(

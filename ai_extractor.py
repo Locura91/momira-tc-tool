@@ -404,6 +404,22 @@ Rules:
   occupant of a room, so a stated discount cannot be reflected in single/double occupancy pricing
   no matter how it's extracted. Still extract the percentage whenever the source states one; it will
   be applied everywhere the platform actually supports it.
+- extra_child_allowed: CONFIRMED REAL FEATURE (product owner, 2026-08-26, screenshots of Travel
+  Compositor's own Modality screen: a "Extra child allowed" checkbox sits next to Price Type, and each
+  occupancy price ALSO has its own "Max [Single/Double/Triple/Quadruple] extra child" number - a real GET
+  on a live option (RAK-2/StandardPrivate) confirmed neither field comes back from Travel Compositor's
+  write API today, so this app can only compute the RECOMMENDED values and remind a human to enter them
+  by hand in Travel Compositor after publishing - see extra_child_max_overrides below). Detect from the
+  URL/description/policy text whether a child may be added to a room on top of its normal adult
+  occupancy: default true (most tours allow this) UNLESS the source explicitly says children are not
+  accepted at all / adults-only / no children permitted, in which case false.
+- extra_child_max_overrides: {"single": null, "double": null, "triple": null, "quadruple": null} - the
+  house default max extra children per occupancy bracket is Single=1, Double=2, Triple=2, Quadruple=0
+  (only applied when extra_child_allowed is true - see builder.py's _EXTRA_CHILD_HOUSE_DEFAULTS). Leave
+  every value here null UNLESS the source EXPLICITLY states a different number of extra children allowed
+  for a specific bracket (e.g. "up to 2 children can share a double room", "no extra child in a triple
+  cabin") - then set just that bracket's number, leaving the others null so the house default still
+  applies to them. Never invent a number that isn't actually stated.
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM).
   CONFIRMED RULE - start_time: if the source gives an actual pick-up/collection time for Day 1 (e.g. "Pick-up
   at 07:30", "collection between 6:00-6:30am" - use the earlier/first time given for a range), always use
@@ -524,6 +540,8 @@ Output this exact JSON structure:
   "itinerary_destinations": [],
   "nights": 0,
   "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12, "child_discount_percentage": null,
+  "extra_child_allowed": true,
+  "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
@@ -597,6 +615,8 @@ EXTRACTION_TOOL_SCHEMA = {
         "min_child_age": {"type": "integer"},
         "max_child_age": {"type": "integer"},
         "child_discount_percentage": {"type": ["number", "null"]},
+        "extra_child_allowed": {"type": "boolean"},
+        "extra_child_max_overrides": {"type": "object", "additionalProperties": True},
         "operational_days": {"type": "array", "items": {"type": "string"}},
         "schedule_notes": {"type": "string"},
         "pricing_notes": {"type": "string"},
@@ -608,7 +628,8 @@ EXTRACTION_TOOL_SCHEMA = {
         "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
         "excluded", "meeting_point", "policy_remarks", "what_to_bring", "cancellation_policy_tiers",
         "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
-        "min_child_age", "max_child_age", "child_discount_percentage", "operational_days",
+        "min_child_age", "max_child_age", "child_discount_percentage", "extra_child_allowed",
+        "extra_child_max_overrides", "operational_days",
         "schedule_notes", "pricing_notes", "stop_sales", "price_list", "release_days_mentions",
     ],
 }
@@ -1944,6 +1965,15 @@ Extract ONLY:
   default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
   Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
   pricing when a 3rd/4th person is sharing the room.
+- extra_child_allowed: CONFIRMED REAL FEATURE (product owner, 2026-08-26) - Travel Compositor's own
+  Modality screen has an "Extra child allowed" toggle plus a per-occupancy "Max extra child" number, not
+  exposed by the write API - this app can only compute the recommended values and remind a human to
+  enter them by hand in Travel Compositor after publishing. Default true UNLESS the source explicitly
+  says children are not accepted at all / adults-only, in which case false.
+- extra_child_max_overrides: {"single": null, "double": null, "triple": null, "quadruple": null} - house
+  default max extra children per bracket is Single=1, Double=2, Triple=2, Quadruple=0 (only used when
+  extra_child_allowed is true). Leave every value null UNLESS the source EXPLICITLY states a different
+  number for a specific bracket - never invent one.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
@@ -1951,6 +1981,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 {
   "price_list": [],
   "child_discount_percentage": null,
+  "extra_child_allowed": true,
+  "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
   "pricing_notes": "",
   "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
@@ -2097,12 +2129,24 @@ Extract:
   default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
   Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
   pricing when a 3rd/4th person is sharing the room.
+- extra_child_allowed: CONFIRMED REAL FEATURE (product owner, 2026-08-26) - Travel Compositor's own
+  Modality screen has an "Extra child allowed" toggle plus a per-occupancy "Max extra child" number, not
+  exposed by the write API - this app can only compute the recommended values and remind a human to
+  enter them by hand in Travel Compositor after publishing. Default true for THIS Modality UNLESS the
+  source explicitly says children are not accepted at all / adults-only, in which case false.
+- extra_child_max_overrides: {"single": null, "double": null, "triple": null, "quadruple": null} - house
+  default max extra children per bracket is Single=1, Double=2, Triple=2, Quadruple=0 (only used when
+  extra_child_allowed is true). Leave every value null UNLESS the source EXPLICITLY states a different
+  number for a specific bracket - never invent one.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
-  "price_list": [], "supplements": [], "child_discount_percentage": null, "pricing_notes": "", "schedule_notes": "",
+  "price_list": [], "supplements": [], "child_discount_percentage": null,
+  "extra_child_allowed": true,
+  "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
+  "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "stop_sales": [], "guaranteed_departure_rule": null
 }"""
@@ -2160,6 +2204,8 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
     defaults = {
         "price_list": [], "supplements": [], "pricing_notes": "", "schedule_notes": "",
         "child_discount_percentage": None,
+        "extra_child_allowed": True,
+        "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None,
     }
@@ -2199,6 +2245,8 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
 
     defaults = {
         "price_list": [], "pricing_notes": "", "schedule_notes": "", "child_discount_percentage": None,
+        "extra_child_allowed": True,
+        "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None,
         # Defensive: fields builder.py's main_tour_payload construction still
@@ -2261,6 +2309,8 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
         "child_discount_percentage": None,
+        "extra_child_allowed": True,
+        "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
     }
