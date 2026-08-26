@@ -1558,11 +1558,85 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                 else:
                                     state_label = "ACTIVE" if mct_publish_as_active else "inactive/draft"
                                     st.success(f"✅ **{tour['tour_code']}** published successfully as `{real_code}` ({state_label}).")
+                                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "after I created a new
+                                    # Closed Tour and I published it, I then want to start a new Batch...
+                                    # in none of the new stage can I add the new ClosedTour Code to the new
+                                    # batch. This causes always problems, if the human not automatically
+                                    # goes back to Step 3 and changes the ClosedTour Code manually." Before
+                                    # this, only the LEGACY update flow's own "add_option" success path (see
+                                    # just below, ~line 11430) remembered what it had just published - this
+                                    # CREATE flow's own success never did, so a code just created here was
+                                    # never available to prefill Step 3's "Existing Tour Code" for a follow-up
+                                    # action (add a Modality, update the tour, update a Modality's pricing) - the human had
+                                    # to remember and retype it by hand, exactly the "always problems" being
+                                    # reported. Recording it the same way the legacy flow already does.
+                                    st.session_state.just_published_tour_code = real_code
+                                    st.session_state.just_published_supplier_id = supplier_id
                             else:
                                 st.warning(f"⚠️ **{tour['tour_code']}**: no Modality options were created successfully - "
                                           f"skipped the follow-up update. Fix the error(s) above and try again.")
                 except Exception as e:
                     show_publish_error(f"publish **{tour['tour_code']}** (unexpected error)", str(e))
+
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26, see the docstring at just_published_tour_code
+        # above): once a code has actually been published this run, offer real next steps that carry
+        # it forward - not just "start a new (different) ClosedTour", which is for someone who wants
+        # to leave this code behind entirely. Mirrors the legacy update flow's own "what next" panel
+        # (~line 11437) so the same two concrete choices exist here, plus a third, more general one
+        # for any OTHER action (update the tour, update a Modality) that also needs this same code.
+        if st.session_state.get("just_published_tour_code"):
+            st.divider()
+            st.caption(f"Just published: **{st.session_state.just_published_tour_code}** "
+                      f"(Supplier {st.session_state.just_published_supplier_id})")
+            ncol1, ncol2, ncol3 = st.columns(3)
+            with ncol1:
+                if st.button("🆕 Start a new ClosedTour", help="Create a DIFFERENT, brand-new ClosedTour - "
+                            "this code is not carried forward."):
+                    _reset_mct_state()
+                    st.rerun()
+            with ncol2:
+                if st.button("➕ Add another Modality to this same ClosedTour"):
+                    prefill_tour_code = st.session_state.just_published_tour_code
+                    prefill_supplier_id = st.session_state.just_published_supplier_id
+                    keep_client = st.session_state.client
+                    keep_suppliers = st.session_state.suppliers_cache
+                    keep_product_type = st.session_state.product_type
+                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
+                    st.session_state.clear()
+                    st.session_state.client = keep_client
+                    st.session_state.suppliers_cache = keep_suppliers
+                    st.session_state.product_type = keep_product_type
+                    st.session_state.active_tool = keep_tool
+                    st.session_state.cfg_action = "add_option"
+                    st.session_state.cfg_supplier_id = prefill_supplier_id
+                    st.session_state.cfg_existing_tour_code = prefill_tour_code
+                    st.session_state.prefill_existing_tour_code = prefill_tour_code
+                    st.session_state.step1_confirmed = True
+                    st.rerun()
+            with ncol3:
+                if st.button("🔧 Do something else with this Code",
+                            help="Pick any other action at Step 1 (update this tour, or update a "
+                                 "Modality's pricing) - the ClosedTour Code above will already be "
+                                 "filled in for you once you reach Step 3."):
+                    prefill_tour_code = st.session_state.just_published_tour_code
+                    prefill_supplier_id = st.session_state.just_published_supplier_id
+                    keep_client = st.session_state.client
+                    keep_suppliers = st.session_state.suppliers_cache
+                    keep_product_type = st.session_state.product_type
+                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
+                    st.session_state.clear()
+                    st.session_state.client = keep_client
+                    st.session_state.suppliers_cache = keep_suppliers
+                    st.session_state.product_type = keep_product_type
+                    st.session_state.active_tool = keep_tool
+                    # Deliberately NOT setting cfg_action/step1_confirmed here - the human still
+                    # picks which action they want at Step 1, same as any fresh run. Only the
+                    # code (and, as a convenience, the supplier) are carried forward so whichever
+                    # action they choose that needs "Existing Tour Code" at Step 3 already has it.
+                    st.session_state.cfg_prefill_supplier_id = prefill_supplier_id
+                    st.session_state.prefill_existing_tour_code = prefill_tour_code
+                    st.rerun()
+            return
 
         if st.button("🆕 Start a new ClosedTour"):
             _reset_mct_state()
@@ -10093,7 +10167,20 @@ else:
                 f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                 for s in momira_suppliers
             }
-            selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()))
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): carried over from the "Do something
+            # else with this Code" button after a ClosedTour publish (see just_published_tour_code
+            # above) - a convenience default, not a hard requirement, since the human might
+            # genuinely want a different supplier for the next action. Popped once so it only
+            # affects the very next Step 1 render, not every one after.
+            option_labels = list(supplier_options.keys())
+            prefill_supplier = st.session_state.pop("cfg_prefill_supplier_id", None)
+            default_index = 0
+            if prefill_supplier is not None:
+                matches = [i for i, label in enumerate(option_labels)
+                          if str(supplier_options[label]) == str(prefill_supplier)]
+                if matches:
+                    default_index = matches[0]
+            selected_label = st.selectbox("Select Supplier", option_labels, index=default_index)
             supplier_id_choice = str(supplier_options[selected_label])
         if st.button("🔄 Refresh supplier list"):
             st.session_state.suppliers_cache = None
