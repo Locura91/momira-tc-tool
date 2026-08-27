@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-27-outreach-place-theme-grouping"
+MODULE_BUILD = "2026-08-27-outreach-select-all-place-themes"
 
 import csv
 import io
@@ -193,6 +193,8 @@ def _render_country_scope():
         place = slot["place"]
         name = place.get("name", "")
         place_themes = slot["themes"]
+        theme_keys = [f"or_scope_pt_{name}_{j}_{t.get('name', '')}"
+                     for j, t in enumerate(place_themes)]
         header = f"📍 {name}" + (f" · {place['region']}" if place.get("region") else "")
         with st.expander(f"{header}  —  {len(place_themes)} theme(s)"):
             if place.get("why"):
@@ -203,9 +205,21 @@ def _render_country_scope():
             if not place_themes:
                 st.caption("No theme from the list is matched to this place yet — add one "
                            "below, or use the general search above.")
+            else:
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-27): "one click to automatically
+                # include all themes in one search. But still, the human shall be able to
+                # unmark single place & theme combinations." Pre-checks every theme box for
+                # this place by writing True into each checkbox's own session_state key before
+                # it renders - the individual checkboxes below are untouched, so any one of
+                # them can still be unticked afterwards without affecting the others.
+                if st.button(f"✅ Select all {len(place_themes)} theme(s) for {name}",
+                            key=f"or_scope_select_all_{name}"):
+                    for k in theme_keys:
+                        st.session_state[k] = True
+                    st.rerun()
             for j, theme in enumerate(place_themes):
                 tname = theme.get("name", "")
-                if st.checkbox(tname, key=f"or_scope_pt_{name}_{j}_{tname}"):
+                if st.checkbox(tname, key=theme_keys[j]):
                     pairs.append((name, tname))
                 if theme.get("why"):
                     st.caption(theme["why"])
