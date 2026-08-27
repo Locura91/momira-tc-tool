@@ -28,7 +28,7 @@ added by hand once and stays added.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-26-outreach-balloons-on-partial-success"
+MODULE_BUILD = "2026-08-27-outreach-place-theme-grouping"
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -65,10 +65,18 @@ SCOPE_TOOL_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "The theme, e.g. 'Nile Cruise', 'Snorkeling'"},
-                    "where": {"type": "string", "description": "Where in the country it is normally sold"},
+                    "where": {"type": "string", "description": "Where in the country it is normally sold - free text, for the human to read"},
                     "why": {"type": "string", "description": "One short line on why it matters commercially"},
+                    "places": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Which of the PLACES listed above (exact name match) this theme is "
+                                       "actually sold at - e.g. 'Nile Cruise' -> ['Luxor', 'Aswan'], never "
+                                       "'Sharm El Sheikh'. Leave empty ONLY for a theme that is genuinely "
+                                       "sold everywhere in the country and isn't tied to specific places "
+                                       "(e.g. 'Airport Transfer', 'Custom Private Tour').",
+                    },
                 },
-                "required": ["name", "why"],
+                "required": ["name", "why", "places"],
             },
         },
         "notes": {"type": "string", "description": "Anything a buyer should know - seasonality, safety, access."},
@@ -93,6 +101,16 @@ supplier could sell you: the standard excursions and experiences, not marketing 
 Cruise", "Pyramid Tour", "Snorkeling", "Desert Oases Tour", "Museum visit", "Dinner cruise" are
 themes. "Adventure", "Luxury" and "Authentic experiences" are not - they cannot be searched for and
 no supplier sells them under that name.
+
+MATCH EVERY THEME TO ITS REAL PLACES - this is what turns a place x theme grid into a usable daily
+worklist instead of a pile of nonsense combinations (nobody sells "Snorkeling" in Cairo, or a "Nile
+Cruise" out of Sharm El Sheikh). For each theme, set "places" to the exact names (copied verbatim
+from your own PLACES list above) of every place that theme is genuinely sold at - a theme sold in
+several places (e.g. "Desert Safari" out of both Hurghada and Marsa Alam) lists all of them. Only
+leave "places" empty for a theme that is truly country-wide and not tied to specific places (e.g.
+"Airport Transfer", "Custom Private Tour", "Multi-day Package"). Getting this right matters more
+than the free-text "where" field - "places" is what the buyer's tool actually uses to decide which
+searches are worth running.
 
 RULES:
 - Real places and real products only. Never invent a site or an excursion to pad the list.
@@ -138,7 +156,14 @@ def list_known_countries() -> List[str]:
     return sorted({(r or {}).get("country", "") for r in rows.values() if isinstance(r, dict)} - {""})
 
 
-def _clean(entries, required_key="name") -> List[Dict[str, str]]:
+def _clean(entries, required_key="name", list_keys=()) -> List[Dict[str, Any]]:
+    """Sanitize AI-returned place/theme dicts.
+
+    Scalar fields (name, why, where...) are kept as trimmed strings. Any key named in
+    `list_keys` (e.g. a theme's "places") is instead kept as a list of trimmed, deduplicated
+    strings - without `list_keys` those fields would silently vanish, since they fail the
+    scalar isinstance check below, and a theme that loses its "places" list falls back to
+    looking country-wide when it was really just never matched."""
     out, seen = [], set()
     for entry in (entries or []):
         if not isinstance(entry, dict):
@@ -148,7 +173,20 @@ def _clean(entries, required_key="name") -> List[Dict[str, str]]:
         if not name or key in seen:
             continue
         seen.add(key)
-        out.append({k: str(v or "").strip() for k, v in entry.items() if isinstance(v, (str, int, float))})
+        cleaned = {k: str(v or "").strip() for k, v in entry.items()
+                   if k not in list_keys and isinstance(v, (str, int, float))}
+        for lk in list_keys:
+            raw = entry.get(lk)
+            items = []
+            if isinstance(raw, list):
+                item_seen = set()
+                for v in raw:
+                    s = str(v or "").strip()
+                    if s and s.lower() not in item_seen:
+                        item_seen.add(s.lower())
+                        items.append(s)
+            cleaned[lk] = items
+        out.append(cleaned)
     return out
 
 
@@ -181,9 +219,17 @@ def suggest_country_scope(country: str, model: str = "claude-sonnet-5",
         return {"places": [], "themes": [], "notes": "",
                 "error": f"Couldn't research {country} - {friendly_error_message(e)}"}
 
+    cleaned_places = _clean((result or {}).get("places"))[:_TARGET_PLACES]
+    known_place_names = {p["name"].strip().lower() for p in cleaned_places if p.get("name")}
+    cleaned_themes = _clean((result or {}).get("themes"), list_keys=("places",))[:_TARGET_THEMES]
+    # Drop any place name the model invented (typo, or a place that didn't make the final,
+    # truncated places list) rather than let a theme silently point at a place that isn't there.
+    for theme in cleaned_themes:
+        theme["places"] = [p for p in theme.get("places", [])
+                            if p.strip().lower() in known_place_names]
     scope = {
-        "places": _clean((result or {}).get("places"))[:_TARGET_PLACES],
-        "themes": _clean((result or {}).get("themes"))[:_TARGET_THEMES],
+        "places": cleaned_places,
+        "themes": cleaned_themes,
         "notes": str((result or {}).get("notes") or "").strip(),
     }
     if scope["places"] or scope["themes"]:
@@ -199,8 +245,12 @@ def add_place(country: str, name: str, why: str = "") -> bool:
     return _add(country, "places", {"name": name, "why": why or "added by hand"})
 
 
-def add_theme(country: str, name: str, why: str = "") -> bool:
-    return _add(country, "themes", {"name": name, "why": why or "added by hand"})
+def add_theme(country: str, name: str, why: str = "", places: List[str] = None) -> bool:
+    """Add a theme the model missed. `places` ties it to specific places (like the AI-suggested
+    ones); leave it empty/None for a genuinely country-wide theme."""
+    entry = {"name": name, "why": why or "added by hand"}
+    entry["places"] = [str(p).strip() for p in (places or []) if str(p).strip()]
+    return _add(country, "themes", entry)
 
 
 def _add(country: str, bucket: str, entry: Dict[str, str]) -> bool:
@@ -231,18 +281,62 @@ def remove_entry(country: str, bucket: str, name: str) -> bool:
     return save_scope(country, scope)
 
 
-def planned_searches(country: str, places: List[str], themes: List[str]) -> List[Dict[str, str]]:
-    """The searches a selection implies - one per place x theme.
+def group_themes_by_place(places: List[Dict[str, Any]], themes: List[Dict[str, Any]]
+                          ) -> "tuple[List[Dict[str, Any]], List[Dict[str, Any]]]":
+    """Sort themes under the places they are actually sold at.
 
-    Returned as a list rather than run directly so the count can be shown BEFORE anything runs:
-    six places and five themes is thirty searches, which is a long wait nobody agreed to."""
+    Returns (per_place, countrywide):
+      per_place       - one entry per place, in the original place order, each carrying the
+                         list of themes whose "places" names it (case-insensitive match).
+      countrywide      - themes with no "places" at all, or whose named places don't match any
+                         place we know about (an AI slip, or a place the human never added) -
+                         these still need somewhere to live rather than silently vanishing.
+
+    This is what turns the old flat "tick any place, tick any theme, get the full cross
+    product" screen into a worklist where each place only ever shows the themes that are
+    genuinely sold there - no "Snorkeling" next to Cairo."""
+    place_list = [p for p in (places or []) if isinstance(p, dict) and p.get("name")]
+    theme_list = [t for t in (themes or []) if isinstance(t, dict) and t.get("name")]
+    place_names_by_key = {p["name"].strip().lower(): p["name"].strip() for p in place_list}
+
+    per_place = [{"place": p, "themes": []} for p in place_list]
+    slot_by_key = {p["name"].strip().lower(): slot for p, slot in zip(place_list, per_place)}
+    countrywide = []
+
+    for theme in theme_list:
+        theme_places = [str(p).strip() for p in (theme.get("places") or []) if str(p).strip()]
+        matched_any = False
+        for tp in theme_places:
+            slot = slot_by_key.get(tp.lower())
+            if slot is not None:
+                slot["themes"].append(theme)
+                matched_any = True
+        if not matched_any:
+            countrywide.append(theme)
+
+    return per_place, countrywide
+
+
+def planned_searches(country: str, pairs: List[tuple]) -> List[Dict[str, str]]:
+    """The searches an explicit (place, theme) selection implies.
+
+    `pairs` is a list of (place_name_or_"", theme_name_or_"") tuples - built by the caller from
+    whatever the human ticked in the place-grouped screen (a countrywide theme pairs with "",
+    a place ticked with no theme pairs with ""). Taking explicit pairs rather than two flat
+    lists is the whole point of the place/theme grouping: no blind cross product, no
+    "Snorkeling in Cairo" nobody asked for."""
     country = (country or "").strip()
-    places = [p for p in (places or []) if str(p).strip()]
-    themes = [t for t in (themes or []) if str(t).strip()]
     if not country:
         return []
-    if not themes:
-        return [{"country": country, "city": p, "keyword": ""} for p in places] or []
-    if not places:
-        return [{"country": country, "city": "", "keyword": t} for t in themes]
-    return [{"country": country, "city": p, "keyword": t} for p in places for t in themes]
+    seen, out = set(), []
+    for place, theme in (pairs or []):
+        place = str(place or "").strip()
+        theme = str(theme or "").strip()
+        if not place and not theme:
+            continue
+        key = (place.lower(), theme.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"country": country, "city": place, "keyword": theme})
+    return out

@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-26-outreach-balloons-on-partial-success"
+MODULE_BUILD = "2026-08-27-outreach-place-theme-grouping"
 
 import re
 import math

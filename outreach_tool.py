@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-26-outreach-balloons-on-partial-success"
+MODULE_BUILD = "2026-08-27-outreach-place-theme-grouping"
 
 import csv
 import io
@@ -177,56 +177,75 @@ def _render_country_scope():
     places = scope.get("places") or []
     themes = scope.get("themes") or []
 
-    pcol, tcol = st.columns(2)
-    chosen_places, chosen_themes = [], []
-    with pcol:
-        st.markdown(f"#### 📍 Places ({len(places)})")
-        st.caption("Regions and sites a programme for this country should cover.")
-        for i, place in enumerate(places):
-            name = place.get("name", "")
-            label = f"**{name}**" + (f" · {place['region']}" if place.get("region") else "")
-            if st.checkbox(label, key=f"or_scope_place_{i}_{name}"):
-                chosen_places.append(name)
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-27): "group the possible and smart themes with
+    # the correct Places already... If we group them: we match automatically the needed service
+    # and we limitate the useless search." Themes are matched to the places they're actually
+    # sold at (by outreach_scope's AI prompt), so each place only ever shows its own fitting
+    # themes - no "Snorkeling" under Cairo. `pairs` collects the explicit (place, theme)
+    # combinations ticked, replacing the old blind place x theme cross product.
+    per_place, countrywide = osc.group_themes_by_place(places, themes)
+    pairs = []
+
+    st.markdown(f"#### 📍 Places & their themes ({len(places)})")
+    st.caption("Open a place to see only the themes it's actually known for. Tick a theme to "
+               "search for it there, or tick the place alone for a general supplier search.")
+    for slot in per_place:
+        place = slot["place"]
+        name = place.get("name", "")
+        place_themes = slot["themes"]
+        header = f"📍 {name}" + (f" · {place['region']}" if place.get("region") else "")
+        with st.expander(f"{header}  —  {len(place_themes)} theme(s)"):
             if place.get("why"):
                 st.caption(place["why"])
-        new_place = st.text_input("Add a place it missed", key="or_scope_new_place")
-        if st.button("➕ Add place", key="or_scope_add_place", disabled=not new_place.strip()):
-            osc.add_place(country, new_place.strip())
-            st.session_state.pop("or_scope", None)
-            st.rerun()
+            if st.checkbox("Just search this place (no specific theme)",
+                           key=f"or_scope_place_only_{name}"):
+                pairs.append((name, ""))
+            if not place_themes:
+                st.caption("No theme from the list is matched to this place yet — add one "
+                           "below, or use the general search above.")
+            for j, theme in enumerate(place_themes):
+                tname = theme.get("name", "")
+                if st.checkbox(tname, key=f"or_scope_pt_{name}_{j}_{tname}"):
+                    pairs.append((name, tname))
+                if theme.get("why"):
+                    st.caption(theme["why"])
+    new_place = st.text_input("Add a place it missed", key="or_scope_new_place")
+    if st.button("➕ Add place", key="or_scope_add_place", disabled=not new_place.strip()):
+        osc.add_place(country, new_place.strip())
+        st.session_state.pop("or_scope", None)
+        st.rerun()
 
-    with tcol:
-        st.markdown(f"#### 🎯 Themes ({len(themes)})")
-        st.caption("The kinds of product suppliers here actually sell.")
-        for i, theme in enumerate(themes):
-            name = theme.get("name", "")
-            label = f"**{name}**" + (f" · {theme['where']}" if theme.get("where") else "")
-            if st.checkbox(label, key=f"or_scope_theme_{i}_{name}"):
-                chosen_themes.append(name)
-            if theme.get("why"):
-                st.caption(theme["why"])
-        new_theme = st.text_input("Add a theme it missed", key="or_scope_new_theme")
-        if st.button("➕ Add theme", key="or_scope_add_theme", disabled=not new_theme.strip()):
-            osc.add_theme(country, new_theme.strip())
-            st.session_state.pop("or_scope", None)
-            st.rerun()
+    st.markdown(f"#### 🌐 Country-wide themes ({len(countrywide)})")
+    st.caption("Not tied to one place — sold, or worth searching for, across the whole "
+               "country (e.g. Airport Transfer, Custom Private Tour).")
+    for i, theme in enumerate(countrywide):
+        name = theme.get("name", "")
+        label = f"**{name}**" + (f" · {theme['where']}" if theme.get("where") else "")
+        if st.checkbox(label, key=f"or_scope_cw_{i}_{name}"):
+            pairs.append(("", name))
+        if theme.get("why"):
+            st.caption(theme["why"])
+    new_theme = st.text_input("Add a theme it missed", key="or_scope_new_theme")
+    if st.button("➕ Add theme", key="or_scope_add_theme", disabled=not new_theme.strip()):
+        osc.add_theme(country, new_theme.strip())
+        st.session_state.pop("or_scope", None)
+        st.rerun()
 
     st.divider()
-    planned = osc.planned_searches(country, chosen_places, chosen_themes)
+    planned = osc.planned_searches(country, pairs)
     if not planned:
         st.caption("Tick at least one place or theme to build a search list.")
         return
 
-    # THE COUNT, BEFORE ANYTHING RUNS. Six places by five themes is thirty searches.
+    # THE COUNT, BEFORE ANYTHING RUNS.
     # CONFIRMED RULE (product owner, 2026-08-16): no cap on how many combinations can run at
     # once - a prior round added a hard block at 20, and the product owner asked for it to be
     # removed. Speed comes from _process_one_queued_job passing max_results=1 to each combination's
     # own search instead (one AI-verification call and one website fetch per combination rather
     # than up to _max_candidates() of each), not from limiting how many combinations run.
-    st.markdown(f"**{len(planned)} search(es)** would run: "
-                f"{len(chosen_places) or 'any'} place(s) × {len(chosen_themes) or 'any'} theme(s). "
-                f"Each combination looks for its single best-reviewed supplier, so even a large "
-                f"list runs at one search's worth of time per combination.")
+    st.markdown(f"**{len(planned)} search(es)** would run, one per ticked place/theme "
+                f"combination. Each combination looks for its single best-reviewed supplier, so "
+                f"even a large list runs at one search's worth of time per combination.")
     if len(planned) > 30:
         st.info(f"{len(planned)} combinations queued. This still takes a while purely from the "
                 f"number of searches - you can watch progress once it starts, and the list is "
