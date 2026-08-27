@@ -29,7 +29,11 @@ def test_discover_suppliers_runs_queries_sequentially_not_concurrently(monkeypat
     time would stay close to a single slow call. Sequential, it must scale with query count."""
     _no_api_keys(monkeypatch)
     queries = od.build_queries("Morocco", "", "tours")
-    assert len(queries) >= 7  # sanity: this test is only meaningful with real fan-out
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): build_queries() was consolidated from 10
+    # separate calls down to ~3-4 (see its own docstring) - this sanity check only needs there
+    # to be more than one query for the sequential-vs-concurrent timing assertion below to be
+    # meaningful at all.
+    assert len(queries) >= 3
 
     def slow_fake(source, query, country, keyword, domains, max_results):
         time.sleep(0.02)

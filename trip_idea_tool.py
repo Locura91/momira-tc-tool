@@ -28,7 +28,7 @@ import ai_extractor
 import trip_prompt_extractor as tpe
 import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-21-rollover-closed-check"
+MODULE_BUILD = "2026-08-26-extra-child-and-outreach-consolidation"
 
 _PHASE_KEY = "ti_phase"
 

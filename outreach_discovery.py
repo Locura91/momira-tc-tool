@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-21-rollover-closed-check"
+MODULE_BUILD = "2026-08-26-extra-child-and-outreach-consolidation"
 
 import os
 import re
@@ -151,39 +151,67 @@ def _enrichment_concurrency() -> int:
 def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]:
     """
     Builds targeted search queries for:
-      - City-specific: local DMC, local travel agency, private tour guide
-      - Country-wide: local DMC, local travel agency, private tour guide
-      - A minimal set of review-site queries for signal (very low budget)
-      - A fallback Instagram query
+      - City-specific: local DMC + travel agency + private tour guide, ONE combined call
+      - Country-wide: local DMC + travel agency + private tour guide, ONE combined call
+      - Review sites (Tripadvisor/Viator/GetYourGuide), ONE combined call via include_domains
+      - A fallback Instagram query (kept separate - see below)
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26, forwarding advice from another AI tool that
+    matches this tool's own real bottleneck): "Extract maximum number of URLs from ONE request...
+    don't do search -> search -> search -> search." Before this, EVERY combination fired 10
+    separate provider calls (dmc_city, agency_city, guide_city, dmc_country, agency_country,
+    guide_country, tripadvisor, viator, getyourguide, instagram) - each its own Tavily/SerpAPI/
+    Gemini request. On a Country Scope run of N combinations that's 10N calls, which is exactly
+    why quota exhaustion (see incident-2026-08-25-outreach-concurrency-432-errors.md) and a
+    single slow/timing-out call (see the 2026-08-26 "120 search calls failed" report) both bite
+    N times harder than they need to. Consolidated to 4 calls per combination (3 with no city
+    given) - each provider already supports asking for MORE results in one call
+    (max_results/num), and multiple review-site domains in one call
+    (Tavily's own include_domains, SerpAPI's "site:a OR site:b", Gemini's domain-restriction
+    hint - see _search_with_tavily/_search_with_serpapi/_search_with_gemini_grounding).
+
+    TRADE-OFF, ACCEPTED (confirmed product owner, 2026-08-26): the city/country supplier calls
+    used to be tagged by exact type (dmc_city/agency_city/guide_city), shown on the review screen
+    via SOURCE_LABELS as e.g. "DMC (City)" - one search can't tell you which of the three phrases
+    actually matched, so the combined call is tagged just "supplier_city"/"supplier_country"
+    ("Local Supplier (City)"/"Local Supplier (Country)"). The review-site merge has NO such loss:
+    guess_aggregator_label() already derives the Tripadvisor/Viator/GetYourGuide badge shown in
+    the table from the result's own URL, not from this source tag - only the mock-data provider's
+    URL shape (tripadvisor-only, real API keys never hit this) loses its per-site flavor.
+
+    Instagram stays its OWN call, NOT folded into the review-site call: is_generic_name() special-
+    cases `source == "instagram"` results specifically (a generic-sounding name found via
+    Instagram is treated differently than the same name found elsewhere) - merging it would
+    silently break that check for every result in the merged call, not just Instagram's own.
     """
     country_base = f"{keyword} {country}".strip()
     queries = []
 
-    # ---- 1. CITY-SPECIFIC (if city is provided) ----
+    # ---- 1. CITY-SPECIFIC (if city is provided) - ONE combined call ----
     if city and city.strip():
         city_base = f"{keyword} {city} {country}".strip()
-        queries.extend([
-            # Use "local DMC" instead of "Destination Management Company"
-            {"source": "dmc_city", "query": f"{city_base} local DMC", "domains": [], "max_results": 8},
-            {"source": "agency_city", "query": f"{city_base} local travel agency tour operator", "domains": [], "max_results": 8},
-            {"source": "guide_city", "query": f"{city_base} private tour guide", "domains": [], "max_results": 5},
-        ])
+        queries.append({
+            "source": "supplier_city",
+            "query": f"{city_base} local DMC, travel agency, tour operator, or private tour guide",
+            "domains": [], "max_results": 15,
+        })
 
-    # ---- 2. COUNTRY-WIDE ----
-    queries.extend([
-        {"source": "dmc_country", "query": f"{country_base} local DMC", "domains": [], "max_results": 6},
-        {"source": "agency_country", "query": f"{country_base} local travel agency tour operator", "domains": [], "max_results": 6},
-        {"source": "guide_country", "query": f"{country_base} private tour guide", "domains": [], "max_results": 4},
-    ])
+    # ---- 2. COUNTRY-WIDE - ONE combined call ----
+    queries.append({
+        "source": "supplier_country",
+        "query": f"{country_base} local DMC, travel agency, tour operator, or private tour guide",
+        "domains": [], "max_results": 12,
+    })
 
-    # ---- 3. REVIEW SITES (minimal budget, just for signal) ----
-    queries.extend([
-        {"source": "tripadvisor", "query": f"{country_base} reviews", "domains": ["tripadvisor.com"], "max_results": 2},
-        {"source": "viator", "query": f"{country_base} reviews", "domains": ["viator.com"], "max_results": 1},
-        {"source": "getyourguide", "query": f"{country_base} reviews", "domains": ["getyourguide.com"], "max_results": 1},
-    ])
+    # ---- 3. REVIEW SITES - ONE combined call across all three domains ----
+    queries.append({
+        "source": "reviews",
+        "query": f"{country_base} reviews",
+        "domains": ["tripadvisor.com", "viator.com", "getyourguide.com"],
+        "max_results": 4,
+    })
 
-    # ---- 4. FALLBACK SOCIAL ----
+    # ---- 4. FALLBACK SOCIAL - kept separate, see docstring ----
     queries.append({"source": "instagram", "query": f"{country_base}", "domains": ["instagram.com"], "max_results": 2})
 
     return queries
@@ -1263,6 +1291,13 @@ SOURCE_LABELS = {
     "tripadvisor": "Tripadvisor", "google": "Google", "website": "Official website",
     "instagram": "Instagram", "facebook": "Facebook", "trustpilot": "Trustpilot",
     "viator": "Viator", "getyourguide": "GetYourGuide",
+    # CONFIRMED PRODUCT-OWNER-ACCEPTED TRADE-OFF (2026-08-26, see build_queries' own docstring):
+    # the city/country supplier searches were consolidated from 3 typed calls each into 1, so a
+    # result from that call can no longer say which specific phrase (DMC/agency/guide) matched -
+    # only that it came from the combined local-supplier search.
+    "supplier_city": "Local Supplier (City)", "supplier_country": "Local Supplier (Country)",
+    "reviews": "Review Sites",
+    # Kept for OLD cached/remembered results built before the 2026-08-26 consolidation.
     "dmc_city": "DMC (City)", "agency_city": "Travel Agency (City)", "guide_city": "Tour Guide (City)",
     "dmc_country": "DMC (Country)", "agency_country": "Travel Agency (Country)", "guide_country": "Tour Guide (Country)",
 }
