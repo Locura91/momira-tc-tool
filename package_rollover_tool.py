@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-27-outreach-place-theme-grouping"
+MODULE_BUILD = "2026-08-27-outreach-select-all-place-themes"
 
 _PHASE_KEY = "pkr_phase"
 
