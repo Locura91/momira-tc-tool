@@ -372,6 +372,21 @@ def _search_with_mock_provider(source: str, country: str, keyword: str) -> List[
     return results
 
 
+_PROVIDER_ENV_KEYS = (("tavily", "TAVILY_API_KEY"), ("serpapi", "SERPAPI_API_KEY"),
+                    ("gemini", "GEMINI_API_KEY"))
+
+
+def _configured_provider_chain() -> List[str]:
+    """Which providers actually have a key set, in fallback order - the single source of truth
+    for _select_and_run_provider's own chain AND for _run_provider_search_with_diagnostics'
+    error message below (2026-08-26: a real "read operation timed out" report couldn't be traced
+    to a specific provider from the error text alone, since a plain requests.Timeout carries no
+    provider name - unlike an HTTPError, whose body/message usually names one, e.g. "gemini 429
+    RESOURCE_EXHAUSTED"). Naming which provider(s) were actually in play turns "check
+    TAVILY_API_KEY/SERPAPI_API_KEY" from a guess into an actual answer."""
+    return [name for name, env_key in _PROVIDER_ENV_KEYS if os.getenv(env_key)]
+
+
 def _select_and_run_provider(source: str, query: str, country: str, keyword: str,
                              domains: List[str], max_results: int) -> List[Dict[str, Any]]:
     """The actual provider dispatch, shared by run_provider_search and its diagnostics-
@@ -432,10 +447,7 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             return _run(name)
 
-    chain = [name for name, env_key in
-            (("tavily", "TAVILY_API_KEY"), ("serpapi", "SERPAPI_API_KEY"),
-             ("gemini", "GEMINI_API_KEY"))
-            if os.getenv(env_key)]
+    chain = _configured_provider_chain()
     if not chain:
         return _run("mock")
 
@@ -483,8 +495,15 @@ def _run_provider_search_with_diagnostics(source: str, query: str, country: str,
     try:
         return _select_and_run_provider(source, query, country, keyword, domains or [], max_results), None
     except Exception as e:
-        print(f"[outreach_discovery] provider search failed for \"{query}\": {e}")
-        return [], f"{source}: {e}"
+        # CONFIRMED REAL FOLLOW-UP (2026-08-26): a "read operation timed out" report couldn't be
+        # traced to a specific provider - a plain requests.Timeout, unlike an HTTPError, carries
+        # no provider name in its own text. Name which provider(s) actually have a key configured
+        # (the chain that was tried, in order - the LAST one is whoever's error this actually is)
+        # right in the message, so "check TAVILY_API_KEY/SERPAPI_API_KEY" isn't a guess anymore.
+        chain = _configured_provider_chain()
+        chain_note = f" [chain tried: {' → '.join(chain)}]" if chain else " [no provider key configured - mock data]"
+        print(f"[outreach_discovery] provider search failed for \"{query}\": {e}{chain_note}")
+        return [], f"{source}: {e}{chain_note}"
 
 
 # ============================================================================
