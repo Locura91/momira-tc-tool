@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-26-extra-child-and-outreach-consolidation"
+MODULE_BUILD = "2026-08-26-outreach-balloons-on-partial-success"
 
 import csv
 import io
@@ -657,6 +657,33 @@ def _apply_review_table_edits(suppliers, diff):
     return rebuilt
 
 
+def _summarize_send_log(send_log):
+    """Pure decision logic for the post-send banner - factored out of _render_review_and_send so
+    it's testable without a Streamlit runtime.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "include the balloons again for a visible sign
+    that mails have been sent." Balloons fire whenever at least one message genuinely went out
+    (status == "sent"), independent of whether some OTHER recipient in the same batch failed or
+    was skipped - a real send deserves the visible confirmation regardless of what else happened
+    in the batch. Returns (sent, skipped, failed, show_balloons, message, level) - level is
+    "warning" or "success", message is "" when there is nothing to report (e.g. every row was
+    already-contacted and skipped, with nothing sent or failed)."""
+    sent = sum(1 for e in send_log if e["status"] == "sent")
+    skipped = sum(1 for e in send_log if e["status"] == "skipped")
+    failed = sum(1 for e in send_log if e["status"] == "failed")
+    show_balloons = sent > 0
+    if failed:
+        message = (f"Finished — **{sent}** sent, **{skipped}** skipped, **{failed}** failed. "
+                  f"Failures are per-recipient; the rest of the batch still went out.")
+        level = "warning"
+    elif sent or skipped:
+        message = f"🎉 Finished — **{sent}** sent, **{skipped}** skipped."
+        level = "success"
+    else:
+        message, level = "", None
+    return sent, skipped, failed, show_balloons, message, level
+
+
 def _render_review_and_send():
     result = st.session_state.or_result
     session = st.session_state.or_session
@@ -1044,15 +1071,19 @@ def _render_review_and_send():
 
     send_log = st.session_state.get("or_send_log")
     if send_log:
-        sent = sum(1 for e in send_log if e["status"] == "sent")
-        skipped = sum(1 for e in send_log if e["status"] == "skipped")
-        failed = sum(1 for e in send_log if e["status"] == "failed")
-        if failed:
-            st.warning(f"Finished — **{sent}** sent, **{skipped}** skipped, **{failed}** failed. "
-                       f"Failures are per-recipient; the rest of the batch still went out.")
-        else:
+        sent, skipped, failed, show_balloons, message, level = _summarize_send_log(send_log)
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "include the balloons again for a visible
+        # sign that mails have been sent." Previously gated behind a FULLY clean batch (only in
+        # the `else` of `if failed:`), so a batch with even one per-recipient failure among many
+        # genuine sends showed no balloons at all, even though real mail went out to everyone
+        # else - the exact case a busy outreach batch hits often. Balloons are now the visible
+        # "yes, mail was actually sent" signal whenever at least one message actually went out,
+        # independent of whether some other recipient in the same batch failed or was skipped.
+        # Decision logic factored into _summarize_send_log so it's testable without Streamlit.
+        if show_balloons:
             st.balloons()
-            st.success(f"🎉 Finished — **{sent}** sent, **{skipped}** skipped.")
+        if message:
+            (st.warning if level == "warning" else st.success)(message)
         st.dataframe(_log_dataframe(send_log), use_container_width=True, hide_index=True)
 
         buf = io.StringIO()
