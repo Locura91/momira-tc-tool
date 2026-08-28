@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-cancellation-links"
+MODULE_BUILD = "2026-08-28-transfer-transport-images"
 
 import math
 import datetime
@@ -2681,13 +2681,14 @@ def build_transfer_payload(
         if existing_transfer_snapshot:
             effective_start_date = existing_transfer_snapshot.get("startDate") or extracted_transfer_data.get("start_date") or ""
             effective_end_date = existing_transfer_snapshot.get("endDate") or extracted_transfer_data.get("end_date") or ""
-            effective_images = existing_transfer_snapshot.get("images") or []
             effective_properties = existing_transfer_snapshot.get("properties") or [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
         else:
             effective_start_date = start_date_or_today(extracted_transfer_data.get("start_date"))
             effective_end_date = extracted_transfer_data.get("end_date") or ""
-            effective_images = []
             effective_properties = [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
+        # See _effective_images_for_update's docstring - the one field here that's an
+        # exception to the preserve-on-update rule the rest of this block follows.
+        effective_images = _effective_images_for_update(extracted_transfer_data, existing_transfer_snapshot)
 
         supplements = build_transfer_supplement_vos(
             raw_transfer_supplements, effective_start_date, effective_end_date)
@@ -2971,6 +2972,27 @@ def derive_arrival_from_duration(departure_time, duration_time):
     hh, rest = divmod(remainder, 3600)
     mm, ss = divmod(rest, 60)
     return f"{hh:02d}:{mm:02d}:{ss:02d}", int(plus_days)
+
+
+def _effective_images_for_update(extracted_data, existing_snapshot):
+    """Shared by build_transfer_payload and build_transport_payloads: decides the 'images'
+    list for the payload.
+
+    NORMAL RULE (preserve-on-update, same as startDate/endDate/properties): an update to an
+    already-live Transfer/Transport keeps its EXISTING images untouched; a fresh create starts
+    with none - a rate-sheet refresh shouldn't silently touch a photo nobody asked it to.
+
+    THE ONE EXCEPTION (CONFIRMED RULE, product owner, 2026-08-28): extracted_data['image_urls'],
+    when present, REPLACES whatever's already live, on both create and update. This is set by
+    app.py from supplier_images.py's direction-classified mass-upload image (or a human's
+    manual override) - a deliberate, supplier-wide choice a human just made, not a "the
+    document happened to mention a photo" extraction that should defer to what's already live.
+    That's why it wins even over an update's normal preserve-what's-live rule."""
+    if extracted_data.get("image_urls"):
+        return list(extracted_data["image_urls"])
+    if existing_snapshot:
+        return existing_snapshot.get("images") or []
+    return []
 
 
 def _add_minimum_charge_bracket(brackets_sorted, price_per_pax, min_billable_pax=None,
@@ -3431,11 +3453,12 @@ def build_transport_payloads(
     if existing_transport_snapshot:
         effective_start_date = existing_transport_snapshot.get("startDate") or extracted_transport_data.get("start_date") or ""
         effective_end_date = existing_transport_snapshot.get("endDate") or extracted_transport_data.get("end_date") or ""
-        effective_images = existing_transport_snapshot.get("images") or []
     else:
         effective_start_date = start_date_or_today(extracted_transport_data.get("start_date"))
         effective_end_date = extracted_transport_data.get("end_date") or ""
-        effective_images = []
+    # See _effective_images_for_update's docstring - the one field here that's an
+    # exception to the preserve-on-update rule the rest of this block follows.
+    effective_images = _effective_images_for_update(extracted_transport_data, existing_transport_snapshot)
 
     transport_payload = None
     transport_error = None

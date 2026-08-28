@@ -127,6 +127,7 @@ import transport_matcher
 import platform_store
 import service_notes
 import cancellation_links
+import supplier_images
 import weekly_review
 import extraction_memory
 import bulk_notes
@@ -5925,6 +5926,56 @@ def render_ticket_flow(client):
 # for multi-excursion Ticket documents.
 # ============================================================================
 
+def render_direction_image_section(current, data, product_type, widget_key):
+    """Shared by Transfer and Transport's review screens: shows the image
+    supplier_images.resolve_and_host_image just picked for this route's detected direction
+    (or explains why nothing was picked), plus a manual override the human can always type
+    over it with.
+
+    `current` must carry "_image_direction" - set once at extraction time (see the
+    resolve_and_host_image call in render_multi_transfer_flow / render_multi_transport_flow),
+    the classified direction or None. `data["image_urls"]` holds the resolved (or manually
+    overridden) URL as a one-item list, same shape every other product type already uses.
+
+    `widget_key` MUST start with the calling flow's own prefix (e.g. "xtf_"/"xtp_") - see
+    _clear_batch_widget_state's docstring: it sweeps stale per-item widget state by prefix
+    whenever a queue slot gets reused by a different item (skip, or a fresh batch reusing
+    idx==0), and a key outside that prefix would silently escape the sweep, leaking one
+    route's typed-in image URL onto a completely different route in the same slot.
+
+    CONFIRMED RULE (product owner, 2026-08-28): never guess when the route can't be
+    classified - warn instead so a human sets it by hand."""
+    st.markdown("##### Image")
+    direction = current.get("_image_direction")
+    current_url = (data.get("image_urls") or [None])[0]
+
+    if direction is None:
+        st.warning(
+            "⚠️ Couldn't tell whether this route goes Airport/Harbor → Hotel or Hotel → "
+            "Airport/Harbor - \"Airport\"/\"Harbor\" needs to appear in exactly ONE of the "
+            "two location names, and it appears in both or neither here. No image was "
+            "auto-picked - paste one below by hand, or fix the route names above."
+        )
+    elif current_url:
+        st.image(current_url, width=200)
+        st.caption(f"Auto-picked from this supplier's saved \"{supplier_images.DIRECTION_LABELS[direction]}\" "
+                  f"{product_type} image - replaces whatever image is already live when you publish.")
+    else:
+        st.info(
+            f"ℹ️ Detected direction: **{supplier_images.DIRECTION_LABELS[direction]}** - but no "
+            f"image is saved yet for this supplier/direction. Upload one in Step 2's setup "
+            f"section above, or paste a URL below by hand for just this one."
+        )
+
+    manual_url = st.text_input(
+        "Image URL (overrides the auto-picked one above; leave blank to keep it)",
+        value="", key=widget_key,
+        placeholder="https://...",
+    ).strip()
+    if manual_url:
+        data["image_urls"] = [manual_url]
+
+
 def render_transfer_flow(client):
     """
     Transfer wizard entry point: Supplier + Currency + release window, then
@@ -6001,6 +6052,7 @@ def render_transfer_flow(client):
     # should have to start a batch upload to record.
     service_notes.render_standing_note_editor(supplier_id, "Transfer", key_suffix="_setup")
     cancellation_links.render_cancellation_link_editor(supplier_id, "Transfer", key_suffix="_setup")
+    supplier_images.render_supplier_image_editor(supplier_id, "Transfer", key_suffix="_setup")
 
     st.header("Transfer — Step 3: Input Source")
     st.caption("Rate sheets commonly describe MANY distinct transfer products at once (per route, per "
@@ -6216,6 +6268,15 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             # cleared the table.
             current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
                 current["data"], supplier_id, "Transfer")
+            # Auto-picks this supplier's saved Airport/Harbor<->Hotel image for the route's
+            # detected direction - see supplier_images.resolve_and_host_image's docstring.
+            # Runs once, here, right after extraction - not on every rerender, so a human's
+            # manual override below (typed once) isn't clobbered on the next widget interaction.
+            _si_url, current["_image_direction"] = supplier_images.resolve_and_host_image(
+                supplier_id, "Transfer",
+                current["data"].get("departure_name"), current["data"].get("arrival_name"))
+            if _si_url:
+                current["data"]["image_urls"] = [_si_url]
 
         data = current["data"]
         key_suffix = f"_{idx}"
@@ -6537,6 +6598,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         with dcol2:
             editable_field("End date (DD/MM/YYYY)", data, "end_date", key_suffix=key_suffix)
 
+        render_direction_image_section(current, data, "Transfer", f"xtf_image_manual_{idx}")
+
         if current.get("_cancellation_link_scope"):
             st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
                       f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
@@ -6732,6 +6795,7 @@ def render_transport_flow(client):
 
     service_notes.render_standing_note_editor(supplier_id, "Transport", key_suffix="_setup")
     cancellation_links.render_cancellation_link_editor(supplier_id, "Transport", key_suffix="_setup")
+    supplier_images.render_supplier_image_editor(supplier_id, "Transport", key_suffix="_setup")
 
     st.header("Transport — Step 3: Input Source")
     st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan → Hurghada, "
@@ -6942,6 +7006,14 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # rather than inside the review widgets below.
             current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
                 current["data"], supplier_id, "Transport")
+            # See the matching comment in render_multi_transfer_flow - auto-picks this
+            # supplier's saved Airport/Harbor<->Hotel image for the route's detected
+            # direction. Runs once, here, at extraction time.
+            _si_url, current["_image_direction"] = supplier_images.resolve_and_host_image(
+                supplier_id, "Transport",
+                current["data"].get("departure_name"), current["data"].get("arrival_name"))
+            if _si_url:
+                current["data"]["image_urls"] = [_si_url]
 
         data = current["data"]
         key_suffix = f"_{idx}"
@@ -7226,6 +7298,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             editable_field("End date (DD/MM/YYYY)", data, "end_date", key_suffix=key_suffix)
         st.caption("Inventory/availability convention: Transports are normally left open-ended (2049) so they "
                   "stay bookable and simply pick up new prices when rates refresh.")
+
+        render_direction_image_section(current, data, "Transport", f"xtp_image_manual_{idx}")
 
         if current.get("_cancellation_link_scope"):
             st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
@@ -9805,7 +9879,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-cancellation-links"
+BUILD_VERSION = "2026-08-28-transfer-transport-images"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
