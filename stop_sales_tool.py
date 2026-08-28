@@ -45,7 +45,7 @@ a warning before Apply.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-audit-followup-decisions"
+MODULE_BUILD = "2026-08-28-cancellation-links"
 
 import json
 from typing import Any, Dict, List, Optional

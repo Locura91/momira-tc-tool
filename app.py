@@ -126,6 +126,7 @@ import transfer_matcher
 import transport_matcher
 import platform_store
 import service_notes
+import cancellation_links
 import weekly_review
 import extraction_memory
 import bulk_notes
@@ -797,6 +798,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     )
                     tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
                     reset_child_age_band_widgets("mct_main")
+                    # Only fills in when this document didn't state its own cancellation
+                    # terms - see apply_cancellation_link_default's docstring. Runs once,
+                    # here at extraction time, not inside the review widgets below.
+                    tour["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
+                        tour["main_data"], supplier_id, "ClosedTour")
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract tour details: {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key="mct_retry_main"):
@@ -843,6 +849,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         # (see builder._with_what_to_bring), and editable here so a human can correct/add to it.
         editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
                        widget="text_area", height=80, key_suffix="_main")
+        if tour.get("_cancellation_link_scope"):
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
+                      f"was filled in from {tour['_cancellation_link_scope']}. Edit or clear it if "
+                      f"this tour needs different terms.")
         render_cancellation_policy_editor(data, "mct_main")
         editable_field("Nights", data, "nights", widget="number_input", key_suffix="_main")
 
@@ -3998,6 +4008,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.session_state.mt_raw_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                    # Only fills in when this document didn't state its own cancellation
+                    # terms - see apply_cancellation_link_default's docstring. Runs once,
+                    # here at extraction time, not inside the review widgets below.
+                    current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
+                        current["data"], supplier_id, "Ticket")
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key=f"mt_retry_extract_{idx}"):
@@ -4023,6 +4038,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.error("🚫 Ticket name is empty - fill it in above before continuing.")
             if not (data.get("description") or "").strip():
                 st.error("🚫 Description is empty - fill it in above before continuing.")
+            if current.get("_cancellation_link_scope"):
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
+                          f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
+                          f"clear it if this ticket needs different terms.")
             render_cancellation_policy_editor(data, f"mt_{idx}")
             editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Voucher Remarks" and "What to
@@ -4705,6 +4724,8 @@ def render_ticket_flow(client):
             st.rerun()
         return
 
+    cancellation_links.render_cancellation_link_editor(st.session_state.tk_cfg_supplier_id, "Ticket", key_suffix="_setup")
+
     # ------------------------------------------------------------------
     # TICKET STEP 3: Action-specific details
     # ------------------------------------------------------------------
@@ -4956,6 +4977,11 @@ def render_ticket_flow(client):
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
                         floor_start_date_for_new_data(data)
+                        # Only fills in when this document (and, for an update, the live
+                        # baseline it was just merged over) had no cancellation terms of its
+                        # own - see apply_cancellation_link_default's docstring.
+                        st.session_state.tk_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                            data, supplier_id, "Ticket")
                         st.session_state.tk_extracted = data
                         # Supersedes the earlier reset_child_age_band_widgets("tk") call: a fresh
                         # generation re-keys EVERY tk widget built through widget_generation(),
@@ -5018,6 +5044,8 @@ def render_ticket_flow(client):
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
 
                         floor_start_date_for_new_data(data)
+                        st.session_state.tk_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                            data, supplier_id, "Ticket")
                         st.session_state.tk_extracted = data
                         bump_widget_generation("tk")  # see the sibling extraction path above
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
@@ -5972,6 +6000,7 @@ def render_transfer_flow(client):
     # supplier's transfers changed" is a standalone maintenance task - not something you
     # should have to start a batch upload to record.
     service_notes.render_standing_note_editor(supplier_id, "Transfer", key_suffix="_setup")
+    cancellation_links.render_cancellation_link_editor(supplier_id, "Transfer", key_suffix="_setup")
 
     st.header("Transfer — Step 3: Input Source")
     st.caption("Rate sheets commonly describe MANY distinct transfer products at once (per route, per "
@@ -6180,6 +6209,13 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             # touched it. Snapshotting later would compare corrected values against
             # corrected values and learn nothing at all.
             extraction_memory.prepare(supplier_id, "Transfer", current)
+            # Only fills in when this document didn't state its own cancellation terms -
+            # see apply_cancellation_link_default's docstring. Must run here, once, right
+            # after extraction - not inside the review widgets below, which rerun on every
+            # interaction and would re-inject the link even after a human deliberately
+            # cleared the table.
+            current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
+                current["data"], supplier_id, "Transfer")
 
         data = current["data"]
         key_suffix = f"_{idx}"
@@ -6501,6 +6537,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         with dcol2:
             editable_field("End date (DD/MM/YYYY)", data, "end_date", key_suffix=key_suffix)
 
+        if current.get("_cancellation_link_scope"):
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
+                      f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
+                      f"this product needs different terms.")
         render_cancellation_policy_editor(data, f"xtf_cancel_{idx}")
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text", key_suffix=key_suffix)
 
@@ -6691,6 +6731,7 @@ def render_transport_flow(client):
     release_days = st.session_state.tp_cfg_release_days
 
     service_notes.render_standing_note_editor(supplier_id, "Transport", key_suffix="_setup")
+    cancellation_links.render_cancellation_link_editor(supplier_id, "Transport", key_suffix="_setup")
 
     st.header("Transport — Step 3: Input Source")
     st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan → Hurghada, "
@@ -6896,6 +6937,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             current["_seeded_fields"] = seed_transport_from_candidate(
                 current, current["data"], currency)
             extraction_memory.prepare(supplier_id, "Transport", current)
+            # See the matching comment in render_multi_transfer_flow - only fills in when
+            # this document didn't state its own cancellation terms, and must run here once
+            # rather than inside the review widgets below.
+            current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
+                current["data"], supplier_id, "Transport")
 
         data = current["data"]
         key_suffix = f"_{idx}"
@@ -7181,6 +7227,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         st.caption("Inventory/availability convention: Transports are normally left open-ended (2049) so they "
                   "stay bookable and simply pick up new prices when rates refresh.")
 
+        if current.get("_cancellation_link_scope"):
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
+                      f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
+                      f"this product needs different terms.")
         render_cancellation_policy_editor(data, f"xtp_cancel_{idx}")
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                        widget="text_area", height=80, key_suffix=key_suffix)
@@ -7614,6 +7664,7 @@ def render_hotel_flow(client):
     release_days = st.session_state.hp_cfg_release_days
 
     service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
+    cancellation_links.render_cancellation_link_editor(supplier_id, "Hotel", key_suffix="_setup")
 
     if "hp_phase" not in st.session_state:
         st.session_state.hp_phase = "gather"
@@ -7674,6 +7725,11 @@ def render_hotel_flow(client):
 
                     st.session_state.hp_raw_text = raw_text
                     st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)
+                    # Only fills in when this document didn't state its own cancellation
+                    # terms - see apply_cancellation_link_default's docstring. Runs once,
+                    # here at extraction time, not inside the review widgets.
+                    st.session_state.hp_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                        st.session_state.hp_data, supplier_id, "Hotel")
                     st.session_state.hp_phase = "reviewing"
                     st.rerun()
                 except Exception as e:
@@ -7684,7 +7740,8 @@ def render_hotel_flow(client):
     # PHASE 2: review everything, then publish
     # ------------------------------------------------------------------
     data = st.session_state.hp_data
-    HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked"]
+    HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked",
+                     "hp_cancellation_link_scope"]
 
     st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
@@ -8080,6 +8137,10 @@ def render_hotel_flow(client):
     st.markdown("#### Cancellation policy")
     st.caption("Hotel has no structured cancellation field at all, so this text is what actually reaches "
               "Voucher Remarks - the only place the policy is visible to staff and customers.")
+    if st.session_state.get("hp_cancellation_link_scope"):
+        st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
+                  f"was filled in from {st.session_state['hp_cancellation_link_scope']}. Edit or "
+                  f"clear it if this hotel needs different terms.")
     render_cancellation_policy_editor(data, "hp_cancel")
     editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                    widget="text_area", height=90)
@@ -9744,7 +9805,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-audit-followup-decisions"
+BUILD_VERSION = "2026-08-28-cancellation-links"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10290,6 +10351,8 @@ action = st.session_state.cfg_action
 needed = ACTION_FIELDS[action]
 supplier_id = st.session_state.cfg_supplier_id
 
+cancellation_links.render_cancellation_link_editor(supplier_id, "ClosedTour", key_suffix="_setup")
+
 if st.session_state.step2_confirmed:
     st.success("✅ Step 3 details confirmed.")
     if st.button("🔄 Change details"):
@@ -10633,6 +10696,11 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                         # than replacing them outright - an incomplete fresh extraction shouldn't
                         # blank out fields the new source just didn't happen to mention.
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+                    # Only fills in when this document (and, for an update, the live baseline
+                    # it was just merged over) had no cancellation terms of its own - see
+                    # apply_cancellation_link_default's docstring.
+                    st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                        data, supplier_id, "ClosedTour")
                     st.session_state.extracted = data
                     reset_child_age_band_widgets("ct")
                     st.session_state.images_text_value = ""
@@ -10695,6 +10763,8 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     if action == "update_tour":
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
 
+                    st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                        data, supplier_id, "ClosedTour")
                     st.session_state.extracted = data
                     reset_child_age_band_widgets("ct")
                     st.session_state.images_text_value = ""
@@ -10791,6 +10861,10 @@ if st.session_state.extracted:
             # CONFIRMED HOUSE RULE (product owner, 2026-08-24) - see the mct_main copy above.
             editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
                            widget="text_area", height=80)
+            if st.session_state.get("ct_cancellation_link_scope"):
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
+                          f"below was filled in from {st.session_state['ct_cancellation_link_scope']}. "
+                          f"Edit or clear it if this tour needs different terms.")
             render_cancellation_policy_editor(data, "legacy_tour")
             editable_field("Nights", data, "nights", widget="number_input")
 
