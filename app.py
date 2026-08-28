@@ -127,6 +127,7 @@ import transport_matcher
 import platform_store
 import service_notes
 import cancellation_links
+import cancellation_bulk_transport
 import supplier_images
 import weekly_review
 import extraction_memory
@@ -9110,6 +9111,176 @@ def render_supplier_migration_flow(client):
         st.rerun()
 
 
+def render_transport_cancellation_bulk_flow(client):
+    """Bulk-change the cancellation policy on every (or a chosen subset of) one supplier's
+    already-live Transports - see cancellation_bulk_transport.py's module docstring for why
+    this is its own deliberate action (never a side effect of a price refresh) and why it's
+    scoped to Transport only (a real structured cancellationRanges field to safely overwrite;
+    Transfer has no equivalent - its cancellation terms are baked into free-text voucher
+    wording with no reliable anchor to safely locate and replace).
+
+    CONFIRMED SCOPE DECISIONS (product owner, 2026-08-28, AskUserQuestion): per-supplier only
+    for now (not multi-supplier/all-at-once); the new policy defaults from that supplier's
+    saved Cancellation Link (cancellation_links.py) - or the house 30-day/free default when
+    none is saved - always editable before applying; EVERY live Transport is listed with its
+    CURRENT policy shown, so nothing "already filled out" differently is silently skipped -
+    the human sees it and decides per row; and the customer-facing description text is
+    rewritten to match, not just the structured field.
+    """
+    st.header("Bulk-update Cancellation Policy (Transport)")
+    st.caption("Applies one cancellation policy to every live Transport of one supplier at "
+              "once - both the structured field Travel Compositor enforces AND the matching "
+              "sentence in each one's customer-facing description.")
+
+    supplier_id = _ur_pick_momira_supplier(client, "ctb")
+    if not supplier_id:
+        st.info("Choose a supplier to continue.")
+        return
+
+    if st.session_state.get("ctb_supplier_id") != supplier_id:
+        # Supplier changed - drop everything loaded for the previous one so nothing from a
+        # different supplier's review screen can leak into this one.
+        for key in ("ctb_rows", "ctb_new_tiers", "ctb_default_scope", "ctb_selected", "ctb_results"):
+            st.session_state.pop(key, None)
+        st.session_state.ctb_supplier_id = supplier_id
+
+    if st.session_state.get("ctb_results"):
+        st.markdown("---")
+        st.subheader("Result")
+        results = st.session_state.ctb_results
+        ok = [r for r in results if r["ok"]]
+        failed = [r for r in results if not r["ok"]]
+        st.caption(f"{len(ok)} updated · {len(failed)} failed.")
+        for r in ok:
+            st.success(f"✅ **{r['name']}** updated.")
+        for r in failed:
+            st.error(f"🚫 **{r['name']}** — {r['detail']}")
+        if st.button("↩️ Run again / start over", key="ctb_reset"):
+            for key in ("ctb_rows", "ctb_new_tiers", "ctb_default_scope", "ctb_selected", "ctb_results"):
+                st.session_state.pop(key, None)
+            st.rerun()
+        return
+
+    if st.button("📥 Load this supplier's live Transports", key="ctb_load"):
+        with st.spinner("Loading..."):
+            rows, err = cancellation_bulk_transport.load_supplier_transports_for_cancellation(client, supplier_id)
+            if err:
+                st.error(f"❌ Couldn't load Transports: {err}")
+            else:
+                st.session_state.ctb_rows = rows
+                st.session_state.ctb_selected = {r["id"]: True for r in rows}
+                st.rerun()
+
+    rows = st.session_state.get("ctb_rows")
+    if rows is None:
+        return
+    if not rows:
+        st.info("This supplier has no live Transports.")
+        return
+
+    st.subheader(f"2 — New cancellation policy (will apply to up to {len(rows)} Transport(s))")
+
+    if "ctb_new_tiers" not in st.session_state:
+        default_tiers, scope_label = cancellation_bulk_transport.default_new_tiers(supplier_id)
+        st.session_state.ctb_new_tiers = default_tiers
+        st.session_state.ctb_default_scope = scope_label
+    st.caption(f"Pre-filled from {st.session_state.get('ctb_default_scope', 'the house default')} — "
+              f"edit below if this run needs something different. This does NOT change the "
+              f"saved Cancellation Link itself, only what gets applied this run.")
+
+    import pandas as pd
+    from ui_components import editable_table, _safe_int, _safe_float
+
+    def _ctb_tier_table(tiers):
+        table_rows = [{"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+                     for t in (tiers or []) if isinstance(t, dict)]
+        return pd.DataFrame(table_rows) if table_rows else pd.DataFrame(
+            columns=["Days before arrival (or more)", "Cancellation Fee %"])
+
+    def _ctb_df_to_tiers(edited_df):
+        new_tiers = []
+        for _, row in edited_df.iterrows():
+            days_val = row.get("Days before arrival (or more)")
+            if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
+                continue
+            new_tiers.append({
+                "days": _safe_int(days_val, fallback=0),
+                "fee_percentage": max(0.0, min(100.0, _safe_float(row.get("Cancellation Fee %"), fallback=0.0))),
+            })
+        return new_tiers
+
+    def _ctb_save_new_tiers(edited_df):
+        st.session_state.ctb_new_tiers = _ctb_df_to_tiers(edited_df)
+
+    ctb_col_config = {
+        "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
+        "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+    }
+    editable_table("New policy", _ctb_tier_table(st.session_state.ctb_new_tiers), "ctb_new_policy",
+                   on_save=_ctb_save_new_tiers, column_config=ctb_col_config)
+
+    def _ctb_fmt_tiers(tiers):
+        if not tiers:
+            return "(system default — 30 days, 0% fee)"
+        return "; ".join(f"{t['days']}+ days: {t['fee_percentage']:.0f}% fee"
+                         for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
+
+    proposals = cancellation_bulk_transport.build_proposals(rows, st.session_state.ctb_new_tiers)
+    proposals_by_id = {p["id"]: p for p in proposals}
+
+    st.subheader("3 — Review and choose which to update")
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
+        if st.button("Select all", key="ctb_select_all"):
+            st.session_state.ctb_selected = {p["id"]: True for p in proposals}
+            st.rerun()
+    with bcol2:
+        if st.button("Select none", key="ctb_select_none"):
+            st.session_state.ctb_selected = {p["id"]: False for p in proposals}
+            st.rerun()
+
+    for p in proposals:
+        route = f"  ·  {p['departure_code']} → {p['arrival_code']}" if (p["departure_code"] or p["arrival_code"]) else ""
+        label = f"**{p['name']}**{route}  ·  id `{p['id']}`"
+        if p["unchanged"]:
+            st.session_state.ctb_selected[p["id"]] = False
+            st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
+                       key=f"ctb_pick_{p['id']}")
+        else:
+            st.session_state.ctb_selected[p["id"]] = st.checkbox(
+                label, value=st.session_state.ctb_selected.get(p["id"], True), key=f"ctb_pick_{p['id']}")
+        with st.expander("Details", expanded=False):
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                st.caption("**Current**")
+                st.text(_ctb_fmt_tiers(p["current_fee_tiers"]))
+                st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found in the description)*")
+            with dcol2:
+                st.caption("**New**")
+                st.text(_ctb_fmt_tiers(p["new_fee_tiers"]))
+                st.caption(p["new_cancellation_text"])
+            if not p["existing_paragraph_found"]:
+                st.warning("⚠️ No existing cancellation sentence was found in this Transport's description — "
+                          "a new one will be INSERTED rather than replacing one. Double-check the result "
+                          "afterward inside Travel Compositor.")
+
+    selected_ids = [pid for pid, v in st.session_state.ctb_selected.items() if v]
+    st.caption(f"{len(selected_ids)} of {len(proposals)} selected.")
+    if not selected_ids:
+        return
+
+    st.subheader("4 — Apply")
+    st.warning(f"⚠️ This will PUT (update) {len(selected_ids)} Transport(s) — both the structured "
+              f"cancellation field and the matching sentence in each one's description. Everything "
+              f"else on each record (pricing, segments, images, dates) is left exactly as it is.")
+    if st.button(f"🚀 Update {len(selected_ids)} Transport(s)", key="ctb_confirm", type="primary"):
+        to_apply = [proposals_by_id[pid] for pid in selected_ids]
+        with st.spinner("Updating..."):
+            results = cancellation_bulk_transport.apply_proposals(client, supplier_id, to_apply)
+        st.session_state.ctb_results = results
+        st.rerun()
+
+
 def _ur_gather_text_optional(key_prefix):
     """Optional 'paste a URL and/or upload document(s)' widget pair for the Update/Refresh
     screen's matching step - same gathering logic every other flow in this app already uses
@@ -9965,7 +10136,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-ticket-tour-update-scope-toggle"
+BUILD_VERSION = "2026-08-28-transport-cancellation-bulk-update"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10201,6 +10372,11 @@ UPDATE_REFRESH_CHOICE = "Update existing Service"
 # inside Update/Refresh, since it acts on a whole supplier's worth of transfers at once, not
 # one already-identified record - see render_supplier_migration_flow's docstring.
 MIGRATE_SUPPLIER_CHOICE = "Move Transfers to another Supplier"
+# CONFIRMED REAL NEED (product owner, 2026-08-28): "can i also include/change the cancellation
+# for a bulk or at least per supplier for transports?" A Step 1 destination rather than living
+# inside Update/Refresh, since it acts on a whole supplier's worth of Transports at once, not
+# one already-identified record - see render_transport_cancellation_bulk_flow's docstring.
+TRANSPORT_CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy (Transport)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -10397,10 +10573,21 @@ if st.session_state.product_type is None:
         st.caption("Recreates a supplier's Transfers under a different supplier and switches the "
                   "originals off - for when a supplier relationship itself changes, not a single "
                   "product's details.")
+        if st.button(TRANSPORT_CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
+            st.session_state.product_type = TRANSPORT_CANCELLATION_BULK_CHOICE
+            st.rerun()
+        st.caption("Applies one cancellation policy to every (or a chosen subset of) one "
+                  "supplier's live Transports at once - for when the supplier's terms "
+                  "themselves changed, not a single product's details. Transport only - "
+                  "Transfer has no equivalent structured field to safely bulk-overwrite.")
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
     render_update_refresh_flow(client)
+    st.stop()
+
+if st.session_state.product_type == TRANSPORT_CANCELLATION_BULK_CHOICE:
+    render_transport_cancellation_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:
