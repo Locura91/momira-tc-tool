@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-ticket-refresh-manual-match"
+MODULE_BUILD = "2026-08-28-audit-followup-decisions"
 
 import os
 import re
@@ -96,6 +96,29 @@ def _min_rating() -> float:
         return float(os.getenv("MIN_SUPPLIER_RATING") or "4.0")
     except ValueError:
         return 4.0
+
+
+# CONFIRMED PRODUCT-OWNER DECISION (2026-08-28, full-app audit): the hard MIN_SUPPLIER_RATING
+# cutoff paired with no review-count floor at all let a 5.0-star rating from a single review
+# through identically to 4.8 from 500 - while auto-rejecting a well-established supplier sitting
+# at, say, 3.8 stars across 500 reviews outright, with no override path. A large review count is
+# itself a strong signal a business is real and established even when its rating dips slightly
+# below the bar - so a candidate whose rating clears this LOWER floor AND whose review count
+# clears the volume floor is let through to review despite missing MIN_SUPPLIER_RATING. Genuinely
+# poor ratings (below this floor) are never rescued by volume alone - a business with thousands
+# of 2-star reviews is still a bad supplier.
+def _review_count_exception_rating_floor() -> float:
+    try:
+        return float(os.getenv("MIN_SUPPLIER_RATING_WITH_VOLUME") or "3.5")
+    except ValueError:
+        return 3.5
+
+
+def _review_count_exception_volume_floor() -> int:
+    try:
+        return int(os.getenv("MIN_SUPPLIER_REVIEW_COUNT_FOR_EXCEPTION") or "100")
+    except ValueError:
+        return 100
 
 
 def _max_results() -> int:
@@ -204,11 +227,18 @@ def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]
     })
 
     # ---- 3. REVIEW SITES - ONE combined call across all three domains ----
+    # CONFIRMED REAL GAP (audit, 2026-08-28): this is specifically the query most likely to
+    # surface a parseable star rating (see RATING_PATTERNS/vet_candidates below) - the one hard
+    # signal a candidate needs to clear MIN_SUPPLIER_RATING. Capped at 4 while being asked to
+    # cover THREE domains at once starved the rating check of its best evidence right after the
+    # 2026-08-26 consolidation folded three separate review-site calls into this one. Raised to
+    # 12 - roughly what tripadvisor/viator/getyourguide used to return SEPARATELY before that
+    # merge, now split across one call instead of three.
     queries.append({
         "source": "reviews",
         "query": f"{country_base} reviews",
         "domains": ["tripadvisor.com", "viator.com", "getyourguide.com"],
-        "max_results": 4,
+        "max_results": 12,
     })
 
     # ---- 4. FALLBACK SOCIAL - kept separate, see docstring ----
@@ -340,6 +370,16 @@ def _search_with_gemini_grounding(query: str, domains: List[str], max_results: i
         return []
     grounding = getattr(candidates[0], "grounding_metadata", None)
     if grounding is None:
+        # CONFIRMED REAL GAP (audit, 2026-08-28): Gemini answered but never actually grounded
+        # the response in a live search (happens when the model decides plain knowledge
+        # answers the prompt, or the search tool silently declines to fire) - this is a real
+        # anomaly, not "the provider searched and genuinely found nothing", but returning []
+        # here made the two indistinguishable from every caller's point of view. Logged (same
+        # print-based diagnostic convention as this module's other provider-failure paths) so a
+        # run reporting "0 raw results" can be traced back to this specific cause instead of
+        # looking identical to a clean empty search.
+        print(f"[outreach_discovery] Gemini grounding search returned no grounding_metadata "
+             f"(ungrounded answer) for query: {query!r}")
         return []
     chunks = getattr(grounding, "grounding_chunks", None) or []
     supports = getattr(grounding, "grounding_supports", None) or []
@@ -658,6 +698,19 @@ NAME_STOPWORDS = {
 }
 
 
+# CONFIRMED REAL BUG (audit, 2026-08-28): `n.startswith(g)` is a plain prefix check with no
+# word boundary, so a real business whose name happens to START WITH a blocklisted word as a
+# substring - not a whole word - was wrongly rejected: "homeland".startswith("home") is True,
+# so "Homeland Tours" (a plausible supplier name, and Momira sources hotel/accommodation
+# contracts too) was silently dropped as boilerplate. Same class of bug
+# EDITORIAL_PUBLISHER_PATTERNS already solved below for "afar" matching inside "safari" - anchor
+# each blocklist phrase to the START of the name AND require a word boundary right after it, so
+# "home" still correctly matches "Home", "Home Page", "Home | Company Name" but not "Homeland".
+GENERIC_NAME_BLOCKLIST_PATTERNS = [
+    re.compile(rf"^{re.escape(g)}\b") for g in GENERIC_NAME_BLOCKLIST
+]
+
+
 def is_generic_name(name: Optional[str]) -> bool:
     if not name:
         return True
@@ -666,7 +719,7 @@ def is_generic_name(name: Optional[str]) -> bool:
         return True
     if n in NAME_STOPWORDS:
         return True
-    return any(n == g or n.startswith(g) for g in GENERIC_NAME_BLOCKLIST)
+    return any(p.match(n) for p in GENERIC_NAME_BLOCKLIST_PATTERNS)
 
 
 # Real evidence this is needed: a genuine supplier's own website got indexed on its
@@ -702,8 +755,19 @@ QUESTION_TITLE_PATTERN = re.compile(
 # slipped through because it has no LEADING digit. A real business is never literally
 # named "Best ... 2026", so requiring a year keeps this from misfiring on a genuine
 # company name that happens to start with "Best" or "Top".
+#
+# CONFIRMED REAL GAP (audit, 2026-08-28): still too narrow - "Top Travel Agencies in Kenya" and
+# "Top 15 Tour Operators in Nairobi" have neither a leading digit nor a year, so both slipped
+# through unflagged. Added two more alternatives: (a) "Best"/"Top" followed by a number anywhere
+# near the start ("Top 15 ..."), (b) "Best"/"Top" followed later by a plural collective noun for
+# a category of supplier ("agencies", "operators", "companies", ...) - a real single business
+# essentially never names itself that way in its own title, so this stays conservative.
 LISTICLE_TITLE_PATTERN = re.compile(
-    r"^\d{1,3}\s*(best|top)\b|^(the\s+)?(best|top)\b.*\b(19|20)\d{2}(\s*[/\-]\s*\d{2,4})?\b", re.I)
+    r"^\d{1,3}\s*(best|top)\b"
+    r"|^(the\s+)?(best|top)\b.*\b(19|20)\d{2}(\s*[/\-]\s*\d{2,4})?\b"
+    r"|^(the\s+)?(best|top)\s+\d+\b"
+    r"|^(the\s+)?(best|top)\b.*\b(agencies|operators|companies|suppliers|dmcs?|guides)\b",
+    re.I)
 
 
 def is_question_or_listicle_title(title: Optional[str]) -> bool:
@@ -796,11 +860,23 @@ OTA_MARKETPLACE_BLOCKLIST = [
 ]
 
 
+# CONFIRMED REAL BUG (audit, 2026-08-28): plain substring matching (`b in n`) rejects any real
+# business whose name merely CONTAINS a blocklisted word - "kayak" matches inside "Kayaking
+# Excursions" (an entirely plausible real supplier given Momira sources excursions), and "gta"
+# (meant as the DMC-platform abbreviation) matches inside ordinary words like "Regatta". Same
+# class of bug EDITORIAL_PUBLISHER_PATTERNS already solved for "afar" inside "safari" - word-
+# boundary match instead, so "kayak" still correctly matches "Kayak.com" or "Kayak Travel" but
+# not "Kayaking Excursions".
+OTA_MARKETPLACE_PATTERNS = [
+    re.compile(rf"\b{re.escape(b)}\b") for b in OTA_MARKETPLACE_BLOCKLIST
+]
+
+
 def is_ota_or_marketplace(name: Optional[str]) -> bool:
     if not name:
         return False
     n = name.lower()
-    return any(b in n for b in OTA_MARKETPLACE_BLOCKLIST)
+    return any(p.search(n) for p in OTA_MARKETPLACE_PATTERNS)
 
 
 # New filter: drop candidates that appear to be international/global DMCs
@@ -930,14 +1006,27 @@ def parse_signals(raw: Dict[str, Any], source: str) -> Dict[str, Any]:
 # ============================================================================
 def vet_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     min_rating = _min_rating()
+    review_count_rating_floor = _review_count_exception_rating_floor()
+    review_count_volume_floor = _review_count_exception_volume_floor()
     kept = []
     for c in candidates:
         rating = c.get("rating")
+        review_count = c.get("reviewCount")
         # A confidently-parsed numeric rating is the strongest signal - enforce the bar.
         # bool is a subclass of int in Python, so it's excluded explicitly; JS's
         # `typeof x === 'number'` would never be true for a boolean.
         if isinstance(rating, (int, float)) and not isinstance(rating, bool):
             if rating >= min_rating:
+                kept.append(c)
+                continue
+            # CONFIRMED PRODUCT-OWNER DECISION (2026-08-28): a high REVIEW COUNT is itself a
+            # strong real-business signal, worth letting through even when the rating alone
+            # falls short of the strict bar - see _review_count_exception_rating_floor's
+            # docstring. Never rescues a genuinely poor rating (below the lower floor).
+            if (rating >= review_count_rating_floor
+                    and isinstance(review_count, (int, float)) and not isinstance(review_count, bool)
+                    and review_count >= review_count_volume_floor):
+                c["keptOnReviewVolume"] = True
                 kept.append(c)
             continue
         # No numeric rating parsed. Real snippets often describe a business in prose
@@ -1340,7 +1429,13 @@ def build_selection_reason(candidate: Dict[str, Any]) -> str:
     else:
         rating_part = f"Found via {source_label} - no star rating listed, but no negative signals found either."
     teaser = candidate.get("aiReviewTeaser")
-    return f"{rating_part} {teaser}" if teaser else rating_part
+    reason = f"{rating_part} {teaser}" if teaser else rating_part
+    # CONFIRMED PRODUCT-OWNER DECISION (2026-08-28): a candidate let through despite sitting
+    # below MIN_SUPPLIER_RATING, on review-count strength (see vet_candidates) - named here so
+    # the human reviewing the list knows this one is here on volume, not on rating alone.
+    if candidate.get("keptOnReviewVolume"):
+        reason = f"{reason} (below the usual rating bar, but kept for its strong review count.)"
+    return reason
 
 
 def to_supplier_record(candidate: Dict[str, Any], country: str, keyword: str) -> Dict[str, Any]:

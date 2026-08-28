@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-28-ticket-refresh-manual-match"
+MODULE_BUILD = "2026-08-28-audit-followup-decisions"
 
 _PHASE_KEY = "pkr_phase"
 

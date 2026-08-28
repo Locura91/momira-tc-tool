@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-ticket-refresh-manual-match"
+MODULE_BUILD = "2026-08-28-audit-followup-decisions"
 
 import math
 import datetime
@@ -1182,7 +1182,29 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
     m_end = (modality_end or "").strip()
     supplements_list = []
     for s in (supplements or []):
-        start = (s.get("start_date") or "").strip() or m_start
+        raw_start = (s.get("start_date") or "").strip() or m_start
+        # CONFIRMED REAL BUG (audit, 2026-08-28): the two clips below only ever move `start`
+        # UP and `end` DOWN into the Modality's window - neither checks the other side. A
+        # supplement whose own start already falls AFTER the Modality's end (a mistyped year,
+        # or a date the source document only implies) used to have its `end` clipped down to
+        # m_end while `start` was left untouched, producing startDate > endDate - a range that
+        # can never be live. Worse, when the clipped endDate still lands in the FUTURE, nothing
+        # caught it: expired_dated_supplements only checks endDate < today, so a not-yet-past
+        # end date sailed through as an inverted range, straight to the live API.
+        #
+        # Caught here instead, BEFORE any clipping, against m_end specifically - m_end is never
+        # floored (unlike m_start, which start_date_or_today floors up to today for a Modality
+        # whose real historical start has passed - see the caller in build_ticket_payloads).
+        # That distinction matters: a genuinely past supplement (e.g. a expired Peak Season
+        # window from 2024, on a Modality whose OWN start got floored to today) must NOT be
+        # caught here - dropping it would hide it, when the existing expired_dated_supplements
+        # check further down is what's supposed to surface it as "expired" instead. Only a
+        # supplement whose own start is impossibly after the Modality's real, stable end is
+        # dropped here - that combination can never have been valid at any point, floored start
+        # or not.
+        if m_end and raw_start > m_end:
+            continue
+        start = raw_start
         end = (s.get("end_date") or "").strip() or m_end
         # Clip into the Modality's own window rather than publish a supplement that claims to
         # be live before the Modality starts or after it ends.
@@ -2303,10 +2325,23 @@ def build_ticket_payloads(
         # must never go live with an occupancy row priced at 0.00. The pricing editor materializes
         # rows 1..cap defaulting to 0, so a document that prices only 1-4 pax used to leave 5-9
         # bookable at zero. Named here, blocked at the publish gate in app.py.
+        #
+        # CONFIRMED REAL BUG (audit, 2026-08-28): occupancy_prices holds TWO row kinds per pax
+        # count - the adult row ({"occupancy": n, "amount": ...}) and, only when children are
+        # separately priced, a second child row for the SAME occupancy number, distinguished
+        # solely by carrying an "ageRange" key (see the comment above occupancy_prices'
+        # construction). This check used to flag an occupancy number the moment ANY row at that
+        # count was 0 - which false-positived on the entirely normal "children go free"
+        # (child_amount=0) case: a ticket correctly priced at, say, 100 for an adult and 0 for a
+        # child was hard-blocked from publishing as if it were "sellable for free", the exact
+        # opposite of what this gate exists to catch. Only ADULT rows (no "ageRange" key) are
+        # checked now - a genuinely free child seat is a real, common pricing choice, not a
+        # missing price.
         "zero_priced_occupancies": [
             int(row.get("occupancy"))
             for row in (occupancy_prices or [])
             if isinstance(row, dict) and row.get("occupancy") is not None
+            and not row.get("ageRange")
             and not _safe_float((row.get("price") or {}).get("amount"
                 ) if isinstance(row.get("price"), dict) else row.get("amount"), fallback=0.0)
         ],

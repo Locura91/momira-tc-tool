@@ -155,6 +155,32 @@ def test_fully_priced_ticket_reports_no_zero_occupancies():
     assert result["zero_priced_occupancies"] == []
 
 
+def test_zero_child_price_does_not_false_positive_the_zero_price_gate():
+    """CONFIRMED REAL BUG (audit, 2026-08-28): occupancy_prices holds an adult row AND, when
+    children are separately priced, a second child row for the SAME occupancy number (tagged
+    with an "ageRange" key - see build_ticket_payloads' own construction of occupancy_prices).
+    "Children go free" (child_amount=0) is an entirely normal pricing choice, but the zero-price
+    gate used to flag the occupancy number the moment ANY row at that count was 0 - so a ticket
+    correctly priced at 100 for an adult and 0 for a child got hard-blocked from publishing as
+    if it were "sellable for free", the opposite of what this gate exists to catch."""
+    data = minimal_ticket_data(
+        price_type="OCCUPANCY",
+        occupancy_prices=[{"occupancy": 1, "amount": 100, "child_amount": 0},
+                          {"occupancy": 2, "amount": 180, "child_amount": 0}])
+    result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
+    assert result["zero_priced_occupancies"] == []
+
+
+def test_zero_adult_price_at_an_occupancy_with_a_real_child_price_still_flags():
+    """The fix must not swing the other way - a genuinely unpriced ADULT row (0.00) still has
+    to block publish even when a child row at the same occupancy carries a real price."""
+    data = minimal_ticket_data(
+        price_type="OCCUPANCY",
+        occupancy_prices=[{"occupancy": 1, "amount": 0, "child_amount": 30}])
+    result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
+    assert result["zero_priced_occupancies"] == [1]
+
+
 # ---------------------------------------------------------------------------
 # B-1: one failed GET silently repriced every other modality
 # ---------------------------------------------------------------------------

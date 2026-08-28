@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-ticket-refresh-manual-match"
+MODULE_BUILD = "2026-08-28-audit-followup-decisions"
 
 import re
 import math
@@ -381,7 +381,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
 
     with st.expander("💨 Quick-fill: same price for every row"):
         st.caption("Use this when the source gives one flat price regardless of group size - fills all "
-                  "rows below with the same amount (this replaces the old Distribution mode).")
+                  "rows below with the same amount.")
         qcol1, qcol2 = st.columns([3, 1])
         with qcol1:
             quick_price = st.number_input("Price for all rows", min_value=0.0, value=0.0, key=f"{key_prefix}_occ_quickfill_price")
@@ -1297,7 +1297,7 @@ def render_extra_child_notice(data, key_prefix):
         return
     if not plan["brackets"]:
         st.caption("👶 Extra child allowed - add at least one occupancy price above to see the "
-                   "recommended per-bracket numbers.")
+                   "recommended numbers for each occupancy size.")
         return
 
     st.caption("Travel Compositor's API doesn't accept this field today (confirmed against a real "

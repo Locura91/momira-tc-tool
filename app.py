@@ -180,7 +180,7 @@ CURRENCY_OPTIONS = [
 TICKET_ACTION_LABELS = {
     "create": "1: Create new Ticket + 1 Modality",
     "add_option": "2: Add new Modality to existing Ticket",
-    "update_ticket": "3: Update existing Ticket (Not updating modality)",
+    "update_ticket": "3: Update Ticket details only (not pricing)",
     "update_option": "4: Update existing Ticket Modality",
 }
 TICKET_ACTION_FIELDS = {
@@ -198,7 +198,7 @@ TICKET_ACTION_FIELDS = {
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
     "add_option": "2: Add new Modality to existing ClosedTour",
-    "update_tour": "3: Update existing ClosedTour (Not updating modality)",
+    "update_tour": "3: Update ClosedTour details only (not pricing)",
     "update_option": "4: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
@@ -225,7 +225,7 @@ def _data_fingerprint(data):
     single-Tour/single-Ticket flows.
 
     CONFIRMED REAL BUG (internal audit): in those legacy flows, clicking
-    "Resolve Destinations & Build Payload" builds st.session_state.payloads
+    "Check Locations & Continue" builds st.session_state.payloads
     ONCE and caches it - but the price/supplements/stop-sales/itinerary
     tables above that button stay fully editable and visible afterward too.
     Editing one of those tables mutates `data` in place and reruns the
@@ -383,7 +383,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             with ccol3:
                 cand["hint"] = st.text_input("Focus Hint", value=cand["hint"], key=f"mm_hint_{i}")
 
-        if st.button("➕ Add another modality manually"):
+        if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
@@ -1459,7 +1459,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if mct_code_taken:
             st.info("Publishing is disabled until the Tour Code above is changed to one that isn't "
                    "already taken.")
-        if st.button("🚀 Publish", type="primary", disabled=mct_has_unresolved or mct_code_taken):
+        if st.button("🚀 Publish to Travel Compositor", type="primary", disabled=mct_has_unresolved or mct_code_taken):
             with st.spinner(f"Publishing '{tour['tour_code']}'..."):
                 try:
                     pre_config = HumanPreConfig(
@@ -3987,7 +3987,16 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 # Same crash-prevention as the ClosedTour batch flow - never leave a
                 # call that can genuinely fail (rate limit, network hiccup) unguarded.
                 try:
-                    current["data"] = extract_ticket_main_info(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                    # CONFIRMED REAL BUG (audit, 2026-08-28): with_learned_guidance (past
+                    # corrections for this supplier/product type - see its own docstring) was
+                    # wired into the single-Ticket flow only. The batch flow, which is what's
+                    # actually used for volume work, extracted every excursion with no memory
+                    # of anything corrected before - same defect already named for a different
+                    # gap in audit-2026-08-24-followup.md's D-6 note ("the path used for volume
+                    # work is the one that ignores everything the platform has learned").
+                    current["data"] = extract_ticket_main_info(
+                        st.session_state.mt_raw_text, variant_hint=variant_hint,
+                        human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     current["data"]["image_urls"] = [FALLBACK_IMAGE]
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
@@ -4200,7 +4209,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if st.button("➡️ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mt_continue_modality_{idx}"):
                 with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''} - this is a separate AI call from the main info above..."):
                     try:
-                        modality_data = extract_ticket_modality_data(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                        modality_data = extract_ticket_modality_data(
+                            st.session_state.mt_raw_text, variant_hint=variant_hint,
+                            human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     except Exception as e:
                         st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
@@ -4313,7 +4324,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 f"ℹ️ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
                 f"for {current['label'] or current['ticket_code']}:{_mt_other_list}\n\n"
                 f"This Ticket will be created with just its one Modality above. Add the other one(s) "
-                f"afterward via **Update/Refresh existing Service -> Ticket -> \"2: Add new Modality to "
+                f"afterward via **Update existing Service -> Ticket -> \"2: Add new Modality to "
                 f"existing Ticket\"**."
             )
 
@@ -4533,11 +4544,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         if st.session_state.mt_failed_items:
             st.divider()
-            st.subheader(f"⚠️ {len(st.session_state.mt_failed_items)} ticket(s) created but their option failed")
+            st.subheader(f"⚠️ {len(st.session_state.mt_failed_items)} ticket(s) created but their Modality failed")
             st.caption("These tickets themselves were created successfully (and are still ACTIVE) - only "
-                      "the option/modality failed, so retrying 'Publish all' would try to create duplicate "
+                      "the Modality failed, so retrying 'Publish all' would try to create duplicate "
                       "tickets. Adjust whatever needs fixing below (e.g. a start time), then retry just the "
-                      "option for that one ticket - no need to redo the whole batch.")
+                      "Modality for that one ticket - no need to redo the whole batch.")
             for fi_idx, fi in enumerate(list(st.session_state.mt_failed_items)):
                 with st.expander(f"🔧 {fi['ticket_code']} (created as `{fi['real_code']}`) — {fi['label']}", expanded=True):
                     fdata = fi["data"]
@@ -4567,7 +4578,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     with fdcol2:
                         fdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(fdata.get("end_date", "")), key=f"mtf_end_{fi_idx}"))
 
-                    if st.button(f"🔄 Retry option for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
+                    if st.button(f"🔄 Retry Modality for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['ticket_code']}'..."):
                             try:
                                 retry_pre_config = TicketHumanPreConfig(
@@ -5378,7 +5389,7 @@ def render_ticket_flow(client):
                 st.session_state.tk_extra_modalities = []
             st.info("ℹ️ This Ticket will be created with just this one Modality. If your document "
                     "describes other variants (e.g. a different guide language or vehicle class), "
-                    "add them afterward via **Update/Refresh existing Service -> Ticket -> \"2: Add "
+                    "add them afterward via **Update existing Service -> Ticket -> \"2: Add "
                     "new Modality to existing Ticket\"**.")
 
 
@@ -5443,7 +5454,7 @@ def render_ticket_flow(client):
             render_clarify_result(r)
         remember_memory_panel(clarify_supplier_id(), "Ticket", "tkp")
 
-        if st.button("🔎 Resolve Geolocation & Build Payload", disabled=not can_build, key="tk_build_payload"):
+        if st.button("🔎 Check Locations & Continue", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
                 supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
                 currency=currency, modality_code=modality_code, on_request=on_request,
@@ -5461,7 +5472,7 @@ def render_ticket_flow(client):
         if st.session_state.get("tk_payloads") and _data_fingerprint(data) != st.session_state.get("tk_payloads_data_fingerprint"):
             st.session_state.tk_payloads = None
             st.warning("✏️ You edited the data above after building the payload - click "
-                      "**🔎 Resolve Geolocation & Build Payload** again to refresh it before publishing.")
+                      "**🔎 Check Locations & Continue** again to refresh it before publishing.")
 
         # ------------------------------------------------------------------
         # TICKET STEP 6: Geolocation & Payload Preview
@@ -5825,7 +5836,7 @@ def render_ticket_flow(client):
                       "switched back to draft/inactive for your review — this is expected. To add more "
                       "Modalities or make further changes, first **activate it manually inside Travel "
                       "Compositor**, then come back and use 'Add new Modality to existing Ticket'.")
-            if st.button("🆕 Start a new import (different Ticket)", type="primary", key="tk_new_import_inactive"):
+            if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_inactive"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
@@ -5839,7 +5850,7 @@ def render_ticket_flow(client):
         else:
             fcol1, fcol2 = st.columns(2)
             with fcol1:
-                if st.button("🆕 Start a new import (different Ticket)", type="primary", key="tk_new_import_active"):
+                if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_active"):
                     keep_client = st.session_state.client
                     keep_suppliers = st.session_state.suppliers_cache
                     keep_product_type = st.session_state.product_type
@@ -5934,6 +5945,7 @@ def render_transfer_flow(client):
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
             with st.expander("⚠️ Emergency manual entry"):
+                st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tf_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tf_currency")
@@ -6306,8 +6318,9 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 "Charge unit", ["per_pax", "per_service"],
                 index=0 if data.get("charge_unit", "per_pax") != "per_service" else 1,
                 key=f"xtf_chargeunit_{idx}",
-                help="per_pax = priced per person (ChargeUnit-Pax). per_service = one flat price for the "
-                     "whole vehicle regardless of headcount (ChargeUnit-Service)."
+                format_func=lambda v: "Per person" if v == "per_pax" else "Flat price for the whole vehicle",
+                help="\"Per person\" charges by headcount. \"Flat price for the whole vehicle\" is one "
+                     "price no matter how many people are in it."
             )
         with ccol2:
             # CONFIRMED REAL RULE (product owner): once a match against an existing transfer is
@@ -6654,6 +6667,7 @@ def render_transport_flow(client):
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
             with st.expander("⚠️ Emergency manual entry"):
+                st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tp_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tp_currency")
@@ -7062,9 +7076,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 "Charge unit", ["per_pax", "per_service"],
                 index=0 if data.get("charge_unit", "per_pax") != "per_service" else 1,
                 key=f"xtp_chargeunit_{idx}",
-                help="per_pax = priced per person. per_service = one flat price for the whole vehicle "
-                     "regardless of headcount (this is what enables multi-vehicle price synthesis for "
-                     "larger groups, up to the 9-pax system cap)."
+                format_func=lambda v: "Per person" if v == "per_pax" else "Flat price for the whole vehicle",
+                help="\"Per person\" charges by headcount. \"Flat price for the whole vehicle\" is one "
+                     "price no matter how many people are in it (this also enables combining multiple "
+                     "vehicles for larger groups, up to the 9-passenger system cap)."
             )
         with ccol2:
             # CONFIRMED REAL RULE (product owner): "the human shall in best case only select
@@ -7112,9 +7127,9 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             help="A per-person rate valid from e.g. 2 pax up means a solo traveller pays the "
                  "2-pax total, not half of it - set this to 2 and that 1-pax bracket is added "
                  "automatically. Only applies to per-pax pricing, ignored for per-service.")
-        st.caption("One row per bracket the document actually states (e.g. 1-2 Pax, 3-4 Pax). Each price is "
-                  "the ACTUAL final price for that bracket - never interpolated between brackets, since real "
-                  "contracts have shown non-monotonic patterns. Brackets above 9 pax are dropped automatically "
+        st.caption("One row per group size the document actually states (e.g. 1-2 Pax, 3-4 Pax). Each price is "
+                  "the ACTUAL final price for that group size - never interpolated between rows, since real "
+                  "contracts have shown non-monotonic patterns. Rows above 9 pax are dropped automatically "
                   "(system cap). For a per-vehicle transport, larger groups are priced automatically as needing "
                   "multiple vehicles. Leave Child/Infant blank (not 0) when the document states no price.")
         br_df = pd.DataFrame(data.get("occupancy_brackets") or
@@ -7529,6 +7544,7 @@ def render_hotel_flow(client):
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
             with st.expander("⚠️ Emergency manual entry"):
+                st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="hp_supplier_manual")
 
         provider_code_in = st.text_input(
@@ -8193,7 +8209,7 @@ def render_hotel_flow(client):
                 st.balloons()
                 st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
                           f"offers, supplements and {seasons_total} season(s) of prices.")
-                if st.button("🆕 Start another hotel", key="hp_new"):
+                if st.button("🆕 Start a new Hotel", key="hp_new"):
                     for key in HP_STATE_KEYS:
                         st.session_state.pop(key, None)
                     _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -8249,6 +8265,7 @@ def render_manual_information_flow(client):
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
         with st.expander("⚠️ Emergency manual entry"):
+            st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", value="", key="mi_supplier_manual")
 
     product_type = st.radio("Which product type does this apply to?",
@@ -8596,7 +8613,7 @@ def render_update_refresh_flow(client):
         "create") the classic per-type flows already use, then handing off into that same
         already-proven Step 3 code with everything pre-filled, so none of the actual
         extraction/review/publish logic is duplicated here."""
-    st.header("🔄 Update/Refresh existing Service")
+    st.header("🔄 Update existing Service")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()
@@ -8656,6 +8673,7 @@ def _ur_pick_momira_supplier(client, key_prefix):
     if not st.session_state.suppliers_cache:
         st.error("Could not load the supplier list from Travel Compositor.")
         with st.expander("⚠️ Emergency manual entry"):
+            st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             return st.text_input("Supplier ID (numeric)", value="", key=f"{key_prefix}_supplier_manual").strip() or None
 
     momira_suppliers = [
@@ -8931,7 +8949,7 @@ def _render_update_refresh_coded_service(client, service):
     Hotel, which has no such distinction today), then hand off into that product type's own
     proven Step 3 with everything pre-filled, so extraction/review/publish is never
     duplicated here."""
-    st.subheader(f"Update/Refresh an existing {service}")
+    st.subheader(f"Update an existing {service}")
     supplier_id = _ur_pick_momira_supplier(client, "ur_coded")
     if not supplier_id:
         return
@@ -9113,6 +9131,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
         with st.expander("⚠️ Emergency manual entry"):
+            st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", key="pr_supplier_manual").strip()
 
     st.subheader("1 — The new rate sheet")
@@ -9352,6 +9371,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                 st.session_state.pr_routes, {p["index"]: manual}))
                             st.session_state.pr_proposals[p["index"]] = rebuilt[p["index"]]
                             st.rerun()
+                        else:
+                            # CONFIRMED REAL BUG (audit, 2026-08-28): every option on this route
+                            # failed to fetch (fetch_failed=True), so `widest` is None and the
+                            # click used to do nothing at all - no rerun, no message, the operator
+                            # just sees the button appear not to work. Named explicitly instead.
+                            st.error("Every bracket on this route failed to load from Travel "
+                                    "Compositor, so there's nothing to price by hand yet. "
+                                    "Re-run the price refresh and try again.")
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
@@ -9425,6 +9452,7 @@ def render_ticket_price_refresh_flow(client):
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
         with st.expander("⚠️ Emergency manual entry"):
+            st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", key="tpr_supplier_manual").strip()
 
     st.subheader("1 — The new rate sheet")
@@ -9653,6 +9681,11 @@ def render_ticket_price_refresh_flow(client):
                                 st.session_state.tpr_routes, {p["index"]: manual}))
                             st.session_state.tpr_proposals[p["index"]] = rebuilt[p["index"]]
                             st.rerun()
+                        else:
+                            # Same defensive fix as the Transfer/Transport "Use" button above -
+                            # this Modality has no readable occupancy bracket to price by hand.
+                            st.error("This Modality has no occupancy bracket to price by hand. "
+                                    "Re-run the price refresh and try again.")
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
@@ -9711,7 +9744,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-ticket-refresh-manual-match"
+BUILD_VERSION = "2026-08-28-audit-followup-decisions"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -9941,7 +9974,7 @@ MANUAL_INFO_CHOICE = "Adding manual information"
 PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): the ONE place every kind of update/refresh
 # happens now, for all five product types - see render_update_refresh_flow's docstring.
-UPDATE_REFRESH_CHOICE = "Update/Refresh existing Service"
+UPDATE_REFRESH_CHOICE = "Update existing Service"
 # CONFIRMED REAL NEED (product owner, 2026-08-24): "mass change the supplier - all Transfers
 # from supplier A must now be changed to supplier B." A Step 1 destination rather than living
 # inside Update/Refresh, since it acts on a whole supplier's worth of transfers at once, not
@@ -10185,7 +10218,7 @@ else:
         "Choose one:",
         list(ACTION_LABELS.keys()),
         format_func=lambda k: ACTION_LABELS[k],
-        help="Travel Compositor uses POST for creating new things and PUT for updating existing ones."
+        help="Creating makes something brand-new; Updating changes something that already exists."
     )
 
     if st.session_state.suppliers_cache is None:
@@ -11160,7 +11193,7 @@ if st.session_state.extracted:
         render_clarify_result(r)
     remember_memory_panel(clarify_supplier_id(), "ClosedTour", "legacy")
 
-    if st.button("🔎 Resolve Destinations & Build Payload",
+    if st.button("🔎 Check Locations & Continue",
                 disabled=not price_list_valid):
         _real_provider_code = st.session_state.get("fetched_tour_provider_code", "")
         with st.spinner("Resolving destinations against Travel Compositor..."):
@@ -11200,7 +11233,7 @@ if st.session_state.extracted:
     if st.session_state.payloads and _data_fingerprint(data) != st.session_state.get("payloads_data_fingerprint"):
         st.session_state.payloads = None
         st.warning("✏️ You edited the data above after building the payload - click "
-                  "**🔎 Resolve Destinations & Build Payload** again to refresh it before publishing.")
+                  "**🔎 Check Locations & Continue** again to refresh it before publishing.")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
@@ -11253,7 +11286,7 @@ if st.session_state.extracted:
                 f"This means Travel Compositor doesn't recognize this place by that name - publishing "
                 f"would fail or create a wrong/broken itinerary stop. **To fix:** go back up to Step 5's "
                 f"'Itinerary destinations' box and either correct the spelling/name, or replace it with "
-                f"the exact name Travel Compositor uses, then click 'Resolve Destinations & Build Payload' again."
+                f"the exact name Travel Compositor uses, then click 'Check Locations & Continue' again."
             )
 
         tour_update_blocks_publish = False
@@ -11581,7 +11614,7 @@ if st.session_state.get("just_published_tour_code"):
                   "switched back to draft/inactive for your review — this is expected. To add more "
                   "Modalities or make further changes, first **activate it manually inside Travel "
                   "Compositor**, then come back and use 'Add new Modality to existing ClosedTour'.")
-        if st.button("🆕 Start a new import (different ClosedTour)", type="primary"):
+        if st.button("🆕 Start a new ClosedTour", type="primary"):
             keep_client = st.session_state.client
             keep_suppliers = st.session_state.suppliers_cache
             keep_product_type = st.session_state.product_type
@@ -11595,7 +11628,7 @@ if st.session_state.get("just_published_tour_code"):
     else:
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            if st.button("🆕 Start a new import (different ClosedTour)", type="primary"):
+            if st.button("🆕 Start a new ClosedTour", type="primary"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
