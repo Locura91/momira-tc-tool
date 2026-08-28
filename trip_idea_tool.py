@@ -28,7 +28,7 @@ import ai_extractor
 import trip_prompt_extractor as tpe
 import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-28-transfer-transport-images"
+MODULE_BUILD = "2026-08-28-ticket-tour-update-scope-toggle"
 
 _PHASE_KEY = "ti_phase"
 

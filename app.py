@@ -182,7 +182,7 @@ CURRENCY_OPTIONS = [
 TICKET_ACTION_LABELS = {
     "create": "1: Create new Ticket + 1 Modality",
     "add_option": "2: Add new Modality to existing Ticket",
-    "update_ticket": "3: Update Ticket details only (not pricing)",
+    "update_ticket": "3: Update an existing Ticket",
     "update_option": "4: Update existing Ticket Modality",
 }
 TICKET_ACTION_FIELDS = {
@@ -193,14 +193,23 @@ TICKET_ACTION_FIELDS = {
     # for the identical ClosedTour case.
     "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "on_request", "release_days"],
     "add_option": ["existing_ticket_code", "modality_code", "on_request"],
-    "update_ticket": ["existing_ticket_code", "release_days"],
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "3" used to always run the full,
+    # expensive extraction (name/description/cancellation AND pricing/schedule) even
+    # though it only ever published the non-pricing half - the pricing it extracted was
+    # silently discarded. Now asks up front (see the "Price only"/"Whole ticket" radio in
+    # Step 3) which half to actually do: "Price only" reuses "update_option"'s existing
+    # cheap, pricing-only path outright (same extractor, same publish call); "Whole
+    # ticket" keeps today's full extraction but NOW ACTUALLY PUBLISHES the pricing it
+    # extracts instead of throwing it away. Either way requires knowing which Modality/
+    # Option the pricing half applies to, so modality_code is asked unconditionally.
+    "update_ticket": ["existing_ticket_code", "modality_code", "release_days"],
     "update_option": ["existing_ticket_code", "modality_code", "on_request"],
 }
 
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
     "add_option": "2: Add new Modality to existing ClosedTour",
-    "update_tour": "3: Update ClosedTour details only (not pricing)",
+    "update_tour": "3: Update an existing ClosedTour",
     "update_option": "4: Update existing ClosedTour Modality",
 }
 ACTION_FIELDS = {
@@ -212,7 +221,17 @@ ACTION_FIELDS = {
     # Step 3's value was never even used).
     "create": ["provider_code", "min_pax", "max_pax", "currency", "on_request", "release_days"],
     "add_option": ["existing_tour_code", "modality_code", "on_request"],
-    "update_tour": ["existing_tour_code", "release_days"],
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28), identical fix to Ticket's "update_ticket"
+    # above: "3" used to always run the full, expensive extraction (name/description/
+    # cancellation AND pricing/schedule) even though it only ever published the non-pricing
+    # half - the pricing it extracted was silently discarded. Now asks up front (see the
+    # "Price only"/"Whole tour" radio in Step 3) which half to actually do: "Price only"
+    # reuses "update_option"'s existing cheap, pricing-only path outright (same extractor,
+    # same publish call); "Whole tour" keeps today's full extraction but NOW ACTUALLY
+    # PUBLISHES the pricing it extracts instead of throwing it away. Either way requires
+    # knowing which Modality/Option the pricing half applies to, so modality_code is asked
+    # unconditionally.
+    "update_tour": ["existing_tour_code", "modality_code", "release_days"],
     # CONFIRMED REAL RULE (product owner): an UPDATE never asks for things the live record
     # already has - the code, the currency, the min/max passengers. "update_option" used to
     # ask for currency, which meant re-picking (and possibly re-denominating) the currency
@@ -4791,6 +4810,22 @@ def render_ticket_flow(client):
                     existing_modalities = t.get("modalityCodes", [])
                     st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
 
+        tk_update_scope_in = "whole_ticket"
+        if action == "update_ticket":
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "Update price only or check the
+            # whole ticket" - asked up front so a human who only needs a price fix doesn't
+            # pay for (or wait through) the full name/description/cancellation extraction,
+            # and so "whole ticket" - which now actually publishes the pricing it extracts,
+            # see TICKET_ACTION_FIELDS's comment - knows to expect a Modality Code below.
+            st.markdown("##### What do you want to update?")
+            _tk_scope_choice = st.radio(
+                "Update scope", label_visibility="collapsed",
+                options=["Price only (fast, cheaper - skips re-checking name/description/etc.)",
+                        "Whole ticket (also re-checks name, description, cancellation policy, etc.)"],
+                key="tk_update_scope_radio",
+            )
+            tk_update_scope_in = "price_only" if _tk_scope_choice.startswith("Price only") else "whole_ticket"
+
         if "ticket_code" in needed:
             ticket_code_in = st.text_input("Ticket Code", value="", placeholder="e.g. JAP-T1", key="tk_ticket_code")
             render_code_availability_check(client, "ticket", supplier_id, ticket_code_in, "ticket")
@@ -4801,17 +4836,20 @@ def render_ticket_flow(client):
         if "currency" in needed:
             currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tk_currency")
         if "modality_code" in needed:
-            default_modality = st.session_state.get("tk_check_modality_pick", "") if action == "update_option" else ""
-            label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
+            # "update_ticket" needs the SAME "which existing Modality" semantics as
+            # "update_option" now (see TICKET_ACTION_FIELDS's comment) - both are asking
+            # for an ALREADY-LIVE modality's code, not a brand-new one.
+            default_modality = st.session_state.get("tk_check_modality_pick", "") if action in ("update_option", "update_ticket") else ""
+            label = "Modality Code to update" if action in ("update_option", "update_ticket") else "Unique Modality Code"
             modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard 7 Days", key="tk_modality_code")
             # CONFIRMED REAL REQUEST (product owner, 2026-08-24): the supplier's own code is often
             # reused as this Modality Code, and the same product can get re-imported under a
             # DIFFERENT (arbitrary, human-chosen) Ticket Code - the Ticket-Code check above can't
             # catch that. See check_modality_code_availability's docstring. For "update_option"/
-            # "add_option", the ticket being worked on right now is excluded from the comparison
-            # (via ignore_ticket_code) - its own existing modality is an expected match there, not
-            # a duplicate; a match on any OTHER ticket still warns.
-            if action in ("update_option", "add_option"):
+            # "add_option"/"update_ticket", the ticket being worked on right now is excluded from
+            # the comparison (via ignore_ticket_code) - its own existing modality is an expected
+            # match there, not a duplicate; a match on any OTHER ticket still warns.
+            if action in ("update_option", "add_option", "update_ticket"):
                 render_modality_code_availability_check(client, supplier_id, modality_code_in, existing_ticket_code_in)
             else:
                 render_modality_code_availability_check(client, supplier_id, modality_code_in)
@@ -4848,6 +4886,7 @@ def render_ticket_flow(client):
             st.session_state.tk_cfg_on_request = on_request_in
             st.session_state.tk_cfg_release_days = release_days_in
             st.session_state.tk_cfg_existing_ticket_code = existing_ticket_code_in or ""
+            st.session_state.tk_cfg_update_scope = tk_update_scope_in
             st.session_state.tk_step2_confirmed = True
             st.rerun()
         return
@@ -4862,6 +4901,10 @@ def render_ticket_flow(client):
     on_request = st.session_state.tk_cfg_on_request
     release_days = st.session_state.tk_cfg_release_days
     existing_ticket_code = st.session_state.tk_cfg_existing_ticket_code
+    # Only meaningful for action == "update_ticket" - see TICKET_ACTION_FIELDS's comment and
+    # the "What do you want to update?" radio in Step 3. Defaults to "whole_ticket" for
+    # every other action so nothing below has to special-case "key not set yet".
+    tk_update_scope = st.session_state.get("tk_cfg_update_scope", "whole_ticket")
 
     # Same product-owner rule as ClosedTour: on an update the live ticket's own code,
     # currency and passenger limits win over anything Step 2 holds. TICKET_ACTION_FIELDS
@@ -4883,7 +4926,15 @@ def render_ticket_flow(client):
         "update_option": "Update an existing ticket option",
     }
     publish_action = _tk_action_to_publish_label[action]
-    tk_is_option_only = action in ("add_option", "update_option")
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "Price only" under action "update_ticket"
+    # is structurally IDENTICAL to action "update_option" from here on - same cheap
+    # extraction, same review (pricing/schedule only, no name/description/cancellation),
+    # same publish call. Relabeling publish_action here, rather than adding new branches
+    # further down, is what makes that reuse automatic instead of duplicated.
+    tk_price_only_via_update_ticket = action == "update_ticket" and tk_update_scope == "price_only"
+    if tk_price_only_via_update_ticket:
+        publish_action = "Update an existing ticket option"
+    tk_is_option_only = action in ("add_option", "update_option") or tk_price_only_via_update_ticket
 
     # ------------------------------------------------------------------
     # TICKET STEP 4: Input Source
@@ -5697,7 +5748,7 @@ def render_ticket_flow(client):
             action_descriptions = {
                 "Create a brand-new ticket (+ first option)": "Will POST a new ticket, then POST a new option.",
                 "Add a new option to an existing ticket": f"Will POST a new option under existing ticket `{target_ticket_code}`.",
-                "Update an existing ticket's details": f"Will PUT (update) ticket `{target_ticket_code}`'s details.",
+                "Update an existing ticket's details": f"Will PUT (update) ticket `{target_ticket_code}`'s details, then PUT (update) Modality `{modality_code}`'s pricing/schedule.",
                 "Update an existing ticket option": f"Will PUT (update) the option under ticket `{target_ticket_code}`.",
             }
             st.caption(action_descriptions[publish_action])
@@ -5743,6 +5794,7 @@ def render_ticket_flow(client):
                                     st.session_state.tk_just_published_supplier_id = supplier_id
                                     st.session_state.tk_just_published_is_inactive = False
                                     st.session_state.tk_publish_partial_failure = True
+                                    st.session_state.tk_partial_failure_kind = "create"
                                 else:
                                     st.success("✅ Ticket option created.")
 
@@ -5813,6 +5865,15 @@ def render_ticket_flow(client):
                                 st.session_state.tk_publish_partial_failure = False
 
                         elif publish_action == "Update an existing ticket's details":
+                            # This branch only runs for action=="update_ticket" with scope
+                            # "whole_ticket" (the "price_only" scope relabels publish_action to
+                            # "Update an existing ticket option" above, routing through that
+                            # branch instead - see tk_price_only_via_update_ticket). CONFIRMED
+                            # FIX (product owner, 2026-08-28): "whole ticket" already extracts
+                            # and builds a full ticket_option_payload via build_ticket_payloads
+                            # (it always builds both), but historically only ever published the
+                            # main ticket details, silently discarding the pricing/schedule it
+                            # just asked the human to review. Now it publishes both.
                             update_payload = dict(payloads["main_ticket_payload"])
                             update_payload["code"] = target_ticket_code
                             result = client.update_ticket(supplier_id, update_payload)
@@ -5821,10 +5882,27 @@ def render_ticket_flow(client):
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ Ticket `{target_ticket_code}` updated.")
-                                st.session_state.tk_just_published_code = target_ticket_code
-                                st.session_state.tk_just_published_supplier_id = supplier_id
-                                st.session_state.tk_just_published_is_inactive = False
-                                st.session_state.tk_publish_partial_failure = False
+
+                                update_option_payload = dict(payloads["ticket_option_payload"])
+                                update_option_payload["code"] = modality_code
+                                option_result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
+                                if "error" in option_result:
+                                    show_publish_error("update the ticket's pricing/modality after retrying", option_result, flow="ticket_legacy")
+                                    st.info(f"💡 The ticket's own details ARE saved. Only the Modality `{modality_code}`'s "
+                                           f"pricing/schedule failed - fix and retry with **'Update existing Ticket "
+                                           f"Modality'** against `{target_ticket_code}` / `{modality_code}`, no need to "
+                                           f"redo the ticket details.")
+                                    st.session_state.tk_just_published_code = target_ticket_code
+                                    st.session_state.tk_just_published_supplier_id = supplier_id
+                                    st.session_state.tk_just_published_is_inactive = False
+                                    st.session_state.tk_publish_partial_failure = True
+                                    st.session_state.tk_partial_failure_kind = "update_ticket"
+                                else:
+                                    st.success(f"✅ Modality `{modality_code}` pricing/schedule updated.")
+                                    st.session_state.tk_just_published_code = target_ticket_code
+                                    st.session_state.tk_just_published_supplier_id = supplier_id
+                                    st.session_state.tk_just_published_is_inactive = False
+                                    st.session_state.tk_publish_partial_failure = False
 
                         elif publish_action == "Update an existing ticket option":
                             update_option_payload = dict(payloads["ticket_option_payload"])
@@ -5848,13 +5926,21 @@ def render_ticket_flow(client):
     if st.session_state.get("tk_just_published_code"):
         st.divider()
         if st.session_state.get("tk_publish_partial_failure"):
-            st.subheader("⚠️ Ticket created, but the option failed — here's how to continue")
-            st.write(f"The ticket itself (**{st.session_state.tk_just_published_code}**, Supplier "
-                    f"{st.session_state.tk_just_published_supplier_id}) was created successfully and is "
-                    f"still **ACTIVE**, but its first option/modality failed - see the error above. Don't "
-                    f"retry 'Create a brand-new ticket' (that would try to create a duplicate). Instead, "
-                    f"use **'Add another Modality to this same Ticket'** below to retry just the option "
-                    f"against the ticket that already exists, or start a completely fresh import.")
+            if st.session_state.get("tk_partial_failure_kind") == "update_ticket":
+                st.subheader("⚠️ Ticket details updated, but the pricing/modality failed — here's how to continue")
+                st.write(f"The ticket's own details (**{st.session_state.tk_just_published_code}**, Supplier "
+                        f"{st.session_state.tk_just_published_supplier_id}) were updated successfully - see the "
+                        f"error above for what went wrong with the Modality's pricing/schedule. Don't redo the "
+                        f"ticket details. Instead, use **'Update existing Ticket Modality'** below to retry just "
+                        f"the pricing/schedule against the Modality code shown in the error.")
+            else:
+                st.subheader("⚠️ Ticket created, but the option failed — here's how to continue")
+                st.write(f"The ticket itself (**{st.session_state.tk_just_published_code}**, Supplier "
+                        f"{st.session_state.tk_just_published_supplier_id}) was created successfully and is "
+                        f"still **ACTIVE**, but its first option/modality failed - see the error above. Don't "
+                        f"retry 'Create a brand-new ticket' (that would try to create a duplicate). Instead, "
+                        f"use **'Add another Modality to this same Ticket'** below to retry just the option "
+                        f"against the ticket that already exists, or start a completely fresh import.")
         else:
             st.subheader("✅ Ticket published — what would you like to do next?")
             st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
@@ -9879,7 +9965,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-transfer-transport-images"
+BUILD_VERSION = "2026-08-28-ticket-tour-update-scope-toggle"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10511,6 +10597,22 @@ else:
                                     st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
                                     st.json(row.get("price", {}))
 
+    ct_update_scope_in = "whole_tour"
+    if action == "update_tour":
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28), identical to Ticket's equivalent
+        # radio: asked up front so a human who only needs a price fix doesn't pay for (or
+        # wait through) the full name/description/cancellation extraction, and so "whole
+        # tour" - which now actually publishes the pricing it extracts, see ACTION_FIELDS'
+        # comment - knows to expect a Modality Code below.
+        st.markdown("##### What do you want to update?")
+        _ct_scope_choice = st.radio(
+            "Update scope", label_visibility="collapsed",
+            options=["Price only (fast, cheaper - skips re-checking name/description/etc.)",
+                    "Whole tour (also re-checks name, description, cancellation policy, etc.)"],
+            key="ct_update_scope_radio",
+        )
+        ct_update_scope_in = "price_only" if _ct_scope_choice.startswith("Price only") else "whole_tour"
+
     if "provider_code" in needed:
         provider_code_in = st.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
         render_code_availability_check(client, "tour", supplier_id, provider_code_in, "tour")
@@ -10521,8 +10623,11 @@ else:
     if "currency" in needed:
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS)
     if "modality_code" in needed:
-        default_modality = st.session_state.get("check_modality_pick", "") if action == "update_option" else ""
-        label = "Modality Code to update" if action == "update_option" else "Unique Modality Code"
+        # "update_tour" needs the SAME "which existing Modality" semantics as
+        # "update_option" now (see ACTION_FIELDS's comment) - both are asking for an
+        # ALREADY-LIVE modality's code, not a brand-new one.
+        default_modality = st.session_state.get("check_modality_pick", "") if action in ("update_option", "update_tour") else ""
+        label = "Modality Code to update" if action in ("update_option", "update_tour") else "Unique Modality Code"
         modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise")
     if "on_request" in needed:
         on_request_in = st.checkbox("On Request", value=True)
@@ -10578,6 +10683,7 @@ else:
         st.session_state.cfg_on_request = on_request_in
         st.session_state.cfg_release_days = release_days_in
         st.session_state.cfg_existing_tour_code = existing_tour_code_in or ""
+        st.session_state.cfg_update_scope = ct_update_scope_in
         st.session_state.step2_confirmed = True
         st.rerun()
 
@@ -10613,6 +10719,10 @@ if action in ("update_tour", "update_option", "add_option"):
 on_request = st.session_state.cfg_on_request
 days_available_before_release = st.session_state.cfg_release_days
 existing_tour_code = st.session_state.cfg_existing_tour_code
+# Only meaningful for action == "update_tour" - see ACTION_FIELDS's comment and the "What do
+# you want to update?" radio in Step 3. Defaults to "whole_tour" for every other action so
+# nothing below has to special-case "key not set yet".
+ct_update_scope = st.session_state.get("cfg_update_scope", "whole_tour")
 
 _action_to_publish_label = {
     "create": "Create a brand-new tour (+ first option)",
@@ -10621,6 +10731,15 @@ _action_to_publish_label = {
     "update_option": "Update an existing option",
 }
 publish_action = _action_to_publish_label[action]
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "Price only" under action "update_tour" is
+# structurally IDENTICAL to action "update_option" from here on - same cheap extraction, same
+# review (pricing/schedule only, no name/description/cancellation), same publish call.
+# Relabeling publish_action here, rather than adding new branches further down, is what makes
+# that reuse automatic instead of duplicated.
+ct_price_only_via_update_tour = action == "update_tour" and ct_update_scope == "price_only"
+if ct_price_only_via_update_tour:
+    publish_action = "Update an existing option"
+is_option_only = action in ("add_option", "update_option") or ct_price_only_via_update_tour
 
 
 # ----------------------------------------------------------------------
@@ -10641,8 +10760,6 @@ extraction_hint = st.text_input(
     help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
          "multiple room categories). Leave blank for normal extraction."
 )
-
-is_option_only = action in ("add_option", "update_option")
 
 multi_modality_mode = False
 if action == "add_option":
@@ -11462,7 +11579,10 @@ if st.session_state.extracted:
         with col4:
             if publish_action in ("Create a brand-new tour (+ first option)", "Add a new option to an existing tour"):
                 title = "Tour Option Payload (POST)"
-            elif publish_action == "Update an existing option":
+            elif publish_action in ("Update an existing option", "Update an existing tour's details"):
+                # "Update an existing tour's details" now also PUTs the option (see the
+                # publish button handler below) - see ACTION_FIELDS's comment on why "whole
+                # tour" was changed to actually publish the pricing it extracts.
                 title = "Tour Option Payload (PUT - update)"
             else:
                 title = "Tour Option Payload (not sent this time)"
@@ -11508,7 +11628,7 @@ if st.session_state.extracted:
         action_descriptions = {
             "Create a brand-new tour (+ first option)": "Will POST a new tour, then POST a new option.",
             "Add a new option to an existing tour": f"Will POST a new option under existing tour `{target_tour_code}`. Main tour is untouched.",
-            "Update an existing tour's details": f"Will PUT (update) tour `{target_tour_code}`'s details. No option changes.",
+            "Update an existing tour's details": f"Will PUT (update) tour `{target_tour_code}`'s details, then PUT (update) Modality `{modality_code}`'s pricing/schedule.",
             "Update an existing option": f"Will PUT (update) the option under tour `{target_tour_code}`.",
         }
         st.caption(action_descriptions[publish_action])
@@ -11709,6 +11829,15 @@ if st.session_state.extracted:
                                                       f"'{modality_code}' to the tour (code `{supp_used_code}`).")
 
                     elif publish_action == "Update an existing tour's details":
+                        # This branch only runs for action=="update_tour" with scope
+                        # "whole_tour" (the "price_only" scope relabels publish_action to
+                        # "Update an existing option" above, routing through that branch
+                        # instead - see ct_price_only_via_update_tour). CONFIRMED FIX
+                        # (product owner, 2026-08-28): "whole tour" already extracts and
+                        # builds a full tour_option_payload via build_closed_tour_payloads,
+                        # but historically only ever published the main tour details,
+                        # silently discarding the pricing/schedule it just asked the human
+                        # to review. Now it publishes both.
                         update_payload = dict(payloads["main_tour_payload"])
                         update_payload["code"] = target_tour_code
                         result, used_code = try_code_variants(
@@ -11721,6 +11850,21 @@ if st.session_state.extracted:
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                         else:
                             st.success(f"✅ Tour updated using code `{used_code}`.")
+
+                            update_option_payload = dict(payloads["tour_option_payload"])
+                            update_option_payload["code"] = modality_code
+                            option_result, option_used_code = try_code_variants(
+                                lambda c: client.update_closed_tour_option(payloads["supplier_id"], c, update_option_payload),
+                                target_tour_code
+                            )
+                            if "error" in option_result:
+                                show_publish_error(f"update the tour's pricing/modality (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
+                                st.info(f"💡 The tour's own details ARE saved. Only the Modality `{modality_code}`'s "
+                                       f"pricing/schedule failed - fix and retry with **'Update existing ClosedTour "
+                                       f"Modality'** against `{target_tour_code}` / `{modality_code}`, no need to "
+                                       f"redo the tour details.")
+                            else:
+                                st.success(f"✅ Modality `{modality_code}` pricing/schedule updated using code `{option_used_code}`.")
                             st.session_state.just_published_tour_code = target_tour_code
                             st.session_state.just_published_supplier_id = payloads["supplier_id"]
                             st.session_state.just_published_is_inactive = False

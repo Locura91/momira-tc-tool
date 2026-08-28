@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-28-transfer-transport-images"
+MODULE_BUILD = "2026-08-28-ticket-tour-update-scope-toggle"
 
 _PHASE_KEY = "pkr_phase"
 
