@@ -9608,13 +9608,51 @@ def render_ticket_price_refresh_flow(client):
                 st.markdown(f"- **{route.get('name')}**  ·  :green[{price_bits}] "
                            f"{route.get('currency') or ''}")
     if absent:
-        with st.expander(f"❓ {len(absent)} not found in the document"):
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "the human shall review if the matched
+        # tickets with the new documents are correct. Same as with transfers" - closing the one
+        # gap between this screen and render_price_refresh_flow's (Transfer/Transport) own
+        # "not found" section: a ticket the AI didn't match still gets a manual price + "Use"
+        # button here, exactly like a transfer/transport route does, instead of being a
+        # dead-end read-only list.
+        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
             st.caption("The document may price these under a code nobody matched, or the "
-                      "supplier may have dropped them.")
+                      "supplier may have dropped them. Pick the Modality's price yourself to "
+                      "update one anyway.")
             for p in absent:
                 route = p["route"]
-                st.markdown(f"- **{route.get('name')}**  ·  `{route.get('ticket_code')}/"
-                           f"{route.get('modality_code')}`")
+                mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
+                with mcol1:
+                    st.write(f"**{route.get('name')}**  ·  `{route.get('ticket_code')}/"
+                            f"{route.get('modality_code')}`")
+                    st.caption(", ".join(f"{o['min_pax']} pax now {o['unit_price']}"
+                                         for o in (route.get("options") or [])))
+                with mcol2:
+                    typed = st.number_input(
+                        "New adult price per person",
+                        min_value=0.0, step=1.0, value=0.0,
+                        # Token, same reason as the other tpr_ widgets - a hand-typed price from
+                        # a previous run must not reappear under a new run's route #0.
+                        key=f"tpr_manual_{p['index']}_{p.get('widget_token', 'g0')}",
+                        help="The widest occupancy bracket's new price. The solo bracket, if "
+                             "any, is recalculated from it using the same minimum-party rule.")
+                with mcol3:
+                    st.write("")
+                    if st.button("Use", key=f"tpr_use_{p['index']}", disabled=typed <= 0):
+                        widest = max(route.get("options") or [],
+                                     key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]),
+                                     default=None)
+                        if widest:
+                            manual = {"found": True, "minimum_pax": widest["min_pax"],
+                                      "confidence": "high", "note": "price entered by hand",
+                                      "matched_row": "entered by hand", "currency": "",
+                                      "brackets": [{"min_pax": widest["min_pax"],
+                                                    "max_pax": widest["max_pax"],
+                                                    "price": float(typed),
+                                                    "child_price": None, "infant_price": None}]}
+                            rebuilt = _stamp_proposal_widget_tokens(price_refresh.build_ticket_proposals(
+                                st.session_state.tpr_routes, {p["index"]: manual}))
+                            st.session_state.tpr_proposals[p["index"]] = rebuilt[p["index"]]
+                            st.rerun()
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
@@ -9673,7 +9711,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-27-outreach-select-all-place-themes"
+BUILD_VERSION = "2026-08-28-ticket-refresh-manual-match"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

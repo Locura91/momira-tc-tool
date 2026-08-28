@@ -380,3 +380,74 @@ def test_apply_reports_a_raised_exception_with_a_friendly_message():
     result = apply_ticket_proposals(_RaisingClient(), "999", [proposal])
     assert result["updated"] == []
     assert len(result["failed"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Manual "match by hand" for a Ticket the document didn't match (2026-08-28)
+#
+# CONFIRMED PRODUCT-OWNER REQUEST: "the human shall review if the matched tickets with the new
+# documents are correct. Same as with transfers" - closing the one gap between this screen and
+# render_price_refresh_flow's (Transfer/Transport) own "not found" section, which already lets a
+# human type a price by hand for a route the AI missed. The UI (app.py's tpr_use_ button) builds
+# exactly this finding shape - a single-bracket "found" finding at the widest live bracket - and
+# feeds it straight through build_ticket_proposals like any AI-found finding, so this is what
+# that button actually produces.
+# ---------------------------------------------------------------------------
+
+def _manual_finding(min_pax, max_pax, price):
+    return {"found": True, "minimum_pax": min_pax, "confidence": "high",
+            "note": "price entered by hand", "matched_row": "entered by hand", "currency": "",
+            "brackets": [{"min_pax": min_pax, "max_pax": max_pax, "price": price,
+                          "child_price": None, "infant_price": None}]}
+
+
+def test_manual_match_turns_a_not_in_document_ticket_into_a_changed_proposal():
+    opts = [{"code": "occ1", "min_pax": 1, "max_pax": 1, "unit_price": 45.0, "name": "1 pax"}]
+    route = _route("ALX-01", "MOD-A", opts)
+    # First pass: nothing found - lands in the "not found in the document" bucket.
+    absent = build_ticket_proposals([route], {0: _finding([], found=False)})
+    assert absent[0]["status"] == "not_in_document"
+
+    # The human types a price by hand for the same (only) bracket - "Use" builds a manual
+    # finding at that bracket and re-runs build_ticket_proposals for just this route.
+    manual = _manual_finding(1, 1, 60.0)
+    rebuilt = build_ticket_proposals([route], {0: manual})
+    assert rebuilt[0]["status"] == "changed"
+    assert rebuilt[0]["changes"][0]["old"] == 45.0
+    assert rebuilt[0]["changes"][0]["new"] == 60.0
+    assert rebuilt[0]["finding"]["matched_row"] == "entered by hand"
+
+
+def test_manual_match_picks_the_widest_bracket_like_transfer_transport_does():
+    # The UI always builds its manual finding from the WIDEST live bracket (max_pax - min_pax,
+    # tie-broken by the smallest min_pax) - same rule render_price_refresh_flow's own "Use"
+    # button uses. A 1-pax solo bracket must not be the one priced by hand when a wider group
+    # bracket also exists.
+    opts = [
+        {"code": "occ1", "min_pax": 1, "max_pax": 1, "unit_price": 90.0, "name": "1 pax"},
+        {"code": "occ2", "min_pax": 2, "max_pax": 6, "unit_price": 40.0, "name": "2-6 pax"},
+    ]
+    route = _route("ALX-01", "MOD-A", opts)
+    widest = max(opts, key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]))
+    assert (widest["min_pax"], widest["max_pax"]) == (2, 6)
+
+    manual = _manual_finding(widest["min_pax"], widest["max_pax"], 44.0)
+    rebuilt = build_ticket_proposals([route], {0: manual})
+    changed_codes = {c["code"]: c["new"] for c in rebuilt[0]["changes"]}
+    assert changed_codes["occ2"] == 44.0
+    # The 1-pax solo bracket is recalculated FROM the typed group price via the minimum-party
+    # rule (bracket_price_for), not left alone and not itself hand-typed.
+    assert changed_codes["occ1"] == 44.0 * 2
+
+
+def test_manual_match_only_touches_the_one_route_passed_to_it():
+    opts_a = [{"code": "occ1", "min_pax": 1, "max_pax": 1, "unit_price": 45.0, "name": "1 pax"}]
+    opts_b = [{"code": "occ1", "min_pax": 1, "max_pax": 1, "unit_price": 30.0, "name": "1 pax"}]
+    route_a = _route("ALX-01", "MOD-A", opts_a)
+    route_b = _route("ALX-02", "MOD-B", opts_b)
+    # Mirrors the UI: only route_a's index (0) is re-priced; route_b's own already-built
+    # proposal is left untouched by the caller, this just confirms build_ticket_proposals
+    # itself never reaches past the single index given a findings dict with one key.
+    manual_only_a = build_ticket_proposals([route_a, route_b], {0: _manual_finding(1, 1, 60.0)})
+    assert manual_only_a[0]["status"] == "changed"
+    assert manual_only_a[1]["status"] == "not_in_document"
