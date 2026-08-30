@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-outreach-learned-suppliers"
+MODULE_BUILD = "2026-08-30-ticket-language-options"
 
 import math
 import datetime
@@ -2086,6 +2086,17 @@ def build_ticket_payloads(
             includes=_ticket_includes,
             excludes=[strip_stray_html(e) for e in (extracted_ticket_data.get("excludes") or [])],
             activityType=extracted_ticket_data.get("activity_type"),
+            # CONFIRMED FIX (2026-08-30 audit, backlog item): TicketDatasheetEN.languageOptions was
+            # never populated - it silently fell back to its Pydantic default ([]) on every upload,
+            # even though the exact value it needs (_ticket_languages) is already extracted and
+            # already used for the Modality's own `languages` field two dozen lines below (see
+            # ContractTicketModalityVO(languages=_ticket_languages, ...)). Travel Compositor's
+            # "Language Options" tab is meant to read from this field - see ai_extractor.py's own
+            # comment on `languages` for that confirmed mapping. list(...) here for the same reason
+            # includes/excludes above build fresh lists: never share the same list object as the
+            # Modality's own languages= assignment, so editing one later can't silently mutate the
+            # other.
+            languageOptions=list(_ticket_languages),
         )
 
         main_ticket_kwargs = dict(

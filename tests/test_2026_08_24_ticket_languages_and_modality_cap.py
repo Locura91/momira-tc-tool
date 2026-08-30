@@ -53,6 +53,42 @@ def test_an_empty_languages_list_still_falls_back_to_english():
 
 
 # ---------------------------------------------------------------------------
+# CONFIRMED FIX (2026-08-30, backlog item picked by the product owner):
+# TicketDatasheetEN.languageOptions was never populated - it silently fell back to its
+# Pydantic default ([]) on every upload even though the exact value it needs
+# (_ticket_languages) was already extracted and already used for the Modality's own
+# `languages` field. This is a plumbing fix, not new extraction - same source value, wired
+# into the second field that also needs it.
+# ---------------------------------------------------------------------------
+
+def test_datasheet_language_options_matches_the_modality_languages():
+    data = minimal_ticket_data(languages=["EN", "DE"])
+    result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
+    assert result["main_ticket_payload"]["datasheets"]["EN"]["languageOptions"] == ["EN", "DE"]
+    # Both fields come from the same extracted value - they must never be able to disagree.
+    assert (result["main_ticket_payload"]["datasheets"]["EN"]["languageOptions"]
+            == result["ticket_option_payload"]["languages"])
+
+
+def test_datasheet_language_options_defaults_to_english_only_when_none_stated():
+    result = builder.build_ticket_payloads(make_pre_config(), minimal_ticket_data(), _FakeAPI())
+    assert result["main_ticket_payload"]["datasheets"]["EN"]["languageOptions"] == ["EN"]
+
+
+def test_datasheet_language_options_is_not_the_same_list_object_as_modality_languages():
+    # Regression guard for the list(...) defensive copy - editing one after the fact must never
+    # silently mutate the other.
+    data = minimal_ticket_data(languages=["EN", "FR"])
+    result = builder.build_ticket_payloads(make_pre_config(), data, _FakeAPI())
+    datasheet_options = result["main_ticket_payload"]["datasheets"]["EN"]["languageOptions"]
+    datasheet_options.append("ES")
+    # Re-run fresh rather than reusing the same result dict - confirms the mutation above
+    # didn't leak into extraction's own input data for a second call either.
+    result2 = builder.build_ticket_payloads(make_pre_config(), minimal_ticket_data(languages=["EN", "FR"]), _FakeAPI())
+    assert result2["main_ticket_payload"]["datasheets"]["EN"]["languageOptions"] == ["EN", "FR"]
+
+
+# ---------------------------------------------------------------------------
 # Ticket creation caps at one Modality - build_ticket_modality_combinations itself is
 # unchanged (still generates every combination); the app now always calls it with
 # max_modalities=1, which these tests exercise directly.
