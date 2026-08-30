@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
+MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
 
 import re
 import math
@@ -43,10 +43,7 @@ from web_extractor import get_page_image_bytes
 # these document images are licensed "for the website only" and a third-party public host is a
 # second, independent distribution channel outside your control. Same interface, drop-in swap -
 # see r2_client.py's module docstring for the one-time Cloudflare setup this requires.
-from r2_client import (
-    upload_images as upload_images_r2,
-    upload_images_with_errors as upload_images_r2_with_errors,
-)
+from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from ai_extractor import friendly_error_message
 
 SUPPLEMENT_COLUMNS = ["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
@@ -983,22 +980,36 @@ def _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls):
     an upload attempt to R2 (your private bucket) so it can also show up pre-hosted,
     one click away, instead of needing a manual "Upload & Add" - matching
     the exact fallback pattern document images already use.
-    """
+
+    Returns a list of "filename: reason" strings, one per image that failed to upload to R2 -
+    empty when everything uploaded cleanly. CONFIRMED FIX (2026-08-30, reported: "images found
+    in your document/page... not working at all" - every one of 12 candidates unusable, with no
+    error shown anywhere): this used to call upload_images_r2 (the silent-skip variant) inside a
+    bare `except Exception: pass`, so a genuine R2 problem - most commonly the bucket's PUBLIC
+    ACCESS setting never having been enabled in Cloudflare (a separate manual step from the
+    write credentials this app authenticates with - see r2_client.py's own setup docs, step 3 -
+    uploads can succeed via the authenticated API while the resulting public URL is still
+    unreachable by anyone else, including this app's own picker) - looked EXACTLY like a normal
+    "0 real images on this page" result, with the human never told why. Switched to
+    upload_images_r2_with_errors so a real failure reason reaches the screen instead of vanishing.
+    Callers should show `errors` in a warning when non-empty."""
     if not url:
-        return
+        return []
     try:
         page_images_bytes = get_page_image_bytes(url)
     except Exception:
         page_images_bytes = []
     if not page_images_bytes:
-        return
+        return []
     doc_raw_images.extend(page_images_bytes)
     try:
-        doc_image_urls.extend(upload_images_r2(
+        new_urls, errors = upload_images_r2_with_errors(
             [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg") for fname, img_bytes in page_images_bytes]
-        ))
-    except Exception:
-        pass
+        )
+        doc_image_urls.extend(new_urls)
+    except Exception as e:
+        errors = [f"R2 upload failed entirely: {e}"]
+    return errors
 
 
 def render_url_image_picker(image_urls, state_prefix):

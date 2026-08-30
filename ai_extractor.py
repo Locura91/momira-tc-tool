@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
+MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
 
 import os
 import re
@@ -2531,12 +2531,25 @@ Extract:
   WHAT DOES *NOT* BELONG HERE: anything the supplier PROVIDES (that's `includes`) and anything the
   customer must PAY for (that's excludes/supplements).
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
-  fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
-  place name so it can be properly located. If the source only says pickup is from the guest's own
-  hotel/accommodation (varies per guest, no fixed place - e.g. "Pick up from Accommodation") OR gives
-  no meeting point at all, use exactly {"description": "Hotel Lobby", "variable_location": true} as the
-  default - this matches the standard default used across all products, so it doesn't get incorrectly
-  geocoded as if it were one specific fixed location.
+  fixed meeting point (a named train station, monument, landmark, marina/jetty, meeting square, hotel by
+  name, etc.), use that exact place name so it can be properly located.
+  CONFIRMED REAL MISS (product report, 2026-08-30 - a boat excursion page that names a specific departure
+  marina AND separately offers hotel pickup): a named fixed location ALWAYS takes priority over the generic
+  Hotel Lobby default, even when the source ALSO offers complimentary hotel pickup/transfer to get there.
+  This is a very common pattern for boat/marina excursions and multi-stop tours: guests are collected from
+  their hotel, then driven/transferred to a named marina, jetty, meeting point, or muster station where the
+  activity actually begins - that named place is the real meeting point; the hotel pickup is only the
+  transfer service that gets them there, not a substitute for it. Read the WHOLE source (including any
+  itinerary/schedule table, not just an explicit "Meeting Point" heading) for a specific departure place
+  name before concluding there isn't one - it is often stated as a departure time/location row (e.g. "10:00
+  - Departs [Named Marina]") rather than under its own heading.
+  Only fall back to the guest's own hotel/accommodation as the meeting point when the source gives NO
+  separate named place at all - i.e. pickup is described purely as "from your hotel"/"from your
+  accommodation" with nothing else stated (varies per guest, no fixed place - e.g. "Pick up from
+  Accommodation"), or the source gives no meeting point information at all. In that case only, use exactly
+  {"description": "Hotel Lobby", "variable_location": true} as the default - this matches the standard
+  default used across all products, so it doesn't get incorrectly geocoded as if it were one specific fixed
+  location.
 - meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
 - duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
   (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
@@ -3064,12 +3077,25 @@ Extract:
   WHAT DOES *NOT* BELONG HERE: anything the supplier PROVIDES (that's `includes`) and anything the
   customer must PAY for (that's excludes/supplements).
 - meeting_points: list of {"description": "plain place/location name"}. If the source mentions a SPECIFIC
-  fixed meeting point (a named train station, monument, landmark, hotel by name, etc.), use that exact
-  place name so it can be properly located. If the source only says pickup is from the guest's own
-  hotel/accommodation (varies per guest, no fixed place - e.g. "Pick up from Accommodation") OR gives
-  no meeting point at all, use exactly {"description": "Hotel Lobby", "variable_location": true} as the
-  default - this matches the standard default used across all products, so it doesn't get incorrectly
-  geocoded as if it were one specific fixed location.
+  fixed meeting point (a named train station, monument, landmark, marina/jetty, meeting square, hotel by
+  name, etc.), use that exact place name so it can be properly located.
+  CONFIRMED REAL MISS (product report, 2026-08-30 - a boat excursion page that names a specific departure
+  marina AND separately offers hotel pickup): a named fixed location ALWAYS takes priority over the generic
+  Hotel Lobby default, even when the source ALSO offers complimentary hotel pickup/transfer to get there.
+  This is a very common pattern for boat/marina excursions and multi-stop tours: guests are collected from
+  their hotel, then driven/transferred to a named marina, jetty, meeting point, or muster station where the
+  activity actually begins - that named place is the real meeting point; the hotel pickup is only the
+  transfer service that gets them there, not a substitute for it. Read the WHOLE source (including any
+  itinerary/schedule table, not just an explicit "Meeting Point" heading) for a specific departure place
+  name before concluding there isn't one - it is often stated as a departure time/location row (e.g. "10:00
+  - Departs [Named Marina]") rather than under its own heading.
+  Only fall back to the guest's own hotel/accommodation as the meeting point when the source gives NO
+  separate named place at all - i.e. pickup is described purely as "from your hotel"/"from your
+  accommodation" with nothing else stated (varies per guest, no fixed place - e.g. "Pick up from
+  Accommodation"), or the source gives no meeting point information at all. In that case only, use exactly
+  {"description": "Hotel Lobby", "variable_location": true} as the default - this matches the standard
+  default used across all products, so it doesn't get incorrectly geocoded as if it were one specific fixed
+  location.
 - meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
 - duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
   (NOT how many days a pass is valid for). Use 0/"HOURS" if unclear.

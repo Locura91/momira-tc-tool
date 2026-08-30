@@ -158,6 +158,26 @@ from package_rollover_tool import render_package_rollover_tool
 FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
 
+
+def _warn_page_image_upload_errors(errors):
+    """Shows whatever _add_page_images_to_doc_pool's return value reports, right after every
+    call site. CONFIRMED FIX (2026-08-30, reported: page images "not working at all" - every
+    one of a page's found images unusable, with nothing on screen explaining why): a failed R2
+    upload used to be swallowed silently, so this is the one place that turns "images found (N)"
+    quietly showing N images that don't actually work into an explicit, actionable message -
+    most often pointing at R2's PUBLIC ACCESS setting (a separate, easy-to-miss one-time
+    Cloudflare step from the write credentials - see r2_client.py's setup docs) rather than
+    anything wrong with the source page itself."""
+    if not errors:
+        return
+    st.warning(
+        f"⚠️ {len(errors)} image(s) found on the page failed to upload and won't work in the "
+        f"picker below: {errors[0]}" + (f" (+{len(errors) - 1} more)" if len(errors) > 1 else "") +
+        ". If this keeps happening for every page/document, check that your R2 bucket's "
+        "**Public Access** is actually enabled in Cloudflare (Settings → Public access) - "
+        "uploading can succeed even when the resulting URL isn't publicly reachable."
+    )
+
 # Session-state key prefixes used ONLY by the shared editable_field/
 # editable_table widget helpers - never by any flow's own phase/queue
 # control state (mct_phase, mm_queue, tk_..., etc. never start with any of
@@ -717,7 +737,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     # Fold any images found on the page into the SAME pool as
                     # document-embedded images (downloaded server-side, not
                     # hotlinked) - see _add_page_images_to_doc_pool's docstring.
-                    _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls)
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
 
                     # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
                     # if every image already got a real URL, showing them again in a second
@@ -3827,7 +3847,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                       "modality_name": "Standard",
                                       "selected": True, "is_genuine_variant": False}]
 
-                    _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
 
                     if len(doc_image_urls) >= len(doc_raw_images):
                         doc_raw_images = []
@@ -5043,7 +5063,7 @@ def render_ticket_flow(client):
                         st.session_state.tk_raw_preview = raw_text
                         st.session_state.tk_payloads = None
                         _tk_clear_geo_confirmation()
-                        _add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls)
+                        _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
                         st.session_state.tk_doc_raw_images = doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                         st.success("Extraction complete. Review and edit below.")
@@ -5106,7 +5126,7 @@ def render_ticket_flow(client):
                         _tk_clear_geo_confirmation()
                         pending_doc_raw_images = list(st.session_state.get("tk_pending_doc_raw_images", []))
                         pending_doc_image_urls = list(st.session_state.get("tk_pending_doc_images", []))
-                        _add_page_images_to_doc_pool(tk_pending_url, pending_doc_raw_images, pending_doc_image_urls)
+                        _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_pending_url, pending_doc_raw_images, pending_doc_image_urls))
                         st.session_state.tk_doc_raw_images = pending_doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
                         st.session_state.tk_pending_variants = None
@@ -5166,7 +5186,7 @@ def render_ticket_flow(client):
                     st.session_state.mt_raw_text = st.session_state.tk_pending_raw_text
                     mt_pending_doc_raw_images = list(st.session_state.get("tk_pending_doc_raw_images", []))
                     mt_pending_doc_image_urls = list(st.session_state.get("tk_pending_doc_images", []))
-                    _add_page_images_to_doc_pool(tk_pending_url, mt_pending_doc_raw_images, mt_pending_doc_image_urls)
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_pending_url, mt_pending_doc_raw_images, mt_pending_doc_image_urls))
                     st.session_state.mt_doc_raw_images = mt_pending_doc_raw_images
                     st.session_state.mt_hosted_image_candidates = list(dict.fromkeys(mt_pending_doc_image_urls))
                     st.session_state.mt_queue = new_mt_queue
@@ -10136,7 +10156,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-30-hotel-matching-fixes"
+BUILD_VERSION = "2026-08-30-meeting-point-named-location-priority"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10152,7 +10172,7 @@ def _module_build_mismatches():
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
                  "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope",
                  "ui_components", "trip_idea_tool", "package_rollover_tool", "cancellation_links",
-                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher"):
+                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher", "web_extractor"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -11086,7 +11106,7 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
-                    _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls)
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
                     st.session_state.doc_raw_images = doc_raw_images
                     st.session_state.hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     st.success("Extraction complete. Review and edit below.")
@@ -11151,7 +11171,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
                     st.session_state.payloads = None
                     pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
                     pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
-                    _add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls)
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls))
                     st.session_state.doc_raw_images = pending_doc_raw_images
                     st.session_state.hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
                     st.session_state.pending_variants = None
@@ -11191,7 +11211,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 st.session_state.mct_raw_text = st.session_state.pending_raw_text
                 mct_pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
                 mct_pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
-                _add_page_images_to_doc_pool(pending_url, mct_pending_doc_raw_images, mct_pending_doc_image_urls)
+                _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, mct_pending_doc_raw_images, mct_pending_doc_image_urls))
                 st.session_state.mct_doc_raw_images = mct_pending_doc_raw_images
                 st.session_state.mct_hosted_image_candidates = list(dict.fromkeys(mct_pending_doc_image_urls))
                 st.session_state.mct_queue = new_mct_queue

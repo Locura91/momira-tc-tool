@@ -22,6 +22,13 @@ Usage:
     python web_extractor.py <URL> --supplier 48940 --provider-code ASW-1 --currency EUR
     python web_extractor.py <URL> --supplier 48940 --provider-code ASW-1 --currency EUR --publish
 """
+
+# Stamped on every delivery - see platform_store.py's own header for why. CONFIRMED FIX
+# (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
+# updated every other file but this one would have gone undetected by app.py's own
+# _module_build_mismatches() check. Added here and to that check's module list together.
+MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
+
 import argparse
 import json
 import requests
@@ -176,6 +183,34 @@ def get_page_images(target_url: str) -> list:
     return extracted_images
 
 
+def _looks_like_real_image(content: bytes) -> bool:
+    """True only if `content` genuinely starts with a recognized image file signature.
+
+    CONFIRMED REAL GAP (2026-08-30, reported: images scraped from a page "not working at all"
+    in the picker, even though the download itself returned HTTP 200 and non-empty bytes for
+    every candidate): `res.raise_for_status()` only catches HTTP error status codes - it says
+    nothing about whether the 200 response body is actually an image. A site's bot-protection
+    or hotlink-protection layer commonly returns a 200 with an HTML challenge/"access denied"
+    page (or a tiny 1x1 tracking pixel) exactly where a real photo was expected, and neither of
+    those raises an exception anywhere in this pipeline - they'd previously sail straight
+    through, get uploaded to R2 as "successful," and then fail to render as an image in the
+    picker with no error anywhere pointing at why. Checking the actual byte signature (not the
+    server's own, sometimes-wrong Content-Type header) is what every real image format
+    guarantees, regardless of what any header claims."""
+    head = (content or b"")[:16]
+    if head.startswith(b"\xff\xd8\xff"):              # JPEG
+        return True
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):          # PNG
+        return True
+    if head.startswith((b"GIF87a", b"GIF89a")):        # GIF
+        return True
+    if head.startswith(b"BM"):                          # BMP
+        return True
+    if head[:4] == b"RIFF" and (content or b"")[8:12] == b"WEBP":  # WEBP
+        return True
+    return False
+
+
 def get_page_image_bytes(target_url: str) -> list:
     """
     Same discovery logic as get_page_images(), but DOWNLOADS each image's
@@ -218,6 +253,11 @@ def get_page_image_bytes(target_url: str) -> list:
         except requests.RequestException:
             continue
         if not res.content:
+            continue
+        if not _looks_like_real_image(res.content):
+            # A 200 response that isn't actually a photo - a bot/hotlink-protection challenge
+            # page, a tracking pixel, a redirect target - see _looks_like_real_image's docstring.
+            # Skipped exactly like a failed download, not treated as a found image.
             continue
 
         path_only = img_url.split("?", 1)[0].split("#", 1)[0]
