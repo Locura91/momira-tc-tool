@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
+MODULE_BUILD = "2026-08-30-outreach-learned-suppliers"
 
 import os
 import re
@@ -68,6 +68,11 @@ from bs4 import BeautifulSoup
 from outreach_memory import (extract_domain as _extract_domain, get_blocklist,
                              add_domain_to_blocklist, remove_domain_from_blocklist,
                              is_blocked)
+# Suppliers a human added by hand in an earlier session, remembered per (country, theme) - see
+# that module's own docstring for the two things this is used for below: resurfacing them
+# straight into this search's results, and calibrating AI verification's judgment on NEW
+# candidates for the same country/theme.
+from outreach_learned_suppliers import resurface_remembered_suppliers
 
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "the tool needs more time to find the correct
 # email address" - raised again (was 8, then 15) after a real report of bad/empty results that
@@ -1614,18 +1619,39 @@ def is_ai_verification_enabled() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-def _build_verification_prompt(candidates: List[Dict[str, Any]], country: str, keyword: str) -> str:
+def _build_verification_prompt(candidates: List[Dict[str, Any]], country: str, keyword: str,
+                               known_examples: Optional[List[Dict[str, Any]]] = None) -> str:
     listing = "\n\n".join(
         f"{i + 1}. id=\"{c.get('id')}\"\n   name: {c.get('name')}\n   source: {c.get('source')}\n"
         f"   url: {c.get('sourceUrl')}\n   snippet: {(c.get('snippet') or '')[:300]}"
         for i, c in enumerate(candidates)
     )
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): "the App can learn which suppliers are
+    # needed and to improve the search results" - part of that is calibration, not just recall.
+    # A supplier a human already added by hand for this exact country/theme is real evidence of
+    # what a genuine match looks like HERE specifically (a real business name, a real domain
+    # shape), on top of the generic instructions above. Capped at 8 - this is calibration
+    # context for judging OTHER candidates, not something that should crowd out the actual
+    # candidate listing on a country/theme with a long remembered history.
+    examples_block = ""
+    if known_examples:
+        examples_listing = "\n".join(
+            f"- {e.get('name')}" + (f" ({e.get('website')})" if e.get("website") else "")
+            for e in known_examples[:8]
+        )
+        examples_block = (
+            f'\nFor reference, a human has already manually confirmed these ARE genuine, in-country direct '
+            f'suppliers for this same "{keyword}" search in {country}:\n{examples_listing}\n'
+            f'Use them ONLY to calibrate what a real match looks like for this country/theme - they are not '
+            f'candidates to verify themselves and will not appear in the candidate list below.\n'
+        )
     return (
         f'You are an expert travel industry procurement assistant. A search for local travel suppliers in '
         f'"{country}" offering "{keyword}" (or related tours, sightseeing, adventures, transfers, excursions, '
         f'round trips, seat-in-coach (SIC), or hotel accommodation) returned the raw candidates below, pulled '
         f'from search snippets. Some may be forum posts, articles, unrelated businesses, or based outside '
-        f'{country} - your job is to judge each one.\n\n'
+        f'{country} - your job is to judge each one.\n'
+        f'{examples_block}\n'
         f'Important: DMCs (Destination Management Companies), local travel agencies, tour operators, and private '
         f'tour guides are ALL valid direct suppliers. Prefer to keep a candidate if it looks like a legitimate '
         f'travel business with a website, even if the snippet is sparse. Only reject if it is clearly an OTA '
@@ -1642,10 +1668,15 @@ def _build_verification_prompt(candidates: List[Dict[str, Any]], country: str, k
     )
 
 
-def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: str) -> Optional[Dict[str, Any]]:
+def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: str,
+                      known_examples: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """Returns {candidate_id: verdict} on success, or None if AI verification is
     disabled/unavailable/failed - callers treat None as "skip this step, rely on the
-    rule-based filters that already ran"."""
+    rule-based filters that already ran".
+
+    `known_examples` - suppliers a human already vetted by hand for this exact country/theme
+    (see outreach_learned_suppliers.resurface_remembered_suppliers) - passed through to the
+    prompt as calibration reference only; see _build_verification_prompt's own docstring."""
     if not is_ai_verification_enabled() or not candidates:
         return None
     try:
@@ -1661,7 +1692,8 @@ def verify_candidates(candidates: List[Dict[str, Any]], country: str, keyword: s
             max_tokens=8192,
             tools=[VERIFY_TOOL],
             tool_choice={"type": "tool", "name": "report_verification"},
-            messages=[{"role": "user", "content": _build_verification_prompt(candidates, country, keyword)}],
+            messages=[{"role": "user", "content": _build_verification_prompt(
+                candidates, country, keyword, known_examples)}],
         )
         tool_use = next((b for b in response.content if getattr(b, "type", None) == "tool_use"), None)
         if not tool_use or not isinstance(getattr(tool_use, "input", None), dict) \
@@ -1714,6 +1746,12 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
 
     # Load the user blocklist once per search
     user_blocklist = get_blocklist()
+
+    # Suppliers a human already added by hand for this EXACT (country, keyword) combination in
+    # an earlier session (see outreach_learned_suppliers' own docstring) - computed once, up
+    # front, and used twice below: as calibration reference for AI verification, and merged
+    # straight into the final result list so they don't have to be found (or re-added) again.
+    remembered_suppliers = resurface_remembered_suppliers(country, keyword)
 
     queries = build_queries(country, city, keyword)
     candidates: List[Dict[str, Any]] = []
@@ -1853,7 +1891,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     ai_dropped = 0
     if is_ai_verification_enabled():
         report("Verifying candidates with AI…")
-        verdicts = verify_candidates(deduped, country, keyword)
+        verdicts = verify_candidates(deduped, country, keyword, known_examples=remembered_suppliers)
         if verdicts:
             before = len(deduped)
             surviving = []
@@ -1899,10 +1937,29 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
 
     suppliers = dedupe_suppliers_by_contact(suppliers)
 
+    # ---- Resurface suppliers a human already vetted by hand for this exact combination ----
+    # Merged through the SAME contact-based dedupe pass, not just appended - a remembered
+    # supplier the automated search also independently found again this run must collapse into
+    # ONE row (keeping whichever side has richer data), never show up twice. The delta in count
+    # before/after is an exact count of how many remembered suppliers actually added a NEW row
+    # this run (as opposed to merging into one the automated search already found).
+    remembered_added = 0
+    if remembered_suppliers:
+        before_remember_merge = len(suppliers)
+        suppliers = dedupe_suppliers_by_contact(suppliers + remembered_suppliers)
+        remembered_added = len(suppliers) - before_remember_merge
+
     # Direct email is what the outreach campaign runs on, so suppliers with one are
     # surfaced first. Within that, own website ranks above social-only - own site is
     # the priority channel. Only then does rating decide; a missing rating isn't a red
     # flag on its own, it just means there's no number to sort by.
+    #
+    # NOTE: a remembered supplier is sorted and capped exactly like anything else here, so on a
+    # combination that already returns a full page of highly-rated automated results, a
+    # remembered one COULD still be cut by max_results below. Not special-cased to bypass the
+    # cap - remembered supplier counts per combination are small in practice (a handful, not a
+    # page), and exempting them from the same cap/sort rules other suppliers use would be a
+    # bigger, less predictable change than the "don't make me re-add this" problem calls for.
     suppliers.sort(key=lambda s: (
         0 if s.get("email") else 1,
         0 if s.get("website") else 1,
@@ -1926,5 +1983,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
             "used_mock_provider": not (os.getenv("TAVILY_API_KEY") or os.getenv("SERPAPI_API_KEY")),
             "provider_error_count": len(provider_errors),
             "provider_error_sample": provider_errors[0] if provider_errors else None,
+            "remembered_available": len(remembered_suppliers),
+            "remembered_added": remembered_added,
         },
     }

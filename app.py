@@ -10156,7 +10156,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-30-meeting-point-named-location-priority"
+BUILD_VERSION = "2026-08-30-outreach-learned-suppliers"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10172,7 +10172,8 @@ def _module_build_mismatches():
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
                  "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope",
                  "ui_components", "trip_idea_tool", "package_rollover_tool", "cancellation_links",
-                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher", "web_extractor"):
+                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher", "web_extractor",
+                 "outreach_learned_suppliers"):
         try:
             mod = importlib.import_module(name)
         except Exception:

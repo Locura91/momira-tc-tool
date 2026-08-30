@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
+MODULE_BUILD = "2026-08-30-outreach-learned-suppliers"
 
 _PHASE_KEY = "pkr_phase"
 

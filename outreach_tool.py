@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-meeting-point-named-location-priority"
+MODULE_BUILD = "2026-08-30-outreach-learned-suppliers"
 
 import csv
 import io
@@ -63,7 +63,8 @@ import pandas as pd
 import outreach_discovery as od
 import outreach_email as oe
 import outreach_followups as ofw
-import outreach_memory as om  # new learning module
+import outreach_learned_suppliers as oln  # remembers suppliers added by hand - see its own docstring
+import outreach_memory as om  # domain blocklist
 import outreach_scope as osc
 
 _PHASE_KEY = "or_phase"
@@ -328,7 +329,8 @@ def _merge_one_job_result(merged, seen, stats, label, result, drop_log=None):
     real businesses, rejected them) without re-running as a single search instead. Now every
     combination's full stats and drop_log merge in, so the same breakdown lights up here too."""
     for key in ("raw", "after_prefilter", "after_vetting", "after_dedupe",
-                "ai_dropped", "no_contact_dropped", "final", "provider_error_count"):
+                "ai_dropped", "no_contact_dropped", "final", "provider_error_count",
+                "remembered_available", "remembered_added"):
         stats[key] = stats.get(key, 0) + result["stats"].get(key, 0)
     stats["used_mock_provider"] = stats["used_mock_provider"] or result["stats"].get("used_mock_provider", False)
     # CONFIRMED REAL INCIDENT (2026-08-25): a Morocco run came back "0 raw results" across all
@@ -408,6 +410,7 @@ def _init_queue_run(queue):
         "raw": 0, "after_prefilter": 0, "after_vetting": 0, "after_dedupe": 0,
         "ai_dropped": 0, "no_contact_dropped": 0, "final": 0, "used_mock_provider": False,
         "provider_error_count": 0, "provider_error_sample": None,
+        "remembered_available": 0, "remembered_added": 0,
     }
     st.session_state.or_queue_drop_log = []
     st.session_state.or_queue_failures = []
@@ -479,10 +482,25 @@ def _render_search():
         )
         result["suppliers"] = _mark_already_contacted(result["suppliers"])
         st.session_state.or_result = result
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): "the App can learn which suppliers are
+        # needed" from a manual add - see outreach_learned_suppliers.py. A merged Country-Scope
+        # run has no single (country, theme) to attribute a hand-added supplier to (that's
+        # exactly why "keyword" below collapses to a vague summary string), so every DISTINCT
+        # combination actually searched in this run is kept here instead - bounded to what was
+        # really searched, not the whole country's theme list, and not a blind guess either.
+        seen_combos = set()
+        combinations = []
+        for job in st.session_state.or_queue_full:
+            combo_key = (job["country"].strip().lower(), (job.get("keyword") or "").strip().lower())
+            if combo_key in seen_combos:
+                continue
+            seen_combos.add(combo_key)
+            combinations.append({"country": job["country"], "keyword": job.get("keyword") or ""})
         st.session_state.or_session = {
             "country": st.session_state.or_queue_full[0]["country"],
             "city": "",
             "keyword": f"{total} place/theme combination(s)",
+            "combinations": combinations,
         }
         st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
         for key in ("or_queue_running", "or_queue_full", "or_queue_pos", "or_queue_merged",
@@ -566,10 +584,14 @@ def _render_search():
         progress_box.empty()
         result["suppliers"] = _mark_already_contacted(result["suppliers"])
         st.session_state.or_result = result
+        # A plain Country/City/Keyword search maps to exactly one (country, theme) combination -
+        # see the matching or_session assignment in _render_search's Country-Scope branch above
+        # for why this list exists at all.
         st.session_state.or_session = {
             "country": country.strip(),
             "city": city.strip(),
             "keyword": keyword.strip(),
+            "combinations": [{"country": country.strip(), "keyword": keyword.strip()}],
         }
         st.session_state.or_template = dict(oe.DEFAULT_TEMPLATE)
         st.session_state[_PHASE_KEY] = "review"
@@ -690,6 +712,27 @@ def _apply_review_table_edits(suppliers, diff):
     return rebuilt
 
 
+def _remember_manually_added_suppliers(suppliers, combinations):
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): "whenever the human is adding manually
+    suppliers, so the App can learn which suppliers are needed and to improve the search
+    results." Every supplier on this review screen that carries addedManually=True - however it
+    got there, the "Add a supplier by hand" expander or a blank row typed directly into the
+    table - is remembered under EVERY (country, theme) combination this review screen's search
+    actually covered (see or_session["combinations"], built where the search was launched).
+
+    Deliberately called on every rerun of the review screen, not just once at the moment of
+    adding - see outreach_learned_suppliers.remember_supplier's own docstring for why that has
+    to be a safe, cheap no-op for a supplier already remembered, rather than something this
+    caller needs to track "did I already save this one" state for itself."""
+    if not combinations:
+        return
+    for s in suppliers:
+        if not s.get("addedManually"):
+            continue
+        for combo in combinations:
+            oln.remember_supplier(combo["country"], combo["keyword"], s)
+
+
 def _summarize_send_log(send_log):
     """Pure decision logic for the post-send banner - factored out of _render_review_and_send so
     it's testable without a Streamlit runtime.
@@ -764,6 +807,11 @@ def _render_review_and_send():
 
     if not suppliers:
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
+
+    if stats.get("remembered_added"):
+        st.caption(f"🧠 {stats['remembered_added']} of these were remembered from a supplier you "
+                   f"added by hand in an earlier search for the same country/theme — no need to "
+                   f"add them again.")
 
     # ---- Manual add ----
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "if the outreach is not good, the human
@@ -857,6 +905,9 @@ def _render_review_and_send():
         # own docstring for why this reads the editor's diff rather than comparing dataframes.
         suppliers = _apply_review_table_edits(suppliers, st.session_state.get("or_editor") or {})
         result["suppliers"] = suppliers
+
+        # ---- LEARNING: remember anyone added by hand, for next time ----
+        _remember_manually_added_suppliers(suppliers, session.get("combinations"))
 
         # ---- LEARNING: Block domains of unticked suppliers ----
         st.divider()
@@ -963,6 +1014,41 @@ def _render_review_and_send():
                                 st.session_state["or_block_result"] = (
                                     f"⚠️ `{domain}` could NOT be removed — the blocklist may not have "
                                     f"been written. Check the Memory line at the bottom of the page.")
+                            st.rerun()
+
+        # ---- Optional: Show what the tool has learned from manual adds ----
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): symmetric to "Show current blocklist"
+        # above - the same reasoning applies (see that section's own comment): a list every
+        # future search reads from needs to be visible and correctable, not just a black box
+        # that silently changes what shows up.
+        with st.expander("🧠 Show what's been learned from manual adds"):
+            learned = oln.list_all()
+            if st.session_state.get("or_learned_result"):
+                st.success(st.session_state.pop("or_learned_result"))
+            if not learned:
+                st.caption("Nothing remembered yet — add a supplier by hand above and it will show "
+                           "up here, tagged with the country/theme it was added for.")
+            else:
+                st.caption(f"{len(learned)} supplier(s) remembered from manual adds. Each one "
+                           f"automatically appears again in a future search for the exact same "
+                           f"country + theme it was added for.")
+                for entry in learned:
+                    lc1, lc2 = st.columns([4, 1])
+                    with lc1:
+                        where = " · ".join(x for x in (entry["country"], entry["theme"]) if x)
+                        contact = entry["email"] or entry["website"] or "no contact saved"
+                        st.write(f"**{entry['name']}** — {where}")
+                        st.caption(contact)
+                    with lc2:
+                        if st.button("🗑️ Forget", key=f"or_forget_{entry['id']}"):
+                            if oln.forget_supplier(entry["country"], entry["theme"], entry["id"]):
+                                st.session_state["or_learned_result"] = (
+                                    f"Forgot {entry['name']} for {where} — it won't be "
+                                    f"auto-resurfaced any more.")
+                            else:
+                                st.session_state["or_learned_result"] = (
+                                    f"⚠️ Could not remove {entry['name']} — check the Memory line "
+                                    f"at the bottom of the page.")
                             st.rerun()
 
     if stats.get("dropped_over_cap"):
