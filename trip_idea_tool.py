@@ -28,7 +28,7 @@ import ai_extractor
 import trip_prompt_extractor as tpe
 import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-28-transport-cancellation-bulk-update"
+MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
 
 _PHASE_KEY = "ti_phase"
 

@@ -51,7 +51,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-08-28-transport-cancellation-bulk-update"
+MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,7 +67,14 @@ from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text,
 # shape this module (and cancellation_links.py) use everywhere else.
 _HOUSE_DEFAULT_TIERS = [{"days": 30, "fee_percentage": 0.0}]
 
-_P_BLOCK_RE = re.compile(r"<p>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+# [^>]* tolerates attributes on the tag itself (Travel Compositor's own editor writes
+# "<p dir=\"ltr\">..." when a paragraph has been hand-edited there) - a bare r"<p>(.*?)</p>"
+# would silently fail to match such a paragraph, sending _swap_cancellation_paragraph down its
+# "no existing paragraph found" INSERT path instead of REPLACE, leaving the old cancellation
+# sentence live in the description right next to the new one. CONFIRMED real via a 2026-08-30
+# audit subagent + direct trace, not hypothetical - Travel Compositor's editor does emit
+# attributed <p> tags.
+_P_BLOCK_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
 
 
 def default_new_tiers(supplier_id: str) -> Tuple[List[Dict[str, Any]], str]:
@@ -198,12 +205,22 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
     new_ranges = _cancellation_ranges_from_tiers(clean_new) or [(30, 100.0)]
     new_wire = [{"days": d, "percentage": p, "isBeforeStart": True} for d, p in new_ranges]
     new_text = _cancellation_voucher_text(None, new_ranges)
+    # What actually gets APPLIED (and so what the human should be shown and what `unchanged`
+    # must compare against) is new_wire after the 30-day/100%-refund floor above - not the raw
+    # clean_new the human typed. cancellation_links.set_supplier_link/set_type_link do not
+    # enforce that floor at save time (only _clean_tiers runs there), so a saved link can read
+    # e.g. {days:14, fee_percentage:0} even though applying it here always floors to
+    # {days:30, fee_percentage:0}. Comparing `unchanged` against the pre-floor clean_new could
+    # mark a row unchanged (and default its checkbox off) when applying the policy would in
+    # fact change the live record. CONFIRMED real via a 2026-08-30 audit subagent + direct
+    # trace of cancellation_links.py's save path.
+    new_fee_tiers = _wire_ranges_to_fee_tiers(new_wire)
 
     proposals = []
     for row in rows:
         new_description_html, existing_found = _swap_cancellation_paragraph(row["description_html"], new_text)
         unchanged = (
-            _tiers_equal(row["current_fee_tiers"], clean_new)
+            _tiers_equal(row["current_fee_tiers"], new_fee_tiers)
             and (row["current_cancellation_snippet"] or "").strip() == new_text.strip()
         )
         proposals.append({
@@ -213,7 +230,7 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
             "arrival_code": row["arrival_code"],
             "current_fee_tiers": row["current_fee_tiers"],
             "current_cancellation_snippet": row["current_cancellation_snippet"],
-            "new_fee_tiers": clean_new,
+            "new_fee_tiers": new_fee_tiers,
             "new_cancellation_text": new_text,
             "new_ranges_wire": new_wire,
             "new_description_html": new_description_html,

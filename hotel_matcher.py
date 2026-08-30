@@ -28,11 +28,37 @@ seasonRoomPrices, offers, supplements, stopSales all at once), so matching
 can always be done live against a fresh GET rather than needing an app-side
 memory of past uploads.
 """
+
+# Stamped on every delivery - see platform_store.py's own header for why. CONFIRMED FIX
+# (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
+# updated every other file but this one would have gone undetected by app.py's own
+# _module_build_mismatches() check. Added here and to that check's module list together.
+MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
+
+import re
+import unicodedata
 from typing import List, Optional
 
 
 def _norm(s: Optional[str]) -> str:
-    return (s or "").strip().lower()
+    """Normalizes a name for matching - case/outer-whitespace-insensitive as before. CONFIRMED
+    FIX (2026-08-30 audit, known issue flagged in full-app-audit-2026-08-28.md): also
+    NFKC-normalizes Unicode (so a smart quote, full-width character, or combining-accent variant
+    of the same text compares equal) and collapses any run of INTERNAL whitespace - a double
+    space, a tab, a stray newline left over from PDF text extraction - down to one. Before this,
+    a room name re-typed with a double space, or extracted with a tab where a space should be,
+    silently failed to match the existing room by name - treating an unchanged room as brand-new,
+    losing its real providerCode, and creating a duplicate room in Travel Compositor instead of
+    updating the existing one (same failure mode for rates/seasons/offers, which all reuse this
+    function).
+
+    Deliberately stops short of fuzzy/similarity matching (e.g. Levenshtein distance) - that
+    would risk the opposite and worse failure: silently merging two DIFFERENTLY-NAMED rooms
+    ("Deluxe Room" and "Deluxe Suite") into one match and overwriting the wrong room's data."""
+    if not s:
+        return ""
+    normalized = unicodedata.normalize("NFKC", s)
+    return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
 def match_room_by_name(room_name: str, existing_rooms: List[dict]) -> Optional[dict]:

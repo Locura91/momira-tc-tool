@@ -10136,7 +10136,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-28-transport-cancellation-bulk-update"
+BUILD_VERSION = "2026-08-30-hotel-matching-fixes"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10151,7 +10151,8 @@ def _module_build_mismatches():
     for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
                  "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
                  "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope",
-                 "ui_components", "trip_idea_tool", "package_rollover_tool"):
+                 "ui_components", "trip_idea_tool", "package_rollover_tool", "cancellation_links",
+                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher"):
         try:
             mod = importlib.import_module(name)
         except Exception:
@@ -12050,11 +12051,19 @@ if st.session_state.extracted:
                                        f"pricing/schedule failed - fix and retry with **'Update existing ClosedTour "
                                        f"Modality'** against `{target_tour_code}` / `{modality_code}`, no need to "
                                        f"redo the tour details.")
+                                # CONFIRMED FIX (2026-08-30 audit): just_published_tour_code must NOT be set
+                                # here - setting it unconditionally (as this used to) made the green "✅
+                                # ClosedTour published - what would you like to do next?" banner render right
+                                # below this failure message, which could lead an operator to trust the banner,
+                                # click "Start a new ClosedTour", and lose the only on-screen pointer to the
+                                # Modality that still needs a retry - matching every other failure branch in
+                                # this handler (e.g. "Add a new option to an existing tour"), none of which set
+                                # just_published_tour_code on a sub-step failure either.
                             else:
                                 st.success(f"✅ Modality `{modality_code}` pricing/schedule updated using code `{option_used_code}`.")
-                            st.session_state.just_published_tour_code = target_tour_code
-                            st.session_state.just_published_supplier_id = payloads["supplier_id"]
-                            st.session_state.just_published_is_inactive = False
+                                st.session_state.just_published_tour_code = target_tour_code
+                                st.session_state.just_published_supplier_id = payloads["supplier_id"]
+                                st.session_state.just_published_is_inactive = False
 
                     elif publish_action == "Update an existing option":
                         update_option_payload = dict(payloads["tour_option_payload"])

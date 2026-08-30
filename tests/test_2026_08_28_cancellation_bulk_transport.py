@@ -170,6 +170,26 @@ def test_swap_handles_a_completely_empty_description():
     assert new_html2 == "<p>NEW POLICY TEXT</p>"
 
 
+def test_swap_matches_a_paragraph_that_has_attributes():
+    # CONFIRMED FIX (2026-08-30 audit): Travel Compositor's own editor writes attributed <p>
+    # tags (e.g. dir="ltr") when a paragraph has been hand-edited there. A bare r"<p>(.*?)</p>"
+    # regex would miss this paragraph entirely and fall through to the INSERT path, leaving the
+    # old cancellation sentence live alongside the new one instead of replacing it.
+    html = ('<p dir="ltr">Private transfer from the airport.</p>'
+           '<p dir="ltr">Free cancellation up to 30 days before arrival.</p>')
+    new_html, found = cbt._swap_cancellation_paragraph(html, "NEW POLICY TEXT")
+    assert found is True
+    assert new_html == ('<p dir="ltr">Private transfer from the airport.</p>'
+                        "<p>NEW POLICY TEXT</p>")
+    assert "Free cancellation up to 30 days before arrival" not in new_html
+
+
+def test_snippet_finds_a_paragraph_that_has_attributes():
+    html = ('<p dir="ltr">Private transfer from the airport.</p>'
+           '<p class="policy">Free cancellation up to 30 days before arrival.</p>')
+    assert cbt._current_cancellation_snippet(html) == "Free cancellation up to 30 days before arrival."
+
+
 # ----------------------------------------------------------------------
 # A tiny fake client for load_supplier_transports_for_cancellation / apply_proposals
 # ----------------------------------------------------------------------
@@ -276,6 +296,32 @@ def test_build_proposals_not_unchanged_when_tiers_match_but_wording_differs():
     client = _FakeTransportClient(transports=[_sample_record(days=30, refund_pct=100.0)])  # default fixture wording
     rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
     proposals = cbt.build_proposals(rows, [{"days": 30, "fee_percentage": 0.0}])
+    assert proposals[0]["unchanged"] is False
+
+
+def test_build_proposals_unchanged_uses_post_floor_new_tiers_not_raw_input():
+    # CONFIRMED FIX (2026-08-30 audit): cancellation_links.py does not enforce the 30-day/
+    # 100%-refund floor at SAVE time (only builder._cancellation_ranges_from_tiers does, at
+    # APPLY time here) - so a saved link, or a value typed directly into this form, can read
+    # e.g. {days:14, fee_percentage:0} even though applying it always floors to
+    # {days:30, fee_percentage:0}. A Transport whose CURRENT tiers happen to already read that
+    # same unfloored {days:14, fee_percentage:0} must NOT be marked unchanged - applying the
+    # new policy would in fact push it out to 30 days, a real, live-visible change.
+    matching_floored_description = (
+        "<p>Private transfer from the airport.</p>"
+        "<p>Cancellation Policy:\n- Free cancellation if cancelled at least 30 days before arrival.</p>"
+    )
+    client = _FakeTransportClient(transports=[
+        _sample_record(days=14, refund_pct=100.0, description=matching_floored_description)
+    ])
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    assert rows[0]["current_fee_tiers"] == [{"days": 14, "fee_percentage": 0.0}]
+
+    proposals = cbt.build_proposals(rows, [{"days": 14, "fee_percentage": 0.0}])
+    # The floor pushes the applied policy out to 30 days - shown to the human as such...
+    assert proposals[0]["new_fee_tiers"] == [{"days": 30, "fee_percentage": 0.0}]
+    # ...and NOT flagged unchanged, even though the raw input matched the record's raw current
+    # tiers exactly - applying it actually changes the live 14-day value to 30.
     assert proposals[0]["unchanged"] is False
 
 

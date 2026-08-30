@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-28-transport-cancellation-bulk-update"
+MODULE_BUILD = "2026-08-30-hotel-matching-fixes"
 
 import math
 import datetime
@@ -3847,7 +3847,20 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     # ---- Rooms: merge new/updated rooms with any existing rooms the fresh document doesn't mention ----
     document_rooms = extracted.get("rooms") or []
-    seen_room_names = set()
+    # CONFIRMED FIX (2026-08-30 audit): track which EXISTING rooms were matched by OBJECT
+    # IDENTITY (the exact dict match_room_by_name returned), not by re-deriving a name string
+    # and comparing it with a separate, weaker `.strip().lower()`. Before this, hotel_matcher.
+    # _norm (used by match_room_by_name to decide the merge above) and this loop's own inline
+    # `.strip().lower()` (used to decide whether to carry an existing room forward unchanged
+    # below) were two independently-normalized string comparisons that could disagree - fixing
+    # `_norm` to also tolerate whitespace/Unicode differences (the "exact room-name string
+    # matching" bug from full-app-audit-2026-08-28.md) without also fixing this loop would have
+    # meant a room now correctly matched and merged above could ALSO get carried forward again
+    # here as an unmatched duplicate, since its raw current name (e.g. with a double space)
+    # wouldn't be in `seen_room_names` (built from the document's own, single-spaced name).
+    # Keying off the actual returned object sidesteps string comparison here entirely, so this
+    # loop can never drift out of sync with whatever match_room_by_name decides, now or later.
+    matched_existing_room_ids = set()
     room_payloads = []
     room_name_matches = {}
     for room_data in document_rooms:
@@ -3855,13 +3868,13 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         existing_room = hotel_matcher.match_room_by_name(room_name, existing_rooms)
         room_payloads.append(_build_room_payload(room_data, existing_room=existing_room))
         room_name_matches[room_name] = (existing_room or {}).get("providerCode")
-        if room_name:
-            seen_room_names.add((room_name or "").strip().lower())
+        if existing_room is not None:
+            matched_existing_room_ids.add(id(existing_room))
 
     for existing_room in existing_rooms:
         if not isinstance(existing_room, dict):
             continue
-        if (existing_room.get("name") or "").strip().lower() not in seen_room_names:
+        if id(existing_room) not in matched_existing_room_ids:
             # Carried forward unchanged - not mentioned in this document, but never silently dropped.
             room_payloads.append(ContractRoomVO(
                 name=existing_room.get("name"),
