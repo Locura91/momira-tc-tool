@@ -122,6 +122,7 @@ from pixabay_client import search_images as search_images_pixabay
 # public host) to r2_client (private Cloudflare R2 bucket you own) - see r2_client.py's module
 # docstring for why and for the one-time setup this requires.
 from r2_client import upload_images as upload_images_r2
+from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
@@ -161,23 +162,24 @@ ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDA
 
 
 def _warn_page_image_upload_errors(errors):
-    """Shows whatever _add_page_images_to_doc_pool's return value reports, right after every
-    call site. CONFIRMED FIX (2026-08-30, reported: page images "not working at all" - every
-    one of a page's found images unusable, with nothing on screen explaining why): a failed R2
-    upload used to be swallowed silently, so this is the one place that turns "images found (N)"
-    quietly showing N images that don't actually work into an explicit, actionable message -
-    most often pointing at R2's PUBLIC ACCESS setting (a separate, easy-to-miss one-time
-    Cloudflare step from the write credentials - see r2_client.py's setup docs) rather than
-    anything wrong with the source page itself."""
+    """Shows whatever _add_page_images_to_doc_pool's (or extract_images's) return value reports,
+    right after every call site. CONFIRMED FIX (2026-08-30, reported: page images "not working at
+    all" - every one of a page's found images unusable, with nothing on screen explaining why): a
+    failed R2 upload used to be swallowed silently.
+
+    GENERALIZED (2026-08-31, reported: "the App never even shows me available images...even
+    though the document and/or the URL has some images included" - no images section appeared at
+    all, not just broken thumbnails): this used to assume every message was specifically an R2
+    "failed to upload" error and appended a hardcoded Public Access hint accordingly - actively
+    MISLEADING for the two earlier failure points added that same day (the page couldn't be
+    fetched at all; a document's embedded images couldn't be read at all), neither of which has
+    anything to do with R2. Each message is now written to already be a complete, self-explanatory
+    sentence at its source (see get_page_image_bytes, _add_page_images_to_doc_pool, and
+    document_reader.extract_images's own docstrings for the three distinct cases), so this is just
+    a plain, cause-agnostic wrapper that puts it on screen."""
     if not errors:
         return
-    st.warning(
-        f"⚠️ {len(errors)} image(s) found on the page failed to upload and won't work in the "
-        f"picker below: {errors[0]}" + (f" (+{len(errors) - 1} more)" if len(errors) > 1 else "") +
-        ". If this keeps happening for every page/document, check that your R2 bucket's "
-        "**Public Access** is actually enabled in Cloudflare (Settings → Public access) - "
-        "uploading can succeed even when the resulting URL isn't publicly reachable."
-    )
+    st.warning("⚠️ " + errors[0] + (f" (+{len(errors) - 1} more issue(s))" if len(errors) > 1 else ""))
 
 # Session-state key prefixes used ONLY by the shared editable_field/
 # editable_table widget helpers - never by any flow's own phase/queue
@@ -707,14 +709,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
                         combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         remaining_budget = 12 - len(doc_raw_images)
-                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
+                        _doc_image_errors = []
+                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
                         if embedded_images:
                             for i, (img_bytes, ext) in enumerate(embedded_images):
                                 doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                             try:
-                                doc_image_urls.extend(upload_images_r2(embedded_images))
-                            except Exception:
-                                pass
+                                new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                                doc_image_urls.extend(new_urls)
+                                _doc_image_errors.extend(_upload_errors)
+                            except Exception as e:
+                                _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+                        _warn_page_image_upload_errors(_doc_image_errors)
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -3794,14 +3800,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
                         combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                         remaining_budget = 12 - len(doc_raw_images)
-                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
+                        _doc_image_errors = []
+                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
                         if embedded_images:
                             for i, (img_bytes, ext) in enumerate(embedded_images):
                                 doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                             try:
-                                doc_image_urls.extend(upload_images_r2(embedded_images))
-                            except Exception:
-                                pass
+                                new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                                doc_image_urls.extend(new_urls)
+                                _doc_image_errors.extend(_upload_errors)
+                            except Exception as e:
+                                _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+                        _warn_page_image_upload_errors(_doc_image_errors)
                         os.remove(tmp_path)
 
                     if not combined_parts:
@@ -5007,14 +5017,18 @@ def render_ticket_flow(client):
                         st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
                     combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
                     remaining_budget = 12 - len(doc_raw_images)
-                    embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
+                    _doc_image_errors = []
+                    embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
                     if embedded_images:
                         for i, (img_bytes, ext) in enumerate(embedded_images):
                             doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
                         try:
-                            doc_image_urls.extend(upload_images_r2(embedded_images))
-                        except Exception:
-                            pass
+                            new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                            doc_image_urls.extend(new_urls)
+                            _doc_image_errors.extend(_upload_errors)
+                        except Exception as e:
+                            _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+                    _warn_page_image_upload_errors(_doc_image_errors)
                     os.remove(tmp_path)
 
                 if not combined_parts:
@@ -10159,7 +10173,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-31-child-discount-percentage-cap"
+BUILD_VERSION = "2026-08-31-silent-image-extraction-failures-fixed"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -11027,7 +11041,9 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
 
                 remaining_budget = 12 - len(doc_raw_images)
-                embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes) if remaining_budget > 0 else []
+                _doc_image_errors = []
+                embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
+                _warn_page_image_upload_errors(_doc_image_errors)
                 if embedded_images:
                     for i, (img_bytes, ext) in enumerate(embedded_images):
                         doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))

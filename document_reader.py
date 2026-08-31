@@ -31,7 +31,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
+MODULE_BUILD = "2026-08-31-silent-image-extraction-failures-fixed"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
@@ -403,7 +403,8 @@ def extract_images_from_xlsx(file_path: str, max_images: int = 12, seen_hashes: 
     return images
 
 
-def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
+def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None,
+                    errors: list = None, label: str = None) -> list:
     """
     Dispatches to the right image extractor based on file extension.
     Returns list of (image_bytes, extension) tuples, or an empty list if
@@ -411,9 +412,28 @@ def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None
     seen_hashes: an optional shared set of content hashes to dedupe against
     - pass the SAME set across multiple calls (e.g. multiple uploaded
     documents in one session) to dedupe across files too, not just within one.
+
+    errors: optional list to append a human-readable message to when image extraction genuinely
+    FAILED (a corrupted file, a PyMuPDF/python-docx/openpyxl internal error, an unsupported file
+    type) - as opposed to the document simply having no embedded images, which stays silent (not
+    an error, just nothing to report). CONFIRMED REAL BUG (reported, 2026-08-31: "the App never
+    even shows me available images, even though the document...has some images included") - a
+    genuine extraction failure used to only reach a print() statement, which never reaches a
+    human on Streamlit Cloud (stdout isn't shown anywhere in the deployed app's UI), so it looked
+    EXACTLY like "this document has no images" - the same class of bug already fixed once for the
+    R2 upload step (see upload_images_r2_with_errors) but left unfixed one step earlier, at
+    extraction itself. Left as an opt-in output parameter, not a return-value change, so every
+    existing direct caller (all four call sites in app.py, none of which pass it today) keeps
+    working unchanged until they're updated to show it.
+
+    label: the name to use in an error message - defaults to file_path's own basename, but
+    file_path is usually a throwaway tempfile path (e.g. "/tmp/xyz123.pdf") by the time this
+    runs, so callers should pass the ORIGINAL uploaded filename here for a message a human can
+    actually recognize.
     """
     if seen_hashes is None:
         seen_hashes = set()
+    display_name = label or os.path.basename(file_path)
     ext = os.path.splitext(file_path)[1].lower()
     try:
         if ext == ".pdf":
@@ -422,6 +442,11 @@ def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None
             return extract_images_from_docx(file_path, max_images, seen_hashes)
         elif ext == ".xlsx":
             return extract_images_from_xlsx(file_path, max_images, seen_hashes)
+        # No else/error here for an unsupported extension (.doc, .pptx, etc.) - that's a normal,
+        # expected case (image extraction is a bonus, not a requirement, for a format that isn't
+        # PDF/.docx/.xlsx), not a failure worth flagging.
     except Exception as e:
         print(f"⚠️ Image extraction failed for {file_path}: {e}")
+        if errors is not None:
+            errors.append(f"'{display_name}': couldn't read embedded images from this file - {e}")
     return []

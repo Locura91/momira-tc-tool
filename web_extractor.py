@@ -27,7 +27,7 @@ Usage:
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
+MODULE_BUILD = "2026-08-31-silent-image-extraction-failures-fixed"
 
 import argparse
 import json
@@ -211,11 +211,20 @@ def _looks_like_real_image(content: bytes) -> bool:
     return False
 
 
-def get_page_image_bytes(target_url: str) -> list:
+def get_page_image_bytes(target_url: str, errors: list = None) -> list:
     """
     Same discovery logic as get_page_images(), but DOWNLOADS each image's
     raw bytes server-side instead of handing the browser a raw URL to fetch
     directly from the source site.
+
+    errors: optional list to append ONE message to when the page genuinely had candidate <img>
+    tags but NOT A SINGLE ONE could be downloaded/verified as a real image - as opposed to the
+    page simply having no <img> tags at all, which stays silent (nothing wrong, nothing to
+    report). CONFIRMED REAL BUG (reported, 2026-08-31: "the App never even shows me available
+    images, even though...the URL has some images included") - a site whose bot/hotlink
+    protection blocks every single one of these server-side requests (a very real, already-
+    confirmed failure mode - see _looks_like_real_image's own docstring) used to look byte-for-
+    byte identical to "this page has zero images", with no way for a human to tell the two apart.
 
     CONFIRMED REAL BUG (reported: URL-scraped images showed as broken/blank
     in the app's picker, while document-embedded images worked fine): the
@@ -244,20 +253,27 @@ def get_page_image_bytes(target_url: str) -> list:
     aborting the whole batch.
     """
     candidate_urls = get_page_images(target_url)
+    if not candidate_urls:
+        return []
 
     results = []
+    skip_reasons = []
     for i, img_url in enumerate(candidate_urls):
         try:
             res = requests.get(img_url, headers=_BROWSER_HEADERS, timeout=10)
             res.raise_for_status()
-        except requests.RequestException:
+        except requests.RequestException as e:
+            skip_reasons.append(f"{img_url} - {e}")
             continue
         if not res.content:
+            skip_reasons.append(f"{img_url} - empty response")
             continue
         if not _looks_like_real_image(res.content):
             # A 200 response that isn't actually a photo - a bot/hotlink-protection challenge
             # page, a tracking pixel, a redirect target - see _looks_like_real_image's docstring.
             # Skipped exactly like a failed download, not treated as a found image.
+            skip_reasons.append(f"{img_url} - response wasn't a real image (likely the site's "
+                                 f"own bot/hotlink protection)")
             continue
 
         path_only = img_url.split("?", 1)[0].split("#", 1)[0]
@@ -266,6 +282,10 @@ def get_page_image_bytes(target_url: str) -> list:
             ext = "jpg"
         results.append((f"page_img{i + 1}.{ext}", res.content))
 
+    if not results and skip_reasons and errors is not None:
+        errors.append(
+            f"Found {len(candidate_urls)} image(s) on the page, but none could be downloaded - "
+            f"the site is likely blocking these requests. First reason: {skip_reasons[0]}")
     return results
 
 

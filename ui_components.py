@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
+MODULE_BUILD = "2026-08-31-silent-image-extraction-failures-fixed"
 
 import re
 import math
@@ -981,35 +981,45 @@ def _add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls):
     one click away, instead of needing a manual "Upload & Add" - matching
     the exact fallback pattern document images already use.
 
-    Returns a list of "filename: reason" strings, one per image that failed to upload to R2 -
-    empty when everything uploaded cleanly. CONFIRMED FIX (2026-08-30, reported: "images found
-    in your document/page... not working at all" - every one of 12 candidates unusable, with no
-    error shown anywhere): this used to call upload_images_r2 (the silent-skip variant) inside a
-    bare `except Exception: pass`, so a genuine R2 problem - most commonly the bucket's PUBLIC
-    ACCESS setting never having been enabled in Cloudflare (a separate manual step from the
-    write credentials this app authenticates with - see r2_client.py's own setup docs, step 3 -
-    uploads can succeed via the authenticated API while the resulting public URL is still
-    unreachable by anyone else, including this app's own picker) - looked EXACTLY like a normal
-    "0 real images on this page" result, with the human never told why. Switched to
-    upload_images_r2_with_errors so a real failure reason reaches the screen instead of vanishing.
-    Callers should show `errors` in a warning when non-empty."""
+    Returns a list of human-readable "what went wrong" strings covering THREE distinct failure
+    points, all previously silent - empty only when nothing went wrong (which includes the page
+    genuinely having no images at all; that's not a failure). CONFIRMED FIX (2026-08-30, reported:
+    "images found in your document/page... not working at all" - every one of 12 candidates
+    unusable, with no error shown anywhere): a failed R2 upload used to be swallowed inside a bare
+    `except Exception: pass` (upload_images_r2, the silent-skip variant) - most commonly the
+    bucket's PUBLIC ACCESS setting never having been enabled in Cloudflare (a separate manual step
+    from the write credentials this app authenticates with - see r2_client.py's own setup docs,
+    step 3). Switched to upload_images_r2_with_errors so a real failure reason reaches the screen.
+
+    FURTHER CONFIRMED FIX (2026-08-31, reported: "the App never even shows me available images,
+    even though the document and/or the URL has some images included" - no images section
+    appeared AT ALL, not even a '0 found' message): two more failure points, ONE STEP EARLIER than
+    the R2 upload, were STILL silent even after the fix above - the page fetch itself failing
+    (blocked, timed out, bad SSL, 403/404) used to hit a bare `except Exception: page_images_bytes
+    = []`, and a page whose candidate <img> tags all failed to download (site-wide hotlink/bot
+    protection - see get_page_image_bytes's own docstring) produced the exact same empty result as
+    a page that genuinely has zero images. Both now reach `errors` too, via the same mechanism.
+
+    Callers should show `errors` in a warning when non-empty (see app.py's
+    _warn_page_image_upload_errors)."""
     if not url:
         return []
+    fetch_errors = []
     try:
-        page_images_bytes = get_page_image_bytes(url)
-    except Exception:
-        page_images_bytes = []
+        page_images_bytes = get_page_image_bytes(url, errors=fetch_errors)
+    except Exception as e:
+        return [f"Couldn't fetch the page to look for images ({url}) - {e}"]
     if not page_images_bytes:
-        return []
+        return fetch_errors
     doc_raw_images.extend(page_images_bytes)
     try:
-        new_urls, errors = upload_images_r2_with_errors(
+        new_urls, upload_errors = upload_images_r2_with_errors(
             [(img_bytes, fname.rsplit(".", 1)[-1] if "." in fname else "jpg") for fname, img_bytes in page_images_bytes]
         )
         doc_image_urls.extend(new_urls)
     except Exception as e:
-        errors = [f"R2 upload failed entirely: {e}"]
-    return errors
+        upload_errors = [f"R2 upload failed entirely: {e}"]
+    return fetch_errors + upload_errors
 
 
 def render_url_image_picker(image_urls, state_prefix):

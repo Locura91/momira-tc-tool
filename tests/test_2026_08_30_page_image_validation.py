@@ -192,10 +192,17 @@ def test_add_page_images_returns_empty_list_when_no_images_found():
 
 
 def test_add_page_images_handles_get_page_image_bytes_raising():
+    """UPDATED 2026-08-31 (reported: "the App never even shows me available images, even though
+    the document and/or the URL has some images included" - no images section appeared at all).
+    This test used to assert errors == [] here - that was itself the bug: a genuine fetch failure
+    (network down, blocked, timed out) was silently swallowed and looked identical to "this page
+    has no images". Now it must be surfaced instead, so the human is told the page couldn't even
+    be reached rather than being left thinking there was simply nothing to find."""
     with patch.object(ui_components, "get_page_image_bytes", side_effect=RuntimeError("network down")):
         doc_raw_images, doc_image_urls = [], []
         errors = ui_components._add_page_images_to_doc_pool(
             "https://supplier.example.com/page", doc_raw_images, doc_image_urls)
-    assert errors == []
+    assert len(errors) == 1
+    assert "network down" in errors[0]
     assert doc_raw_images == []
     assert doc_image_urls == []
