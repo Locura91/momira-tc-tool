@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-31-silent-image-extraction-failures-fixed"
+MODULE_BUILD = "2026-08-31-outreach-reminder-send-balloons"
 
 import csv
 import io
@@ -1264,6 +1264,15 @@ def _render_followup_row(row, show_replied_button=True, show_reminder_button=Tru
                     st.error(f"Reminder failed to send: {exc}")
                 else:
                     ofw.mark_reminder_sent(row["email"], row["sent_at"], channel="tool")
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-31): "once send mails to supplier,
+                    # I dont see any balloons - but we should display it, if the outreach mail was
+                    # successfully send." The batch "review and send" screen already fires
+                    # st.balloons() on any successful send (2026-08-26 fix), but this individual
+                    # reminder-send button - a real email dispatch via send_supplier_email, exactly
+                    # like a batch send - never got the same treatment; it only ever showed a small
+                    # text success message. Balloons now fire here too, so every path that actually
+                    # sends mail through the tool gives the same visible confirmation.
+                    st.balloons()
                     st.success("Reminder sent.")
                     st.rerun()
         with cols[2]:
