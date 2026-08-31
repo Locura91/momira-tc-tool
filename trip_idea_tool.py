@@ -26,9 +26,11 @@ import streamlit as st
 
 import ai_extractor
 import trip_prompt_extractor as tpe
+import trip_quote_client as tqc
 import trip_search_rules as tsr
+from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-31-outreach-reminder-send-balloons"
+MODULE_BUILD = "2026-08-31-trip-idea-quote-client-foundation"
 
 _PHASE_KEY = "ti_phase"
 
@@ -109,6 +111,159 @@ def _render_criteria(result):
         st.json({**result, "resolved_search_rules": rules})
 
 
+def _run_debug_quote(build_fn):
+    """Shared runner for every branch of the debug panel below: builds an api_client +
+    TripQuoteClient, calls `build_fn(api, client)` to do the actual product-specific quote call,
+    and stores the raw result (or a raw error string - deliberately NOT run through
+    ai_extractor.friendly_error_message, since that's tuned for the AI/Claude service, not a raw
+    Travel Compositor HTTP/network error - this is an advanced debug tool for Chris, seeing the
+    real underlying error is the whole point) into session_state for display below."""
+    with st.spinner("Calling the live Travel Compositor account..."):
+        try:
+            api = TravelCompositorAPI()
+            client = tqc.TripQuoteClient(api)
+            st.session_state.qdbg_last_result = build_fn(api, client)
+            st.session_state.qdbg_last_error = None
+        except Exception as e:
+            st.session_state.qdbg_last_result = None
+            st.session_state.qdbg_last_error = f"{type(e).__name__}: {e}"
+
+
+def _render_quote_debug_panel():
+    """⚠️ Fires a REAL call against Travel Compositor's live booking/Quote API - Momira's actual
+    account, not a sandbox. Exists specifically to let a human running this tool somewhere with
+    real TRAVELC_* credentials and real network access (this internal tool's usual home - NOT the
+    cloud sandbox this feature is often developed in, which has neither) verify the guessed
+    request shapes in trip_quote_client.py actually work, and see what a real Quote RESPONSE
+    looks like - something that has never been observed at all before this panel existed (see
+    that module's own docstring for the full "unverified" caveat).
+
+    Stays QUOTE ONLY - the exact same hard boundary as the rest of this feature; nothing here can
+    Confirm, Prebook, or Book (enforced by tests/test_trip_idea_never_books.py, which covers
+    every trip_*.py file, this one included)."""
+    st.divider()
+    with st.expander("🔧 Live Quote endpoint test (advanced — hits the real Travel Compositor account)"):
+        st.warning("⚠️ This fires a REAL call against Momira's live Travel Compositor account "
+                  "(not a sandbox/test account) — it needs real `TRAVELC_*` credentials and "
+                  "network access to work at all. It only ever calls a **Quote** endpoint — the "
+                  "same non-binding step Travel Compositor's own booking wizard uses for its "
+                  "live ~30s search — never Confirm, Prebook, or Book, so nothing gets held or "
+                  "charged. Useful for checking that the request shapes in `trip_quote_client.py` "
+                  "(the best-available guess from a different operator's API docs — see that "
+                  "file's own warning) actually work against Momira's real account, and for "
+                  "seeing a real response shape for the first time.")
+
+        endpoint = st.selectbox("Which Quote endpoint?",
+                                ["Accommodations (hotels)", "Transports (flights)", "Transfer",
+                                 "Tickets (activities)", "Closed Tour"], key="qdbg_endpoint")
+
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            adults = st.number_input("Adults", min_value=1, max_value=9, value=2, key="qdbg_adults")
+        with pcol2:
+            children_raw = st.text_input("Children ages (comma-separated, e.g. 6,9)",
+                                         value="", key="qdbg_children")
+        try:
+            children_ages = [int(a.strip()) for a in children_raw.split(",") if a.strip()]
+        except ValueError:
+            children_ages = []
+            st.caption("⚠️ Couldn't parse children ages — treating as no children.")
+
+        if endpoint == "Accommodations (hotels)":
+            dest_query = st.text_input("Destination (name or code)", value="Cairo", key="qdbg_dest")
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                date_from = st.text_input("Check-in (YYYY-MM-DD)", value="2027-03-18", key="qdbg_from")
+            with dcol2:
+                date_to = st.text_input("Check-out (YYYY-MM-DD)", value="2027-03-21", key="qdbg_to")
+
+            if st.button("🚀 Fire real Accommodations Quote call", key="qdbg_fire_acc"):
+                def _do(api, client):
+                    dest = api.resolve_destination(dest_query)
+                    dist = tqc.build_distributions(adults, children_ages)
+                    result = client.quote_accommodations(dist, date_from, date_to,
+                                                          destination_code=dest.get("tc_code"))
+                    return {"resolved_destination": dest, "request_distributions": dist, "response": result}
+                _run_debug_quote(_do)
+
+        elif endpoint == "Transports (flights)":
+            tcol1, tcol2 = st.columns(2)
+            with tcol1:
+                dep_query = st.text_input("Departure (airport/place name or code)", value="Frankfurt", key="qdbg_dep")
+            with tcol2:
+                arr_query = st.text_input("Arrival (destination name or code)", value="Cairo", key="qdbg_arr")
+            dep_date = st.text_input("Departure date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_dep_date")
+
+            if st.button("🚀 Fire real Transports Quote call", key="qdbg_fire_transport"):
+                def _do(api, client):
+                    dep = api.resolve_transport_base(dep_query)
+                    arr = api.resolve_destination(arr_query)
+                    journey = tqc.build_transport_journey(
+                        dep.get("code"), "TRANSPORT_BASE", arr.get("tc_code"), "DESTINATION", dep_date)
+                    dist = tqc.build_distributions(adults, children_ages)
+                    result = client.quote_transports([journey], dist)
+                    return {"resolved_departure": dep, "resolved_arrival": arr,
+                           "request_journey": journey, "response": result}
+                _run_debug_quote(_do)
+
+        elif endpoint == "Transfer":
+            xcol1, xcol2 = st.columns(2)
+            with xcol1:
+                pickup_query = st.text_input("Pickup (airport/place name or code)", value="Cairo Airport", key="qdbg_pu")
+            with xcol2:
+                dropoff_query = st.text_input("Drop-off (place name or code)", value="Cairo", key="qdbg_do")
+            pickup_date = st.text_input("Pickup date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_pu_date")
+
+            if st.button("🚀 Fire real Transfer Quote call", key="qdbg_fire_transfer"):
+                def _do(api, client):
+                    pu = api.resolve_transport_base(pickup_query)
+                    do = api.resolve_destination(dropoff_query)
+                    dist = tqc.build_distributions(adults, children_ages)
+                    result = client.quote_transfers(dist, pu.get("code"), "TRANSPORT_BASE",
+                                                     do.get("tc_code"), "DESTINATION", pickup_date)
+                    return {"resolved_pickup": pu, "resolved_dropoff": do, "response": result}
+                _run_debug_quote(_do)
+
+        elif endpoint == "Tickets (activities)":
+            ticket_id = st.text_input("Ticket catalog code (e.g. TICKET-417967)", value="", key="qdbg_ticket_id")
+            ticket_date = st.text_input("Activity date (YYYY-MM-DD)", value="2027-03-19", key="qdbg_ticket_date")
+            modality = st.text_input("Modality code (optional)", value="", key="qdbg_modality")
+            if not ticket_id.strip():
+                st.caption("Need a real ticket catalog code first — see a saved Idea's page or "
+                          "the project doc's captured Ticket examples (e.g. TICKET-417967).")
+
+            if st.button("🚀 Fire real Tickets Quote call", key="qdbg_fire_ticket", disabled=not ticket_id.strip()):
+                def _do(api, client):
+                    dist = tqc.build_distributions(adults, children_ages)
+                    result = client.quote_tickets(dist, ticket_id.strip(), ticket_date,
+                                                  modality_code=modality.strip() or None)
+                    return {"response": result}
+                _run_debug_quote(_do)
+
+        else:  # Closed Tour
+            ct_id = st.text_input("Closed Tour code", value="", key="qdbg_ct_id")
+            start_date = st.text_input("Start date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_ct_start")
+            origin = st.text_input("Origin code (optional)", value="", key="qdbg_ct_origin")
+            if not ct_id.strip():
+                st.caption("Need a real Closed Tour code first — this product type hasn't been "
+                          "captured yet (still an open item in the project doc).")
+
+            if st.button("🚀 Fire real Closed Tour Quote call", key="qdbg_fire_ct", disabled=not ct_id.strip()):
+                def _do(api, client):
+                    dist = tqc.build_distributions(adults, children_ages)
+                    result = client.quote_closed_tour(ct_id.strip(), start_date, dist,
+                                                       origin_code=origin.strip())
+                    return {"response": result}
+                _run_debug_quote(_do)
+
+        if st.session_state.get("qdbg_last_error"):
+            st.error(f"Raw error (not a customer-facing message — this is a debug tool): "
+                    f"{st.session_state.qdbg_last_error}")
+        if st.session_state.get("qdbg_last_result") is not None:
+            st.markdown("##### Raw response")
+            st.json(st.session_state.qdbg_last_result)
+
+
 def render_trip_idea_tool():
     st.subheader("💡 AI Trip Idea (prototype)")
     st.warning("⚠️ **Prototype — not connected to Travel Compositor.** This only shows how a "
@@ -152,6 +307,8 @@ def render_trip_idea_tool():
         st.divider()
         st.caption(f"For: *\"{st.session_state.get('ti_result_prompt', '')}\"*")
         _render_criteria(result)
-        st.caption("This is as far as the prototype goes today — the next step (turning this "
-                  "into a real search against Travel Compositor) is still pending confirmation "
-                  "of Travel Compositor's search/booking API access.")
+        st.caption("This is as far as the automatic extraction goes today — turning this into "
+                  "real, priced options (Phase 1's selection logic) is in progress. The panel "
+                  "below lets you fire a real Quote call directly, ahead of that being wired in.")
+
+    _render_quote_debug_panel()
