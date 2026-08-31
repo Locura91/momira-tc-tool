@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
+MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
 
 _NAMESPACE = "cancellation_links"
 

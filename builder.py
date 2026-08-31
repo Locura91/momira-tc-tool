@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
+MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
 
 import math
 import datetime
@@ -180,7 +180,37 @@ def _money_or_none(value, currency):
     return {"amount": amount, "currency": (value.get("currency") or currency or "EUR")}
 
 
-def normalize_price_list(rows, currency, fallback_child_discount_percentage=None):
+# CONFIRMED SAFETY RULE (product owner, 2026-08-31): "we must make sure, that the app never
+# allows more than 100% discount - because in travel compositor people could enter 100000%
+# discount and the price will be absolutely wrong." Travel Compositor's own admin screen enforces
+# no upper (or lower) bound on tripleChildPercentageDiscount/quadrupleChildPercentageDiscount - a
+# typo or a bad AI extraction could otherwise reach the live API completely unchecked. 100% means
+# "the child travels free", which is already the most generous a discount can mean; 0% is the
+# floor because a negative number would mean a child pays MORE than an adult, never this field's
+# real-world meaning. Applied here, at the single choke point every child-discount value passes
+# through before publish, so the cap holds regardless of source: a document-wide percentage typed
+# into ui_components.render_child_discount_editor, OR a row's own value straight from AI
+# extraction (which - unlike the document-wide field - has never been shown to a human at all,
+# so it gets exactly the same protection rather than relying on someone having reviewed it).
+_MAX_CHILD_DISCOUNT_PERCENTAGE = 100.0
+_MIN_CHILD_DISCOUNT_PERCENTAGE = 0.0
+
+
+def _clamp_child_discount_percentage(value):
+    """(clamped_float, was_clamped) for one child-discount percentage, or (None, False) when
+    `value` isn't a usable number at all (mirrors the existing "silently skip, don't crash"
+    handling every other field in this function already uses for bad extraction data)."""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None, False
+    if pct != pct:  # NaN - float('nan') raises nothing, but is never a usable percentage
+        return None, False
+    clamped = max(_MIN_CHILD_DISCOUNT_PERCENTAGE, min(pct, _MAX_CHILD_DISCOUNT_PERCENTAGE))
+    return clamped, clamped != pct
+
+
+def normalize_price_list(rows, currency, fallback_child_discount_percentage=None, notes=None):
     """Make a price list safe to validate, without changing what it says.
 
     Every occupancy that is priced keeps its number; every one that is blank becomes None
@@ -196,7 +226,14 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     to that row instead of silently leaving the discount off - but ONLY on rows that actually sell
     triplePrice/quadruplePrice (an occupancy this tour doesn't sell can't carry a discount either,
     same rule as supplements - see strip_unsold_supplement_occupancies). A row's own explicit value
-    (including 0, meaning "confirmed no discount") always wins over this fallback."""
+    (including 0, meaning "confirmed no discount") always wins over this fallback.
+
+    Every child-discount value (a row's own, or the fallback) is clamped to 0-100% - see
+    _clamp_child_discount_percentage's own comment for why. notes: an optional list to append a
+    human-readable message to whenever a value actually had to be clamped, so a caller with a
+    review screen (see ui_components.render_child_discount_editor) can surface the correction
+    instead of it happening invisibly. Left as an opt-in output parameter, not a return-value
+    change, so every existing direct call/test keeps working unchanged."""
     out = []
     for row in (rows or []):
         if not isinstance(row, dict):
@@ -217,16 +254,22 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
             ("tripleChildPercentageDiscount", "triplePrice"),
             ("quadrupleChildPercentageDiscount", "quadruplePrice"),
         ):
+            source_value = None
             if price.get(extra) not in (None, ""):
-                try:
-                    cleaned[extra] = float(price[extra])
-                except (TypeError, ValueError):
-                    pass
+                source_value = price[extra]
             elif fallback_child_discount_percentage not in (None, "") and occupancy_key in cleaned:
-                try:
-                    cleaned[extra] = float(fallback_child_discount_percentage)
-                except (TypeError, ValueError):
-                    pass
+                source_value = fallback_child_discount_percentage
+            if source_value is None:
+                continue
+            pct, was_clamped = _clamp_child_discount_percentage(source_value)
+            if pct is None:
+                continue
+            cleaned[extra] = pct
+            if was_clamped and notes is not None:
+                notes.append(
+                    f"{extra} was {source_value} - capped to {pct:g}% (Travel Compositor has no "
+                    f"upper limit of its own here, so an uncapped value could make the child's "
+                    f"price wildly wrong, e.g. free-plus-refund on a >100% discount).")
         if not any(k in cleaned for k in _MONEY_KEYS):
             continue
         row["price"] = cleaned
@@ -1747,9 +1790,16 @@ def build_closed_tour_payloads(
     if is_indonesia:
         combined_stop_sales = _merge_stop_sales(combined_stop_sales, indonesia_holiday_stop_sales())
 
+    # Collects a message whenever a child-discount value (this tour's document-wide field, or a
+    # row's own value straight from AI extraction) had to be capped to 0-100% - see
+    # normalize_price_list's own docstring/_clamp_child_discount_percentage comment. Surfaced to
+    # the review screen below as child_discount_clamp_notes, same "flag it, don't silently
+    # change it" convention as pricing_notes/supplement_occupancy_notes.
+    _child_discount_clamp_notes = []
     _tour_price_list_sorted = sorted(
         normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
-                              fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage")),
+                              fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
+                              notes=_child_discount_clamp_notes),
         key=lambda p: p.get("startDate", ""))
     tet_overlap = None
     if is_vietnam and _tour_price_list_sorted:
@@ -1787,6 +1837,10 @@ def build_closed_tour_payloads(
         "main_tour_error": main_tour_error,
         # Occupancies removed for consistency with the price list - named, never silent.
         "supplement_occupancy_notes": _supplement_notes,
+        # Any child-discount value that had to be capped to 0-100% before publish - see
+        # normalize_price_list's own docstring for why this can never be skipped, whatever the
+        # source of the value.
+        "child_discount_clamp_notes": _child_discount_clamp_notes,
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing

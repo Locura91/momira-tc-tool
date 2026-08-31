@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
+MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
 
 _PHASE_KEY = "pkr_phase"
 

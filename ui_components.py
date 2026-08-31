@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
+MODULE_BUILD = "2026-08-31-child-discount-percentage-cap"
 
 import re
 import math
@@ -1344,6 +1344,17 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     this - same override rule normalize_price_list already applies; this widget only sets the
     fallback, never overwrites a row's own value.
 
+    CONFIRMED SAFETY RULE (product owner, 2026-08-31): "we must make sure, that the app never
+    allows more than 100% discount - because in travel compositor people could enter 100000%
+    discount and the price will be absolutely wrong." The number input below can never go above
+    100 or below 0 - min_value/max_value are hard Streamlit limits, not just a suggestion - and
+    the actual publish-time cap lives one level deeper, in normalize_price_list() itself (see its
+    own docstring/_clamp_child_discount_percentage), so the guarantee holds even for a row's own
+    value straight from AI extraction, which this widget never lets a human edit directly. If
+    anything still gets capped (e.g. a stale >100 value saved before this safety rule existed, or
+    a bad per-row extraction), the preview below surfaces exactly what was capped and why, rather
+    than silently sending a different number than what's shown.
+
     `data` is the extracted-data dict for one ClosedTour/Modality (must have "price_list" and may
     have "child_discount_percentage" - written back here on edit)."""
     from builder import normalize_price_list, sold_occupancies
@@ -1360,6 +1371,13 @@ def render_child_discount_editor(data, key_prefix, currency=None):
         current_value = float(raw) if raw not in (None, "") else 0.0
     except (TypeError, ValueError):
         current_value = 0.0
+    # Defensive only - the number_input below would raise a StreamlitAPIException if `value`
+    # were ever outside its own min_value/max_value (e.g. a stale value saved before this cap
+    # existed). Silent here because it's purely a display correction of an already-invalid stored
+    # number; the write-back two lines down immediately replaces it with the clamped value, and
+    # any REAL row-level clamp (a value that actually changes what gets sent) is still reported
+    # below via clamp_notes.
+    current_value = max(0.0, min(current_value, 100.0))
     new_value = st.number_input(
         "👶 Child discount % (Triple/Quadruple only)", min_value=0.0, max_value=100.0,
         value=current_value, step=1.0, key=f"{key_prefix}_child_discount_pct",
@@ -1367,11 +1385,17 @@ def render_child_discount_editor(data, key_prefix, currency=None):
              "there is no Single/Double field on a ClosedTour price list, so those two never show "
              "a number here. Detected from the document when it stated one; leave at 0 if the "
              "document doesn't mention a child discount. Applied to every Triple/Quadruple row "
-             "below that doesn't already carry its own row-specific discount.")
+             "below that doesn't already carry its own row-specific discount. Capped at 100% "
+             "(a free child) - Travel Compositor itself has no such limit, which is exactly what "
+             "makes an uncapped value dangerous to send.")
     data["child_discount_percentage"] = new_value
 
+    clamp_notes = []
     preview_rows = normalize_price_list(
-        data.get("price_list"), currency, fallback_child_discount_percentage=new_value)
+        data.get("price_list"), currency, fallback_child_discount_percentage=new_value,
+        notes=clamp_notes)
+    if clamp_notes:
+        st.warning("⚠️ " + " ".join(clamp_notes))
     lines = []
     for row in preview_rows:
         price = row.get("price") or {}
