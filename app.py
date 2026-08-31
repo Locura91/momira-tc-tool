@@ -111,6 +111,7 @@ from ui_components import (
     render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
+    render_child_discount_editor,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
@@ -521,6 +522,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
 
         editable_table(f"Pricing - {current['code']}", price_df, f"mm_pricing_{idx}", on_save=_save_mm_price_list)
         render_extra_child_notice(data, f"mm_{idx}")
+        render_child_discount_editor(data, f"mm_{idx}", currency)
 
         st.subheader(f"🤖 Tell AI what to fix - {current['code']}")
         st.caption("Ask a question, or tell it to fix something (e.g. 'the price should be x3 for 3 "
@@ -1263,6 +1265,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             )
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
         render_extra_child_notice(data, f"mct_mod_{midx}")
+        render_child_discount_editor(data, f"mct_mod_{midx}", currency)
 
         # CONFIRMED PRODUCT-OWNER CORRECTION: supplements belong to the TOUR, not to a
         # Modality - see render_closedtour_supplements. Edited once on the main tour screen.
@@ -10156,7 +10159,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-08-30-ticket-language-options"
+BUILD_VERSION = "2026-08-31-closedtour-child-discount-visibility"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -11480,6 +11483,7 @@ if st.session_state.extracted:
     price_df = pd.DataFrame(price_df_rows)
     editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
     render_extra_child_notice(data, "ct_single")
+    render_child_discount_editor(data, "ct_single", currency)
 
     price_list_valid = len(data["price_list"]) > 0
     if not price_list_valid:

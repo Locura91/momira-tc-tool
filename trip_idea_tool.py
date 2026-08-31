@@ -28,7 +28,7 @@ import ai_extractor
 import trip_prompt_extractor as tpe
 import trip_search_rules as tsr
 
-MODULE_BUILD = "2026-08-30-ticket-language-options"
+MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
 
 _PHASE_KEY = "ti_phase"
 

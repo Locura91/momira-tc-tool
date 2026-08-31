@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-08-30-ticket-language-options"
+MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
 
 import re
 import math
@@ -1323,3 +1323,67 @@ def render_extra_child_notice(data, key_prefix):
                 f"Max {bracket['label'].lower()} extra child", min_value=0, max_value=4,
                 value=int(bracket["max_extra_child"]), key=f"{key_prefix}_max_{override_key}_extra_child")
             overrides[override_key] = new_value
+
+
+def render_child_discount_editor(data, key_prefix, currency=None):
+    """Document-wide child-discount percentage - the ONLY child discount Travel Compositor
+    actually supports on a ClosedTour price list, and only for Triple/Quadruple occupancy (see
+    builder.normalize_price_list()'s own docstring for the confirmed real API limitation - there
+    is no Single/Double equivalent anywhere in Travel Compositor's live price list schema,
+    PriceListPriceVO).
+
+    CONFIRMED REAL GAP (product owner question, 2026-08-31): this value is already extracted from
+    the source document into child_discount_percentage, and is already being sent to Travel
+    Compositor - normalize_price_list() applies it automatically to every price-list row that
+    sells Triple/Quadruple, right before publish (see build_closed_tour_payloads). But until this
+    widget, it had ZERO visibility on any review screen: not shown, not editable, and its effect
+    on the actual price rows invisible - "so far no child discount is seen at all" was accurate.
+    This widget closes that gap: shows/edits the document-wide percentage, and previews exactly
+    what will be sent on each Triple/Quadruple row. A row's own explicit discount (when the source
+    stated one specifically for that row, rather than a document-wide number) always wins over
+    this - same override rule normalize_price_list already applies; this widget only sets the
+    fallback, never overwrites a row's own value.
+
+    `data` is the extracted-data dict for one ClosedTour/Modality (must have "price_list" and may
+    have "child_discount_percentage" - written back here on edit)."""
+    from builder import normalize_price_list, sold_occupancies
+
+    sold = sold_occupancies(data.get("price_list"))
+    if not ({"triplePrice", "quadruplePrice"} & sold):
+        st.caption("👶 No Triple or Quadruple occupancy priced yet - a child discount only ever "
+                   "applies to those two (Travel Compositor has no Single/Double field), so "
+                   "there's nothing to set here until one of them has a price.")
+        return
+
+    raw = data.get("child_discount_percentage")
+    try:
+        current_value = float(raw) if raw not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        current_value = 0.0
+    new_value = st.number_input(
+        "👶 Child discount % (Triple/Quadruple only)", min_value=0.0, max_value=100.0,
+        value=current_value, step=1.0, key=f"{key_prefix}_child_discount_pct",
+        help="Travel Compositor only supports a child discount on Triple/Quadruple occupancy - "
+             "there is no Single/Double field on a ClosedTour price list, so those two never show "
+             "a number here. Detected from the document when it stated one; leave at 0 if the "
+             "document doesn't mention a child discount. Applied to every Triple/Quadruple row "
+             "below that doesn't already carry its own row-specific discount.")
+    data["child_discount_percentage"] = new_value
+
+    preview_rows = normalize_price_list(
+        data.get("price_list"), currency, fallback_child_discount_percentage=new_value)
+    lines = []
+    for row in preview_rows:
+        price = row.get("price") or {}
+        for money_key, label in (("tripleChildPercentageDiscount", "Triple"),
+                                  ("quadrupleChildPercentageDiscount", "Quadruple")):
+            pct = price.get(money_key)
+            if pct is not None:
+                when = f"{row.get('startDate', '?')} to {row.get('endDate', '?')}"
+                lines.append(f"- **{label}** ({when}): **{pct:g}%** off the child's share")
+    if lines:
+        st.caption("Will be sent to Travel Compositor on publish:\n\n" + "\n".join(lines))
+    elif new_value:
+        st.caption("Nothing to send yet - add a Triple or Quadruple price above first.")
+    else:
+        st.caption("No discount will be sent - set the percentage above if the document states one.")

@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-30-ticket-language-options"
+MODULE_BUILD = "2026-08-31-closedtour-child-discount-visibility"
 
 _PHASE_KEY = "pkr_phase"
 
