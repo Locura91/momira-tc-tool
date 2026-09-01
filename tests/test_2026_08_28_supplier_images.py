@@ -138,16 +138,21 @@ def test_saving_with_no_bytes_is_rejected_not_stored_as_an_empty_row():
 # ---------------------------------------------------------------------------
 
 def test_resolve_returns_none_none_for_an_unclassifiable_route():
-    tiers, direction = si.resolve_and_host_image("SUP-H", "Transfer", "Riu Palace Hotel", "Steigenberger Hotel")
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): resolve_and_host_image now returns
+    # a 3-tuple (url, direction, upload_error) - see its updated docstring on why a real R2
+    # upload failure needed to become distinguishable from "nothing saved yet."
+    tiers, direction, error = si.resolve_and_host_image("SUP-H", "Transfer", "Riu Palace Hotel", "Steigenberger Hotel")
     assert tiers is None
     assert direction is None
+    assert error is None
 
 
 def test_resolve_returns_none_url_with_the_direction_when_classified_but_nothing_saved():
     _reset("Transfer", "SUP-I")
-    url, direction = si.resolve_and_host_image("SUP-I", "Transfer", "Hurghada Airport", "Steigenberger Hotel")
+    url, direction, error = si.resolve_and_host_image("SUP-I", "Transfer", "Hurghada Airport", "Steigenberger Hotel")
     assert url is None
     assert direction == si.DIRECTION_AIRPORT_TO_HOTEL
+    assert error is None
 
 
 def test_resolve_uploads_a_fresh_copy_and_never_reuses_a_cached_url(monkeypatch):
@@ -167,8 +172,9 @@ def test_resolve_uploads_a_fresh_copy_and_never_reuses_a_cached_url(monkeypatch)
     import r2_client
     monkeypatch.setattr(r2_client, "upload_image", fake_upload_image)
 
-    url1, direction1 = si.resolve_and_host_image("SUP-J", "Transfer", "Steigenberger Hotel", "Hurghada Airport")
-    url2, direction2 = si.resolve_and_host_image("SUP-J", "Transfer", "Riu Palace Hotel", "Marsa Alam Harbor")
+    url1, direction1, error1 = si.resolve_and_host_image("SUP-J", "Transfer", "Steigenberger Hotel", "Hurghada Airport")
+    url2, direction2, error2 = si.resolve_and_host_image("SUP-J", "Transfer", "Riu Palace Hotel", "Marsa Alam Harbor")
+    assert error1 is None and error2 is None
 
     assert direction1 == direction2 == si.DIRECTION_HOTEL_TO_AIRPORT
     assert url1 == "https://images.example.com/1.jpg"
@@ -188,9 +194,14 @@ def test_resolve_returns_none_url_when_the_r2_upload_fails(monkeypatch):
 
     monkeypatch.setattr(r2_client, "upload_image", failing_upload)
 
-    url, direction = si.resolve_and_host_image("SUP-K", "Transfer", "Hurghada Airport", "Steigenberger Hotel")
+    url, direction, error = si.resolve_and_host_image("SUP-K", "Transfer", "Hurghada Airport", "Steigenberger Hotel")
     assert url is None
     assert direction == si.DIRECTION_AIRPORT_TO_HOTEL
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a real R2 upload failure must be
+    # distinguishable from "nothing saved yet" (the previous test) - an image WAS saved here,
+    # the upload just failed, so `error` must carry that failure rather than being None.
+    assert error is not None
+    assert "R2 upload failed" in error
 
 
 # ---------------------------------------------------------------------------

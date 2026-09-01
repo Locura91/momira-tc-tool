@@ -51,13 +51,14 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-01-audit-high-outreach-subsystem"
+MODULE_BUILD = "2026-09-01-audit-high-support-modules"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import cancellation_links
 from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text, strip_stray_html
+from state_store import StateStore
 
 # CONFIRMED STANDING RULE (product owner, 2026-08-24, see builder.py's own copy of this
 # comment): "if no specific policy is mentioned, leave the standardized Cancellation policy to
@@ -246,20 +247,46 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
     first, same convention as price_refresh.apply_proposals and the supplier-migration flow's
     own selected-indices filtering.
 
-    Each write is the record's own live GET shape, PUT back whole with ONLY cancellationRanges
-    and the EN datasheet's description changed - the exact same "dict(existing_record), mutate
-    one/two fields, PUT the whole thing back" shape already used by ClosedTour's "attach
-    supplements to an existing tour" update (see app.py's publish handler for
-    "Add a new option to an existing tour"). Nothing else on the record - pricing, segments,
-    images, dates - is touched."""
+    Each write is the record's own live GET shape, PUT back whole with cancellationRanges and
+    EVERY datasheet's description changed - see the CONFIRMED BUG FIX comment below for why
+    this now touches every language, not only EN. Nothing else on the record - pricing,
+    segments, images, dates - is touched.
+
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to rewrite ONLY the EN
+    datasheet's description, by design (see this module's own docstring: cancellationRanges is
+    the safely-editable structured field, and only EN's free text was meant to change here).
+    That was correct for the STRUCTURED field, but it left every OTHER language's datasheet
+    describing the OLD policy in prose - and the translation tracker (state_store.py's
+    verify_and_filter_needed, the "check state and verify existing content" self-healing check)
+    then permanently froze that stale text: on the next regular sync, it sees the non-EN
+    description no longer matches the (now-changed) EN source and reads that mismatch as "this
+    is already a genuine, up-to-date translation the tracker just lost track of" - exactly the
+    signal it's designed to trust, since that's normally how a state-tracking gap looks. It has
+    no way to tell that apart from "this text is stale because EN just changed outside the
+    normal sync flow," so it marks the stale foreign text as done and never revisits it. Real
+    consequence: non-English customers keep reading a cancellation policy the company no longer
+    honors, indefinitely.
+
+    Fix, two parts: (1) the same new cancellation sentence (English, until the next real
+    translation pass) is swapped into every OTHER language's datasheet too, via the identical
+    _swap_cancellation_paragraph helper used for EN - so no customer, in any language, is ever
+    shown a stale, no-longer-honored policy, even before it's properly translated. (2) the
+    translation-tracker state for this Transport is explicitly cleared (state_store.clear_state)
+    so the next regular sync treats it as never-synced instead of running the self-healing check
+    against content this tool just knowingly went around."""
     results = []
     for p in proposals:
         updated = dict(p["raw"])
         updated["cancellationRanges"] = p["new_ranges_wire"]
         datasheets = dict(updated.get("datasheets") or {})
-        en = dict(datasheets.get("EN") or {})
-        en["description"] = p["new_description_html"]
-        datasheets["EN"] = en
+        new_text = p["new_cancellation_text"]
+        for lang, sheet in datasheets.items():
+            sheet = dict(sheet or {})
+            new_html, _found = _swap_cancellation_paragraph(sheet.get("description") or "", new_text)
+            sheet["description"] = new_html
+            datasheets[lang] = sheet
+        if "EN" not in datasheets:
+            datasheets["EN"] = {"description": p["new_description_html"]}
         updated["datasheets"] = datasheets
         try:
             result = client.update_transport(supplier_id, updated)
@@ -271,5 +298,9 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
             results.append({"id": p["id"], "name": p["name"], "ok": False,
                             "detail": str(result.get("message") or result.get("error"))})
         else:
+            try:
+                StateStore().clear_state("transport", supplier_id, p["id"])
+            except Exception:
+                pass  # best-effort - a failed cache-invalidation must never undo a real, already-applied publish
             results.append({"id": p["id"], "name": p["name"], "ok": True, "detail": ""})
     return results

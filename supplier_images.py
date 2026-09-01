@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-01-audit-high-outreach-subsystem"
+MODULE_BUILD = "2026-09-01-audit-high-support-modules"
 
 _NAMESPACE = "supplier_images"
 
@@ -125,34 +125,44 @@ def delete_supplier_image(supplier_id: str, product_type: str, direction: str) -
 
 
 def resolve_and_host_image(supplier_id: str, product_type: str,
-                            departure_name: str, arrival_name: str) -> Tuple[Optional[str], Optional[str]]:
+                            departure_name: str, arrival_name: str
+                            ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Classifies the route's direction, and if a supplier image is saved for it, uploads a
     FRESH copy to R2 (see this module's docstring for why it's never a reused/cached URL) and
     returns its new public URL.
 
-    Returns (url_or_None, direction_or_None):
-      * (url, direction)  - classified AND an image is saved for that direction. Use `url`.
-      * (None, direction) - classified, but no image saved yet for that direction - the
+    Returns (url_or_None, direction_or_None, upload_error_or_None):
+      * (url, direction, None)   - classified AND an image is saved for that direction. Use `url`.
+      * (None, direction, None)  - classified, but no image saved yet for that direction - the
         caller should say which direction was detected and point at Setup to upload one.
-      * (None, None)      - couldn't classify the route at all (see classify_direction) - the
-        caller should warn and let a human set an image manually. CONFIRMED (product owner,
+      * (None, direction, error) - CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): an
+        image WAS saved for this direction, but the R2 upload itself failed (bad credentials,
+        R2 down, network error). This used to collapse to the exact same (None, direction)
+        shape as "nothing saved yet" - the caller had no way to tell "you haven't uploaded
+        anything" apart from "you uploaded something and hosting it just failed," so an
+        operator facing a real R2 outage saw "no image is saved yet, upload one in Setup" and
+        would naturally go re-upload an image that was already there, which does nothing to
+        fix an outage. `error` carries the real failure so the caller can say what actually
+        went wrong instead.
+      * (None, None, None)       - couldn't classify the route at all (see classify_direction) -
+        the caller should warn and let a human set an image manually. CONFIRMED (product owner,
         2026-08-28): never guess in this case.
 
     Imports r2_client lazily so callers that only need classify_direction (e.g. tests) don't
     need R2 credentials configured."""
     direction = classify_direction(departure_name, arrival_name)
     if direction is None:
-        return None, None
+        return None, None, None
     saved = get_supplier_image(supplier_id, product_type, direction)
     if not saved or not saved.get("bytes_b64"):
-        return None, direction
+        return None, direction, None
     try:
         from r2_client import upload_image
         image_bytes = base64.b64decode(saved["bytes_b64"])
         url = upload_image(image_bytes, filename=f"supplier_image.{saved.get('ext', 'jpg')}")
-        return url, direction
-    except Exception:
-        return None, direction
+        return url, direction, None
+    except Exception as e:
+        return None, direction, f"{type(e).__name__}: {e}"
 
 
 def list_supplier_images() -> list:

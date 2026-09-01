@@ -111,8 +111,23 @@ class StateStore:
         source_hash: str,
         translated_languages: List[str],
         option_code: str = "",
-    ):
-        platform_store.set(
+    ) -> bool:
+        """CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to call
+        platform_store.set() and discard its return value entirely - the exact silent
+        re-billing this module's own docstring calls out ("if the record is lost, the next
+        run sees everything as new and re-translates content that never changed - and the
+        translation API bills for it again"). A transient write failure (a Postgres blip, a
+        connection drop mid-sync) looked EXACTLY like a successful write to every caller - the
+        sync just moved on to the next entity, believing the translation was recorded, when it
+        silently wasn't. Every other durable store in this app (service_notes, supplier_images,
+        cancellation_links) surfaces set()'s failure to the operator; this one didn't surface it
+        anywhere at all, to anyone - not even a log line, let alone a UI. Now returns the
+        success flag (matching platform_store.set's own contract, so a future caller CAN check
+        it) and, since these sync_*.py runs are unattended CLI/scheduled jobs with no UI to show
+        an st.error to, prints a loud, specific failure using the entity info already in scope
+        here - the one choke point every upsert_state call already goes through, so no call site
+        anywhere needed to change to get this visibility."""
+        ok = platform_store.set(
             _NAMESPACE,
             _key(entity_type, str(supplier_id), str(entity_id), option_code),
             {
@@ -121,6 +136,24 @@ class StateStore:
                 "last_synced_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        if not ok:
+            print(f"🔴 [state_store] FAILED to record translation state for "
+                  f"{entity_type} supplier={supplier_id} entity={entity_id} "
+                  f"option={option_code or '(none)'} - this content will look untranslated on "
+                  f"the NEXT sync run and will be re-translated and re-billed even though "
+                  f"nothing about it changed. Check DATABASE_URL / the platform_store connection.")
+        return ok
+
+    def clear_state(self, entity_type: str, supplier_id: str, entity_id: str, option_code: str = "") -> bool:
+        """CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): deletes this entity's tracked
+        translation state entirely, so the next regular sync treats it as never-synced. Added
+        for cancellation_bulk_transport.py's bulk cancellation-policy update, which - by design
+        (see that module's own docstring on why it deliberately touches ONLY the EN datasheet) -
+        changes the EN source without touching any other language's already-live text. Called
+        right after a successful bulk update so this Transport's now-stale non-EN cancellation
+        text isn't left sitting behind a tracker row that still (wrongly) claims it's up to
+        date."""
+        return platform_store.delete(_NAMESPACE, _key(entity_type, str(supplier_id), str(entity_id), option_code))
 
     def languages_needed(self, entity_type, supplier_id, entity_id, source_hash, target_languages, option_code=""):
         """

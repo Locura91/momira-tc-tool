@@ -43,11 +43,35 @@ PHOTON_URL = "https://photon.komoot.io/api/"
 USER_AGENT = "MomiraTravelCompositorTool/1.0 (internal DMC-to-TravelCompositor upload tool)"
 
 _cache = {}
+_failure_cache = {}  # cache_key -> monotonic time.time() of the last failed attempt
 _last_nominatim_request_time = [0.0]
 
+# CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a failed attempt (both providers'
+# calls themselves failed - see _nominatim_search's docstring) is retried after this long,
+# rather than never (the original bug) or on every single call (which would re-pay the full
+# 1 req/sec Nominatim throttle for every repeated lookup of the same place within a short
+# burst - a real cost, and exactly the "heavy use" pattern the usage policy asks callers to
+# avoid). Long enough that a burst of calls for the same place (e.g. many documents from one
+# session mentioning the same city) only actually hits the network once; short enough that a
+# transient blip is never mistaken for "this place does not exist" for the life of the
+# container, unlike the original bug.
+_FAILURE_RETRY_SECONDS = 300
 
-def _nominatim_search(clean_query: str, limit: int) -> list:
-    """Raw Nominatim call - list of {"latitude", "longitude", "display_name", "type"}. Never raises."""
+
+def _nominatim_search(clean_query: str, limit: int):
+    """Raw Nominatim call - returns (results, ok). `ok` is False only when the CALL ITSELF
+    failed (network error, timeout, non-200 status) - never for a legitimate zero-result
+    answer, so callers can tell "we don't know" apart from "we asked and there really is
+    nothing." Never raises.
+
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to return a bare list, with
+    no way to tell a genuine "no such place" apart from "the request itself failed" - both
+    collapsed to the same `[]`. geocode_search cached that `[]` FOREVER (an in-memory,
+    process-lifetime cache with no expiry - "the same place is never looked up twice in one
+    session", by design, for real answers), so a single transient network blip on a real,
+    valid place permanently turned it into "this place does not exist" for the rest of the
+    container's life, with every later lookup for that exact query served the same cached
+    failure without ever trying again."""
     elapsed = time.time() - _last_nominatim_request_time[0]
     if elapsed < 1.1:
         time.sleep(1.1 - elapsed)
@@ -61,7 +85,7 @@ def _nominatim_search(clean_query: str, limit: int) -> list:
         )
         _last_nominatim_request_time[0] = time.time()
         if res.status_code != 200:
-            return []
+            return [], False
         return [
             {
                 "latitude": float(item["lat"]),
@@ -71,19 +95,20 @@ def _nominatim_search(clean_query: str, limit: int) -> list:
                 "provider": "nominatim",
             }
             for item in res.json()
-        ]
+        ], True
     except Exception:
-        return []
+        return [], False
 
 
-def _photon_search(clean_query: str, limit: int) -> list:
+def _photon_search(clean_query: str, limit: int):
     """
-    Raw Photon call - same return shape as _nominatim_search so callers can't
-    tell the difference. Photon's response is GeoJSON: each feature has
-    geometry.coordinates = [lon, lat] (note: reversed vs. lat/lon) and a
-    properties dict with name/city/state/country pieces to reconstruct a
-    human-readable display_name from (Photon doesn't provide one ready-made
-    the way Nominatim does). Never raises.
+    Raw Photon call - returns (results, ok), same convention as _nominatim_search (see its
+    docstring for why `ok` exists - CONFIRMED BUG FIX, full-app audit HIGH, 2026-09-01). Same
+    result shape as _nominatim_search so callers can't tell the difference. Photon's response is
+    GeoJSON: each feature has geometry.coordinates = [lon, lat] (note: reversed vs. lat/lon) and
+    a properties dict with name/city/state/country pieces to reconstruct a human-readable
+    display_name from (Photon doesn't provide one ready-made the way Nominatim does). Never
+    raises.
     """
     try:
         res = requests.get(
@@ -93,7 +118,7 @@ def _photon_search(clean_query: str, limit: int) -> list:
             timeout=10
         )
         if res.status_code != 200:
-            return []
+            return [], False
         results = []
         for feature in res.json().get("features", []):
             coords = (feature.get("geometry") or {}).get("coordinates")
@@ -113,9 +138,9 @@ def _photon_search(clean_query: str, limit: int) -> list:
                 "type": props.get("osm_value") or props.get("type") or "",
                 "provider": "photon",
             })
-        return results
+        return results, True
     except Exception:
-        return []
+        return [], False
 
 
 def geocode_search(query: str, limit: int = 5) -> list:
@@ -133,7 +158,12 @@ def geocode_search(query: str, limit: int = 5) -> list:
     declining cloud-hosted traffic rather than a real "place doesn't exist").
 
     Cached per unique (query, limit) to avoid repeated lookups and respect
-    Nominatim's 1 request/second policy.
+    Nominatim's 1 request/second policy - but a CONFIRMED-FAILED attempt (both providers'
+    calls themselves failed, not just "found nothing" - see _nominatim_search's docstring,
+    CONFIRMED BUG FIX full-app audit HIGH, 2026-09-01) is only cached for
+    _FAILURE_RETRY_SECONDS, not forever, and is retried after that window instead of being
+    remembered as "this place does not exist" for the life of the container. A real "no
+    results from either provider" answer is still cached indefinitely, same as before.
     """
     clean_query = (query or "").strip()
     if not clean_query:
@@ -142,12 +172,20 @@ def geocode_search(query: str, limit: int = 5) -> list:
     cache_key = (clean_query.lower(), limit)
     if cache_key in _cache:
         return _cache[cache_key]
+    last_failure = _failure_cache.get(cache_key)
+    if last_failure is not None and (time.time() - last_failure) < _FAILURE_RETRY_SECONDS:
+        return []
 
-    results = _nominatim_search(clean_query, limit)
+    results, nominatim_ok = _nominatim_search(clean_query, limit)
+    photon_ok = True
     if not results:
-        results = _photon_search(clean_query, limit)
+        results, photon_ok = _photon_search(clean_query, limit)
 
-    _cache[cache_key] = results
+    if nominatim_ok or photon_ok:
+        _cache[cache_key] = results
+        _failure_cache.pop(cache_key, None)
+    else:
+        _failure_cache[cache_key] = time.time()
     return results
 
 

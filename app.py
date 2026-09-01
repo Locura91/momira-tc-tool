@@ -6239,6 +6239,20 @@ def render_direction_image_section(current, data, product_type, widget_key):
         st.image(current_url, width=200)
         st.caption(f"Auto-picked from this supplier's saved \"{supplier_images.DIRECTION_LABELS[direction]}\" "
                   f"{product_type} image - replaces whatever image is already live when you publish.")
+    elif current.get("_image_upload_error"):
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): an image WAS already saved for
+        # this supplier/direction - the R2 upload of that saved image just failed (bad
+        # credentials, R2 down, network error) - see resolve_and_host_image's own docstring on
+        # why this is a genuinely different situation from "nothing saved yet" and must not be
+        # shown the same way. Re-uploading the same image in Setup would not fix this; the
+        # underlying R2 problem needs fixing (or the operator can still paste a URL by hand
+        # below as a workaround for this one item).
+        st.error(
+            f"🔴 An image IS saved for this supplier's **{supplier_images.DIRECTION_LABELS[direction]}** "
+            f"{product_type} direction, but hosting it just failed: {current['_image_upload_error']}. "
+            f"Re-uploading it in Setup won't fix this - it's an R2 connection/credentials problem, not "
+            f"a missing image. Paste a URL below by hand for just this one, or fix R2 and re-open this item."
+        )
     else:
         st.info(
             f"ℹ️ Detected direction: **{supplier_images.DIRECTION_LABELS[direction]}** - but no "
@@ -6551,9 +6565,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             # detected direction - see supplier_images.resolve_and_host_image's docstring.
             # Runs once, here, right after extraction - not on every rerender, so a human's
             # manual override below (typed once) isn't clobbered on the next widget interaction.
-            _si_url, current["_image_direction"] = supplier_images.resolve_and_host_image(
-                supplier_id, "Transfer",
-                current["data"].get("departure_name"), current["data"].get("arrival_name"))
+            _si_url, current["_image_direction"], current["_image_upload_error"] = (
+                supplier_images.resolve_and_host_image(
+                    supplier_id, "Transfer",
+                    current["data"].get("departure_name"), current["data"].get("arrival_name")))
             if _si_url:
                 current["data"]["image_urls"] = [_si_url]
 
@@ -7288,9 +7303,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # See the matching comment in render_multi_transfer_flow - auto-picks this
             # supplier's saved Airport/Harbor<->Hotel image for the route's detected
             # direction. Runs once, here, at extraction time.
-            _si_url, current["_image_direction"] = supplier_images.resolve_and_host_image(
-                supplier_id, "Transport",
-                current["data"].get("departure_name"), current["data"].get("arrival_name"))
+            _si_url, current["_image_direction"], current["_image_upload_error"] = (
+                supplier_images.resolve_and_host_image(
+                    supplier_id, "Transport",
+                    current["data"].get("departure_name"), current["data"].get("arrival_name")))
             if _si_url:
                 current["data"]["image_urls"] = [_si_url]
 
@@ -10328,7 +10344,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-high-outreach-subsystem"
+BUILD_VERSION = "2026-09-01-audit-high-support-modules"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -12157,8 +12173,19 @@ if st.session_state.extracted:
                                 if extra_modalities:
                                     st.markdown("**Creating additional modalities...**")
                                     for mod in extra_modalities:
-                                        if not mod.get("code") or not mod.get("data"):
-                                            st.warning("⚠️ Skipped a modality - missing code or pricing data.")
+                                        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this only ever
+                                        # checked that `data` was present at all - it was always present, complete
+                                        # with a fabricated "Example row" placeholder price row nobody had actually
+                                        # entered (see render_seasonal_price_editor's own fix, ui_components.py, for
+                                        # why that placeholder used to get written into the live data too). This
+                                        # extra-modality path never separately validated real pricing before
+                                        # publish, unlike the base modality's own "Add at least one price row"
+                                        # button-disable check - a ClosedTour Modality could publish bookable for
+                                        # all of 2027 at 0.00. `target_data["price_list"]` is now only ever real,
+                                        # operator-saved rows (never the placeholder), so this check is trustworthy.
+                                        if not mod.get("code") or not mod.get("data") or not (mod.get("data") or {}).get("price_list"):
+                                            st.warning(f"⚠️ Skipped modality '{mod.get('code') or '(no code)'}' - "
+                                                      f"missing code or at least one real (saved) price row.")
                                             continue
                                         with st.spinner(f"Creating modality '{mod['code']}'..."):
                                             try:

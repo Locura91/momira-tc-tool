@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-outreach-subsystem"
+MODULE_BUILD = "2026-09-01-audit-high-support-modules"
 
 import re
 import math
@@ -204,18 +204,39 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
     Double/Triple/Quadruple) bound to target_data["price_list"], matching
     the exact ClosedTour pricing shape. Reusable for the main modality and
     for any additional modalities being created in the same batch.
+
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to write the DISPLAY list -
+    including the fabricated "Example row - edit or delete" placeholder shown when there's
+    nothing real yet - straight into `target_data["price_list"]`, unconditionally, on every
+    single render, before the operator had touched anything. Any "add at least one price row"
+    guard elsewhere that just checked `target_data.get("price_list")` for truthiness saw that
+    fake, $0-priced placeholder as a perfectly real row the moment this widget first rendered -
+    silently defeating the guard. Confirmed real path: the "Add another Modality" extra-modality
+    flow (app.py) never separately validated price rows before publish at all, relying entirely
+    on `mod.get("data")` being present - which it always was, complete with a placeholder price
+    row nobody had actually entered. A ClosedTour could publish bookable for all of 2027 at
+    the currency's 0.00.
+
+    Fix: the placeholder is now ONLY ever shown in the on-screen table (`price_df`, below) so the
+    operator always sees something to edit - it is never written back into `target_data`.
+    `target_data["price_list"]` is only ever changed by `_save` (wired as editable_table's
+    on_save), i.e. only from what the operator actually has on screen at the moment they save -
+    exactly the same pattern app.py's own inline copies of this table already use for the base
+    modality. Until a real save happens, `target_data["price_list"]` stays exactly what it
+    already was (empty, if nothing was ever entered), so a caller checking it for "is there a
+    real price row yet" gets a truthful answer.
     """
-    default_price_list = sorted(
-        coerce_price_list_shape(target_data.get("price_list"), currency)[0] or [{
+    real_price_list = coerce_price_list_shape(target_data.get("price_list"), currency)[0] or []
+    display_price_list = sorted(
+        real_price_list or [{
             "name": "Example row - edit or delete", "startDate": "2027-01-01", "endDate": "2027-12-31",
             "price": {"singlePrice": {"amount": 0, "currency": currency}, "doublePrice": {"amount": 0, "currency": currency}}
         }],
         key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
     )
-    target_data["price_list"] = default_price_list
 
     price_df_rows = []
-    for entry in default_price_list:
+    for entry in display_price_list:
         price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
         def _amt(key, price=price):
             block = price.get(key)
