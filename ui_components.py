@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-builder-money-bugs"
+MODULE_BUILD = "2026-09-01-audit-high-currency-lock-fix"
 
 import re
 import math
@@ -167,33 +167,35 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
 
 def render_currency_check(currency, currency_options, state_key, widget_key):
     """
-    A small, editable Currency display shown right next to a Modality's own pricing - an
-    extra check for a CREATE flow, not a replacement for the Currency question already asked
-    earlier in the wizard.
+    A read-only Currency display shown right next to a Modality's own pricing - confirms
+    which currency this Modality's numbers are in, without any way to change it here.
 
-    CONFIRMED (product owner, 2026-08-19): "Please display the Currency within the modalities,
-    when creating a new Service - in case the human selected a wrong currency, so he could
-    still change it. But leave it in the first step too, because if a Service is created
-    without a modality, the currency is already required there. It shall be more like an
-    extra check." A whole product/Service is denominated in ONE currency throughout - there is
-    no such thing as Modality 1 in EUR and Modality 2 in USD on the same record - so changing
-    it here writes back to the SAME session_state key the earlier Currency step reads from
-    (`state_key`) and reruns, rather than only affecting this one Modality's own numbers.
-    That keeps every Modality's pricing consistent instead of quietly creating a
-    part-EUR/part-USD product nobody would notice until publish.
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-01, supersedes the 2026-08-19 rule this function
+    used to implement): "Once a currency has been set, it can never be changed and all
+    Modalities are using the same Currency." This function used to be an editable selectbox
+    that wrote back to the SAME session_state key the earlier Currency step reads from
+    (`state_key`) and reran the whole screen - full-app audit HIGH finding #1, 2026-09-01:
+    changing currency from a later Modality's widget correctly updated the shared `currency`
+    variable going forward, but every EARLIER Modality's `price_list` rows had already been
+    saved with that OLD currency baked into each price entry (see builder.py's
+    `coerce_price_list_shape`, where an already-stored row's own embedded currency wins over
+    whatever currency is passed in later) - so the record silently published part-EUR/
+    part-USD. Verified real example: changing currency on Modality 2 left Modality 1's
+    already-entered prices denominated in the old currency.
+
+    The only correct fix per the confirmed rule is to make currency genuinely immutable once
+    set, not just try to propagate a change everywhere - so this is now display-only. See
+    also the matching lock on the currency widget itself, at the ClosedTour/Ticket "Step 3"
+    config screens in app.py (`currency_in` disabled once `cfg_currency`/`tk_cfg_currency` is
+    already set, even after "Change details") - both places had to be closed for the rule to
+    actually hold, since "Change details" was the OTHER way to re-set currency after Modality
+    data already existed.
+
+    `currency_options`/`widget_key` are still accepted (unused) so existing call sites don't
+    need to change their own code.
     """
-    chosen = st.selectbox(
-        "Currency", currency_options,
-        index=currency_options.index(currency) if currency in currency_options else 0,
-        key=widget_key,
-        help="Set earlier in this wizard - shown again here so a wrong pick is easy to catch "
-             "and fix before publishing, instead of only surfacing once you're looking at raw "
-             "numbers. Changing it here updates every Modality of this Service.",
-    )
-    if chosen != currency:
-        st.session_state[state_key] = chosen
-        st.rerun()
-    return chosen
+    st.caption(f"💰 Currency: **{currency}** — locked once set; every Modality of this record shares it.")
+    return currency
 
 
 def render_seasonal_price_editor(label, target_data, edit_key, currency):

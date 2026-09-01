@@ -4899,7 +4899,22 @@ def render_ticket_flow(client):
         if "max_passengers" in needed:
             max_pass_in = st.selectbox("Max Passengers", list(range(2, 21)), index=7, key="tk_max_pass")
         if "currency" in needed:
-            currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tk_currency")
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-01, full-app audit HIGH #1 fix - same rule
+            # and same "Change details" re-entry hole as ClosedTour's twin lock above): "Once
+            # a currency has been set, it can never be changed and all Modalities are using
+            # the same Currency."
+            _tk_currency_already_set = bool(st.session_state.get("tk_cfg_currency"))
+            if _tk_currency_already_set:
+                currency_in = st.session_state.tk_cfg_currency
+                st.selectbox(
+                    "Currency", CURRENCY_OPTIONS,
+                    index=CURRENCY_OPTIONS.index(currency_in) if currency_in in CURRENCY_OPTIONS else 0,
+                    disabled=True, key="tk_currency",
+                    help="Locked - a currency, once set, cannot be changed. It applies to "
+                         "every Modality of this ticket.",
+                )
+            else:
+                currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tk_currency")
         if "modality_code" in needed:
             # "update_ticket" needs the SAME "which existing Modality" semantics as
             # "update_option" now (see TICKET_ACTION_FIELDS's comment) - both are asking
@@ -10218,7 +10233,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-high-builder-money-bugs"
+BUILD_VERSION = "2026-09-01-audit-high-currency-lock-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10898,7 +10913,27 @@ else:
     if "max_pax" in needed:
         max_pax_in = st.selectbox("Max Pax", list(range(2, 10)), index=7)
     if "currency" in needed:
-        currency_in = st.selectbox("Currency", CURRENCY_OPTIONS)
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-01, full-app audit HIGH #1 fix): "Once a
+        # currency has been set, it can never be changed and all Modalities are using the
+        # same Currency." "Change details" (above) resets step2_confirmed and re-renders this
+        # very widget - without this lock, an operator could pick a different currency here
+        # AFTER Modality 1 already has price data entered, and republishing would carry
+        # Modality 1's old-currency prices forward under the new currency label (the other
+        # half of the same bug render_currency_check's docstring documents - that widget is
+        # now locked too, but "Change details" was the second way to re-set currency after
+        # data already existed, so both had to close).
+        _currency_already_set = bool(st.session_state.get("cfg_currency"))
+        if _currency_already_set:
+            currency_in = st.session_state.cfg_currency
+            st.selectbox(
+                "Currency", CURRENCY_OPTIONS,
+                index=CURRENCY_OPTIONS.index(currency_in) if currency_in in CURRENCY_OPTIONS else 0,
+                disabled=True,
+                help="Locked - a currency, once set, cannot be changed. It applies to every "
+                     "Modality of this tour.",
+            )
+        else:
+            currency_in = st.selectbox("Currency", CURRENCY_OPTIONS)
     if "modality_code" in needed:
         # "update_tour" needs the SAME "which existing Modality" semantics as
         # "update_option" now (see ACTION_FIELDS's comment) - both are asking for an

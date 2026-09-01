@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-builder-money-bugs"
+MODULE_BUILD = "2026-09-01-audit-high-currency-lock-fix"
 
 import math
 import datetime
