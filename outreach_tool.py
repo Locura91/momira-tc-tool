@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-closedtour-ticket-flows"
+MODULE_BUILD = "2026-09-01-audit-high-outreach-subsystem"
 
 import csv
 import io
@@ -66,6 +66,7 @@ import outreach_followups as ofw
 import outreach_learned_suppliers as oln  # remembers suppliers added by hand - see its own docstring
 import outreach_memory as om  # domain blocklist
 import outreach_scope as osc
+import platform_store
 
 _PHASE_KEY = "or_phase"
 
@@ -82,16 +83,27 @@ def _mark_already_contacted(suppliers):
     Pre-unticks (does not remove) any result whose email was already sent to before, and tags
     it so the review table can show why. A human can still deliberately re-tick a row - this
     is a safety default, not a hard block, the same posture the rest of this screen takes
-    everywhere else a human makes the final call."""
+    everywhere else a human makes the final call.
+
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this guard fails OPEN. list_all_sends()
+    is built on platform_store.get_namespace(), which swallows every read failure and returns {}
+    - identical to "the store has never seen this namespace." So a store outage (paused Postgres
+    project, wrong password, no network) looked EXACTLY like "nothing has ever been sent," and
+    every previously-emailed supplier came back fully ticked with no warning at all - the one
+    guard whose entire job is "never email the same supplier twice" silently stopped working at
+    the worst possible moment. Returns (suppliers, store_reachable) now - store_reachable is
+    False only when platform_store.health() itself reports the store isn't answering, so the
+    caller can show a real warning instead of a false "nobody's been contacted" all-clear."""
     contacted_emails = {row["email"] for row in ofw.list_all_sends() if row.get("email")}
     if not contacted_emails:
-        return suppliers
+        store_ok = platform_store.health().get("ok", True)
+        return suppliers, store_ok
     for supplier in suppliers:
         email = (supplier.get("email") or "").strip().lower()
         if email and email in contacted_emails:
             supplier["alreadyContacted"] = True
             supplier["selected"] = False
-    return suppliers
+    return suppliers, True
 
 
 def _reset_run():
@@ -348,7 +360,23 @@ def _merge_one_job_result(merged, seen, stats, label, result, drop_log=None):
             tagged["combination"] = label
             drop_log.append(tagged)
     for supplier in result["suppliers"]:
-        domain = om.extract_domain(supplier.get("website") or supplier.get("listingUrl") or "")
+        website = supplier.get("website") or ""
+        listing_url = supplier.get("listingUrl") or ""
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a supplier with no website of its
+        # own (common - see od.scrape_aggregator_for_website_and_contact's own docstring on how
+        # often that's the case) fell back to fingerprinting on its LISTING domain instead - and
+        # for any supplier only ever found via an aggregator (tripadvisor.com, viator.com,
+        # getyourguide.com, ...), that domain is the SAME for every different real business
+        # listed there. The first supplier seen on an aggregator in a run silently absorbed
+        # every other genuinely distinct supplier on that same aggregator as a "duplicate" -
+        # the largest confirmed recall loss in the whole outreach subsystem, and invisible in
+        # any stat panel (they were merged, not dropped, so no count reflects it). od.is_aggregator_url
+        # already exists precisely to tell a business's own site apart from a listing page (used
+        # elsewhere in outreach_discovery.py for exactly this distinction) - reused here so an
+        # aggregator domain is never treated as if it uniquely identified one business.
+        domain = om.extract_domain(website) if website and not od.is_aggregator_url(website) else None
+        if not domain and listing_url and not od.is_aggregator_url(listing_url):
+            domain = om.extract_domain(listing_url)
         fingerprint = domain or (supplier.get("name") or "").strip().lower()
         if fingerprint and fingerprint in seen:
             continue
@@ -480,7 +508,8 @@ def _render_search():
             stopped_early=st.session_state.get("or_queue_stopped", False),
             searched=st.session_state.or_queue_pos, total=total,
         )
-        result["suppliers"] = _mark_already_contacted(result["suppliers"])
+        result["suppliers"], _duplicate_check_ok = _mark_already_contacted(result["suppliers"])
+        result["duplicate_check_unavailable"] = not _duplicate_check_ok
         st.session_state.or_result = result
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): "the App can learn which suppliers are
         # needed" from a manual add - see outreach_learned_suppliers.py. A merged Country-Scope
@@ -582,7 +611,8 @@ def _render_search():
                 st.error(f"Search failed: {e}")
                 return
         progress_box.empty()
-        result["suppliers"] = _mark_already_contacted(result["suppliers"])
+        result["suppliers"], _duplicate_check_ok = _mark_already_contacted(result["suppliers"])
+        result["duplicate_check_unavailable"] = not _duplicate_check_ok
         st.session_state.or_result = result
         # A plain Country/City/Keyword search maps to exactly one (country, theme) combination -
         # see the matching or_session assignment in _render_search's Country-Scope branch above
@@ -862,6 +892,15 @@ def _render_review_and_send():
                "are saved back to the supplier list. Add a new partner directly by filling in the "
                "blank row at the bottom, or remove one by selecting its row and pressing the trash "
                "icon.")
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the "already contacted" check
+    # (_mark_already_contacted) fails open on a store outage - it looks identical to "nobody's
+    # been emailed yet." Every row below could really be a repeat send with no way to tell from
+    # this screen alone, so that has to be surfaced loudly rather than silently trusted.
+    if result.get("duplicate_check_unavailable"):
+        st.warning("⚠️ Could not verify send history against the platform's database (it isn't "
+                   "answering right now) - the **Contacted before** check below could not run. "
+                   "Any of these suppliers may have already been emailed. Fix the database "
+                   "connection before sending, or double-check manually.")
     if any(s.get("alreadyContacted") for s in suppliers):
         st.caption("🔁 Rows marked **Contacted before** were already emailed in an earlier session and have "
                    "been pre-unticked, per \"we can contact each supplier only once\" — re-tick one only if "
@@ -1161,15 +1200,29 @@ def _render_review_and_send():
         def on_progress(entry):
             live.append(entry)
             progress_box.caption(f"📤 {len(live)}/{len(selected)} — {entry['supplierName']}: {entry['status']}")
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): record each successful send
+            # to durable history AS IT HAPPENS, not after the whole batch finishes. dispatch_batch
+            # sends one supplier at a time with a throttle sleep between each real provider call -
+            # a batch of any real size takes real wall-clock time, and a refresh, a closed tab, or
+            # a crash partway through used to mean every send that already went out before the
+            # interruption was lost from outreach_followups' durable history entirely
+            # (record_sends_from_log used to run once, only after the loop returned normally) -
+            # so retrying the "same" batch afterward would silently re-send to suppliers who had
+            # already been emailed, with no durable record anywhere that they had been. record_send
+            # is safe to call more than once for the same entry (same email+sent_at key upserts in
+            # place), so this can't double-record if the batch does finish normally afterward.
+            if entry.get("status") == "sent" and not entry.get("demo") and entry.get("email"):
+                supplier = next(
+                    (s for s in selected
+                     if (s.get("email") or "").strip().lower() == entry["email"].strip().lower()),
+                    {"email": entry["email"], "name": entry.get("supplierName")},
+                )
+                ofw.record_send(supplier, session, entry.get("subject") or template.get("subject", ""),
+                                entry.get("timestamp"))
 
         with st.spinner("Sending…"):
             st.session_state.or_send_log = oe.dispatch_batch(selected, session, template,
                                                               on_progress=on_progress, dry_run=False)
-        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): durable send history, so a "sent N+
-        # days ago, no reply logged" follow-up list has something to work from - see
-        # outreach_followups.py's module docstring for why this couldn't exist before (a send
-        # log used to live only in this browser session and a downloaded CSV).
-        ofw.record_sends_from_log(selected, session, st.session_state.or_send_log)
 
         # CONFIRMED FIX (2026-08-19 audit): previously nothing disarmed the send button after a
         # successful send - the confirm checkbox and the "Send" ticks stayed exactly as they
@@ -1249,31 +1302,60 @@ def _render_followup_row(row, show_replied_button=True, show_reminder_button=Tru
                 st.rerun()
         with cols[1]:
             if show_reminder_button and st.button("📨 Send reminder", key=f"or_followup_remind_{row['key']}"):
+                # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): `row["keyword"]` is a
+                # display-only run summary (see record_send's comment on `focus_keyword`) - it
+                # must never be used to fill [FocusKeyword] in the reminder itself. Passing the
+                # row's stored `focus_keyword` as the supplier's `foundVia` reuses
+                # build_template_data's existing, already-correct precedence
+                # (`supplier.get("foundVia") or session.get("keyword")`) so this reminder resolves
+                # the SAME way the original send did, without duplicating that logic here. Older
+                # rows recorded before this field existed fall back to build_template_data's own
+                # safe generic default rather than the raw run-summary string.
                 supplier = {
                     "name": row.get("supplier_name") or "",
                     "email": row.get("email") or "",
                     "website": row.get("website") or "",
+                    "foundVia": row.get("focus_keyword") or "",
                 }
                 session = {
                     "country": row.get("country") or "",
                     "keyword": row.get("keyword") or "",
                 }
                 try:
-                    oe.send_supplier_email(supplier, session, oe.DEFAULT_REMINDER_TEMPLATE)
+                    reminder_result = oe.send_supplier_email(supplier, session, oe.DEFAULT_REMINDER_TEMPLATE)
                 except Exception as exc:
                     st.error(f"Reminder failed to send: {exc}")
                 else:
-                    ofw.mark_reminder_sent(row["email"], row["sent_at"], channel="tool")
-                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-31): "once send mails to supplier,
-                    # I dont see any balloons - but we should display it, if the outreach mail was
-                    # successfully send." The batch "review and send" screen already fires
-                    # st.balloons() on any successful send (2026-08-26 fix), but this individual
-                    # reminder-send button - a real email dispatch via send_supplier_email, exactly
-                    # like a batch send - never got the same treatment; it only ever showed a small
-                    # text success message. Balloons now fire here too, so every path that actually
-                    # sends mail through the tool gives the same visible confirmation.
-                    st.balloons()
-                    st.success("Reminder sent.")
+                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): with no email provider
+                    # configured, send_supplier_email fakes the send (provider == "demo", see its
+                    # own comment - "fully built but never delivered, so the workflow stays
+                    # testable") without raising, so the `else` branch used to run unconditionally:
+                    # balloons, "Reminder sent.", AND mark_reminder_sent - all as if a real reminder
+                    # had gone out, even though nothing was delivered. Reminders are capped at ONE
+                    # (see this module's docstring); permanently burning that one shot on a phantom
+                    # demo send meant the supplier could never get a real reminder later, once a
+                    # provider was actually configured. This mirrors CRITICAL #4's exact fix for
+                    # cold sends (outreach_followups.record_sends_from_log skipping demo entries) -
+                    # applied here for the one send path that CRITICAL #4 didn't cover, since a
+                    # reminder never goes through record_sends_from_log at all.
+                    if reminder_result.get("demo"):
+                        st.warning("📭 No email provider is configured, so this ran in **demo mode** - "
+                                  "nothing was actually delivered. The one-reminder allowance for "
+                                  "this supplier was NOT used, so a real reminder can still be sent "
+                                  "once a provider (Resend or SMTP) is configured.")
+                    else:
+                        ofw.mark_reminder_sent(row["email"], row["sent_at"], channel="tool")
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-31): "once send mails to
+                        # supplier, I dont see any balloons - but we should display it, if the
+                        # outreach mail was successfully send." The batch "review and send" screen
+                        # already fires st.balloons() on any successful send (2026-08-26 fix), but
+                        # this individual reminder-send button - a real email dispatch via
+                        # send_supplier_email, exactly like a batch send - never got the same
+                        # treatment; it only ever showed a small text success message. Balloons now
+                        # fire here too, so every path that actually sends mail through the tool
+                        # gives the same visible confirmation.
+                        st.balloons()
+                        st.success("Reminder sent.")
                     st.rerun()
         with cols[2]:
             if show_external_button and st.button("📞 Log external contact",

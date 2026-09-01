@@ -127,13 +127,18 @@ def test_mark_already_contacted_unticks_a_previously_emailed_supplier():
     ofw.record_send({"name": "Old Contact", "email": email}, {"country": "Peru", "keyword": "Trekking"},
                     "Subject", sent_at=datetime.now(timezone.utc).isoformat())
     suppliers = [_supplier("Old Contact", email=email)]
-    result = ot._mark_already_contacted(suppliers)
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): _mark_already_contacted now returns
+    # (suppliers, store_reachable) - see its updated docstring on why the guard needed a way to
+    # signal "the store didn't answer" distinctly from "nobody's been contacted."
+    result, store_ok = ot._mark_already_contacted(suppliers)
     assert result[0]["selected"] is False
     assert result[0]["alreadyContacted"] is True
+    assert store_ok is True
 
 
 def test_mark_already_contacted_leaves_a_new_supplier_untouched():
     suppliers = [_supplier("Brand New", email="brandnew@outreach-tool-crosssession-test.example")]
-    result = ot._mark_already_contacted(suppliers)
+    result, store_ok = ot._mark_already_contacted(suppliers)
     assert result[0]["selected"] is True
     assert "alreadyContacted" not in result[0]
+    assert store_ok is True

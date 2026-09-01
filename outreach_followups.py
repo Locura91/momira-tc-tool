@@ -73,6 +73,16 @@ def record_send(supplier: Dict[str, Any], session: Dict[str, Any], subject: str,
         "subject": subject or "",
         "country": session.get("country") or "",
         "keyword": session.get("keyword") or "",
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): `keyword` above is a display-only
+        # summary of the RUN ("12 place/theme combination(s)" for a combination/queue run) - fine
+        # for the follow-up worklist's own caption, never meant to be injected into an email a
+        # supplier reads. The per-SUPPLIER value that actually belongs in outbound email content
+        # (outreach_email.build_template_data's [FocusKeyword]) is `supplier["foundVia"]` when
+        # this send came from a combination run, captured here so a later reminder - built from
+        # this stored row, long after the original run's session is gone - can reuse the exact
+        # same correct value the first email used, instead of re-deriving one from `keyword` and
+        # getting the same run-summary nonsense build_template_data was fixed to reject.
+        "focus_keyword": supplier.get("foundVia") or session.get("keyword") or "",
         "sent_at": sent_at,
         "status": "pending",           # pending -> replied (the only other state - see module docstring)
         "reminder_sent_at": None,
@@ -172,13 +182,34 @@ def cold_followups() -> List[Dict[str, Any]]:
 
 
 def mark_replied(email: str, sent_at: str) -> bool:
-    key = _key(email, sent_at)
-    row = platform_store.get(_NAMESPACE, key)
-    if not isinstance(row, dict):
+    """CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to touch only the single
+    (email, sent_at) row identified by the button that was clicked - keyed per SEND, not per
+    SUPPLIER. A supplier can genuinely end up with more than one row here (found and contacted
+    again in a later, separate run under the same email - nothing here prevents that once a
+    prior row has already been marked replied, since the duplicate-send guard only checks
+    UNREPLIED-looking history in practice) - a reply is a fact about the SUPPLIER, not about
+    one specific email thread, so marking only the clicked row left every OTHER pending row for
+    that same email still eligible for pending_followups()/a "just checking in" reminder to a
+    supplier who has, in fact, already replied. Every not-yet-replied row for this email is now
+    marked, not just the one the button happened to be on; `sent_at` is kept as a parameter
+    (rather than dropped) only so a caller can still confirm the specific row it meant to act on
+    exists before this fans out - it no longer limits which rows get updated."""
+    normalized_email = (email or "").strip().lower()
+    target_key = _key(email, sent_at)
+    target_row = platform_store.get(_NAMESPACE, target_key)
+    if not isinstance(target_row, dict):
         return False
-    row["status"] = "replied"
-    row["reply_marked_at"] = _now().isoformat()
-    return platform_store.set(_NAMESPACE, key, row)
+    ok = True
+    for row in list_all_sends():
+        if (row.get("email") or "").strip().lower() != normalized_email:
+            continue
+        if row.get("status") == "replied":
+            continue
+        row = dict(row)
+        row["status"] = "replied"
+        row["reply_marked_at"] = _now().isoformat()
+        ok = platform_store.set(_NAMESPACE, _key(row["email"], row["sent_at"]), row) and ok
+    return ok
 
 
 def mark_reminder_sent(email: str, sent_at: str, channel: str = "tool") -> bool:

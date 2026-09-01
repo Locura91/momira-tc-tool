@@ -38,11 +38,12 @@ REMOVED FROM THE ORIGINAL: the TEST_MODE_RECIPIENTS redirect - see the note
 where it used to live, further down this file.
 """
 import base64
+import hashlib
 import os
 import re
 import smtplib
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from typing import Any, Callable, Dict, List, Optional
 
@@ -242,6 +243,24 @@ def build_template_data(supplier: Dict[str, Any], session: Dict[str, Any]) -> Di
     # should go in the email. A plain single Country/City/Keyword search has no foundVia, so
     # session["keyword"] (the real keyword typed for that search) is still used there.
     focus_keyword = supplier.get("foundVia") or session.get("keyword")
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): two real gaps in the fix above.
+    # (1) A supplier ADDED BY HAND during a combination/queue run (outreach_tool.py's "Add a
+    # supplier by hand" / blank-row-in-table paths) never gets a `foundVia` at all - it isn't
+    # found by a search job, so nothing ever sets it - so it fell straight through to the same
+    # run-summary garbage string the 2026-08-19 fix was written to avoid. (2) A REMINDER email,
+    # sent much later from outreach_followups.py's durable send-history row (see record_send
+    # below), was built from a `session` reconstructed out of that stored row - which only ever
+    # kept the run-level `keyword` field for display in the follow-up list, never the per-
+    # supplier `foundVia` that made the first email read correctly - so a reminder for a
+    # combination-run supplier hit the exact same bug the first email had already been fixed for.
+    # Rather than patch each caller, the run-summary shape itself (f"{N} place/theme
+    # combination(s)", the one place this string is ever generated) is recognized and treated
+    # as "no real per-supplier value available" here, at the single point every caller already
+    # goes through - closing both gaps (and any future one shaped like them) at once.
+    if focus_keyword and re.match(r"^\d+ place/theme combination\(s\)$", str(focus_keyword)):
+        focus_keyword = None
+    if not focus_keyword:
+        focus_keyword = "your offerings"
     # CONFIRMED FIX (2026-08-19 audit): render_template deliberately leaves an unmatched
     # [Tag] visible so a genuine authoring typo stays noticeable - but a supplier scraped
     # with no name (rather than a typo in the template) hit that same fallback and could
@@ -335,6 +354,28 @@ def build_message(supplier: Dict[str, Any], session: Dict[str, Any],
     }
 
 
+def _resend_idempotency_key(message: Dict[str, Any]) -> str:
+    """CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): with no idempotency key, a request
+    that timed out on OUR side AFTER Resend had already accepted and delivered it got logged as
+    "failed" (see send_supplier_email's own comment on this exact ambiguity for a malformed
+    response body - a network timeout is the same class of problem, just earlier in the round
+    trip) - the operator, seeing "failed", would naturally re-tick that row and press Send
+    again, and Resend would deliver a genuine duplicate cold email to the same real recipient.
+
+    Deterministic per (recipient, exact rendered subject+body, day) rather than random per
+    attempt - Resend deduplicates any request carrying a key it has already seen within its
+    retention window, so an accidental retry of the literal same message on the literal same
+    day is caught, while a genuinely new email (different day, or the template/content changed)
+    still gets its own key and sends normally."""
+    basis = "|".join([
+        ",".join(message.get("to") or []),
+        message.get("subject") or "",
+        message.get("text") or "",
+        date.today().isoformat(),
+    ])
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
 def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
                         template: Dict[str, Any]) -> Dict[str, Any]:
     provider = get_email_provider()
@@ -359,7 +400,8 @@ def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
         res = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {os.getenv('RESEND_API_KEY')}",
-                     "Content-Type": "application/json"},
+                     "Content-Type": "application/json",
+                     "Idempotency-Key": _resend_idempotency_key(message)},
             json=payload, timeout=_REQUEST_TIMEOUT_S,
         )
         if res.status_code >= 400:

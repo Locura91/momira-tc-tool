@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-closedtour-ticket-flows"
+MODULE_BUILD = "2026-09-01-audit-high-outreach-subsystem"
 
 import os
 import re
@@ -590,7 +590,19 @@ RATING_PATTERNS = [
     re.compile(r"(\d(?:[.,]\d)?)\s*★", re.I),                                  # "4.6★"
     re.compile(r"rated\s*(\d(?:[.,]\d)?)", re.I),                              # "rated 4.6"
     re.compile(r"rating[:\s]+(\d(?:[.,]\d)?)", re.I),                          # "Rating: 4.6"
-    re.compile(r"\((\d(?:[.,]\d)?)\)"),                                        # "(4.6)" next to a name
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this pattern used to match ANY single
+    # digit in parens, with no lookahead - a phone number formatted with a parenthesized trunk
+    # prefix ("+20 (0)100...", a completely standard way to write an Egyptian number) matched
+    # "(0)" as a "0-star rating," and vet_candidates below treats a confidently-parsed numeric
+    # rating as its STRONGEST signal, enforcing the bar with no review-count rescue for a
+    # genuinely low one - so real local businesses with a phone number in their snippet (exactly
+    # the kind of strong "this is a real, contactable business" signal this search is trying to
+    # find) got hard-rejected on a rating that was never actually there. A real "(N.N)"/"(N)"
+    # rating is essentially never immediately glued to another digit with no space (it's always
+    # followed by a space, punctuation, or the end of the snippet) - a trunk-prefix "(0)" in a
+    # phone number almost always IS glued straight to the rest of the digits ("(0)100..."), so
+    # the negative lookahead below tells the two apart without needing a phone-number parser.
+    re.compile(r"\((\d(?:[.,]\d)?)\)(?!\d)"),                                  # "(4.6)" next to a name
 ]
 
 REVIEW_COUNT_PATTERN = re.compile(r"(\d[\d,]*)\+?\s*(?:google\s*)?reviews?", re.I)
