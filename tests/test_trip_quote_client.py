@@ -18,6 +18,8 @@ from trip_quote_client import (
     MAX_ROOMS,
     TripQuoteClient,
     build_distributions,
+    build_persons,
+    build_transfer_location,
     build_transport_journey,
 )
 
@@ -104,6 +106,53 @@ def test_exceeding_max_rooms_raises():
 
 
 # ============================================================
+# build_persons - the FLAT shape used by Transports/Transfer/Ticket (confirmed 2026-09-01,
+# genuinely different from build_distributions()'s room-wrapped shape above)
+# ============================================================
+def test_build_persons_flat_shape_no_rooms():
+    persons = build_persons(adults=2, children_ages=[6, 9])
+    assert persons == [
+        {"age": ADULT_PLACEHOLDER_AGE},
+        {"age": ADULT_PLACEHOLDER_AGE},
+        {"age": 6},
+        {"age": 9},
+    ]
+
+
+def test_build_persons_zero_travellers_raises():
+    with pytest.raises(ValueError):
+        build_persons(adults=0, children_ages=[])
+
+
+def test_build_persons_exceeding_max_pax_raises():
+    with pytest.raises(ValueError):
+        build_persons(adults=9, children_ages=[1])  # 10 > MAX_PAX
+
+
+def test_build_persons_exactly_max_pax_is_allowed():
+    persons = build_persons(adults=9, children_ages=[])
+    assert len(persons) == MAX_PAX
+
+
+# ============================================================
+# build_transfer_location - {accommodationId} or {transportBaseID}, confirmed 2026-09-01
+# ============================================================
+def test_build_transfer_location_transport_base():
+    assert build_transfer_location(transport_base_id="CAI") == {"transportBaseID": "CAI"}
+
+
+def test_build_transfer_location_accommodation():
+    assert build_transfer_location(accommodation_id="HTL123") == {"accommodationId": "HTL123"}
+
+
+def test_build_transfer_location_requires_exactly_one():
+    with pytest.raises(ValueError):
+        build_transfer_location()
+    with pytest.raises(ValueError):
+        build_transfer_location(accommodation_id="HTL123", transport_base_id="CAI")
+
+
+# ============================================================
 # build_transport_journey
 # ============================================================
 def test_build_transport_journey_shape():
@@ -128,6 +177,10 @@ def test_build_transport_journey_rejects_invalid_location_type():
 # TripQuoteClient - URL construction, payload shape, error handling
 # ============================================================
 def test_quote_accommodations_posts_the_confirmed_url_and_filter_shape(client):
+    # Field names verified 2026-09-01 against Momira's own real online.travelcompositor.com
+    # Swagger (ApiAccommodationQuoteRequestVO) - checkIn/checkOut/destinationId/tripType, not the
+    # earlier dertourgroup-derived guess (dateFrom/dateTo/destination, and tripType was missing
+    # entirely despite being required).
     dist = build_distributions(adults=2)
     with patch("api_client.requests.request", return_value=make_response(200, {"ok": True})) as req_mock:
         result = client.quote_accommodations(dist, "2027-03-18", "2027-03-21", destination_code="CAI")
@@ -137,9 +190,10 @@ def test_quote_accommodations_posts_the_confirmed_url_and_filter_shape(client):
     assert args[1] == f"{client.api.api_base_url}/booking/accommodations/quote"
     payload = kwargs["json"]
     assert payload["distributions"] == dist
-    assert payload["dateFrom"] == "2027-03-18"
-    assert payload["dateTo"] == "2027-03-21"
-    assert payload["destination"] == "CAI"
+    assert payload["checkIn"] == "2027-03-18"
+    assert payload["checkOut"] == "2027-03-21"
+    assert payload["destinationId"] == "CAI"
+    assert payload["tripType"] == "ONLY_HOTEL"
     assert payload["filter"] == {"bestCombinations": True, "includeOnRequestOptions": False}
 
 
@@ -151,32 +205,68 @@ def test_quote_accommodations_includes_max_combinations_only_when_given(client):
     assert payload["filter"]["maxCombinations"] == 5
 
 
-def test_quote_transports_maps_distributions_onto_persons_field(client):
-    dist = build_distributions(adults=2)
+def test_quote_transports_uses_flat_persons_not_room_wrapped_distributions(client):
+    # Confirmed 2026-09-01 (live browser session against the real OpenAPI spec): Transports'
+    # "persons" field is a flat array of {age}, not build_distributions()'s room-wrapped shape -
+    # this was a real bug (a doubly-nested, wrong-keyed payload) before this date.
+    persons = build_persons(adults=2)
     journeys = [build_transport_journey("FRA", "TRANSPORT_BASE", "CAI", "DESTINATION", "2027-03-18")]
     with patch("api_client.requests.request", return_value=make_response(200, {"ok": True})) as req_mock:
-        client.quote_transports(journeys, dist)
+        client.quote_transports(journeys, persons)
     args, kwargs = req_mock.call_args
     assert args[1] == f"{client.api.api_base_url}/booking/transports/quote"
     payload = kwargs["json"]
     assert payload["journeys"] == journeys
-    assert payload["persons"] == dist          # NOT "distributions" - see docstring
-    assert payload["tripType"] == "ROUND_TRIP"
+    assert payload["persons"] == persons
+    assert payload["tripType"] == "MULTI"
+    assert payload["filter"] == {"includeFareFamilies": False}
 
 
-def test_quote_transfers_posts_the_confirmed_url(client):
-    dist = build_distributions(adults=2)
+def test_quote_transfers_posts_the_confirmed_url_and_location_shape(client):
+    # Confirmed 2026-09-01: from/to are {accommodationId} or {transportBaseID} objects, not the
+    # pickup/pickupType/dropoff/dropoffType string pairs this used to (wrongly) send.
+    persons = build_persons(adults=2)
+    from_loc = build_transfer_location(transport_base_id="CAI")
+    to_loc = build_transfer_location(accommodation_id="HTL123")
     with patch("api_client.requests.request", return_value=make_response(200, {"ok": True})) as req_mock:
-        client.quote_transfers(dist, "CAI", "TRANSPORT_BASE", "HTL123", "DESTINATION", "2027-03-18")
-    assert req_mock.call_args.args[1] == f"{client.api.api_base_url}/booking/transfer/quote"
+        client.quote_transfers(persons, from_loc, to_loc, "2027-03-18T14:00:00")
+    args, kwargs = req_mock.call_args
+    assert args[1] == f"{client.api.api_base_url}/booking/transfer/quote"
+    payload = kwargs["json"]
+    assert payload["persons"] == persons
+    assert payload["from"] == {"transportBaseID": "CAI"}
+    assert payload["to"] == {"accommodationId": "HTL123"}
+    assert payload["pickupDateTime"] == "2027-03-18T14:00:00"
+    assert "arrivalTransportDateTime" not in payload
+    assert "departureTransportDateTime" not in payload
 
 
-def test_quote_tickets_posts_the_confirmed_url(client):
-    dist = build_distributions(adults=2)
+def test_search_tickets_posts_the_destination_search_shape(client):
+    persons = build_persons(adults=2)
     with patch("api_client.requests.request", return_value=make_response(200, {"ok": True})) as req_mock:
-        client.quote_tickets(dist, "TICKET-417967", "2027-03-19", modality_code="EN")
-    assert req_mock.call_args.args[1] == f"{client.api.api_base_url}/booking/tickets/quote"
-    assert req_mock.call_args.kwargs["json"]["modalityCode"] == "EN"
+        client.search_tickets(persons, "2027-03-19", "2027-03-19", destination_code="CAI")
+    args, kwargs = req_mock.call_args
+    assert args[1] == f"{client.api.api_base_url}/booking/tickets/quote"
+    payload = kwargs["json"]
+    assert payload["checkIn"] == "2027-03-19"
+    assert payload["checkOut"] == "2027-03-19"
+    assert payload["persons"] == persons
+    assert payload["destinationId"] == "CAI"
+    assert payload["filter"] == {}
+
+
+def test_quote_ticket_puts_ticket_id_in_the_path_not_the_body(client):
+    # Confirmed 2026-09-01: ticketId is a path parameter and there is no modalityCode request
+    # field at all - both were wrong before this date.
+    persons = build_persons(adults=2)
+    with patch("api_client.requests.request", return_value=make_response(200, {"ok": True})) as req_mock:
+        client.quote_ticket("TICKET-417967", persons, "2027-03-19", "2027-03-19")
+    args, kwargs = req_mock.call_args
+    assert args[1] == f"{client.api.api_base_url}/booking/tickets/TICKET-417967/quote"
+    payload = kwargs["json"]
+    assert payload == {"checkIn": "2027-03-19", "checkOut": "2027-03-19", "persons": persons}
+    assert "ticketId" not in payload
+    assert "modalityCode" not in payload
 
 
 def test_quote_closed_tour_posts_the_confirmed_url_and_shape(client):

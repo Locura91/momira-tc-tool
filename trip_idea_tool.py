@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-08-31-trip-idea-quote-client-foundation"
+MODULE_BUILD = "2026-09-01-trip-quote-all-shapes-confirmed"
 
 _PHASE_KEY = "ti_phase"
 
@@ -200,8 +200,10 @@ def _render_quote_debug_panel():
                     arr = api.resolve_destination(arr_query)
                     journey = tqc.build_transport_journey(
                         dep.get("code"), "TRANSPORT_BASE", arr.get("tc_code"), "DESTINATION", dep_date)
-                    dist = tqc.build_distributions(adults, children_ages)
-                    result = client.quote_transports([journey], dist)
+                    # Transports' real "persons" field is FLAT (no rooms) - confirmed 2026-09-01,
+                    # see build_persons()'s docstring. build_distributions() would be wrong here.
+                    persons = tqc.build_persons(adults, children_ages)
+                    result = client.quote_transports([journey], persons)
                     return {"resolved_departure": dep, "resolved_arrival": arr,
                            "request_journey": journey, "response": result}
                 _run_debug_quote(_do)
@@ -212,31 +214,42 @@ def _render_quote_debug_panel():
                 pickup_query = st.text_input("Pickup (airport/place name or code)", value="Cairo Airport", key="qdbg_pu")
             with xcol2:
                 dropoff_query = st.text_input("Drop-off (place name or code)", value="Cairo", key="qdbg_do")
-            pickup_date = st.text_input("Pickup date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_pu_date")
+            pickup_date = st.text_input("Pickup date-time (YYYY-MM-DDTHH:MM:SS)", value="2027-03-18T14:00:00", key="qdbg_pu_date")
+            st.caption("Confirmed 2026-09-01: a transfer endpoint is either an accommodation or a "
+                      "transport base (airport/station), not a generic pickup/dropoff pair - this "
+                      "debug form always resolves Pickup as a transport base and Drop-off as a "
+                      "destination's accommodation lookup isn't wired here yet, so this uses "
+                      "transport-base-to-transport-base as the simplest real-shape test.")
 
             if st.button("🚀 Fire real Transfer Quote call", key="qdbg_fire_transfer"):
                 def _do(api, client):
                     pu = api.resolve_transport_base(pickup_query)
-                    do = api.resolve_destination(dropoff_query)
-                    dist = tqc.build_distributions(adults, children_ages)
-                    result = client.quote_transfers(dist, pu.get("code"), "TRANSPORT_BASE",
-                                                     do.get("tc_code"), "DESTINATION", pickup_date)
-                    return {"resolved_pickup": pu, "resolved_dropoff": do, "response": result}
+                    do = api.resolve_transport_base(dropoff_query)
+                    persons = tqc.build_persons(adults, children_ages)
+                    from_loc = tqc.build_transfer_location(transport_base_id=pu.get("code"))
+                    to_loc = tqc.build_transfer_location(transport_base_id=do.get("code"))
+                    result = client.quote_transfers(persons, from_loc, to_loc, pickup_date)
+                    return {"resolved_pickup": pu, "resolved_dropoff": do,
+                           "request_from": from_loc, "request_to": to_loc, "response": result}
                 _run_debug_quote(_do)
 
         elif endpoint == "Tickets (activities)":
             ticket_id = st.text_input("Ticket catalog code (e.g. TICKET-417967)", value="", key="qdbg_ticket_id")
             ticket_date = st.text_input("Activity date (YYYY-MM-DD)", value="2027-03-19", key="qdbg_ticket_date")
-            modality = st.text_input("Modality code (optional)", value="", key="qdbg_modality")
             if not ticket_id.strip():
                 st.caption("Need a real ticket catalog code first — see a saved Idea's page or "
                           "the project doc's captured Ticket examples (e.g. TICKET-417967).")
+            st.caption("Confirmed 2026-09-01: this calls the single-ticket endpoint "
+                      "(`/booking/tickets/{ticketId}/quote`), which returns EVERY modality and "
+                      "its prices for this one ticket - there is no modality filter on the "
+                      "request. checkIn/checkOut are both set to the activity date below (a real "
+                      "date range is possible but tickets in the captured examples are always "
+                      "single-day).")
 
             if st.button("🚀 Fire real Tickets Quote call", key="qdbg_fire_ticket", disabled=not ticket_id.strip()):
                 def _do(api, client):
-                    dist = tqc.build_distributions(adults, children_ages)
-                    result = client.quote_tickets(dist, ticket_id.strip(), ticket_date,
-                                                  modality_code=modality.strip() or None)
+                    persons = tqc.build_persons(adults, children_ages)
+                    result = client.quote_ticket(ticket_id.strip(), persons, ticket_date, ticket_date)
                     return {"response": result}
                 _run_debug_quote(_do)
 
