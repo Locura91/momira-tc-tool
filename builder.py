@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-trip-quote-all-shapes-confirmed"
+MODULE_BUILD = "2026-09-01-audit-critical-transfer-pricing-and-active-fix"
 
 import math
 import datetime
@@ -46,7 +46,8 @@ _MAX_OCCUPANCY_PAX = 9
 _MIN_FULL_REFUND_NOTICE_DAYS = 30
 
 
-def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, max_cap=_MAX_OCCUPANCY_PAX):
+def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, vehicle_capacity=None,
+                                             max_cap=_MAX_OCCUPANCY_PAX):
     """
     CONFIRMED REAL RULE (product owner): "as 7-8 pax will be needed all the time in the
     Transport, we must check the prices for that transfer too. For example a Transport for 4
@@ -65,11 +66,24 @@ def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, max_cap=
     the supplier's rate sheet only ever describes a single (smaller) vehicle. Child/infant
     prices are scaled by the same vehicle-count multiplier, only when the source bracket itself
     priced them (never invents a child/infant price the source never gave).
+
+    CONFIRMED BUG FIX (audit CRITICAL #1, 2026-09-01): the vehicle's real capacity must come
+    from `vehicle_capacity` (the document's own separately-extracted max_occupancy field - "the
+    largest passenger count this specific service/class covers"), NOT from tiers_sorted[-1]'s
+    own "occupancy" value. ai_extractor.py's extraction rule stores a bracket's LOWER bound as
+    "occupancy" (a flat "1-7 pax: EUR 80" rate becomes one tier with occupancy=1) - correct for
+    per-pax defaulting, but wrong as a vehicle capacity. Using it as the divisor here made
+    vehicles_needed = ceil(N / 1) = N, so a 7-pax booking in one EUR-80 minivan synthesized 7
+    separate EUR-80 vehicles and published at EUR 560. When vehicle_capacity is given and is at
+    least as large as the tier's own occupancy value, it wins.
     """
     if price_by_pax or not tiers_sorted:
         return tiers_sorted
     largest = tiers_sorted[-1]
     largest_occ = _safe_int(largest.get("occupancy", 1), fallback=1)
+    capacity = _safe_int(vehicle_capacity, fallback=0) if vehicle_capacity is not None else 0
+    if capacity > largest_occ:
+        largest_occ = capacity
     largest_price = _safe_float(largest.get("price", 0))
     if largest_occ <= 0 or largest_occ >= max_cap:
         return tiers_sorted
@@ -2675,7 +2689,12 @@ def build_transfer_payload(
         # see _extend_tiers_for_multi_vehicle_pricing()'s docstring. Extends tiers_sorted BEFORE
         # max_occupancy is capped below, since this genuinely extends real bookable coverage up
         # to 9 pax (via multiple vehicles), not just a display default.
-        tiers_sorted = _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax)
+        # CONFIRMED BUG FIX (audit CRITICAL #1, 2026-09-01): pass the document's own
+        # max_occupancy (the bracket's real upper-bound capacity) so the synthesis divides by
+        # the actual vehicle size, not the tier's lower-bound "occupancy" field - see the
+        # function's docstring for the full 7x-overcharge failure this fixes.
+        tiers_sorted = _extend_tiers_for_multi_vehicle_pricing(
+            tiers_sorted, price_by_pax, vehicle_capacity=max_occupancy)
         if not price_by_pax and tiers_sorted:
             # Multi-vehicle synthesis means this route is now genuinely bookable up to the full
             # system cap, even though the source document's own stated max_occupancy was for a

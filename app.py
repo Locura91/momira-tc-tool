@@ -5914,6 +5914,20 @@ def render_ticket_flow(client):
                             # just asked the human to review. Now it publishes both.
                             update_payload = dict(payloads["main_ticket_payload"])
                             update_payload["code"] = target_ticket_code
+                            # CONFIRMED BUG FIX (audit CRITICAL #2, 2026-09-01): build_ticket_payloads
+                            # always sets active=False ("LOCKED default" - correct for a brand-new
+                            # ticket, which must land as a draft), but this same payload is reused
+                            # verbatim for UPDATE. Sent as-is, every "update this ticket's details"
+                            # silently took a live, active ticket off sale - the UI still said
+                            # "updated" while the ticket vanished from sale, and the very next call
+                            # (pricing update) then failed the app's own ACTIVE-required guard. The
+                            # live record's own active state (fetched by "Check what's already
+                            # online", same source already used for currency/min/maxPassengers above)
+                            # must win here instead.
+                            _tk_live_for_active = st.session_state.get("tk_fetched_ticket") or {}
+                            if isinstance(_tk_live_for_active, dict) and "error" not in _tk_live_for_active \
+                                    and _tk_live_for_active.get("active") is not None:
+                                update_payload["active"] = _tk_live_for_active["active"]
                             result = client.update_ticket(supplier_id, update_payload)
                             if "error" in result:
                                 show_publish_error("update the ticket", result, flow="ticket_legacy")
@@ -10173,7 +10187,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-trip-quote-all-shapes-confirmed"
+BUILD_VERSION = "2026-09-01-audit-critical-transfer-pricing-and-active-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -12069,6 +12083,17 @@ if st.session_state.extracted:
                         # to review. Now it publishes both.
                         update_payload = dict(payloads["main_tour_payload"])
                         update_payload["code"] = target_tour_code
+                        # CONFIRMED BUG FIX (audit CRITICAL #2, same root cause as the Ticket twin
+                        # above, 2026-09-01): build_closed_tour_payloads always sets active=False
+                        # ("LOCKED default" for a brand-new tour, which must land as a draft), but
+                        # this same payload is reused verbatim for UPDATE - sent as-is, every
+                        # "update this tour's details" silently took a live, active tour off sale.
+                        # The live record's own active state (fetched_tour, from "Check what's
+                        # already online") must win here instead.
+                        _ct_live_for_active = st.session_state.get("fetched_tour") or {}
+                        if isinstance(_ct_live_for_active, dict) and "error" not in _ct_live_for_active \
+                                and _ct_live_for_active.get("active") is not None:
+                            update_payload["active"] = _ct_live_for_active["active"]
                         result, used_code = try_code_variants(
                             lambda c: client.update_closed_tour(payloads["supplier_id"], {**update_payload, "code": c}),
                             target_tour_code
