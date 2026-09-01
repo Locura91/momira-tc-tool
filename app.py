@@ -585,7 +585,13 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     try:
                         pre_config = HumanPreConfig(
                             supplier_id=supplier_id,
-                            provider_code=st.session_state.get("fetched_tour_provider_code") or "XXX-1",
+                            # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): raw read of
+                            # fetched_tour_provider_code, un-validated against which tour it was
+                            # actually fetched for - see fetched_tour_matches_code()'s docstring.
+                            provider_code=(
+                                st.session_state.get("fetched_tour_provider_code")
+                                if fetched_tour_matches_code(existing_tour_code) else None
+                            ) or "XXX-1",
                             min_pax=1, max_pax=9, currency=currency,
                             modality_code=q["code"], on_request=on_request
                         )
@@ -3715,6 +3721,31 @@ def render_skip_item_button(item_label, queue, idx, queue_session_key, index_ses
                 # start with the same prefix as its widgets - see _clear_batch_widget_state.
                 _clear_batch_widget_state(widget_state_prefixes, keep=cleanup_keys)
         st.rerun()
+
+
+def fetched_tour_matches_code(existing_tour_code):
+    """
+    CONFIRMED BUG FIX (full-app audit CRITICAL #3, 2026-09-01): Step 3's "Check what's already
+    online for this code" button populates fetched_tour_provider_code/min_pax/max_pax/currency
+    from whatever tour it fetched - but those globals used to be set once and never cleared, and
+    every guard/usage site downstream only tested whether they were PRESENT, never whether they
+    actually belonged to the tour currently being configured. Real failure mode: check tour A,
+    click "Change details", type in tour B's code, forget to click "Check" again (or it fails) -
+    the stale fields still read as "present," so tour B silently published with tour A's
+    currency, provider code, and pax capacity, with nothing on the review screen to show it.
+
+    fetched_tour_for_code (set alongside the other fetched_tour_* fields, on both success AND
+    failure - see the Step 3 button handler) records which code the fetch was actually run
+    against. Every site that used to just check truthiness of fetched_tour_provider_code etc.
+    now calls this first and treats a mismatch exactly like "never fetched."
+    """
+    fetched = st.session_state.get("fetched_tour")
+    return (
+        bool(existing_tour_code)
+        and st.session_state.get("fetched_tour_for_code") == existing_tour_code
+        and isinstance(fetched, dict)
+        and "error" not in fetched
+    )
 
 
 def try_code_variants(call_fn, code):
@@ -10187,7 +10218,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-critical-transfer-pricing-and-active-fix"
+BUILD_VERSION = "2026-09-01-audit-critical-3-4-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10784,6 +10815,12 @@ else:
                 st.session_state.fetched_tour = fetched
                 st.session_state.fetched_option = None
                 st.session_state.working_tour_code = working_code
+                # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): record which code this
+                # fetch was actually for, every time - success OR failure - so
+                # fetched_tour_matches_code() can tell a genuinely-fresh fetch for THIS tour
+                # apart from stale data left over from a previous tour. See that function's
+                # docstring for the full leak this closes.
+                st.session_state.fetched_tour_for_code = existing_tour_code_in
                 if isinstance(fetched, dict) and "error" not in fetched:
                     st.session_state.fetched_tour_provider_code = fetched.get("providerCode", "")
                     st.session_state.fetched_tour_min_pax = fetched.get("minPax")
@@ -10903,10 +10940,15 @@ else:
         required_ok = False
     if "existing_tour_code" in needed and not existing_tour_code_in:
         required_ok = False
-    if action in ("update_tour", "add_option") and not st.session_state.get("fetched_tour_provider_code"):
+    # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): must match THIS code, not just be
+    # present - see fetched_tour_matches_code()'s docstring. Without the match check, editing
+    # the code above after a previous successful check (for a different tour) silently let the
+    # previous tour's stale currency/min/max/provider-code through.
+    if action in ("update_tour", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):
         required_ok = False
-        st.info("Click 'Check what's already online for this code' above first - this fetches the "
-               "existing tour's Currency (and for updates, Min/Max Pax too) so you don't have to re-enter them.")
+        st.info("Click 'Check what's already online for this code' above first (or again, if you "
+               "changed the code) - this fetches the existing tour's Currency (and for updates, "
+               "Min/Max Pax too) so you don't have to re-enter them.")
 
     if st.button("➡️ Continue to Step 4", type="primary", disabled=not required_ok):
         if action == "update_tour":
@@ -10941,13 +10983,26 @@ min_pax = st.session_state.cfg_min_pax
 max_pax = st.session_state.cfg_max_pax
 currency = st.session_state.cfg_currency
 modality_code = st.session_state.cfg_modality_code
+existing_tour_code = st.session_state.cfg_existing_tour_code
 
 # CONFIRMED REAL RULE (product owner): "if updating a service it never has to be asked for
 # the code (it is set already), never for the currency (it also is set), never for the min
 # and max passenger." Step 3 no longer asks for them on an update - so take them from the
 # tour that was actually fetched. Without this the update would publish the blank/default
 # Step-3 values over a live tour, re-denominating its prices and resetting its capacity.
-if action in ("update_tour", "update_option", "add_option"):
+#
+# CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): this block runs on EVERY rerun of Steps
+# 4+, re-pulling fetched_tour_currency/min_pax/max_pax/provider_code fresh each time - so even
+# though Step 3's own "Continue" button is now guarded (see fetched_tour_matches_code() above),
+# these globals must ALSO be re-validated here against the tour actually being worked on
+# (cfg_existing_tour_code). Otherwise a stale fetch left over from a previous tour (or one that
+# failed silently) keeps being blended in on every single render of this tour's own screens.
+if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code):
+    st.warning("⚠️ The tour data fetched by 'Check what's already online' doesn't match this "
+              "tour's code (or was never fetched / failed) - go back to Step 3 and re-check "
+              "before continuing, to avoid publishing with another tour's currency, pax limits, "
+              "or code.")
+if action in ("update_tour", "update_option", "add_option") and fetched_tour_matches_code(existing_tour_code):
     _live_currency = st.session_state.get("fetched_tour_currency")
     _live_min = st.session_state.get("fetched_tour_min_pax")
     _live_max = st.session_state.get("fetched_tour_max_pax")
@@ -10958,7 +11013,6 @@ if action in ("update_tour", "update_option", "add_option"):
     provider_code = _live_code or provider_code
 on_request = st.session_state.cfg_on_request
 days_available_before_release = st.session_state.cfg_release_days
-existing_tour_code = st.session_state.cfg_existing_tour_code
 # Only meaningful for action == "update_tour" - see ACTION_FIELDS's comment and the "What do
 # you want to update?" radio in Step 3. Defaults to "whole_tour" for every other action so
 # nothing below has to special-case "key not set yet".
@@ -11703,7 +11757,12 @@ if st.session_state.extracted:
 
     if st.button("🔎 Check Locations & Continue",
                 disabled=not price_list_valid):
-        _real_provider_code = st.session_state.get("fetched_tour_provider_code", "")
+        # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
+        # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
+        # was stale (left over from checking a different tour), it could win over an empty
+        # `provider_code` and silently publish under the wrong tour's code. `provider_code`
+        # (module-level, above) already carries the fetched_tour_matches_code()-validated value
+        # when one applies - nothing else should be trusted here.
         with st.spinner("Resolving destinations against Travel Compositor..."):
             try:
                 # HumanPreConfig() itself used to be constructed OUTSIDE this
@@ -11715,7 +11774,7 @@ if st.session_state.extracted:
                 # build_closed_tour_payloads.
                 pre_config = HumanPreConfig(
                     supplier_id=supplier_id,
-                    provider_code=provider_code or _real_provider_code or "XXX-1",
+                    provider_code=provider_code or "XXX-1",
                     min_pax=min_pax, max_pax=max_pax, currency=currency,
                     modality_code=modality_code, on_request=on_request,
                     days_available_before_release=days_available_before_release
@@ -11843,9 +11902,11 @@ if st.session_state.extracted:
         creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
         target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
         missing_existing_code = not creating_new_tour and not existing_tour_code
+        # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): must match the tour actually being
+        # published, not just be present - see fetched_tour_matches_code()'s docstring.
         missing_provider_code_for_update = (
             publish_action == "Update an existing tour's details"
-            and not st.session_state.get("fetched_tour_provider_code")
+            and not fetched_tour_matches_code(existing_tour_code)
         )
         if missing_provider_code_for_update:
             st.warning("⚠️ Go back to Step 3 and click 'Check what's already online for this code' first — "
@@ -11962,7 +12023,7 @@ if st.session_state.extracted:
                                         with st.spinner(f"Creating modality '{mod['code']}'..."):
                                             try:
                                                 mod_pre_config = HumanPreConfig(
-                                                    supplier_id=payloads["supplier_id"], provider_code=provider_code or _real_provider_code or "XXX-1",
+                                                    supplier_id=payloads["supplier_id"], provider_code=provider_code or "XXX-1",
                                                     min_pax=min_pax, max_pax=max_pax, currency=currency,
                                                     modality_code=mod["code"], on_request=on_request,
                                                     days_available_before_release=days_available_before_release
@@ -11973,7 +12034,7 @@ if st.session_state.extracted:
                                                     continue
                                                 mod_result, mod_used_code = try_code_variants(
                                                     lambda c: client.create_closed_tour_option(payloads["supplier_id"], c, mod_payloads["tour_option_payload"]),
-                                                    [provider_code or _real_provider_code, real_code]
+                                                    [provider_code, real_code]
                                                 )
                                                 if "error" in mod_result:
                                                     show_publish_error(f"create modality '{mod['code']}'", mod_result, flow="tour_legacy")

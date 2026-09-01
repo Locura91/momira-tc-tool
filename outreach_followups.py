@@ -85,11 +85,21 @@ def record_sends_from_log(suppliers: List[Dict[str, Any]], session: Dict[str, An
                           send_log: List[Dict[str, Any]]) -> int:
     """Feed this dispatch_batch's own result list right after a real send. Only entries whose
     status is actually 'sent' get recorded - 'skipped'/'failed'/'would_send' never reached the
-    supplier, so there is nothing to follow up on. Returns how many rows were recorded."""
+    supplier, so there is nothing to follow up on. Returns how many rows were recorded.
+
+    CONFIRMED BUG FIX (full-app audit CRITICAL #4, 2026-09-01): a 'demo' send (no email provider
+    configured - see outreach_email.py's send_supplier_email, provider == "demo") is fully built
+    but deliberately never delivered, "so the workflow stays testable" - yet dispatch_batch still
+    logs it with status "sent" (it only carries a separate demo=True flag alongside), and this
+    function used to check status alone. A demo run therefore permanently recorded suppliers who
+    were never actually emailed as contacted: they'd show "Contacted before" forever even though
+    nothing went out, and later get a "just checking in" reminder for a first email that never
+    existed. Demo entries must never reach durable send history - skip them here, the single
+    real gate between dispatch_batch's in-memory log and the durable outreach_sends store."""
     by_email = {(s.get("email") or "").strip().lower(): s for s in suppliers if s.get("email")}
     recorded = 0
     for entry in (send_log or []):
-        if entry.get("status") != "sent":
+        if entry.get("status") != "sent" or entry.get("demo"):
             continue
         email = (entry.get("email") or "").strip().lower()
         supplier = by_email.get(email) or {"email": email, "name": entry.get("supplierName")}

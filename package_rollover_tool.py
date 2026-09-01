@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-01-audit-critical-transfer-pricing-and-active-fix"
+MODULE_BUILD = "2026-09-01-audit-critical-3-4-fix"
 
 _PHASE_KEY = "pkr_phase"
 

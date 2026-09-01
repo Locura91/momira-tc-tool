@@ -65,6 +65,39 @@ def test_record_sends_from_log_only_records_actual_sends():
     assert "failed@followup-log-test.example" not in emails
 
 
+def test_record_sends_from_log_skips_demo_sends():
+    """CONFIRMED BUG FIX (full-app audit CRITICAL #4, 2026-09-01): with no email provider
+    configured, outreach_email.send_supplier_email fakes a send (provider == "demo") and
+    dispatch_batch still logs it with status "sent" (carrying a separate demo=True flag
+    alongside) - "so the workflow stays testable," but nothing was actually delivered. Before
+    this fix, record_sends_from_log only checked status, so a demo run permanently recorded a
+    never-contacted supplier as "Contacted before" and made them eligible for a "just checking
+    in" reminder for an email that never existed. A demo entry, even with status == "sent", must
+    never reach durable send history."""
+    suppliers = [
+        {"name": "Demo-Only Supplier", "email": "demo@followup-log-test.example"},
+        {"name": "Really Sent Supplier", "email": "real@followup-log-test.example"},
+    ]
+    session = {"country": "Jordan", "keyword": "Petra Tours"}
+    sent_at = _iso(0)
+    send_log = [
+        {"status": "sent", "email": "demo@followup-log-test.example", "demo": True,
+         "subject": "Hello", "timestamp": sent_at},
+        {"status": "sent", "email": "real@followup-log-test.example", "demo": False,
+         "subject": "Hello", "timestamp": sent_at},
+    ]
+    recorded = ofw.record_sends_from_log(suppliers, session, send_log)
+    assert recorded == 1
+    rows = ofw.list_all_sends()
+    emails = {r["email"] for r in rows if r["sent_at"] == sent_at}
+    assert "real@followup-log-test.example" in emails
+    assert "demo@followup-log-test.example" not in emails
+    # A demo-only supplier must never show up on the follow-up worklists either - no row was
+    # ever recorded for them, so they can't surface as "no reply yet" or get a reminder.
+    due_emails = {r["email"] for r in ofw.pending_followups(min_days=0)}
+    assert "demo@followup-log-test.example" not in due_emails
+
+
 # ======================================================================
 # pending_followups
 # ======================================================================
