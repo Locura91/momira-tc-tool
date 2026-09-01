@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-critical-3-4-fix"
+MODULE_BUILD = "2026-09-01-audit-high-builder-money-bugs"
 
 import math
 import datetime
@@ -97,6 +97,94 @@ def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, vehicle_
             synthesized["infant_price"] = round(vehicles_needed * _safe_float(largest.get("infant_price")), 2)
         extended.append(synthesized)
     return extended
+
+
+def _extend_tiers_for_per_pax_pricing(tiers_sorted, price_by_pax, max_cap=_MAX_OCCUPANCY_PAX):
+    """
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, `builder.py:2639-2708`): per-pax rate
+    sheets often price real group discounts (e.g. 1 pax pays EUR 20 per person, 2-3 pax pay
+    EUR 14 per person) but only ever explicitly list the occupancies the SOURCE DOCUMENT states.
+    Any occupancy above the document's largest documented tier - unlisted, but still genuinely
+    bookable up to the 9-pax system cap - had no explicit pricesByOccupancy entry, so Travel
+    Compositor fell back to the transfer's top-level basePrice, which this module sets from the
+    SMALLEST occupancy's price (the most expensive per-person SOLO rate - see build_transfer_
+    payload's `base_price`, "use the smallest occupancy's rate as the top-level basePrice").
+    A 4-pax booking with no explicit 4-pax tier therefore got charged 4x the 1-pax solo
+    per-person rate instead of 4x the correct, cheaper group rate: verified real example, 50%
+    overcharge at 4 pax, 100% overcharge at 8 pax.
+
+    This was previously assumed to be a non-issue for per-pax pricing - see
+    _extend_tiers_for_multi_vehicle_pricing's own docstring, "every person already pays the same
+    rate regardless of group size" - which is exactly the wrong assumption this fix corrects.
+
+    Only applies to per-pax pricing (price_by_pax=True) - per-vehicle pricing has its own
+    equivalent, _extend_tiers_for_multi_vehicle_pricing (mutually exclusive with this one, same
+    call-site pattern). Fills in every occupancy from the largest documented tier's occupancy+1
+    up to max_cap, at the SAME per-person rate as that largest tier - the cheapest real, stated
+    rate - never inventing a new discount level, just carrying the best-known real per-person
+    price forward instead of letting it fall back to the worst one.
+    """
+    if not price_by_pax or not tiers_sorted:
+        return tiers_sorted
+    largest = tiers_sorted[-1]
+    largest_occ = _safe_int(largest.get("occupancy", 1), fallback=1)
+    if largest_occ <= 0 or largest_occ >= max_cap:
+        return tiers_sorted
+    extended = list(tiers_sorted)
+    for occ in range(largest_occ + 1, max_cap + 1):
+        synthesized = {"occupancy": occ, "price": largest.get("price", 0),
+                       "synthesized_per_pax_gap_fill": True}
+        if largest.get("child_price") is not None:
+            synthesized["child_price"] = largest.get("child_price")
+        if largest.get("infant_price") is not None:
+            synthesized["infant_price"] = largest.get("infant_price")
+        extended.append(synthesized)
+    return extended
+
+
+def transfer_tier_child_price(tier: Dict[str, Any]) -> float:
+    """
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:2705): the resolved
+    child price for one Transfer occupancy tier - the piece build_transfer_payload's
+    TransferOccupancyPriceVO loop needs, factored out so it's independently testable without
+    the geolocation resolution the rest of build_transfer_payload requires.
+
+    The extraction layer correctly uses child_price=None to mean "the document didn't state a
+    separate child rate for this occupancy" (as opposed to 0, which means "the document says
+    children are free here") - see ai_extractor.py's own confirmed rule for base_children_price,
+    "not mentioning a separate child price is NOT the same as children being free - it means
+    they pay the standard rate," already implemented for Tickets. This used to collapse straight
+    into TransferMoneyVO's own amount=0.0 default, publishing every undocumented Transfer child
+    rate as free (EUR 0.00) instead of the adult rate for that same occupancy - the same house
+    rule Tickets already honor. Infant pricing is deliberately NOT covered by this rule: "base_
+    infant_price commonly IS genuinely 0 by convention" per the same confirmed rule, so an
+    unstated infant price staying free is correct, not a bug - only childPrice gets this
+    fallback.
+    """
+    child_price = tier.get("child_price")
+    if child_price is not None:
+        return child_price
+    return tier.get("price", 0)
+
+
+def transport_base_child_price(base_bracket: Optional[Dict[str, Any]], base_price: float) -> float:
+    """
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:3442-3443): Transport's
+    own counterpart to transfer_tier_child_price above - same house rule ("not mentioning a
+    separate child price is NOT the same as children being free - it means they pay the standard
+    rate"), factored out so it's independently testable without the geolocation resolution the
+    rest of build_transport_payloads requires.
+
+    child_price is None (not 0) when the document simply didn't state a separate child rate for
+    the base bracket - the extraction layer already distinguishes that from a genuine "children
+    are free" 0. This used to default straight to 0.0, publishing every undocumented Transport
+    child rate as free. infant pricing is deliberately NOT covered - infants being free by
+    convention when unstated is the confirmed, correct behavior, unlike children (see
+    transport_base_infant_price / the base_infant_price computation at the call site).
+    """
+    if base_bracket and base_bracket.get("child_price") is not None:
+        return _safe_float(base_bracket.get("child_price"))
+    return base_price
 
 
 def _safe_float(value, fallback=0.0):
@@ -1148,7 +1236,15 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
             # publishing every optional excursion and upgrade as refundable - the opposite of
             # the commercial terms. Set explicitly rather than relying on any default.
             refundable=False,
-            free=(price_val == 0),
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:1137): a
+            # supplement priced ONLY via the per-occupancy columns (single/double/triple/
+            # quadruple - e.g. singlePrice=15, doublePrice=10, no flat "price" field at all)
+            # published as free=True, because only the flat price_val was checked here and an
+            # absent "price" key defaults to 0. free must reflect whichever of the actual priced
+            # fields Travel Compositor will read, not just the one this document happened not to
+            # use - a genuinely free supplement is one where NONE of them carry a real charge.
+            free=(price_val == 0 and single_val == 0 and double_val == 0
+                  and triple_val == 0 and quadruple_val == 0),
             travelWindows=travel_windows,
         ))
     return supplements_list
@@ -2695,10 +2791,21 @@ def build_transfer_payload(
         # function's docstring for the full 7x-overcharge failure this fixes.
         tiers_sorted = _extend_tiers_for_multi_vehicle_pricing(
             tiers_sorted, price_by_pax, vehicle_capacity=max_occupancy)
-        if not price_by_pax and tiers_sorted:
-            # Multi-vehicle synthesis means this route is now genuinely bookable up to the full
-            # system cap, even though the source document's own stated max_occupancy was for a
-            # single vehicle only.
+        # CONFIRMED BUG FIX (audit HIGH, 2026-09-01, builder.py:2639-2708): the per-pax
+        # counterpart to the multi-vehicle synthesis above - see
+        # _extend_tiers_for_per_pax_pricing()'s docstring for the 50%/100% overcharge this
+        # fixes. Extends BEFORE the max_occupancy reconciliation below for the same reason: this
+        # genuinely extends real bookable coverage, not just a display default.
+        tiers_sorted = _extend_tiers_for_per_pax_pricing(tiers_sorted, price_by_pax)
+        if tiers_sorted:
+            # Multi-vehicle synthesis (per-service) or per-pax gap-fill synthesis means this
+            # route is now genuinely bookable up to the full system cap, even though the source
+            # document's own generic max_occupancy field understated it - same reconciliation
+            # for both pricing modes (CONFIRMED BUG FIX, audit MED builder.py:2666-2683: this
+            # used to only run for per-vehicle pricing, so a per-pax rate sheet with real tiers
+            # above the document's own stated max_occupancy - e.g. explicit 6-pax pricing under
+            # a stated max_occupancy of 4 - could publish tiers TC would reject as exceeding the
+            # contract's declared capacity).
             max_occupancy = max(max_occupancy, _safe_int(tiers_sorted[-1].get("occupancy", 1), fallback=1))
 
         # CONFIRMED REAL GAP (product owner, screenshot of a live TRANSFER-nnnnnn record): a
@@ -2716,12 +2823,11 @@ def build_transfer_payload(
         prices_by_occupancy = []
         for t in tiers_sorted:
             occ = _safe_int(t.get("occupancy", 1), fallback=1)
-            child_price = t.get("child_price")
             infant_price = t.get("infant_price")
             prices_by_occupancy.append(TransferOccupancyPriceVO(
                 occupancy=occ,
                 basePrice=_money(t.get("price", 0)),
-                childPrice=_money(child_price) if child_price is not None else TransferMoneyVO(currency=currency),
+                childPrice=_money(transfer_tier_child_price(t)),
                 infantPrice=_money(infant_price) if infant_price is not None else TransferMoneyVO(currency=currency),
                 priceByPax=price_by_pax,
             ))
@@ -3458,7 +3564,15 @@ def build_transport_payloads(
         if brackets_sorted else None
     )
     base_price = _safe_float(base_bracket.get("price", 0)) if base_bracket else 0.0
-    base_child_price = _safe_float(base_bracket.get("child_price")) if base_bracket and base_bracket.get("child_price") is not None else 0.0
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:3442-3443): child_price
+    # is None (not 0) when the document simply didn't state a separate child rate for this
+    # bracket - the extraction layer already distinguishes that from a genuine "children are
+    # free" 0, same confirmed house rule as Tickets ("not mentioning a separate child price is
+    # NOT the same as children being free - it means they pay the standard rate"). Defaulting an
+    # unstated base_child_price to 0.0 here published every undocumented Transport child rate as
+    # free. base_infant_price is deliberately left defaulting to 0.0 - infants being free by
+    # convention when unstated is the confirmed, correct behavior, unlike children.
+    base_child_price = transport_base_child_price(base_bracket, base_price)
     base_infant_price = _safe_float(base_bracket.get("infant_price")) if base_bracket and base_bracket.get("infant_price") is not None else 0.0
 
     # House naming: "DEPARTURE - ARRIVAL" (confirmed product-owner template). The service class
@@ -4248,11 +4362,18 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
 
         season_payloads = []
         season_actions = []
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:4294-4305): tracks
+        # which of this rate's EXISTING seasons got matched (and therefore re-included, with
+        # this run's own updated data) by the fresh document below - anything left over gets
+        # carried forward unchanged after the loop. See the carry-forward block below for why.
+        matched_existing_season_ids = set()
         for season_data in (rate_data or {}).get("seasons") or []:
             season_name = (season_data or {}).get("name") or "Season"
             date_ranges_data = [w for w in (season_data or {}).get("date_ranges") or []
                                  if isinstance(w, dict) and w.get("start") and w.get("end")]
             existing_season = hotel_matcher.match_season_to_existing(season_name, date_ranges_data, existing_seasons)
+            if existing_season and existing_season.get("id") is not None:
+                matched_existing_season_ids.add(existing_season["id"])
 
             room_prices = []
             for rp_data in (season_data or {}).get("room_prices") or []:
@@ -4294,19 +4415,75 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 "matched_season_id": (existing_season or {}).get("id"),
             })
 
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:4294-4305): a rate
+        # UPDATE (PUT) is a full-body replace - any live season/offer/supplement/stop-sale this
+        # rate currently has, that the fresh document simply doesn't restate (a Winter-only
+        # update naturally says nothing about the already-live Summer season, an unrelated
+        # linked offer, an unrelated supplement, an existing Christmas blackout), used to vanish
+        # from the published rate entirely. Verified real example: a Winter-only update wiped
+        # live Summer pricing, a linked offer, a supplement, and a Christmas blackout. This is
+        # a different failure than the "no deletion needed" rule in this function's own
+        # docstring - that rule is about not needing to actively purge something that will
+        # self-expire by date; it was never meant to justify dropping something still-live and
+        # still-valid just because this particular document update didn't mention it. Every
+        # existing season not matched above, and every existing offer/supplement/stop-sale not
+        # already present in this run's own fresh data, is carried forward unchanged - the same
+        # "don't destroy what a partial update didn't restate" pattern this codebase already
+        # applies elsewhere (hotel room/meal-plan carry-forward, Transfer/Transport's
+        # _locked_on_update).
+        for existing_season in existing_seasons:
+            if not isinstance(existing_season, dict):
+                continue
+            existing_id = existing_season.get("id")
+            if existing_id is not None and existing_id in matched_existing_season_ids:
+                continue
+            try:
+                season_payloads.append(ContractHotelSeasonVO(**existing_season))
+                season_actions.append({
+                    "season_name": existing_season.get("name") or "Season",
+                    "action": "carried_forward_unchanged",
+                    "matched_season_id": existing_id,
+                })
+            except (ValidationError, ValueError, TypeError):
+                # An existing season Travel Compositor itself returned should always parse
+                # against its own confirmed shape - but if the live record ever carries a field
+                # this schema doesn't expect, skip it rather than crash the whole rate build;
+                # the season simply doesn't get carried forward this run, matching the previous
+                # (bugged) behavior rather than making anything worse.
+                pass
+
         offer_codes = [c for c in (offer_name_to_provider_code.get(n) for n in (rate_data or {}).get("offer_names") or []) if c]
         supplement_codes = [c for c in (supplement_name_to_provider_code.get(n) for n in (rate_data or {}).get("supplement_names") or []) if c]
+        # Carry forward any existing offer/supplement links this document's own extraction
+        # didn't restate - see the carry-forward note above.
+        offer_codes = list(dict.fromkeys(offer_codes + [c for c in (existing_rate or {}).get("offers") or [] if c]))
+        supplement_codes = list(dict.fromkeys(supplement_codes + [c for c in (existing_rate or {}).get("supplements") or [] if c]))
 
         stop_sales_payloads = []
+        _fresh_stop_sale_room_names = set()
         for ss_data in (rate_data or {}).get("stop_sales") or []:
             room_name = (ss_data or {}).get("room_name")
             ss_ranges = [w for w in (ss_data or {}).get("date_ranges") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
             if not room_name or not ss_ranges:
                 continue
+            _fresh_stop_sale_room_names.add(room_name)
             stop_sales_payloads.append(ContractHotelRoomStopSalesVO(
                 roomName=room_name,
                 stopSales=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in ss_ranges],
             ))
+        # Carry forward any existing stop-sale this document's own extraction didn't restate for
+        # that room - see the carry-forward note above (verified real example: an existing
+        # Christmas blackout silently disappeared on an unrelated update before this fix).
+        for existing_ss in (existing_rate or {}).get("stopSales") or []:
+            if not isinstance(existing_ss, dict):
+                continue
+            existing_room_name = existing_ss.get("roomName")
+            if not existing_room_name or existing_room_name in _fresh_stop_sale_room_names:
+                continue
+            try:
+                stop_sales_payloads.append(ContractHotelRoomStopSalesVO(**existing_ss))
+            except (ValidationError, ValueError, TypeError):
+                pass
 
         booking_windows_data = [w for w in (rate_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
 

@@ -95,6 +95,34 @@ def test_free_flag_tracks_whether_the_flat_price_is_zero():
     assert paid.free is False
 
 
+def test_free_flag_is_false_when_only_per_occupancy_prices_carry_a_real_charge():
+    """CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:1137): a supplement
+    priced ONLY via the per-occupancy columns (no flat "price" field at all) used to publish
+    free=True, because only the flat price_val was checked and an absent "price" key defaults
+    to 0 - even though singlePrice/doublePrice carry a real, non-zero charge Travel Compositor
+    will actually read."""
+    vo = build_supplement_vos([{
+        "name": "Room upgrade", "single_price": 15, "double_price": 10,
+    }])[0]
+    assert vo.price.singlePrice == 15.0
+    assert vo.price.doublePrice == 10.0
+    assert vo.free is False
+
+
+def test_free_flag_is_true_only_when_every_priced_field_is_genuinely_zero():
+    vo = build_supplement_vos([{
+        "name": "Genuinely free upgrade", "price": 0, "single_price": 0, "double_price": 0,
+        "triple_price": 0, "quadruple_price": 0,
+    }])[0]
+    assert vo.free is True
+
+
+def test_free_flag_is_false_when_only_triple_or_quadruple_price_carries_a_charge():
+    vo = build_supplement_vos([{"name": "Family room surcharge", "triple_price": 12}])[0]
+    assert vo.price.triplePrice == 12.0
+    assert vo.free is False
+
+
 def test_a_dict_accidentally_used_as_a_price_does_not_crash():
     """CONFIRMED FIX (real production crash, SUB-1): a supplement price arriving as the
     price_list's nested {"amount": ..., "currency": ...} shape instead of a flat number must
