@@ -151,14 +151,24 @@ def test_app_py_wires_the_editor_into_all_three_closedtour_screens():
     went unnoticed for missing UI in the first place."""
     source = _read_app_py()
     assert 'render_child_discount_editor(data, f"mm_{idx}", currency)' in source
-    assert 'render_child_discount_editor(data, f"mct_mod_{midx}", currency)' in source
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the mct_mod_ call site's key_prefix
+    # is now generation-scoped (flow_widget_key), to fix "Re-extract with updated hint" leaving
+    # the previous extraction's Child Discount % on screen - see the comment on that call site
+    # and on the "Re-extract" button above it in app.py. The bare f"mct_mod_{midx}" prefix this
+    # test used to assert on is deliberately gone from THIS call only.
+    assert 'render_child_discount_editor(data, flow_widget_key(f"mct_mod_{midx}", "cde"), currency)' in source
     assert 'render_child_discount_editor(data, "ct_single", currency)' in source
     # Every call site sits immediately after its matching render_extra_child_notice call, so the
     # two widgets are never shown out of order relative to one another.
-    for extra_child_call, discount_call in [
-        ('render_extra_child_notice(data, f"mm_{idx}")', 'render_child_discount_editor(data, f"mm_{idx}", currency)'),
-        ('render_extra_child_notice(data, f"mct_mod_{midx}")', 'render_child_discount_editor(data, f"mct_mod_{midx}", currency)'),
-        ('render_extra_child_notice(data, "ct_single")', 'render_child_discount_editor(data, "ct_single", currency)'),
+    # Widened from 200 to 900 for the mct_mod_ pair - the generation-scoping fix above (see
+    # test_render_currency_check_never_reruns_or_writes_session_state's own sibling in the
+    # currency-lock tests for the established precedent on widening this kind of window) added
+    # an explanatory comment between the two calls that the tighter window doesn't accommodate.
+    for extra_child_call, discount_call, max_gap in [
+        ('render_extra_child_notice(data, f"mm_{idx}")', 'render_child_discount_editor(data, f"mm_{idx}", currency)', 200),
+        ('render_extra_child_notice(data, f"mct_mod_{midx}")',
+         'render_child_discount_editor(data, flow_widget_key(f"mct_mod_{midx}", "cde"), currency)', 900),
+        ('render_extra_child_notice(data, "ct_single")', 'render_child_discount_editor(data, "ct_single", currency)', 200),
     ]:
         assert source.index(extra_child_call) < source.index(discount_call)
-        assert source.index(discount_call) - source.index(extra_child_call) < 200
+        assert source.index(discount_call) - source.index(extra_child_call) < max_gap

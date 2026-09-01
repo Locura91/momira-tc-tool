@@ -59,7 +59,11 @@ def test_fetch_handler_records_which_code_it_was_for():
 
 def test_step3_continue_gate_uses_the_match_helper_not_bare_truthiness():
     src = _read_app_py()
-    marker = 'if action in ("update_tour", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):'
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): "update_option" was added to this
+    # tuple - it was missing, letting an operator continue past Step 3 for an option-only
+    # update without ever fetching the live tour, silently defaulting currency to EUR. See the
+    # comment on this line in app.py.
+    marker = 'if action in ("update_tour", "add_option", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):'
     assert marker in src, (
         "Step 3's 'Continue to Step 4' gate must require the fetch to match the CURRENTLY "
         "entered tour code, not just be present - a bare truthiness check on "

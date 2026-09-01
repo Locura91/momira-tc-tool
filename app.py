@@ -1219,6 +1219,19 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         if st.button("🔄 Re-extract with updated hint", key=f"mct_mod_reextract_{midx}"):
             mod["data"] = None
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): re-extraction replaces
+            # mod["data"] with a fresh read of the document, but two widgets below kept their
+            # PREVIOUS extraction's values regardless - Operational Days and the Child Discount
+            # % - because Streamlit ignores a widget's default/value once session_state already
+            # holds an entry for its key, and this Modality's `midx` never changed, so the same
+            # bare keys (f"mct_mod_days_{midx}", the child-discount widget's key) survived the
+            # rerun untouched. This is exactly the bug class widget_state.py exists to close
+            # (see its own module docstring) - bumping this Modality's own widget generation
+            # here (its `mct_mod_{midx}` flow name already isolates it from every OTHER
+            # Modality, so this only affects the two widgets below, not the whole tour) gives
+            # both a fresh, ungenerationed key with no session_state entry, so the freshly
+            # extracted data's own values are what's shown after re-extraction, not stale ones.
+            bump_widget_generation(f"mct_mod_{midx}")
             st.rerun()
 
         data = mod["data"]
@@ -1227,7 +1240,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             st.info(f"🔎 {data['schedule_notes']}")
 
         data["operational_days"] = st.multiselect(
-            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mct_mod_days_{midx}"
+            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS),
+            key=flow_widget_key(f"mct_mod_{midx}", "days")
         )
         render_stop_sales_editor(data, f"mct_mod_{midx}")
 
@@ -1277,7 +1291,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             )
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
         render_extra_child_notice(data, f"mct_mod_{midx}")
-        render_child_discount_editor(data, f"mct_mod_{midx}", currency)
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the Child Discount % widget
+        # (built inside render_child_discount_editor from this key_prefix) is the other half
+        # of the "Re-extract with updated hint" staleness bug fixed above - see the comment on
+        # the re-extract button. Generation-scoping just this one call's key_prefix (not the
+        # bare "mct_mod_{midx}" used by render_stop_sales_editor/render_extra_child_notice/the
+        # pricing table right above, which are untouched) fixes only the widget the audit
+        # confirmed goes stale, without touching sibling widgets' own key stability.
+        render_child_discount_editor(data, flow_widget_key(f"mct_mod_{midx}", "cde"), currency)
 
         # CONFIRMED PRODUCT-OWNER CORRECTION: supplements belong to the TOUR, not to a
         # Modality - see render_closedtour_supplements. Edited once on the main tour screen.
@@ -1647,8 +1668,37 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                     st.session_state.just_published_tour_code = real_code
                                     st.session_state.just_published_supplier_id = supplier_id
                             else:
-                                st.warning(f"⚠️ **{tour['tour_code']}**: no Modality options were created successfully - "
-                                          f"skipped the follow-up update. Fix the error(s) above and try again.")
+                                # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the tour
+                                # ITSELF was already created above with `creation_payload["active"]
+                                # = True` hardcoded (necessary at create time, before any option
+                                # exists - see the "2-phase pattern" comment above) - so skipping
+                                # the follow-up update entirely, as this branch used to, left the
+                                # tour LIVE and ACTIVE on Travel Compositor with ZERO bookable
+                                # Modalities: a tour that looks published but can never actually be
+                                # booked, and whose Tour Code is now permanently taken (the tour DID
+                                # get created, even though every option attempt failed) - blocking a
+                                # simple retry under the same code. Explicitly deactivate it instead
+                                # of leaving that silent trap.
+                                deactivate_payload = dict(payloads["main_tour_payload"])
+                                deactivate_payload["code"] = real_code
+                                deactivate_payload["active"] = False
+                                deactivate_payload["modalityCodes"] = []
+                                deactivate_payload["supplements"] = []
+                                deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
+                                if "error" in deactivate_result:
+                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
+                                            f"successfully, AND the tour could not be deactivated afterward "
+                                            f"({deactivate_result}) - it is LIVE on Travel Compositor as "
+                                            f"`{real_code}` with zero bookable Modalities. Deactivate it "
+                                            f"manually in Travel Compositor, or finish it there directly. "
+                                            f"Its Tour Code is now taken.")
+                                else:
+                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
+                                            f"successfully. The tour was created on Travel Compositor as "
+                                            f"`{real_code}` but has been deactivated since it has no "
+                                            f"bookable Modality - it will not be sold. Its Tour Code is now "
+                                            f"taken; fix the error(s) above and use 'Add a Modality' to "
+                                            f"finish it (a different Tour Code cannot reuse this one).")
                 except Exception as e:
                     show_publish_error(f"publish **{tour['tour_code']}** (unexpected error)", str(e))
 
@@ -2102,6 +2152,22 @@ def _tk_clear_geo_confirmation():
     between a wrong location and a published ticket, so it must be cleared, not just the flag."""
     st.session_state.tk_geo_confirmed = False
     st.session_state.pop(flow_widget_key("tk", "geo_confirm_checkbox"), None)
+
+
+def _mt_clear_geo_confirmation(current, idx):
+    """Un-confirms the multi-Ticket BATCH flow's "I've checked this location" box, for real -
+    twin of _tk_clear_geo_confirmation() above for the "mt_" (Ticket batch) flow.
+
+    CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this flow has its own SEPARATE
+    geo-confirm state (current["geo_confirmed"], with its own checkbox keyed f"mt_geo_confirm_
+    {idx}") from the legacy single-Ticket "tk_" flow the 2026-08-24 fix above already covers -
+    it was never wired to that fix, so it had the exact same bug: picking a new search result
+    or entering new manual coordinates set current["geo_confirmed"] = False, but the
+    checkbox's OWN session_state entry survived and re-asserted True on the very next render,
+    silently re-confirming a location the operator never actually re-checked. Same fix, same
+    reasoning - the checkbox has to be cleared too, not just the flag."""
+    current["geo_confirmed"] = False
+    st.session_state.pop(f"mt_geo_confirm_{idx}", None)
 
 
 def flow_widget_key(flow, name):
@@ -4160,6 +4226,23 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             # ------------------------------------------------------------------
             st.markdown(f"**📍 Location for {current['label'] or current['ticket_code']}**")
             mt_city = data.get("city", "")
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): manual coordinates (from a
+            # search-pick or manual lat/lng entry, below) used to be shown with `display_name`
+            # set to whatever the City field CURRENTLY says - so editing City after picking
+            # coordinates silently relabeled the OLD, now-unrelated coordinates with the NEW
+            # city name, looking exactly like a correctly re-verified location while actually
+            # publishing a mismatch. `manual_coords_for_city` records which city the manual
+            # coordinates were actually chosen for; a City edit since then invalidates them the
+            # same way picking a brand-new location already does (both change what publishes,
+            # both must un-confirm the "I've checked this" tick - see _mt_clear_geo_confirmation
+            # below), forcing a fresh geocode/re-pick against the new city instead of a stale
+            # coordinate pair wearing the new city's name.
+            if (data.get("manual_latitude") is not None and data.get("manual_longitude") is not None
+                    and data.get("manual_coords_for_city") != mt_city):
+                data["manual_latitude"] = None
+                data["manual_longitude"] = None
+                data.pop("manual_coords_for_city", None)
+                _mt_clear_geo_confirmation(current, idx)
             if data.get("manual_latitude") is not None and data.get("manual_longitude") is not None:
                 mt_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
                           "display_name": mt_city, "valid": True}
@@ -4200,7 +4283,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             if st.button("Use this", key=f"mt_geo_pick_{idx}_{gi}"):
                                 data["manual_latitude"] = candidate["latitude"]
                                 data["manual_longitude"] = candidate["longitude"]
-                                current["geo_confirmed"] = False
+                                data["manual_coords_for_city"] = mt_city
+                                _mt_clear_geo_confirmation(current, idx)
                                 current["geo_search_results"] = None
                                 st.rerun()
 
@@ -4213,7 +4297,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
                     data["manual_latitude"] = mt_man_lat
                     data["manual_longitude"] = mt_man_lng
-                    current["geo_confirmed"] = False
+                    data["manual_coords_for_city"] = mt_city
+                    _mt_clear_geo_confirmation(current, idx)
                     st.rerun()
 
             current["geo_confirmed"] = st.checkbox(
@@ -4950,7 +5035,17 @@ def render_ticket_flow(client):
             required_ok = False
         if "existing_ticket_code" in needed and not existing_ticket_code_in:
             required_ok = False
-        if action in ("add_option", "update_ticket") and not st.session_state.get("tk_fetched_currency"):
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): "update_option" was missing from
+        # this tuple - TICKET_ACTION_FIELDS deliberately excludes "currency" from
+        # update_option's own needed fields ("an UPDATE never asks for things the live record
+        # already has"), relying entirely on it being inherited from the fetched ticket
+        # (tk_fetched_currency, used further down once Steps 4+ render). But this gate - the
+        # only thing standing between Step 3 and Step 4 - never required that fetch to have
+        # happened for update_option, so an operator could click Continue having never checked
+        # what's online, and currency would fall through to whatever tk_cfg_currency last held
+        # (blank on a fresh session) - the SAME empty-currency-defaults-to-EUR fallback this
+        # already blocks for add_option/update_ticket, just left open on the fourth action.
+        if action in ("add_option", "update_ticket", "update_option") and not st.session_state.get("tk_fetched_currency"):
             required_ok = False
             st.info("Click 'Check what's already online for this code' above first - this fetches the "
                    "existing Currency so you don't have to re-enter it.")
@@ -10233,7 +10328,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-high-currency-lock-fix"
+BUILD_VERSION = "2026-09-01-audit-high-closedtour-ticket-flows"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10979,7 +11074,17 @@ else:
     # present - see fetched_tour_matches_code()'s docstring. Without the match check, editing
     # the code above after a previous successful check (for a different tour) silently let the
     # previous tour's stale currency/min/max/provider-code through.
-    if action in ("update_tour", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): "update_option" was missing from this
+    # tuple - ACTION_FIELDS deliberately excludes "currency" from update_option's own needed
+    # fields ("an UPDATE never asks for things the live record already has"), relying entirely
+    # on it being inherited from the fetched tour (fetched_tour_currency, used further down once
+    # Steps 4+ render - see that block's own fetched_tour_matches_code() check, which DOES
+    # already cover update_option). But THIS gate - the only thing standing between Step 3 and
+    # Step 4 - never required that fetch to have happened for update_option, so an operator
+    # could click Continue having never checked what's online, and every price row would
+    # publish under whatever cfg_currency last held (blank on a fresh session, which the
+    # downstream builder defaults to EUR) - silently re-denominating a non-EUR tour.
+    if action in ("update_tour", "add_option", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):
         required_ok = False
         st.info("Click 'Check what's already online for this code' above first (or again, if you "
                "changed the code) - this fetches the existing tour's Currency (and for updates, "

@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-01-audit-high-currency-lock-fix"
+MODULE_BUILD = "2026-09-01-audit-high-closedtour-ticket-flows"
 
 _PHASE_KEY = "pkr_phase"
 
