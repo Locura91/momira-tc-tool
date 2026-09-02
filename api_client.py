@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this module - the actual publish path
+# for every product type - had no MODULE_BUILD stamp at all, so app.py's own partial-deploy
+# detector (_module_build_mismatches) was structurally blind to it: a stale api_client.py could
+# sit alongside a freshly-deployed app.py with no warning, even though it's the single most
+# consequential file to have out of sync (every publish call goes through it). Stamped now, and
+# the detector's module list is auto-discovered (see app.py) so any future module that adds a
+# MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
+MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+
 
 class TravelCompositorAPI:
     """

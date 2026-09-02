@@ -340,6 +340,36 @@ def _fetch_url_text_safe(url_val):
 # module docstring for why.
 
 
+def _clean_modality_code(raw_code):
+    """Shared Modality-Code cleanup for every flow that lets an AI suggest one (the ClosedTour
+    create flow's select_modalities phase, and this file's render_multi_modality_flow). CONFIRMED
+    FIX (real production failure): a Modality Code is sent straight to Travel Compositor's API -
+    "." used to slip through here on some call sites (only / \\ + - were stripped), and an
+    AI-suggested code with extra descriptive text (e.g. "Standard English min. 2 people") got
+    rejected outright by the real API ("Modality code ... not found in contract modalities")."""
+    return "".join(c for c in (raw_code or "") if c not in "/\\+-.")
+
+
+def _modality_code_suspicious(code):
+    """Shared suspicious-code heuristic - see _clean_modality_code's docstring. A Modality Code
+    is only ever safe if it's the short category name itself; anything with a stray junk word or
+    unusually long text is almost certainly going to be rejected by the real API the same way
+    "Standard English min. 2 people" was.
+
+    CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this check (and _clean_modality_code's
+    "." stripping) used to exist only in the single-tour ClosedTour create flow's
+    select_modalities phase (as a nested function, `_mct_modality_code_suspicious`) - the sibling
+    "add multiple Modalities to an existing ClosedTour" flow (render_multi_modality_flow below)
+    built its own candidate codes with none of this hardening, so the exact same real-world
+    failure mode (a descriptive AI-suggested code getting rejected by Travel Compositor) could
+    still happen there. Promoted to module level so both flows share one implementation."""
+    c = (code or "")
+    if len(c) > 24:
+        return True
+    lowered = c.lower()
+    return any(junk in lowered for junk in ("people", " pax", "person", " min ", " max ", "min ", "max "))
+
+
 def render_multi_modality_flow(client, url=None, uploaded_files=None):
     """
     Queue-based flow for adding MULTIPLE modalities from one shared source:
@@ -397,7 +427,11 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                     candidates = []
                     for m in detected:
                         raw_code = (m.get("suggested_code") or m.get("label") or "").strip()
-                        clean_code = "".join(c for c in raw_code if c not in "/\\+-")
+                        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this flow used
+                        # to build its own candidate codes with none of the hardening the
+                        # sibling ClosedTour create flow has - see _clean_modality_code's
+                        # docstring for the real production failure this closes.
+                        clean_code = _clean_modality_code(raw_code)
                         candidates.append({"code": clean_code, "hint": m.get("label", ""), "selected": True})
                     if not candidates:
                         candidates = [{"code": "", "hint": "", "selected": True}]
@@ -432,6 +466,20 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
+        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see _clean_modality_code's
+        # docstring - this flow had neither the suspicious-code warning nor a duplicate-code
+        # check its sibling ClosedTour create flow has, so a descriptive AI-suggested code (or
+        # two modalities accidentally sharing one code) could sail through to publish and fail
+        # at Travel Compositor with no earlier warning.
+        suspicious_codes = [c["code"] for c in candidates if c["selected"] and _modality_code_suspicious(c["code"])]
+        if suspicious_codes:
+            st.warning(
+                "🤔 These Modality Codes look unusually long/descriptive for a real code, which has "
+                "caused real publish failures before (Travel Compositor rejects anything that isn't "
+                "the short category name itself, e.g. 'Standard' not 'Standard English min. 2 people') "
+                "- please shorten them to just the core category name: " + ", ".join(f"'{c}'" for c in suspicious_codes)
+            )
+
         new_queue = []
         for cand in candidates:
             if not cand["selected"]:
@@ -441,9 +489,16 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 continue
             new_queue.append({"code": code, "hint": cand["hint"].strip(), "data": None, "confirmed": False})
 
+        dup_codes = {}
+        for item in new_queue:
+            dup_codes.setdefault(item["code"], []).append(item)
+        dup_codes = {code: v for code, v in dup_codes.items() if len(v) > 1}
+        if dup_codes:
+            st.error(f"🚫 Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
+
         st.caption(f"**{len(new_queue)}** modality(ies) selected to review and publish.")
 
-        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue or bool(dup_codes)):
             st.session_state.mm_queue = new_queue
             st.session_state.mm_queue_index = 0
             st.session_state.mm_phase = "reviewing"
@@ -619,7 +674,12 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             # Also clear per-item widget state (see _clear_batch_widget_state) -
             # otherwise a fresh batch's first item (always idx==0) can inherit
             # leftover edited values from the PREVIOUS batch's idx==0 item.
-            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+            # CONFIRMED BUG FIX (full-app audit MEDIUM (plausible), 2026-09-01): this used to
+            # sweep only SHARED_WIDGET_STATE_PREFIXES (the generic editing-table widgets shared
+            # across every flow), never this flow's OWN "mm_"-prefixed widget keys (Modality
+            # Code/hint text inputs, checkboxes) - those could carry over into the next batch's
+            # positionally-identical widget.
+            _clear_batch_widget_state(["mm_"] + SHARED_WIDGET_STATE_PREFIXES)
             st.rerun()
         return
 
@@ -627,9 +687,21 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
 def _reset_mct_state():
     """Clears all state for the single-ClosedTour create flow, ready to start over."""
     for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_doc_raw_images",
-               "mct_hosted_image_candidates", "mct_tour"]:
+               "mct_hosted_image_candidates", "mct_tour",
+               # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the "Just published: X"
+               # success panel (and its "Add another Modality to this same ClosedTour" prefill)
+               # read these two keys, but they were only ever SET on a successful publish and
+               # never cleared here - so starting a genuinely new ClosedTour after a publish
+               # kept showing tour A's "just published" panel on tour B's screen, and "Add
+               # another Modality" on tour B would prefill tour A's code.
+               "just_published_tour_code", "just_published_supplier_id"]:
         st.session_state.pop(key, None)
-    _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+    # CONFIRMED BUG FIX (full-app audit MEDIUM (plausible), 2026-09-01): see the matching fix in
+    # render_multi_modality_flow's "Start a new batch" - this used to sweep only the generic
+    # SHARED_WIDGET_STATE_PREFIXES, never this flow's own "mct_"-prefixed widget keys (Modality
+    # Code/hint inputs, geo-confirm checkboxes, etc.), so a fresh ClosedTour could inherit
+    # leftover typed values from the previous one's positionally-identical widgets.
+    _clear_batch_widget_state(["mct_"] + SHARED_WIDGET_STATE_PREFIXES)
 
 
 def _new_mct_tour(candidate, tour_code):
@@ -1052,13 +1124,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 for m in detected:
                     label = (m.get("label") or "").strip()
                     raw_code = (m.get("suggested_code") or label or "").strip()
-                    # CONFIRMED FIX (real production failure): this code gets sent straight
-                    # to Travel Compositor's API - "." used to slip through here (stripped
-                    # were only / \ + -), and an AI-suggested code with extra descriptive
-                    # text (e.g. "Standard English min. 2 people") got rejected outright by
-                    # the real API ("Modality code ... not found in contract modalities").
-                    # Strip periods too, and flag anything still suspicious below.
-                    clean_code = "".join(c for c in raw_code if c not in "/\\+-.")
+                    clean_code = _clean_modality_code(raw_code)
                     candidates.append({"code": clean_code, "hint": label, "selected": True})
                 if not candidates:
                     candidates = [{"code": "", "hint": "", "selected": True}]
@@ -1069,18 +1135,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                   "code/hint, or add more manually. At least one Modality is required (a 'Modality' is "
                   "Travel Compositor's own term for the pricing option, e.g. 'Standard' or 'Deluxe').")
 
-        def _mct_modality_code_suspicious(code):
-            # CONFIRMED FIX (real production failure): a Modality Code is only ever safe
-            # if it's the short category name itself - anything with a stray junk word or
-            # unusually long text is almost certainly going to be rejected by the real API
-            # the same way "Standard English min. 2 people" was.
-            c = (code or "")
-            if len(c) > 24:
-                return True
-            lowered = c.lower()
-            return any(junk in lowered for junk in ("people", " pax", "person", " min ", " max ", "min ", "max "))
-
-        suspicious_codes = [c["code"] for c in candidates if c["selected"] and _mct_modality_code_suspicious(c["code"])]
+        suspicious_codes = [c["code"] for c in candidates if c["selected"] and _modality_code_suspicious(c["code"])]
         if suspicious_codes:
             st.warning(
                 "🤔 These Modality Codes look unusually long/descriptive for a real code, which has "
@@ -1131,8 +1186,22 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         ready = bool(selected) and not missing and not dup_codes
         if st.button("➡️ Start Reviewing Modalities", type="primary", disabled=not ready):
+            # CONFIRMED BUG FIX (full-app audit MEDIUM-HIGH, 2026-09-01): clicking "Add another
+            # Modality" from final_review comes back through THIS same phase (select_modalities)
+            # with the tour's existing modalities still holding real, human-corrected `data` -
+            # but this list used to be rebuilt unconditionally with `data: None` for every
+            # entry, discarding every already-reviewed Modality's corrected pricing/supplements/
+            # operational days and forcing a full re-extraction (and re-billing) from scratch,
+            # even for Modalities the operator never touched. Now carries forward the existing
+            # `data`/`confirmed` for any code that already had a reviewed Modality under it -
+            # only a genuinely NEW code (not previously reviewed) starts blank.
+            existing_by_code = {m["code"]: m for m in (tour.get("modalities") or [])}
             tour["modalities"] = [
-                {"code": c["code"].strip(), "hint": c["hint"], "data": None, "confirmed": False}
+                (
+                    {**existing_by_code[c["code"].strip()], "hint": c["hint"]}
+                    if c["code"].strip() in existing_by_code
+                    else {"code": c["code"].strip(), "hint": c["hint"], "data": None, "confirmed": False}
+                )
                 for c in selected
             ]
             tour["modality_index"] = 0
@@ -1587,6 +1656,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             show_publish_error(f"create **{tour['tour_code']}**", result)
                         else:
                             real_code = result.get("code", payloads["main_tour_code"])
+                            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
+                            # mark_code_as_taken's docstring - keeps the availability cache in
+                            # sync the instant this code goes live, not just after the next
+                            # full re-check.
+                            mark_code_as_taken("tour", supplier_id, tour["tour_code"], result.get("name"))
+                            if real_code and real_code != tour["tour_code"]:
+                                mark_code_as_taken("tour", supplier_id, real_code, result.get("name"))
                             created_modality_codes = []
 
                             # api_client.py's _request() already retries each individual POST
@@ -2802,6 +2878,12 @@ def check_code_availability(client, kind, supplier_id, code):
     if cache_key in cache:
         return cache[cache_key]
 
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the "code is free" answer this
+    # function caches was never invalidated after a successful publish under that code - see
+    # mark_code_as_taken() below, called from every successful create-with-a-new-code path. A
+    # stale cached "available" for a code the operator just published under looked free right
+    # up until the actual publish/submit rejected it as already taken.
+
     try:
         result = client.get_closed_tour(supplier_id, clean_code) if kind == "tour" else client.get_ticket(supplier_id, clean_code)
     except Exception:
@@ -2837,6 +2919,21 @@ def check_code_availability(client, kind, supplier_id, code):
 
     cache[cache_key] = outcome
     return outcome
+
+
+def mark_code_as_taken(kind, supplier_id, code, name=None):
+    """CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): call this immediately after a
+    successful create-with-a-new-code publish (ClosedTour or Ticket) so check_code_availability's
+    cache reflects reality right away - otherwise a stale "available" cached from before the
+    publish (or simply never having been checked as unavailable) would let the operator re-use
+    the just-published code again in the SAME session, look free on screen, and only fail once
+    they actually submit."""
+    clean_code = (code or "").strip()
+    if not clean_code:
+        return
+    if "_code_exists_cache" not in st.session_state:
+        st.session_state._code_exists_cache = {}
+    st.session_state._code_exists_cache[(kind, supplier_id, clean_code)] = {"exists": True, "name": name}
 
 
 def render_code_availability_check(client, kind, supplier_id, code, label):
@@ -3036,7 +3133,14 @@ def _merge_extraction_over_baseline(baseline, fresh):
     if not baseline:
         return fresh
     merged = dict(baseline)
-    empty_values = (None, "", [], {}, 0)
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): `0` used to be in this tuple, and
+    # Python's `in` uses `==` for membership - `0 == False` is True, so `v in empty_values` also
+    # caught a genuine `False` (e.g. a boolean flag correctly re-extracted as False) as if it
+    # were "nothing extracted," silently keeping the baseline's stale True. And a genuinely
+    # re-extracted `0` (e.g. a price or a count that really is now zero) was reverted to
+    # whatever non-zero value the baseline happened to have. Dropped `0` from this tuple - a
+    # real 0/False is a value the fresh extraction actually found, not an empty field.
+    empty_values = (None, "", [], {})
     for k, v in (fresh or {}).items():
         if v not in empty_values:
             merged[k] = v
@@ -3104,7 +3208,13 @@ def render_tour_update_comparison(publish_action, data, payloads, client, suppli
             st.info(f"🏨 Hotel count changing: **{old_hotels}** → **{new_hotels}**")
 
     elif publish_action == "Update an existing option":
-        cache_key = f"_cmp_fetched_option_{modality_code}"
+        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this cache was keyed only on
+        # modality_code, which is NOT unique across tours/suppliers - two different tours can
+        # both have a "Standard" modality. Switching from tour A to tour B without a full app
+        # restart could show tour A's cached live prices as tour B's "what's currently live"
+        # sanity check, right up until the modality code happened to differ. Now scoped by
+        # supplier + the actual tour code the lookup uses, too.
+        cache_key = f"_cmp_fetched_option_{supplier_id}_{working_tour_code or existing_tour_code}_{modality_code}"
         if cache_key not in st.session_state:
             with st.spinner("Fetching current live pricing for this modality..."):
                 st.session_state[cache_key] = client.get_closed_tour_option(
@@ -3213,7 +3323,10 @@ def render_ticket_update_comparison(publish_action, data, payloads, client, supp
                           f"Double-check this is intentional.")
 
     elif publish_action == "Update an existing ticket option":
-        cache_key = f"_cmp_fetched_tk_option_{modality_code}"
+        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see the matching fix for
+        # ClosedTour options above - scoped by supplier + ticket code too, not modality code
+        # alone.
+        cache_key = f"_cmp_fetched_tk_option_{supplier_id}_{existing_ticket_code}_{modality_code}"
         if cache_key not in st.session_state:
             with st.spinner("Fetching current live pricing for this modality..."):
                 st.session_state[cache_key] = client.get_ticket_option(supplier_id, existing_ticket_code, modality_code)
@@ -3843,6 +3956,15 @@ def try_code_variants(call_fn, code):
         if alt not in variants:
             variants.append(alt)
 
+    if not variants:
+        # CONFIRMED BUG FIX (full-app audit LOW-MED, 2026-09-01): a blank/None `code` (every
+        # candidate falsy) used to fall straight through the loop below with `result` still at
+        # its initial `None` - every call site does `if "error" in result:`, and `"error" in
+        # None` raises an unhandled TypeError instead of a friendly "no code provided" message.
+        # Returning a proper error-shaped dict here means every existing call site's normal
+        # error-handling path already does the right thing, with no call-site changes needed.
+        return {"error": True, "message": "No code was provided to look up."}, None
+
     result = None
     for v in variants:
         result = call_fn(v)
@@ -4413,6 +4535,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     # its stale selection cleared too, or a re-used slot shows the PREVIOUS
                     # item's language picks instead of this one's freshly extracted default.
                     st.session_state.pop(f"mt_{idx}_languages", None)
+                    # CONFIRMED BUG FIX (full-app audit MEDIUM (plausible), 2026-09-01): this
+                    # re-extraction updates `data` with fresh operational days, end date, price
+                    # type and service price - but 4 widgets bound to those exact fields were
+                    # never cleared, same fixed-key staleness as every other widget reset in
+                    # this handler. A widget with a fixed key ignores a freshly computed `value=`
+                    # after its first render, so the OLD (pre-re-extraction) value would render
+                    # right back into `data` on the very next run, silently reverting the fresh
+                    # extraction for exactly these 4 fields.
+                    st.session_state.pop(f"mt_op_days_{idx}", None)
+                    st.session_state.pop(f"mt_end_date_{idx}", None)
+                    st.session_state.pop(f"mt_{idx}_price_type", None)
+                    st.session_state.pop(f"mt_{idx}_service_price", None)
                 # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
                 # ONE Modality. If the document describes other pricing categories for this same
                 # excursion (e.g. a second price table for another guide language), do NOT
@@ -4667,6 +4801,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             show_publish_error(f"create **{q['ticket_code']}**", result)
                             continue
                         real_code = result.get("code", payloads["main_ticket_code"])
+                        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
+                        # mark_code_as_taken's docstring.
+                        mark_code_as_taken("ticket", supplier_id, q["ticket_code"], result.get("name"))
+                        if real_code and real_code != q["ticket_code"]:
+                            mark_code_as_taken("ticket", supplier_id, real_code, result.get("name"))
 
                         # api_client.py's _request() already retries every write call (incl. this
                         # POST) up to 6 times internally now - no need to also loop here.
@@ -5203,10 +5342,24 @@ def render_ticket_flow(client):
                     else:
                         data = extract_ticket_data(
                             raw_text,
-                            human_hint=with_learned_guidance(clarify_supplier_id(), "Ticket", tk_hint))
-                        data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see the
+                            # matching fix below - pass the local supplier_id explicitly rather
+                            # than relying on the ambiguous ClosedTour-first fallback order.
+                            human_hint=with_learned_guidance(clarify_supplier_id(supplier_id), "Ticket", tk_hint))
+                        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the placeholder
+                        # used to be set to [FALLBACK_IMAGE] BEFORE the merge below - a non-empty
+                        # value, so _merge_extraction_over_baseline (which only keeps the
+                        # baseline's value for fields the fresh side left EMPTY) always preferred
+                        # the placeholder over the update's real, already-live photos. Set to []
+                        # (genuinely empty, so the merge falls back to the baseline's real
+                        # images) and only fall back to the placeholder afterward, when there's
+                        # still nothing - a create with no baseline, or an update whose baseline
+                        # itself had no images either.
+                        data["image_urls"] = []
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
+                        if not data.get("image_urls"):
+                            data["image_urls"] = [FALLBACK_IMAGE]
                         floor_start_date_for_new_data(data)
                         # Only fills in when this document (and, for an update, the live
                         # baseline it was just merged over) had no cancellation terms of its
@@ -5270,9 +5423,14 @@ def render_ticket_flow(client):
                             human_hint=st.session_state.get("tk_pending_hint")
                         )
                         tk_pending_url = st.session_state.get("tk_pending_url")
-                        data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see the matching
+                        # fix above - the placeholder must not be set before the merge, or it
+                        # always wins over the update's real live photos.
+                        data["image_urls"] = []
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
+                        if not data.get("image_urls"):
+                            data["image_urls"] = [FALLBACK_IMAGE]
 
                         floor_start_date_for_new_data(data)
                         st.session_state.tk_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
@@ -5688,7 +5846,14 @@ def render_ticket_flow(client):
                 "Send", disabled=not tk_clarify_q2.strip(), key="tk_clarify_send_pricing"):
             with st.spinner("Thinking..."):
                 result = apply_clarification(st.session_state.tk_raw_preview, data, tk_clarify_q2)
-                remember_clarification(clarify_supplier_id(), "Ticket", tk_clarify_q2, result)
+                # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): a bare clarify_supplier_id()
+                # call checks session-state keys in a fixed priority order that puts ClosedTour's
+                # own key FIRST - if the operator had used ClosedTour earlier in this same browser
+                # session (its key never gets cleared just by switching product types), a Ticket
+                # correction here could get filed under that stale ClosedTour supplier instead of
+                # this Ticket's real one. Passing the local `supplier_id` explicitly (it's already
+                # in scope here) makes that the preferred value, bypassing the ambiguous fallback.
+                remember_clarification(clarify_supplier_id(supplier_id), "Ticket", tk_clarify_q2, result)
                 st.session_state.tk_clarify_result_pricing = result
                 if result.get("changes"):
                     apply_clarify_changes(data, result, currency)
@@ -5711,7 +5876,7 @@ def render_ticket_flow(client):
         if st.session_state.get("tk_clarify_result_pricing"):
             r = st.session_state.tk_clarify_result_pricing
             render_clarify_result(r)
-        remember_memory_panel(clarify_supplier_id(), "Ticket", "tkp")
+        remember_memory_panel(clarify_supplier_id(supplier_id), "Ticket", "tkp")
 
         if st.button("🔎 Check Locations & Continue", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
@@ -5953,6 +6118,11 @@ def render_ticket_flow(client):
                                 show_publish_error("create the ticket", result, flow="ticket_legacy")
                             else:
                                 real_code = result.get("code", payloads["main_ticket_code"])
+                                # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
+                                # mark_code_as_taken's docstring.
+                                mark_code_as_taken("ticket", supplier_id, payloads["main_ticket_code"], result.get("name"))
+                                if real_code and real_code != payloads["main_ticket_code"]:
+                                    mark_code_as_taken("ticket", supplier_id, real_code, result.get("name"))
                                 st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
 
                                 # api_client.py's _request() already retries every write call
@@ -7332,7 +7502,13 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                           "is untouched."):
             current["data"] = None
             current.pop("_seeded_fields", None)
-            _clear_batch_widget_state(["xtp_"], keep=XTP_STATE_KEYS)
+            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this was the only "re-read"/
+            # "start over" reset in the whole file that swept `["xtp_"]` alone, without also
+            # sweeping SHARED_WIDGET_STATE_PREFIXES (the generic editable-table edit-mode flags
+            # etc. - see its own sibling "skip this item" button just below, which already
+            # includes it) - so a table left in live-edit mode before re-reading could still show
+            # the previous extraction's edited values after the fresh read.
+            _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES, keep=XTP_STATE_KEYS)
             st.rerun()
 
         render_skip_item_button(
@@ -8247,15 +8423,42 @@ def render_hotel_flow(client):
         for r in (data.get("rooms") or [{"name": "", "distributions": []}])
     ])
 
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): captured before editing, so
+    # _hp_save_rooms can tell a RENAME (same row, new text) apart from a genuinely new/removed
+    # room - see the rename-propagation note inside it.
+    _hp_original_room_names = [r.get("name", "") for r in (data.get("rooms") or [])]
+
     def _hp_save_rooms(edited_df):
         rows = []
-        for _, row in edited_df.iterrows():
+        renamed_pairs = []
+        for pos, (_, row) in enumerate(edited_df.iterrows()):
             name = str(row.get("name") or "").strip()
             if not name:
                 continue
             rows.append({"name": name, "type_id": None,
                           "distributions": _hp_str_to_dist(row.get("allowed_distributions"))})
+            old_name = _hp_original_room_names[pos] if pos < len(_hp_original_room_names) else None
+            if old_name and old_name != name:
+                renamed_pairs.append((old_name, name))
         data["rooms"] = rows
+        # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): every season's room_prices and
+        # every rate's stop_sales are keyed by room NAME (see build_hotel_rate_payloads), not a
+        # stable id - renaming a room here used to leave those rows keyed under the OLD name,
+        # which then simply doesn't match any name in the new room list and gets silently
+        # dropped (see the room_prices carry-forward filter further down this screen). Propagate
+        # the rename into every season/rate that referenced the old name, by row position (this
+        # table's rows aren't reordered by anything else on this screen), instead of losing
+        # already-entered prices/stop-sales just because a room got renamed.
+        if renamed_pairs:
+            rename_map = dict(renamed_pairs)
+            for rate in (data.get("rates") or []):
+                for season in (rate.get("seasons") or []):
+                    for rp in (season.get("room_prices") or []):
+                        if rp.get("room_name") in rename_map:
+                            rp["room_name"] = rename_map[rp["room_name"]]
+                for ss in (rate.get("stop_sales") or []):
+                    if ss.get("room_name") in rename_map:
+                        ss["room_name"] = rename_map[ss["room_name"]]
 
     editable_table("Room types", rooms_df, "hp_rooms", on_save=_hp_save_rooms)
     room_names = [r.get("name") for r in (data.get("rooms") or []) if r.get("name")]
@@ -8563,6 +8766,7 @@ def render_hotel_flow(client):
 
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
                  type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms):
+        st.session_state.hp_publish_succeeded = False
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
@@ -8669,11 +8873,15 @@ def render_hotel_flow(client):
                 st.balloons()
                 st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
                           f"offers, supplements and {seasons_total} season(s) of prices.")
-                if st.button("🆕 Start a new Hotel", key="hp_new"):
-                    for key in HP_STATE_KEYS:
-                        st.session_state.pop(key, None)
-                    _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
-                    st.rerun()
+                # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): "Start a new Hotel" used
+                # to be a button nested inside `if st.button("🚀 Publish...")` - that outer
+                # button's own value is only True on the EXACT render where it was clicked, so on
+                # the very next rerun (the one clicking "Start a new Hotel" itself triggers), the
+                # outer button is False again, this whole branch never re-executes, and the inner
+                # button's click is never evaluated - a dead no-op. Fixed by persisting the
+                # success into session_state instead, and rendering "Start a new Hotel" from a
+                # separate, unnested check below that survives the rerun.
+                st.session_state.hp_publish_succeeded = True
         except Exception as e:
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): an exception anywhere in
             # Phase 2 (offers/supplements/rates) used to show the exact same generic "couldn't
@@ -8685,6 +8893,17 @@ def render_hotel_flow(client):
                 f"finish publishing hotel **{provider_code}** — note: the contract, rooms and "
                 f"meal plans (Phase 1 above) may already be live even though this failed",
                 str(e))
+
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): rendered here, OUTSIDE the outer
+    # "🚀 Publish" button's `if` block, so it actually survives the rerun its own click causes -
+    # see the note where hp_publish_succeeded is set, above.
+    if st.session_state.get("hp_publish_succeeded"):
+        if st.button("🆕 Start a new Hotel", key="hp_new"):
+            for key in HP_STATE_KEYS:
+                st.session_state.pop(key, None)
+            st.session_state.hp_publish_succeeded = False
+            _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
+            st.rerun()
 
 
 # ======================================================================
@@ -9324,6 +9543,18 @@ def render_supplier_migration_flow(client):
                                "detail": str(create_res.get("message") or create_res.get("error"))})
                 continue
             new_id = create_res.get("id") if isinstance(create_res, dict) else None
+            # CONFIRMED BUG FIX (full-app audit LOW (plausible), 2026-09-01): the "error" in
+            # create_res check above only catches a response Travel Compositor itself flagged as
+            # an error - it doesn't guarantee `new_id` actually came back set. Deactivating the
+            # ORIGINAL Transfer here was previously unconditional on the create having "worked"
+            # (no "error" key), not on it having genuinely returned a usable id - so a create
+            # response that was some other kind of malformed/empty dict would still deactivate
+            # the original, potentially destroying the only working copy with no replacement.
+            if not new_id:
+                results.append({"name": name, "ok": False, "stage": "create",
+                               "detail": "the create call didn't return an id for the new record - "
+                                         "the original was NOT deactivated, nothing was lost."})
+                continue
 
             deactivate_payload = dict(record)
             deactivate_payload["active"] = False
@@ -9520,7 +9751,19 @@ def render_transport_cancellation_bulk_flow(client):
     st.warning(f"⚠️ This will PUT (update) {len(selected_ids)} Transport(s) — both the structured "
               f"cancellation field and the matching sentence in each one's description. Everything "
               f"else on each record (pricing, segments, images, dates) is left exactly as it is.")
-    if st.button(f"🚀 Update {len(selected_ids)} Transport(s)", key="ctb_confirm", type="primary"):
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the "New policy" table above is a
+    # live-editable table (editable_table) - while it's in live-edit mode, `st.session_state.
+    # ctb_new_tiers` (and therefore every `proposals` entry's "New" column shown above) still
+    # reflects the LAST SAVED numbers, not whatever's currently typed into the open table. This
+    # button used to stay enabled through that whole window, so clicking "Apply" while the table
+    # had unsaved edits pushed the OLD policy to every selected live Transport while the screen
+    # displayed the new, not-yet-saved numbers right above it. Disabled until the table is saved.
+    ctb_table_being_edited = bool(st.session_state.get("_editing_table_ctb_new_policy"))
+    if ctb_table_being_edited:
+        st.error("🚫 The New Policy table above has unsaved edits — click its own Save button "
+                 "first, or this button would apply the OLD numbers while the screen shows new ones.")
+    if st.button(f"🚀 Update {len(selected_ids)} Transport(s)", key="ctb_confirm", type="primary",
+                 disabled=ctb_table_being_edited):
         to_apply = [proposals_by_id[pid] for pid in selected_ids]
         with st.spinner("Updating..."):
             results = cancellation_bulk_transport.apply_proposals(client, supplier_id, to_apply)
@@ -10398,7 +10641,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-high-leftover-findings"
+BUILD_VERSION = "2026-09-01-audit-medium-batch1-app-py"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10408,28 +10651,49 @@ BUILD_VERSION = "2026-09-01-audit-high-leftover-findings"
 # outreach_tool.py while quoting a line of code from a completely different function, because
 # app.py had been pushed and outreach_tool.py had not.
 def _module_build_mismatches():
+    import glob
     import importlib
+
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this used to be a hand-maintained
+    # tuple of 23 names, which is exactly as stale-prone as the partial-deploy problem it exists
+    # to catch - api_client.py (the actual publish path for every product type) and
+    # trip_quote_client.py (the newest file in the repo) both carried NO MODULE_BUILD at all and
+    # were silently never checked, and any future module someone forgot to add here would be
+    # just as invisible. Now discovers every local .py module and checks whichever ones actually
+    # declare a MODULE_BUILD - a module that's never been stamped still isn't checked (nothing to
+    # compare), but a module that WAS given a stamp is picked up automatically, with no second
+    # list to keep in sync.
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_names = sorted(
+        os.path.splitext(os.path.basename(p))[0]
+        for p in glob.glob(os.path.join(this_dir, "*.py"))
+        if os.path.basename(p) not in ("app.py",) and not os.path.basename(p).startswith("test_")
+    )
     stale = []
-    for name in ("builder", "ai_extractor", "schemas", "outreach_tool", "outreach_memory",
-                 "outreach_discovery", "price_refresh", "stop_sales_tool", "extraction_memory",
-                 "platform_store", "date_format", "weekly_review", "document_reader", "outreach_scope",
-                 "ui_components", "trip_idea_tool", "package_rollover_tool", "cancellation_links",
-                 "supplier_images", "cancellation_bulk_transport", "hotel_matcher", "web_extractor",
-                 "outreach_learned_suppliers"):
+    import_failures = []
+    for name in candidate_names:
         try:
             mod = importlib.import_module(name)
-        except Exception:
+        except Exception as e:
+            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): a failed import used to be
+            # silently treated as "no mismatch" (`continue`) - the exact same blind spot as never
+            # checking the module at all, just reached a different way (e.g. a module with a
+            # genuine syntax error or a missing dependency after a partial deploy). Surfaced as
+            # its own kind of finding instead of being swallowed.
+            import_failures.append((name, str(e)))
             continue
         found = getattr(mod, "MODULE_BUILD", None)
+        if found is None:
+            continue  # never stamped - nothing to compare, not itself a mismatch
         if found != BUILD_VERSION:
-            stale.append((name, found or "(no build stamp)"))
-    return stale
+            stale.append((name, found))
+    return stale, import_failures
 
 
 st.title("Momira Travel Platform")
 st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 
-_stale_modules = _module_build_mismatches()
+_stale_modules, _module_import_failures = _module_build_mismatches()
 if _stale_modules:
     st.error(
         "🚨 **Partial deploy — some files on the server are older than this one.** Errors from "
@@ -10439,6 +10703,15 @@ if _stale_modules:
                     for name, found in _stale_modules)
         + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
           "then push and let the app redeploy.")
+if _module_import_failures:
+    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see _module_build_mismatches'
+    # docstring - a module that fails to import can't be build-checked at all, which used to be
+    # silently indistinguishable from "everything's fine."
+    st.error(
+        "🚨 **Some modules failed to import and could not be build-checked:**\n\n"
+        + "\n".join(f"- `{name}.py`: {err}" for name, err in _module_import_failures)
+        + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
+          "trusting anything this module is used for.")
 
 # A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
@@ -11406,12 +11679,17 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.pending_doc_raw_images = doc_raw_images
                 else:
                     data = extract_structured_data(raw_text, human_hint=extraction_hint or None)
-                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see the matching
+                    # fix in the Ticket update flow - setting the placeholder before the merge
+                    # made it always win over an update's real, already-live photos.
+                    data["image_urls"] = []
                     if action == "update_tour":
                         # Merge on top of the tour's real live values (pre-filled in Step 3) rather
                         # than replacing them outright - an incomplete fresh extraction shouldn't
                         # blank out fields the new source just didn't happen to mention.
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+                    if not data.get("image_urls"):
+                        data["image_urls"] = [FALLBACK_IMAGE]
                     # Only fills in when this document (and, for an update, the live baseline
                     # it was just merged over) had no cancellation terms of its own - see
                     # apply_cancellation_link_default's docstring.
@@ -11480,10 +11758,14 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 )
 
                 pending_url = st.session_state.get("pending_url")
-                data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see the matching fix
+                # above - the placeholder must not be set before the merge.
+                data["image_urls"] = []
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
                 if action == "update_tour":
                     data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+                if not data.get("image_urls"):
+                    data["image_urls"] = [FALLBACK_IMAGE]
 
                 st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                     data, supplier_id, "ClosedTour")
@@ -12175,6 +12457,11 @@ if st.session_state.extracted:
                             show_publish_error("create the main tour", result, flow="tour_legacy")
                         else:
                             real_code = result.get('code', payloads['main_tour_code'])
+                            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
+                            # mark_code_as_taken's docstring.
+                            mark_code_as_taken("tour", payloads["supplier_id"], payloads["main_tour_code"], result.get("name"))
+                            if real_code and real_code != payloads["main_tour_code"]:
+                                mark_code_as_taken("tour", payloads["supplier_id"], real_code, result.get("name"))
                             st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
                                       f"— save this exact value, you'll need it for any future lookups, "
                                       f"updates, or adding more modalities to this tour.")

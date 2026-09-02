@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-01-audit-high-leftover-findings"
+MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -51,7 +51,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-01-audit-high-leftover-findings"
+MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
