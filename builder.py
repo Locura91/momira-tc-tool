@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 import math
 import datetime
@@ -433,9 +433,15 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
             name=name,
             type="PERCENT" if is_percent else "ABSOLUTE",
             amount=amount,
-            startDate=(s.get("start_date") or transfer_start_date
+            # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): a supplement's own
+            # start_date/end_date used to pass straight through unnormalized - only the
+            # start_date_or_today(None) fallback (when nothing was stated at all) got ISO
+            # defense. Both now go through to_iso_date first, same as every other date in this
+            # module, so a non-ISO/ambiguous stated date is normalized before publish rather
+            # than reaching the API as whatever raw string the extractor produced.
+            startDate=(to_iso_date(s.get("start_date")) or transfer_start_date
                        or start_date_or_today(None)) or None,
-            endDate=(s.get("end_date") or transfer_end_date or _TRANSFER_MAX_END_DATE) or None,
+            endDate=(to_iso_date(s.get("end_date")) or transfer_end_date or _TRANSFER_MAX_END_DATE) or None,
             startTime=normalize_supplement_time(s.get("start_time")),
             endTime=normalize_supplement_time(s.get("end_time")),
         ))
@@ -583,10 +589,17 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
                     lines.append(f"- {fee_pct:g}% cancellation fee on the day of arrival or for no-shows "
                                   f"({refund_pct:g}% refund).")
             elif refund_pct <= 0:
-                lines.append(f"- No refund if cancelled within {days} days of arrival.")
+                # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): a tier means "cancel
+                # AT LEAST `days` days BEFORE arrival -> this refund" (see
+                # _cancellation_ranges_from_tiers's own confirmed semantics) - the exact same
+                # window the free-cancellation branch above phrases correctly. This branch used
+                # to say "within {days} days OF arrival" instead - the OPPOSITE condition (close
+                # to arrival, not far from it) - so the voucher told the customer the reverse of
+                # what the structured refund tier actually grants.
+                lines.append(f"- No refund if cancelled less than {days} days before arrival.")
             else:
-                lines.append(f"- {fee_pct:g}% cancellation fee if cancelled within {days} days of arrival "
-                              f"({refund_pct:g}% refund).")
+                lines.append(f"- {fee_pct:g}% cancellation fee if cancelled less than {days} days before "
+                              f"arrival ({refund_pct:g}% refund).")
         return "\n".join(lines)
     return default_text
 
@@ -819,6 +832,21 @@ _PRICE_COLUMN_ALIASES = {
     "quad": "quadruplePrice", "qdp": "quadruplePrice",
 }
 
+# CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): coerce_price_list_shape used to only
+# know about the 4 money columns above - a row's tripleChildPercentageDiscount/
+# quadrupleChildPercentageDiscount (normalize_price_list's ONLY child-price mechanism for a
+# Closed Tour price list, see that function's own docstring) had no alias entry, so it resolved
+# to `canon = None` and was silently dropped on every "Tell AI what to fix" merge or table
+# re-render - a documented 50%-off 3rd/4th child publishing at full price. These aren't money
+# columns (no currency/amount split), so they get their own alias table and their own,
+# simpler copy-through in the loop below instead of being forced through _money_or_none.
+_CHILD_DISCOUNT_COLUMN_ALIASES = {
+    "triplechildpercentagediscount": "tripleChildPercentageDiscount",
+    "triplechilddiscount": "tripleChildPercentageDiscount",
+    "quadruplechildpercentagediscount": "quadrupleChildPercentageDiscount",
+    "quadruplechilddiscount": "quadrupleChildPercentageDiscount",
+}
+
 
 def coerce_price_list_shape(rows, currency="EUR"):
     """Force a price list into the one shape the screens and the payload expect.
@@ -851,19 +879,29 @@ def coerce_price_list_shape(rows, currency="EUR"):
         if isinstance(raw, dict):
             for key, value in raw.items():
                 canon = _PRICE_COLUMN_ALIASES.get(str(key).strip().lower())
-                if not canon:
+                if canon:
+                    if isinstance(value, dict):
+                        amount = value.get("amount")
+                        row_currency = value.get("currency") or currency
+                    else:
+                        amount, row_currency = value, currency
+                    if amount in (None, ""):
+                        continue
+                    try:
+                        prices[canon] = {"amount": float(amount), "currency": row_currency}
+                    except (TypeError, ValueError):
+                        notes.append(f"{label}'s {canon} was not a number and was left blank")
                     continue
-                if isinstance(value, dict):
-                    amount = value.get("amount")
-                    row_currency = value.get("currency") or currency
-                else:
-                    amount, row_currency = value, currency
-                if amount in (None, ""):
-                    continue
-                try:
-                    prices[canon] = {"amount": float(amount), "currency": row_currency}
-                except (TypeError, ValueError):
-                    notes.append(f"{label}'s {canon} was not a number and was left blank")
+                # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): a row's own
+                # tripleChildPercentageDiscount/quadrupleChildPercentageDiscount used to have no
+                # alias entry at all, so it silently fell through and was lost - see the comment
+                # above _CHILD_DISCOUNT_COLUMN_ALIASES.
+                discount_canon = _CHILD_DISCOUNT_COLUMN_ALIASES.get(str(key).strip().lower())
+                if discount_canon and value not in (None, ""):
+                    try:
+                        prices[discount_canon] = float(value)
+                    except (TypeError, ValueError):
+                        notes.append(f"{label}'s {discount_canon} was not a number and was left blank")
         elif raw not in (None, ""):
             # A bare number. It could mean per person, or the double rate, or a total - and
             # each reading bills a different amount. Refusing to guess: the dates survive so
@@ -871,18 +909,27 @@ def coerce_price_list_shape(rows, currency="EUR"):
             notes.append(f"{label} had a single unlabelled price ({raw}) with no occupancy - "
                          f"enter it under the right column")
 
-        # A very common alternative shape: the occupancies sitting on the row itself.
+        # A very common alternative shape: the occupancies (and child discounts) sitting on the
+        # row itself, rather than nested inside "price".
         for key, value in row.items():
-            canon = _PRICE_COLUMN_ALIASES.get(str(key).strip().lower())
-            if not canon or canon in prices or value in (None, ""):
+            key_lower = str(key).strip().lower()
+            canon = _PRICE_COLUMN_ALIASES.get(key_lower)
+            if canon and canon not in prices and value not in (None, ""):
+                if isinstance(value, dict):
+                    value = value.get("amount")
+                try:
+                    prices[canon] = {"amount": float(value), "currency": currency}
+                    entry.pop(key, None)
+                except (TypeError, ValueError):
+                    pass
                 continue
-            if isinstance(value, dict):
-                value = value.get("amount")
-            try:
-                prices[canon] = {"amount": float(value), "currency": currency}
-                entry.pop(key, None)
-            except (TypeError, ValueError):
-                pass
+            discount_canon = _CHILD_DISCOUNT_COLUMN_ALIASES.get(key_lower)
+            if discount_canon and discount_canon not in prices and value not in (None, ""):
+                try:
+                    prices[discount_canon] = float(value)
+                    entry.pop(key, None)
+                except (TypeError, ValueError):
+                    pass
 
         entry["price"] = prices
         entry["startDate"] = str(entry.get("startDate") or "")
@@ -1335,7 +1382,15 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
     m_end = (modality_end or "").strip()
     supplements_list = []
     for s in (supplements or []):
-        raw_start = (s.get("start_date") or "").strip() or m_start
+        # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): `(value or "").strip()`
+        # crashes with an uncaught AttributeError if `value` is a non-string truthy object (e.g.
+        # a datetime.date the extractor or a merge produced instead of a string) - `value or ""`
+        # evaluates to the object itself (truthy), and .strip() doesn't exist on it. That
+        # propagates straight out of build_ticket_payloads uncaught (the enclosing try/except
+        # only catches ValidationError/ValueError/TypeError), crashing the whole ticket build
+        # instead of degrading gracefully like every other malformed field in this function.
+        # str(...) first matches normalize_supplement_time's own established defensive pattern.
+        raw_start = str(s.get("start_date") or "").strip() or m_start
         # CONFIRMED REAL BUG (audit, 2026-08-28): the two clips below only ever move `start`
         # UP and `end` DOWN into the Modality's window - neither checks the other side. A
         # supplement whose own start already falls AFTER the Modality's end (a mistyped year,
@@ -1358,7 +1413,7 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
         if m_end and raw_start > m_end:
             continue
         start = raw_start
-        end = (s.get("end_date") or "").strip() or m_end
+        end = str(s.get("end_date") or "").strip() or m_end
         # Clip into the Modality's own window rather than publish a supplement that claims to
         # be live before the Modality starts or after it ends.
         if m_start and start < m_start:
@@ -2123,7 +2178,7 @@ def build_ticket_payloads(
         # (excluded_language_choice_extras below) instead of silently dropped, same "never silent"
         # pattern as _ignored_ticket_supplements right below.
         _modality_start = start_date_or_today(extracted_ticket_data.get("start_date"))
-        _modality_end = extracted_ticket_data.get("end_date") or ""
+        _modality_end = end_date_iso(extracted_ticket_data.get("end_date"))
         _all_modality_supplements = [
             s for s in (extracted_ticket_data.get("modality_supplements") or []) if isinstance(s, dict)
         ]
@@ -2874,7 +2929,7 @@ def build_transfer_payload(
             effective_properties = existing_transfer_snapshot.get("properties") or [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
         else:
             effective_start_date = start_date_or_today(extracted_transfer_data.get("start_date"))
-            effective_end_date = extracted_transfer_data.get("end_date") or ""
+            effective_end_date = end_date_iso(extracted_transfer_data.get("end_date"))
             effective_properties = [p.dict() for p in _DEFAULT_TRANSFER_PROPERTIES]
         # See _effective_images_for_update's docstring - the one field here that's an
         # exception to the preserve-on-update rule the rest of this block follows.
@@ -3008,6 +3063,19 @@ def start_date_or_today(stated):
     if not stated or stated < today:
         return today
     return stated
+
+
+def end_date_iso(stated):
+    """CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): startDate always goes through
+    start_date_or_today, whose own "last line of defence" is a to_iso_date() call before the
+    today-floor comparison - endDate had no equivalent anywhere in Ticket/Transfer/Transport,
+    so it was passed straight through as whatever raw string the extractor produced (a
+    non-ISO/ambiguous format could reach the payload unnormalized). This mirrors that same
+    to_iso_date defense WITHOUT the floor - only startDate should ever be floored to today, per
+    start_date_or_today's own docstring; an end date genuinely in the past is a real expired-
+    document problem for expired_validity_window() to catch and block on, not something this
+    function should silently paper over."""
+    return to_iso_date((stated or "").strip())
 
 
 def expired_validity_window(stated_start, stated_end):
@@ -3298,6 +3366,17 @@ def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_
     largest = brackets_sorted[-1]
     capacity = _safe_int(largest.get("max_occupancy", 0), fallback=0)
     price = _safe_float(largest.get("price", 0))
+    # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): Transfer's sibling function
+    # above scales child_price/infant_price forward by the same vehicles_needed multiplier when
+    # the source bracket priced them - this one used to hardcode both to None unconditionally,
+    # regardless of whether the largest documented bracket had a real child/infant price. That
+    # made every synthesized per-vehicle bracket's children_delta/infant_delta stay 0.0
+    # downstream (see build_transport_payloads), so a synthesized bracket correctly doubled the
+    # adult price for the extra vehicle while children were priced identically to the
+    # single-vehicle base bracket - free, if the source never separately priced them there
+    # either. Mirrors Transfer's exact pattern: only scale a price the source actually gave.
+    source_child_price = largest.get("child_price")
+    source_infant_price = largest.get("infant_price")
     if capacity <= 0 or capacity >= max_cap:
         return brackets_sorted
     extended = list(brackets_sorted)
@@ -3309,8 +3388,10 @@ def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_
             "min_occupancy": occ,
             "max_occupancy": bracket_max,
             "price": round(vehicles_needed * price, 2),
-            "child_price": None,
-            "infant_price": None,
+            "child_price": (round(vehicles_needed * _safe_float(source_child_price), 2)
+                            if source_child_price is not None else None),
+            "infant_price": (round(vehicles_needed * _safe_float(source_infant_price), 2)
+                             if source_infant_price is not None else None),
         })
         occ = bracket_max + 1
     return extended
@@ -3653,7 +3734,7 @@ def build_transport_payloads(
         effective_end_date = existing_transport_snapshot.get("endDate") or extracted_transport_data.get("end_date") or ""
     else:
         effective_start_date = start_date_or_today(extracted_transport_data.get("start_date"))
-        effective_end_date = extracted_transport_data.get("end_date") or ""
+        effective_end_date = end_date_iso(extracted_transport_data.get("end_date"))
     # See _effective_images_for_update's docstring - the one field here that's an
     # exception to the preserve-on-update rule the rest of this block follows.
     effective_images = _effective_images_for_update(extracted_transport_data, existing_transport_snapshot)

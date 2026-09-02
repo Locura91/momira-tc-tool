@@ -374,7 +374,11 @@ def test_apply_updates_cancellation_ranges_and_description_only():
     assert supplier_id == "SUP-X"
     assert payload["cancellationRanges"] == [{"days": 14, "percentage": 50.0, "isBeforeStart": True}]
     new_description = payload["datasheets"]["EN"]["description"]
-    assert "50% cancellation fee if cancelled within 14 days of arrival" in new_description
+    # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): _cancellation_voucher_text's
+    # partial-refund wording used to say "within N days OF arrival" (the opposite condition from
+    # what the structured tier actually grants) - now says "less than N days BEFORE arrival",
+    # matching the free-cancellation branch's existing correct phrasing.
+    assert "50% cancellation fee if cancelled less than 14 days before arrival" in new_description
     assert "Free cancellation up to 30 days before arrival" not in new_description  # old text is gone
     assert "<p>Private transfer from the airport.</p>" in new_description  # unrelated paragraph kept
     # Everything else on the record is untouched.

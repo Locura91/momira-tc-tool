@@ -27,7 +27,7 @@ Usage:
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 import argparse
 import json
@@ -97,17 +97,58 @@ def get_price_list_interactively(default_currency: str = "EUR") -> list:
     return price_list
 
 
+_MIN_USEFUL_PAGE_CHARS = 200
+
+
 def get_page_text(target_url: str) -> str:
-    """Fetches a URL and returns clean, readable visible text for AI extraction."""
+    """Fetches a URL and returns clean, readable visible text for AI extraction.
+
+    CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): `soup.find("article")` returns
+    only the FIRST matching element. A common WordPress layout wraps every teaser card (related
+    posts, other listings) in its own <article>, with the real product content sitting entirely
+    OUTSIDE any of them - so this used to silently hand the model one unrelated teaser card
+    instead of the actual page content, with no signal downstream that anything had gone wrong.
+    Every <article> is now combined; if that combined text is implausibly short (a strong sign
+    the real content lives elsewhere - in <main>, or outside any <article>/<main> at all), the
+    fuller container is used instead."""
     response = requests.get(target_url, headers=_BROWSER_HEADERS, timeout=15)
     response.raise_for_status()
     soup = BeautifulSoup(response.content, "html.parser")
-    main_content = soup.find("article") or soup.find("main") or soup
 
-    for tag in main_content(["script", "style", "nav", "footer"]):
+    for tag in soup(["script", "style", "nav", "footer"]):
         tag.decompose()
 
-    return main_content.get_text(separator="\n", strip=True)
+    articles = soup.find_all("article")
+    if articles:
+        combined_text = "\n".join(a.get_text(separator="\n", strip=True) for a in articles)
+        if len(combined_text) >= _MIN_USEFUL_PAGE_CHARS:
+            return combined_text
+
+    main = soup.find("main")
+    if main is not None:
+        return main.get_text(separator="\n", strip=True)
+
+    return soup.get_text(separator="\n", strip=True)
+
+
+def short_page_text_warning(target_url: str, text: str):
+    """A plain-English warning when a fetched page yielded almost no readable text, else None -
+    the URL-fetch counterpart to document_reader.scanned_document_warning.
+
+    CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): a short/near-empty fetch used to
+    only ever be noted with a bare print() of the character count - invisible once this runs on
+    Streamlit Cloud, the same class of silent-failure this codebase has already fixed elsewhere
+    (see extract_images' errors-list pattern in document_reader.py). A JS-rendered page, a bot
+    wall that returns a near-empty shell, or the get_page_text article/main narrowing above
+    picking the wrong container can all produce a short result with no signal that anything went
+    wrong - detection/extraction then just quietly finds nothing."""
+    if len((text or "").strip()) >= _MIN_USEFUL_PAGE_CHARS:
+        return None
+    return (f"**The product page ({target_url}) returned almost no readable text** "
+            f"({len((text or '').strip())} characters). The page may require JavaScript to "
+            f"render, block automated fetching, or simply not contain the product content this "
+            f"tool looked for. If pricing/details are missing below, try uploading the page as a "
+            f"PDF or document instead.")
 
 
 def _first_image_src(img) -> str:

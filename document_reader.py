@@ -31,7 +31,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
@@ -253,6 +253,17 @@ def extract_text_from_docx(file_path: str) -> str:
 
 
 def extract_text_from_xlsx(file_path: str) -> str:
+    """Sheets, grid-preserving - the same span/ruler treatment extract_text_from_pdf and
+    extract_text_from_docx already give their tables.
+
+    CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): this used to just join each row's
+    cell values with " | ", with no awareness of merged cells at all - the exact left-to-right
+    guessing this module's own module docstring says the grid-preservation mechanism exists to
+    prevent. A merged season header spanning several columns came out as one value floating
+    above a row of blanks, with nothing telling the model which price columns it actually
+    covers - forcing it into exactly the left-to-right column counting the prompts explicitly
+    forbid. Excel rate sheets are common enough (Excel is the natural format for a tariff grid)
+    that this was a real, not theoretical, gap."""
     import openpyxl
 
     wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -260,10 +271,46 @@ def extract_text_from_xlsx(file_path: str) -> str:
 
     for sheet_name in wb.sheetnames:
         sheet = wb[sheet_name]
+
+        # Map every merged region so a season header spanning several columns becomes ONE cell
+        # covering those columns (matching _docx_row_spans/the PDF reader's span reconstruction),
+        # instead of being flattened into a repeated-or-blank run of individual cells.
+        merge_top_left = {}    # (row, col), 1-indexed -> (min_col, max_col) of its merge
+        merge_covered = set()  # every OTHER (row, col) inside a merged range, to skip entirely
+        for merged_range in sheet.merged_cells.ranges:
+            merge_top_left[(merged_range.min_row, merged_range.min_col)] = (
+                merged_range.min_col, merged_range.max_col)
+            for r in range(merged_range.min_row, merged_range.max_row + 1):
+                for c in range(merged_range.min_col, merged_range.max_col + 1):
+                    if (r, c) != (merged_range.min_row, merged_range.min_col):
+                        merge_covered.add((r, c))
+
+        rows = []
+        for row_cells in sheet.iter_rows():
+            spans = []
+            row_has_content = False
+            for cell in row_cells:
+                coord = (cell.row, cell.column)
+                if coord in merge_covered:
+                    continue
+                text = "" if cell.value is None else str(cell.value)
+                text = text.strip()
+                if text:
+                    row_has_content = True
+                start = end = cell.column - 1
+                if coord in merge_top_left:
+                    end = merge_top_left[coord][1] - 1
+                spans.append((text, start, end))
+            if row_has_content:
+                rows.append(spans)
+
+        if not rows:
+            continue
         parts.append(f"--- Sheet: {sheet_name} ---")
-        for row in sheet.iter_rows(values_only=True):
-            if any(cell is not None for cell in row):
-                parts.append(" | ".join(str(cell) if cell is not None else "" for cell in row))
+        # Each sheet is its own independent table, not a continuation of the previous one, so no
+        # previous_column_count/previous_paths are carried across sheets.
+        lines, _, _ = _render_grid(rows, f"SHEET {sheet_name}")
+        parts.extend(lines)
 
     return "\n".join(parts)
 
@@ -283,7 +330,13 @@ def scanned_document_warning(file_path: str, text: str):
 
     Cheap to detect, and impossible to diagnose from the symptoms - so it is said out loud."""
     if len((text or "").strip()) >= _MIN_USEFUL_CHARS:
-        return None
+        # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): this whole-document check
+        # passed silently for a real, verified failure mode - a cover page of genuine text
+        # (easily clearing 200 characters on its own) followed by pricing pages that are pure
+        # screenshots. The document as a whole looked "readable"; every page that actually
+        # mattered for pricing was blank. Per-page pages still need their own check even when
+        # the concatenated total is fine.
+        return _scanned_pages_warning(file_path, text)
     name = os.path.basename(file_path or "this file")
     extension = os.path.splitext(file_path or "")[1].lower()
     if extension == ".pdf":
@@ -295,6 +348,38 @@ def scanned_document_warning(file_path: str, text: str):
     return (f"**{name} contains almost no readable text** ({len((text or '').strip())} "
             f"characters). If the content is inside images, the app cannot read it - please "
             f"send the underlying table instead.")
+
+
+_MIN_USEFUL_CHARS_PER_PAGE = 40
+
+
+def _scanned_pages_warning(file_path: str, text: str):
+    """A plain-English warning naming specific near-blank PAGES, when the document as a whole
+    passed scanned_document_warning's total-length check but one or more individual pages did
+    not - e.g. a text cover page followed by screenshot pricing pages. Only meaningful for PDFs,
+    the only format extract_text_from_pdf marks with "--- Page N ---" per-page breaks; docx/xlsx
+    have no comparable per-page concept."""
+    extension = os.path.splitext(file_path or "")[1].lower()
+    if extension != ".pdf" or "--- Page " not in (text or ""):
+        return None
+    pages = (text or "").split("--- Page ")[1:]
+    blank_pages = []
+    for page_block in pages:
+        header, _, body = page_block.partition(" ---\n")
+        page_num = header.split(" ", 1)[0].strip()
+        if len(body.strip()) < _MIN_USEFUL_CHARS_PER_PAGE:
+            blank_pages.append(page_num)
+    if not blank_pages or len(blank_pages) == len(pages):
+        # All pages blank is already caught by the whole-document check above; only a genuine
+        # MIX (some fine, some blank) is new information this check adds.
+        return None
+    name = os.path.basename(file_path or "this file")
+    page_word = "page" if len(blank_pages) == 1 else "pages"
+    return (f"**{name}: {page_word} {', '.join(blank_pages)} contain almost no readable text**, "
+            f"even though the document as a whole does. Those pages are almost certainly a scan "
+            f"or a screenshot - if pricing lives there, it will come back blank. Please check "
+            f"those pages, or upload the original file rather than a photographed/screenshotted "
+            f"one.")
 
 
 def extract_raw_text(file_path: str) -> str:

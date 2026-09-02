@@ -115,7 +115,7 @@ from ui_components import (
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
-from web_extractor import get_page_text, get_page_image_bytes
+from web_extractor import get_page_text, get_page_image_bytes, short_page_text_warning
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 # CONFIRMED (product owner, 2026-08-22): switched from freeimage_client (free third-party
@@ -317,7 +317,15 @@ def _fetch_url_text_safe(url_val):
     failure - the error is phrased around "the product page URL" specifically.
     """
     try:
-        return get_page_text(url_val), None
+        text = get_page_text(url_val)
+        # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): a fetch that "succeeds" but
+        # returns almost no readable text used to have no visible signal at all - joins the same
+        # _scanned_doc_warnings list the document-upload path already surfaces on screen, rather
+        # than introducing a new return shape that would ripple into every call site.
+        _url_warning = short_page_text_warning(url_val, text)
+        if _url_warning:
+            st.session_state.setdefault("_scanned_doc_warnings", []).append(_url_warning)
+        return text, None
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403, 406, 429):
@@ -10641,7 +10649,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-medium-batch1-app-py"
+BUILD_VERSION = "2026-09-01-audit-medium-batch3-builder"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

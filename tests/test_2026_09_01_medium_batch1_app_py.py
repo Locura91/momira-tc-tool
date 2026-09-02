@@ -58,7 +58,7 @@ MODULE_BUILD are tested via direct import since those modules import cleanly sta
 """
 import os
 
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)

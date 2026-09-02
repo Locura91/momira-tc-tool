@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 _PHASE_KEY = "ti_phase"
 

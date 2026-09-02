@@ -33,7 +33,7 @@ memory of past uploads.
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-09-01-audit-medium-batch1-app-py"
+MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
 
 import re
 import unicodedata
