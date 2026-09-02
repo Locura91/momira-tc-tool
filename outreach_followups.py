@@ -46,7 +46,7 @@ import platform_store
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_email.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
 
 _NAMESPACE = "outreach_sends"
 

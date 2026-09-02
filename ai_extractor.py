@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
 
 import os
 import re
@@ -4434,13 +4434,42 @@ STOP SALES (blackout dates for a specific room).
 - min_children_age, max_children_age: CONFIRMED this API only supports ONE combined age range covering both
   infants and children together (not two separate bands). If the document gives a single explicit children age
   range, use it. If it gives no explicit range, default to 0 and 12.
+  CONFIRMED PRODUCT-OWNER RULE - MULTIPLE STATED SUB-BANDS: some documents split children into more than one
+  explicit age band (e.g. "Child" 2-10 plus "Infant" 0-1 stated separately, or "Child 1" 5-11 / "Child 2" 2-4 /
+  "Infant" 0-1) rather than giving one combined range. Since the API still only accepts ONE band, union every
+  explicitly stated child/infant sub-range together: min_children_age = the LOWEST of all the stated minimums,
+  max_children_age = the HIGHEST of all the stated maximums (e.g. Child 2-10 + Infant 0-1 -> 0 and 10; Child 1
+  5-11 + Child 2 2-4 + Infant 0-1 -> 0 and 11). This only applies when the document gives explicit numeric
+  sub-ranges to union - it does not change the "no explicit range at all -> default 0/12" rule above.
+  CONFIRMED PRODUCT-OWNER RULE - MULTIPLE SUB-BANDS PRICED DIFFERENTLY: when those sub-bands also carry
+  DIFFERENT prices for the same charge (e.g. a meal-plan child supplement that costs more for the older band
+  than the younger one, or is free for one band and charged for another), this affects every child_price/
+  child_value figure extracted anywhere in this document (meal plan child_prices, supplement child pricing,
+  offer child_value, room distribution_prices combos involving children) - always use the MORE EXPENSIVE of
+  the stated per-band prices for that charge, never the cheaper one and never an average. This is a deliberate
+  "safe side" choice: the single collapsed band can't represent two different prices, and undercharging a
+  family costs real margin on every booking, so the tool defaults to the higher figure everywhere a tiered
+  price has to be flattened into one.
 - minimum_stay, maximum_stay, release_days: hotel-level defaults for these, only if the document states hotel-
   wide values distinct from what's stated per-season below (per-season values take precedence there). Leave
   null if not stated at this level.
+  CONFIRMED PRODUCT-OWNER RULE - A RANGE INSTEAD OF ONE NUMBER: if the document states minimum_stay as a range
+  or an "either/or" (e.g. "a minimum stay of 3 nights or 4 nights is required, depending on flight schedule"),
+  always use the HIGHER of the stated numbers, not the lower one and not an average - this keeps every stay the
+  tool proposes genuinely bookable rather than risking a shorter stay that turns out not to be available. This
+  applies at every level minimum_stay can appear (hotel, rate, season) whenever the source states more than one
+  number for the same minimum-stay rule.
 - cancellation_policy_tiers: whenever the document states its OWN specific cancellation-fee schedule, extract
   EVERY tier as {"days": <the LOWER bound of days-before-arrival for this tier>, "fee_percentage": <the
   cancellation FEE percentage, exactly as stated - a fee/charge percentage, NOT a refund percentage>}. If the
   document states NO specific cancellation terms, return an EMPTY list - do not invent one.
+  CONFIRMED PRODUCT-OWNER RULE - DIFFERENT POLICIES PER ROOM CATEGORY: some documents state a DIFFERENT
+  cancellation schedule for different room categories within the same hotel (e.g. one schedule for "Villas",
+  a stricter one for "Residences"/"Presidential Villas"). Hotel has only ONE cancellation policy for the whole
+  record (no per-room-category field exists), so pick the ONE schedule that applies to the LARGEST number of
+  room categories in the document (by room-type count, not by which is listed first) and use only that one -
+  do not attempt to merge or average the different schedules. This is a deliberate simplification for now, not
+  a limitation to work around.
 - cancellation_policy_text: if cancellation_policy_tiers is non-empty, ALSO write the same policy as a short,
   clear, human-readable plain-text summary. Leave empty whenever cancellation_policy_tiers is empty. NOTE:
   Hotel has NO separate structured cancellation field on the record itself - this text is what customer/staff
@@ -4454,6 +4483,16 @@ occupancy table/grid states (e.g. a table with columns "1 Adult", "2 Adults", "2
 three distribution entries: {"adults":1,"children":0}, {"adults":2,"children":0}, {"adults":2,"children":1}).
 Do NOT invent combinations the document doesn't show pricing/availability for. type_id: always null - there is
 no known master-list reference for this field, never invent one.
+CONFIRMED PRODUCT-OWNER RULE - SHARED PHYSICAL UNITS (e.g. a villa that can be booked as "1 Bedroom", "2
+Bedroom", or "3 Bedroom" configurations, all drawn from the same physical villas): each distinct configuration
+the document names and prices is still its OWN independent "rooms" entry with its own room_prices/units_quota -
+Travel Compositor has no concept of "this room type shares inventory with that one," so do not merge them or
+invent a combined entry. When the document states a unit count for the physical villa/building but NOT
+separately for one of its sub-configurations, use the physical unit's own stated count for that sub-
+configuration's units_quota (e.g. "12 Villas total" and a "2-Bedroom configuration" of that same villa with no
+count of its own -> that configuration's units_quota is 12, since at most as many 2-Bedroom bookings can exist
+as there are physical villas) rather than defaulting to 20. Only fall back to the 20/0 default (see room_prices
+below) when NEITHER the sub-configuration NOR the physical unit it is drawn from states any count.
 
 === MEAL PLANS ===
 "meal_plans": one entry per DISTINCT meal plan the document prices as an add-on (do NOT create a "Room Only"
@@ -4505,6 +4544,15 @@ IMPORTANT - COMBINABLE OFFERS: if a document describes an offer combining MULTIP
 pay 2, valid for stays Oct 1-19, must book within 2 weeks of stay"), extract that as ONE offer entry using
 type="STAY_TO_PAY", stay=3, pay=2, travel_windows=[{Oct 1-19 dates}], booking_windows=[the 2-week booking
 deadline, computed relative to the travel window if the document gives it as a relative rule].
+CONFIRMED PRODUCT-OWNER RULE - PROMOTION COMBINATION WHITELISTS: some documents list several distinct
+promotions and then separately state which of them CAN or CANNOT be combined with each other (e.g. "Early
+Booking Discount can be combined with Long Stay Discount but not with Honeymoon Offer"). Extract EACH named
+promotion as its OWN separate offer entry, using only that promotion's own terms/value/conditions - do not
+merge combinable promotions into one entry. There is no structured field anywhere on an offer to record which
+OTHER offers it combines with (offers have no notes/description field, only "name"), so do not attempt to
+enforce or structurally encode the combination rule. Instead, fold the combination info into that offer's own
+"name" as short descriptive text so a human still sees it (e.g. "Early Booking Discount 10% (combinable with
+Long Stay Discount only)"). This is descriptive only, for a human to read - nothing downstream enforces it.
 
 === RATES, SEASONS, and ROOM PRICES ===
 "rates": Travel Compositor groups pricing under named "rate" containers (e.g. "Standard Rates", "Peak Season
@@ -4532,6 +4580,15 @@ hotel/contract itself:
   {"room_name": "" (must match a name from "rooms" above),
    "units_quota": <int> (how many rooms are allotted - if the document doesn't state a number, use 20),
    "units_on_request": <int> (how many additional rooms are available on-request only - if not stated, use 0),
+   CONFIRMED PRODUCT-OWNER RULE - ROOM CATEGORY SOLD ON REQUEST ONLY: when the document states that an entire
+   room category is available "on request"/"subject to availability at time of booking"/similarly (i.e. it has
+   NO guaranteed allotment at all, unlike a normal room that just happens to have some on-request units on TOP
+   of a quota), still extract that room type normally - do not drop it from "rooms" or leave it out of
+   room_prices. Instead set units_quota=0 (there is no guaranteed allotment) and units_on_request=<the real
+   count of on-request units, if the document states one; if the document says "on request" without ever
+   stating a number, use 1 and note in the top-level description that this figure was assumed, not stated>.
+   The room must still be added to the system so it can be sold/requested - it just carries no guaranteed
+   inventory.
    "distribution_prices": [{"adults": <int>, "children": <int>, "amount": <the ACTUAL FINAL price for exactly
      this adults+children combination, exactly as the document states it>}, ...],
    "base_price": 0.0, "adult_prices": [], "child_prices": []}
@@ -4539,6 +4596,20 @@ CRITICAL: extract distribution_prices LITERALLY, one entry per adults+children c
 actually prices - NEVER assume a formula or fixed increment between different occupancy combinations (real
 contracts have shown non-monotonic, irregular differences between brackets). Only use base_price/adult_prices/
 child_prices instead of distribution_prices when price_type is genuinely "PAX" for that season.
+CONFIRMED PRODUCT-OWNER RULE - BASE RATE PLUS PER-BEDROOM/PER-EXTRA-CAP SUPPLEMENT: some documents do NOT give a
+full occupancy grid at all - instead they give ONE flat rate for the room/villa at its base occupancy (e.g. "2
+Bedroom Villa: USD 1,200/night, based on 2 adults"), plus a SEPARATE flat supplement for each additional
+bedroom/occupant the same physical unit can hold (e.g. "+USD 300/night per additional bedroom used, up to 3
+bedrooms"). This is still price_type "DISTRIBUTION", not "PAX" - do not switch price_type just because the
+document expresses it this way. Compute the missing distribution_prices combos yourself by adding the base rate
+plus the applicable supplement(s), one combo per additional-bedroom/occupancy step the document allows (e.g.
+base 1,200 + one supplement of 300 = 1,500 for the 3-bedroom/next-occupancy combo, base 1,200 + two supplements
+of 300 = 1,800 for the 4-bedroom/next combo) - do NOT leave those combos unpriced just because no single line
+states the combined total. Only compute combos the document's own occupancy/bedroom limit actually allows; do
+not extend beyond the stated maximum. This is a straightforward addition of numbers the document itself states,
+not the kind of formula/increment guessing the CRITICAL rule above warns against - that rule is about NOT
+inventing an increment between brackets the document never ties together; this rule is about NOT leaving a
+combo unpriced when the document supplies both pieces needed to price it exactly.
 
 === STOP SALES ===
 "stop_sales" (within a rate): blackout date ranges for a specific room, if the document mentions any:

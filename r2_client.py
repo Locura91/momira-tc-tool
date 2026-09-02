@@ -71,7 +71,7 @@ import uuid
 import mimetypes
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old

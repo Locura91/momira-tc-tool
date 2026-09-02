@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
 
 _PHASE_KEY = "pkr_phase"
 
