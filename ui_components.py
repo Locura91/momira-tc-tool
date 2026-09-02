@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
+MODULE_BUILD = "2026-09-02-active-supplier-filter"
 
 import re
 import math
@@ -50,6 +50,25 @@ from ai_extractor import friendly_error_message
 SUPPLEMENT_COLUMNS = ["Name", "Price (per person)", "Single", "Double", "Triple", "Quadruple",
                       "Per Pax", "Mandatory", "On Request",
                       "Special Travel Start Date", "Special Travel End Date"]
+
+
+def is_active_supplier(supplier: dict) -> bool:
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-02): "For the select supplier, please only display
+    active suppliers. All supplier who are inactive do not show in the dropdown menu." Every
+    "Select Supplier" dropdown across the app (Ticket, ClosedTour, Transfer, Transport, Hotel,
+    Stop Sale) shares this one check via GET /suppliers' own 'active' field, instead of each of
+    the ~10 call sites re-deciding on its own what "inactive" means - the same
+    one-implementation-many-callers pattern this file already uses for
+    render_cancellation_policy_editor (see this module's own docstring above).
+
+    Travel Compositor's ContractSupplierVO uses the same 'active' boolean every other entity VO
+    in this codebase already carries (ClosedTour/Ticket/Transfer/Transport/Hotel all have their
+    own 'active: bool' field - see schemas.py). Defaults to True (shown) when the field is
+    missing from a supplier record entirely, rather than hiding every supplier the moment an
+    account's API response happens to omit it - a wrong default here should fail toward "an
+    inactive supplier is still visible" (same behavior as before this fix), never toward "the
+    dropdown is empty and nobody can publish anything"."""
+    return supplier.get("active") is not False
 
 
 def _safe_cell_str(value):

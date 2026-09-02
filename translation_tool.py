@@ -40,6 +40,7 @@ import streamlit as st
 from travelcompositor_api import TravelCompositorAPI as TranslationTCAPI
 from translator import get_translator, required_api_key_env_var
 from state_store import StateStore
+from ui_components import is_active_supplier
 
 from sync_holiday_package import sync_holiday_package, sync_all_holiday_packages
 from sync_ticket import (
@@ -90,12 +91,18 @@ def _fetch_translation_suppliers():
     Deliberately NOT filtered to 'Momira_' suppliers the way the Upload &
     Update tool filters them: we only ever CREATE products under our own
     supplier accounts, but we may well need to translate content that
-    already exists under any supplier."""
+    already exists under any supplier.
+
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-02): inactive suppliers are still excluded, same as
+    every other 'Select Supplier' dropdown in the app - see is_active_supplier()'s own
+    docstring in ui_components.py. Only the Momira_-only restriction is tool-specific; "don't
+    show inactive suppliers" is not."""
     try:
         api = TranslationTCAPI()
         suppliers = api.get_all_suppliers()
         if not suppliers:
             return []
+        suppliers = [s for s in suppliers if is_active_supplier(s)]
         suppliers_sorted = sorted(suppliers, key=lambda s: (s.get("commercialName") or "").lower())
         return [(s["id"], s.get("commercialName", f"Supplier {s['id']}")) for s in suppliers_sorted]
     except Exception as e:

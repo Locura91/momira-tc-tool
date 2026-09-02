@@ -111,7 +111,7 @@ from ui_components import (
     render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
-    render_child_discount_editor,
+    render_child_discount_editor, is_active_supplier,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
@@ -5012,7 +5012,7 @@ def render_ticket_flow(client):
             # any other supplier that happens to exist in the account.
             momira_suppliers = [
                 s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
@@ -6478,7 +6478,7 @@ def render_transfer_flow(client):
         if st.session_state.suppliers_cache:
             momira_suppliers = [
                 s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
@@ -7225,7 +7225,7 @@ def render_transport_flow(client):
         if st.session_state.suppliers_cache:
             momira_suppliers = [
                 s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
@@ -8142,7 +8142,7 @@ def render_hotel_flow(client):
         if st.session_state.suppliers_cache:
             momira_suppliers = [
                 s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
@@ -8948,7 +8948,7 @@ def render_manual_information_flow(client):
     supplier_id = None
     momira_suppliers = [
         s for s in (st.session_state.suppliers_cache or [])
-        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
     ]
     if momira_suppliers:
         options = {f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
@@ -9374,7 +9374,7 @@ def _ur_pick_momira_supplier(client, key_prefix):
 
     momira_suppliers = [
         s for s in st.session_state.suppliers_cache
-        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
     ]
     if not momira_suppliers:
         st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
@@ -10012,7 +10012,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
     momira = [x for x in (st.session_state.suppliers_cache or [])
-              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_")]
+              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
     supplier_id = None
     if momira:
         options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
@@ -10342,7 +10342,7 @@ def render_ticket_price_refresh_flow(client):
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
     momira = [x for x in (st.session_state.suppliers_cache or [])
-              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_")]
+              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
     supplier_id = None
     if momira:
         options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
@@ -10649,7 +10649,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-02-hotel-extraction-rules-1-9"
+BUILD_VERSION = "2026-09-02-active-supplier-filter"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -11193,7 +11193,7 @@ else:
         # any other supplier that happens to exist in the account.
         momira_suppliers = [
             s for s in st.session_state.suppliers_cache
-            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
         ]
         if not momira_suppliers:
             st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "

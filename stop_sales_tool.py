@@ -45,7 +45,7 @@ a warning before Apply.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-02-hotel-extraction-rules-1-9"
+MODULE_BUILD = "2026-09-02-active-supplier-filter"
 
 import json
 from typing import Any, Dict, List, Optional
@@ -57,6 +57,7 @@ import extraction_memory
 import platform_store
 import stop_sales_parser as ssp
 from ai_extractor import friendly_error_message
+from ui_components import is_active_supplier
 
 _NS_PROCESSED = "processed_stop_sales"
 _NS_SENDER_SUPPLIER = "stop_sale_sender_supplier"
@@ -394,7 +395,7 @@ def render_stop_sales_tool(client) -> None:
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.ss_suppliers = []
     momira = [s for s in (_get("ss_suppliers") or [])
-              if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")]
+              if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)]
     supplier_id = None
     # CONFIRMED RULE (product owner, 2026-08-16): "Stop sale will come from a specific mail,
     # which must be the first time matched to an existing supplier from our system." The FIRST
