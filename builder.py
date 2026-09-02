@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-high-support-modules"
+MODULE_BUILD = "2026-09-01-audit-high-leftover-findings"
 
 import math
 import datetime
@@ -3788,6 +3788,12 @@ def build_transport_payloads(
             "max_occupancy": max_occ,
             "option_payload": option_payload,
             "option_error": option_error,
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the house-pattern name
+            # BEFORE any human override is applied - see the comparison note where this is read
+            # in app.py's modality-names editor. Needed because option_payload's own translated
+            # name already has the override baked in when one is set, so comparing against IT
+            # made a saved override look "unchanged" on the very next build and get dropped.
+            "auto_generated_name": f"{_class} - {bracket_label} - Door to Door ({_guide})",
         })
 
     if transport_payload is not None:
@@ -4226,6 +4232,26 @@ def _build_offer_or_supplement_common_kwargs(item_data, apply_default="LODGING")
     )
 
 
+def _hotel_offer_supplement_value_changed_error(kind_label, name, item_data, existing_match):
+    """Shared helper for build_hotel_offer_payloads/build_hotel_supplement_payloads - see the
+    CONFIRMED BUG FIX note at each call site. Returns a human-readable error string when the
+    document's own value/childValue differs from what's already live under the same name, or
+    None when they match (a genuine no-op skip, nothing to flag)."""
+    extracted_value = _safe_float((item_data or {}).get("value", 0))
+    existing_value = _safe_float((existing_match or {}).get("value", 0))
+    extracted_child_value = _safe_float((item_data or {}).get("child_value", 0))
+    existing_child_value = _safe_float((existing_match or {}).get("childValue", 0))
+    if round(extracted_value, 2) == round(existing_value, 2) and \
+            round(extracted_child_value, 2) == round(existing_child_value, 2):
+        return None
+    return (
+        f"{kind_label} '{name or '(unnamed)'}' already exists (matched by name) with a DIFFERENT "
+        f"value than this document states - live: {existing_value} (child: {existing_child_value}), "
+        f"document: {extracted_value} (child: {extracted_child_value}). There's no update endpoint "
+        f"for {kind_label.lower()}s, so this was NOT changed - go update it by hand in Travel "
+        f"Compositor if the document's new value is correct.")
+
+
 def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None):
     """
     PHASE 2 (offers). Builds one ContractHotelOffersVO payload per extracted offer, ready for
@@ -4240,6 +4266,7 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
 
     Returns a list of {"offer_payload": dict|None, "offer_error": str|None,
                         "action": "create"|"skip_duplicate", "matched_provider_code": str|None}.
+    A skip_duplicate result can still carry an offer_error - see the value-changed check below.
     """
     existing_offers = (existing_hotel_snapshot or {}).get("offers") or []
     results = []
@@ -4247,7 +4274,17 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
         offer_name = (offer_data or {}).get("name")
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(offer_name, existing_offers)
         if existing_match:
-            results.append({"offer_payload": None, "offer_error": None, "action": "skip_duplicate",
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a name match used to be
+            # skipped unconditionally and silently - correct when it's genuinely the same offer,
+            # but there's still no update endpoint for offers (see this function's docstring), so
+            # if the document's own VALUE actually changed (a renegotiated rate), that change
+            # went nowhere and the publish screen reported "published in full" with no hint the
+            # new value never made it live. Flagged as an offer_error (not a hard block - the
+            # skip itself is still correct, since there's nothing to PUT it to) so the caller's
+            # failure list surfaces it instead of staying silent.
+            value_changed_error = _hotel_offer_supplement_value_changed_error(
+                "Offer", offer_name, offer_data, existing_match)
+            results.append({"offer_payload": None, "offer_error": value_changed_error, "action": "skip_duplicate",
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
 
@@ -4282,7 +4319,12 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
         supp_name = (supp_data or {}).get("name")
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(supp_name, existing_supplements)
         if existing_match:
-            results.append({"supplement_payload": None, "supplement_error": None, "action": "skip_duplicate",
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching fix in
+            # build_hotel_offer_payloads - same silent-skip-on-value-change problem, same lack
+            # of an update endpoint, same need to surface it instead of reporting a full success.
+            value_changed_error = _hotel_offer_supplement_value_changed_error(
+                "Supplement", supp_name, supp_data, existing_match)
+            results.append({"supplement_payload": None, "supplement_error": value_changed_error, "action": "skip_duplicate",
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
 
@@ -4348,7 +4390,7 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
     A season's room-price entry for a room with no resolvable providerCode is skipped (not sent)
     rather than submitting a rate that references a room Travel Compositor won't recognize.
 
-    Returns a list of {"rate_payload": dict|None, "rate_error": str|None,
+    Returns a list of {"rate_payload": dict|None, "rate_error": str|None, "rate_name": str,
                         "action": "create"|"update", "matched_rate_id": int|None,
                         "season_actions": [{"season_name", "action", "matched_season_id"}]}.
     """
@@ -4513,6 +4555,12 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
         results.append({
             "rate_payload": rate_payload,
             "rate_error": rate_error,
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): rate_name is now always
+            # present (even when rate_payload is None because the build failed) - the caller
+            # used to reach into rate_payload for the name to report a build failure, and
+            # rate_payload is None on exactly the failure path that needs a name, raising
+            # 'NoneType' object has no attribute 'get' instead of showing which rate broke.
+            "rate_name": rate_name,
             "action": "update" if existing_rate else "create",
             "matched_rate_id": (existing_rate or {}).get("id"),
             "season_actions": season_actions,

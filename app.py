@@ -7649,11 +7649,23 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                     _key = f"{_a.get('min_occupancy')}-{_a.get('max_occupancy')}"
                     _suggested = ((_a.get("option_payload") or {}).get("translations") or {}) \
                         .get("EN", {}).get("name", "")
+                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): compare the typed
+                    # text against the STABLE house-pattern name (auto_generated_name), not
+                    # against `_suggested` above - `_suggested` is read from option_payload,
+                    # which already has any saved override baked into it by builder.py. Comparing
+                    # against the post-override name meant: type an override -> saved (differs
+                    # from the OLD suggestion) -> next build bakes it in -> now "differs" is
+                    # False -> override gets popped -> next build reverts to the auto name ->
+                    # "differs" is True again -> override gets re-added. The custom name only
+                    # ended up live on whichever parity a given Publish click happened to land
+                    # on. auto_generated_name never changes just because an override was applied,
+                    # so this comparison is stable.
+                    _auto = _a.get("auto_generated_name") or _suggested
                     _typed = st.text_input(
                         f"{_key} pax  ·  code `{_a.get('code')}`",
                         value=data["modality_names"].get(_key, _suggested),
                         key=f"xtp_modname_{idx}_{_key}")
-                    if _typed.strip() and _typed.strip() != _suggested:
+                    if _typed.strip() and _typed.strip() != _auto:
                         data["modality_names"][_key] = _typed.strip()
                     else:
                         data["modality_names"].pop(_key, None)
@@ -8583,6 +8595,12 @@ def render_hotel_flow(client):
                     name = offer_data.get("name")
                     if res["action"] == "skip_duplicate":
                         offer_map[name] = res.get("matched_provider_code")
+                        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a skipped
+                        # duplicate can now carry offer_error when the document's value changed
+                        # (see build_hotel_offer_payloads) - surface it instead of silently
+                        # treating the skip as a no-op success.
+                        if res.get("offer_error"):
+                            offer_failures.append((name, res.get("offer_error")))
                         continue
                     if res.get("offer_error") or not res.get("offer_payload"):
                         offer_failures.append((name, res.get("offer_error")))
@@ -8603,6 +8621,10 @@ def render_hotel_flow(client):
                     name = supp_data.get("name")
                     if res["action"] == "skip_duplicate":
                         supplement_map[name] = res.get("matched_provider_code")
+                        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching
+                        # fix for offers above.
+                        if res.get("supplement_error"):
+                            supp_failures.append((name, res.get("supplement_error")))
                         continue
                     if res.get("supplement_error") or not res.get("supplement_payload"):
                         supp_failures.append((name, res.get("supplement_error")))
@@ -8620,7 +8642,15 @@ def render_hotel_flow(client):
             with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
                 for res in rate_results:
                     if res.get("rate_error") or not res.get("rate_payload"):
-                        rate_failures.append((res.get("rate_payload", {}).get("name"), res.get("rate_error")))
+                        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to read
+                        # res.get("rate_payload", {}).get("name") - rate_payload is present but
+                        # set to None on exactly the failure path being handled here, and
+                        # dict.get(key, default) only falls back to `default` when the KEY is
+                        # absent, not when its value is None, so this raised an unhandled
+                        # 'NoneType' object has no attribute 'get' AFTER rooms/offers/supplements
+                        # were already published, with no name for the offending rate. Use the
+                        # dedicated rate_name field (always present) instead.
+                        rate_failures.append((res.get("rate_name"), res.get("rate_error")))
                         continue
                     if res["action"] == "update":
                         resp = client.update_hotel_rates(supplier_id, provider_code, res["rate_payload"])
@@ -8645,7 +8675,16 @@ def render_hotel_flow(client):
                     _clear_batch_widget_state(["hp_"] + SHARED_WIDGET_STATE_PREFIXES)
                     st.rerun()
         except Exception as e:
-            show_publish_error(f"publish hotel **{provider_code}**", str(e))
+            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): an exception anywhere in
+            # Phase 2 (offers/supplements/rates) used to show the exact same generic "couldn't
+            # publish hotel" message as a Phase-1 failure - but by the time Phase 2 can even run,
+            # the contract/rooms/meal plans (and possibly some offers/supplements/rates) are
+            # ALREADY live. Say so, so the operator doesn't assume nothing happened and re-run
+            # from scratch expecting a clean slate.
+            show_publish_error(
+                f"finish publishing hotel **{provider_code}** — note: the contract, rooms and "
+                f"meal plans (Phase 1 above) may already be live even though this failed",
+                str(e))
 
 
 # ======================================================================
@@ -9788,7 +9827,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         price_refresh.build_proposals(routes, findings))
                     st.session_state.pr_raw_text = raw_text
                     st.session_state.pop("pr_result", None)
-        st.rerun()
+                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this st.rerun() used
+                    # to sit unconditionally after the whole button block, at the same indent as
+                    # the "no document"/"couldn't read supplier's X/no X yet" branches above - so
+                    # it fired even when nothing new was read, instantly wiping whichever
+                    # st.error/st.warning had just been shown and leaving the PREVIOUS rate
+                    # sheet's proposals on screen with no indication anything failed, looking
+                    # exactly like a fresh successful read. Moved inside the one branch that
+                    # actually produced a new result, so a failed read's error message stays on
+                    # screen instead of being rerun away.
+                    st.rerun()
 
     proposals = st.session_state.get("pr_proposals")
     if not proposals:
@@ -10108,7 +10156,13 @@ def render_ticket_price_refresh_flow(client):
                         price_refresh.build_ticket_proposals(routes, findings))
                     st.session_state.tpr_raw_text = raw_text
                     st.session_state.pop("tpr_result", None)
-        st.rerun()
+                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching fix
+                    # in render_price_refresh_flow (Transfer/Transport) - this st.rerun() used to
+                    # fire unconditionally after every branch, wiping the "no document"/"couldn't
+                    # read"/"no Tickets yet" error or warning before the operator could read it
+                    # and leaving the previous rate sheet's proposals on screen looking fresh.
+                    # Moved inside the one branch that actually produced a new result.
+                    st.rerun()
 
     proposals = st.session_state.get("tpr_proposals")
     if not proposals:
@@ -10344,7 +10398,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-01-audit-high-support-modules"
+BUILD_VERSION = "2026-09-01-audit-high-leftover-findings"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -10830,6 +10884,10 @@ if st.session_state.step1_confirmed:
     if st.button("🔄 Change action / supplier"):
         st.session_state.step1_confirmed = False
         st.session_state.step2_confirmed = False
+        # The Existing Tour Code box now persists via a stable widget key (see the
+        # CONFIRMED BUG FIX note where it's rendered) so its typed text survives reruns -
+        # correct within one action/supplier, but it must NOT leak into a different one.
+        st.session_state.pop("ct_existing_tour_code_in", None)
         st.rerun()
 else:
     action_key = st.radio(
@@ -10921,10 +10979,25 @@ else:
     release_days_in = 30
 
     if "existing_tour_code" in needed:
-        prefill = st.session_state.pop("prefill_existing_tour_code", "")
+        # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this widget used to be a one-shot
+        # `value=prefill` with NO `key=` - Streamlit only honors `value=` on a widget's very
+        # first render, so the moment the mandatory "Check what's already online" button below
+        # is clicked, the rerun it triggers pops the prefill to "" (already consumed on the
+        # PREVIOUS render), the widget re-renders empty with nothing to preserve the typed/
+        # prefilled text (no key = no persisted state), `existing_tour_code_in` becomes "", and
+        # the button - now `disabled=not existing_tour_code_in` - goes disabled on that same
+        # rerun. The first click always silently no-oped. Fixed by giving the widget a stable
+        # `key` (so Streamlit persists whatever's typed across reruns) and only using the
+        # prefill to SEED that key once, the one time something else (a "recheck this code"
+        # shortcut elsewhere) actually sets it - never on every render.
+        _ct_code_key = "ct_existing_tour_code_in"
+        if "prefill_existing_tour_code" in st.session_state:
+            _prefill = st.session_state.pop("prefill_existing_tour_code")
+            if _prefill:
+                st.session_state[_ct_code_key] = _prefill
         existing_tour_code_in = st.text_input(
             "Existing Tour Code",
-            value=prefill,
+            key=_ct_code_key,
             placeholder="e.g. BKK-1 (your own ClosedTour/Provider Code) or CLOSEDTOUR-411099",
         ).strip()
         st.caption(
@@ -11359,113 +11432,78 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
 
 if st.session_state.get("pending_variants") and not is_option_only:
     variants = st.session_state.pending_variants
-    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one(s) do you want to add?")
-    st.caption("Tick just one to continue in the normal single-tour flow below, or tick several to create "
-              "them all as separate ClosedTours in one batch (you'll assign each its own Code next).")
+    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to use?")
+    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was a "tick several to create them all
+    # as a batch" option here): this block is only ever reached for action == "update_tour" -
+    # "create" always routes through render_multi_tour_flow above and st.stop()s first, so the
+    # "batch review" path below was UNREACHABLE dead code for its only sensible use case, and
+    # made no sense for update_tour anyway (you're updating ONE existing tour, not creating
+    # several new ones). Ticking multiple variants and clicking through used to write to
+    # mct_queue/mct_queue_index and set mct_phase="reviewing" - a phase render_multi_tour_flow's
+    # own dispatcher (see its docstring, phase list starting at app.py:667) never handles, so the
+    # whole Create-ClosedTour screen rendered blank until "Switch tool" reset the state. Fixed by
+    # only ever allowing ONE variant to be picked here - the working single-tour path below.
+    st.caption("Only one variant can be selected here (this picker is for choosing which "
+              "variant to extract, not for batch-creating several tours).")
 
     if "pending_variant_selection" not in st.session_state:
         st.session_state.pending_variant_selection = [
-            {"label": v.get("label", f"Variant {i+1}"), "nights": v.get("nights"), "selected": False,
-             "tour_code": "", "modality_code": "Standard"}
+            {"label": v.get("label", f"Variant {i+1}"), "nights": v.get("nights"), "selected": False}
             for i, v in enumerate(variants)
         ]
     pv_selection = st.session_state.pending_variant_selection
 
     for i, sel in enumerate(pv_selection):
         nights_note = f" ({sel['nights']} nights)" if sel.get("nights") else ""
-        sel["selected"] = st.checkbox(f"{sel['label']}{nights_note}", value=sel["selected"], key=f"pv_sel_{i}")
+        newly_checked = st.checkbox(f"{sel['label']}{nights_note}", value=sel["selected"], key=f"pv_sel_{i}")
+        if newly_checked and not sel["selected"]:
+            # Enforce single-select: checking one unchecks every other (a real radio button
+            # would be cleaner, but this preserves each variant's own widget key/state).
+            for other in pv_selection:
+                other["selected"] = False
+        sel["selected"] = newly_checked
 
     pv_num_selected = sum(1 for s in pv_selection if s["selected"])
-
     if pv_num_selected > 1:
-        st.caption("Multiple selected - each needs its own ClosedTour/Provider Code and Modality Code:")
-        for i, sel in enumerate(pv_selection):
-            if not sel["selected"]:
-                continue
-            pvcol1, pvcol2 = st.columns(2)
-            with pvcol1:
-                sel["tour_code"] = st.text_input(f"ClosedTour/Provider Code — {sel['label']}", value=sel["tour_code"], key=f"pv_code_{i}", placeholder="e.g. BKK-1")
-            with pvcol2:
-                sel["modality_code"] = st.text_input(f"Modality Code — {sel['label']}", value=sel["modality_code"], key=f"pv_modcode_{i}")
+        # Guards the one release-to-release gap where two boxes can appear checked in the same
+        # run (the uncheck above only takes effect next rerun) - never publish against that.
+        st.error("🚫 Please tick only one variant.")
 
-    pv_btn_label = "✅ Confirm and Extract Full Details" if pv_num_selected <= 1 else f"✅ Confirm and Start Batch Review ({pv_num_selected} tours)"
-    if st.button(pv_btn_label, disabled=pv_num_selected == 0):
-        if pv_num_selected <= 1:
-            with st.spinner("Extracting full details for the selected variant..."):
-                try:
-                    chosen = next(s for s in pv_selection if s["selected"])
-                    chosen_label = chosen["label"]
-                    data = extract_structured_data(
-                        st.session_state.pending_raw_text, variant_hint=chosen_label,
-                        human_hint=st.session_state.get("pending_hint")
-                    )
+    if st.button("✅ Confirm and Extract Full Details", disabled=pv_num_selected != 1):
+        with st.spinner("Extracting full details for the selected variant..."):
+            try:
+                chosen = next(s for s in pv_selection if s["selected"])
+                chosen_label = chosen["label"]
+                data = extract_structured_data(
+                    st.session_state.pending_raw_text, variant_hint=chosen_label,
+                    human_hint=st.session_state.get("pending_hint")
+                )
 
-                    pending_url = st.session_state.get("pending_url")
-                    data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
-                    preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
-                    if action == "update_tour":
-                        data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
-
-                    st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
-                        data, supplier_id, "ClosedTour")
-                    st.session_state.extracted = data
-                    reset_child_age_band_widgets("ct")
-                    st.session_state.images_text_value = ""
-                    st.session_state.raw_preview = preview
-                    st.session_state.payloads = None
-                    pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
-                    pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
-                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls))
-                    st.session_state.doc_raw_images = pending_doc_raw_images
-                    st.session_state.hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
-                    st.session_state.pending_variants = None
-                    st.session_state.pending_raw_text = None
-                    st.session_state.pending_url = None
-                    st.session_state.pending_variant_selection = None
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Extraction failed: {friendly_error_message(e)}")
-        else:
-            pv_missing = [s["label"] for s in pv_selection if s["selected"] and (not s["tour_code"].strip() or not s["modality_code"].strip())]
-            pv_codes_seen = {}
-            for s in pv_selection:
-                if s["selected"] and s["tour_code"].strip():
-                    pv_codes_seen.setdefault(s["tour_code"].strip(), []).append(s["label"])
-            pv_dupes = {c: labs for c, labs in pv_codes_seen.items() if len(labs) > 1}
-            pv_existing = []
-            for s in pv_selection:
-                if s["selected"] and s["tour_code"].strip():
-                    existing_check = check_code_availability(client, "tour", supplier_id, s["tour_code"])
-                    if existing_check and existing_check["exists"]:
-                        pv_existing.append(s["tour_code"].strip())
-            if pv_missing:
-                st.error(f"🚫 These selected variants are missing a ClosedTour Code or Modality Code: {pv_missing}")
-            elif pv_dupes:
-                st.error(f"🚫 These ClosedTour Codes are used by more than one selected variant: {list(pv_dupes.keys())}")
-            elif pv_existing:
-                st.error(f"🚫 These ClosedTour Codes are ALREADY TAKEN by existing tours - choose different "
-                        f"ones: {pv_existing}")
-            else:
                 pending_url = st.session_state.get("pending_url")
-                new_mct_queue = [
-                    {"label": s["label"], "tour_code": s["tour_code"].strip(), "modality_code": s["modality_code"].strip(),
-                     "data": None, "confirmed": False}
-                    for s in pv_selection if s["selected"]
-                ]
-                st.session_state.mct_raw_text = st.session_state.pending_raw_text
-                mct_pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
-                mct_pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
-                _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, mct_pending_doc_raw_images, mct_pending_doc_image_urls))
-                st.session_state.mct_doc_raw_images = mct_pending_doc_raw_images
-                st.session_state.mct_hosted_image_candidates = list(dict.fromkeys(mct_pending_doc_image_urls))
-                st.session_state.mct_queue = new_mct_queue
-                st.session_state.mct_queue_index = 0
-                st.session_state.mct_phase = "reviewing"
+                data["image_urls"] = [FALLBACK_IMAGE]  # safe default - human picks below, this only stays if nothing gets chosen
+                preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
+                if action == "update_tour":
+                    data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+
+                st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                    data, supplier_id, "ClosedTour")
+                st.session_state.extracted = data
+                reset_child_age_band_widgets("ct")
+                st.session_state.images_text_value = ""
+                st.session_state.raw_preview = preview
+                st.session_state.payloads = None
+                pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
+                pending_doc_image_urls = list(st.session_state.get("pending_doc_images", []))
+                _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls))
+                st.session_state.doc_raw_images = pending_doc_raw_images
+                st.session_state.hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
                 st.session_state.pending_url = None
                 st.session_state.pending_variant_selection = None
                 st.rerun()
+            except Exception as e:
+                st.error(f"Extraction failed: {friendly_error_message(e)}")
 
 
 # ----------------------------------------------------------------------
