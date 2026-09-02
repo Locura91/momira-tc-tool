@@ -51,10 +51,11 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -460,6 +461,60 @@ def _configured_provider_chain() -> List[str]:
     return [name for name, env_key in _PROVIDER_ENV_KEYS if os.getenv(env_key)]
 
 
+# CONFIRMED (full-app audit MED-HIGH, 2026-09-02): the fallback chain above re-tries every
+# configured provider from scratch on EVERY query, with no memory of a provider that already
+# confirmed itself dead (429/quota-exhausted) earlier in the SAME run. A dead primary provider
+# still got hit on every one of ~4 queries x N combinations - on a 40-combination Country Scope
+# run, that's up to 160 wasted calls to a provider already known to be exhausted, which can burn
+# a middle-of-the-chain provider's (e.g. SerpAPI's) entire monthly free-tier quota on nothing but
+# retries of a call that was never going to succeed. This is NOT the pacing-sleep change that was
+# tried and reverted the same day this fallback chain was built (see _select_and_run_provider's
+# own docstring) - it adds no delay and makes a run FASTER, not slower: once a provider is
+# confirmed rate-limited/quota-exhausted, later queries in this same run skip straight past it to
+# the next provider in the chain instead of paying for (and waiting on) a call already known to
+# fail. A provider failing for any OTHER reason (bad key, network blip, a genuine 4xx unrelated
+# to quota) is NOT tripped here - it keeps being tried on every call, same as before, so those
+# failure modes keep surfacing accurately rather than being silently forgiven after one hit.
+_PROVIDER_CIRCUIT_BREAKER: Dict[str, float] = {}  # provider name -> time.time() it tripped
+_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 3600  # long enough to stop re-hitting a dead provider for
+                                           # the rest of a same-session run; short enough that a
+                                           # genuinely transient rate limit (not a plan-level
+                                           # exhaustion) can be tried again later the same day
+
+
+def _is_rate_limit_or_quota_error(exc: Exception) -> bool:
+    """True only for the specific "this provider is out of quota / rate-limited right now"
+    failure shape (429, or a body naming RESOURCE_EXHAUSTED/rate limit/usage limit - see
+    _raise_for_status_with_body and this module's own confirmed-incident comments above for the
+    real error text these providers actually send) - never for a generic exception, so a bad key
+    or an unrelated 4xx keeps failing loudly on every call instead of being mistaken for a
+    quota trip and silently skipped."""
+    text = str(exc)
+    lowered = text.lower()
+    return ("429" in text or "resource_exhausted" in lowered or "rate limit" in lowered
+            or "rate-limit" in lowered or "usage limit" in lowered or "quota" in lowered)
+
+
+def _circuit_is_open(name: str) -> bool:
+    tripped_at = _PROVIDER_CIRCUIT_BREAKER.get(name)
+    if tripped_at is None:
+        return False
+    if (time.time() - tripped_at) >= _CIRCUIT_BREAKER_COOLDOWN_SECONDS:
+        _PROVIDER_CIRCUIT_BREAKER.pop(name, None)  # cooldown elapsed - eligible again
+        return False
+    return True
+
+
+def _trip_circuit_breaker(name: str) -> None:
+    _PROVIDER_CIRCUIT_BREAKER[name] = time.time()
+
+
+def reset_circuit_breakers() -> None:
+    """Test/diagnostic hook - clears every tripped breaker so a fresh run/test isn't affected by
+    a previous one's state."""
+    _PROVIDER_CIRCUIT_BREAKER.clear()
+
+
 def _select_and_run_provider(source: str, query: str, country: str, keyword: str,
                              domains: List[str], max_results: int) -> List[Dict[str, Any]]:
     """The actual provider dispatch, shared by run_provider_search and its diagnostics-
@@ -526,9 +581,18 @@ def _select_and_run_provider(source: str, query: str, country: str, keyword: str
 
     last_error: Optional[Exception] = None
     for name in chain:
+        if _circuit_is_open(name):
+            # Already confirmed rate-limited/quota-exhausted earlier this run - don't pay for
+            # (or wait on) another call known to fail; go straight to the next provider.
+            last_error = last_error or RuntimeError(
+                f"{name} is skipped this run - a rate-limit/quota error tripped its breaker "
+                f"earlier and the cooldown hasn't elapsed yet")
+            continue
         try:
             return _call_with_transient_retry(name)
         except Exception as e:
+            if _is_rate_limit_or_quota_error(e):
+                _trip_circuit_breaker(name)
             last_error = e
     raise last_error
 
@@ -1065,11 +1129,60 @@ def normalize_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
 
 
+def _distinct_host(url_a: Optional[str], url_b: Optional[str]) -> bool:
+    """True when both URLs are present and point at genuinely different hosts - used for a
+    website/listing candidate, where two different pages on the SAME site (a homepage vs an
+    "/about" page) are still the same business - see dedupe_candidates' own comment. For a
+    social-profile URL, use _distinct_social_profile instead (see its docstring for why host
+    alone is the wrong comparison there)."""
+    if not url_a or not url_b:
+        return False
+    host_a, host_b = _hostname(url_a), _hostname(url_b)
+    return bool(host_a) and bool(host_b) and host_a != host_b
+
+
+def _distinct_social_profile(url_a: Optional[str], url_b: Optional[str]) -> bool:
+    """True when both URLs are present and refer to genuinely different social profiles - used
+    for Instagram/Facebook, where every profile shares the SAME host (instagram.com) and the
+    profile identity lives entirely in the path (instagram.com/citytoursA vs
+    instagram.com/citytoursB are different businesses, not a host difference the way two
+    different websites would be). Compares the full normalized reference (host + path) rather
+    than just the host."""
+    if not url_a or not url_b:
+        return False
+    key_a, key_b = normalize_url_key(url_a), normalize_url_key(url_b)
+    return bool(key_a) and bool(key_b) and key_a != key_b
+
+
 def dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     by_name: Dict[str, Dict[str, Any]] = {}
     for c in candidates:
         key = normalize_name(c.get("name") or "")
         url = c.get("sourceUrl") or ""
+
+        # CONFIRMED BUG FIX (full-app audit MED plausible, 2026-09-02): merging purely on
+        # normalized name silently attached one business's Instagram/Facebook/website (and its
+        # rating) onto a DIFFERENT business that just happens to share, or normalize to, the
+        # same name - a real risk for generic names ("City Tours", "Desert Adventures"). The
+        # attached channel could then outrank a correct website email found elsewhere for the
+        # (wrong) merged record. When the incoming candidate's own contact channel genuinely
+        # conflicts with what's already recorded under this name - a DIFFERENT host, not the
+        # same profile resurfacing from a second query/source - that's the strongest signal
+        # available that these are two separate real businesses, so the candidate is kept as
+        # its own separate entry instead of overwriting or being silently absorbed into the
+        # first one's contact info.
+        existing = by_name.get(key)
+        if existing is not None:
+            conflict = (
+                (is_instagram_url(url) and _distinct_social_profile(url, existing.get("instagramUrl")))
+                or (is_facebook_url(url) and _distinct_social_profile(url, existing.get("facebookUrl")))
+                or (not is_instagram_url(url) and not is_facebook_url(url)
+                    and not is_aggregator_url(url)
+                    and _distinct_host(url, existing.get("websiteCandidate")))
+            )
+            if conflict:
+                key = f"{key}::distinct::{_hostname(url) or url}"
+
         if key not in by_name:
             # The original had a bug here where instagramUrl/facebookUrl/
             # websiteCandidate were only attached when a SECOND matching candidate
@@ -1483,7 +1596,15 @@ def to_supplier_record(candidate: Dict[str, Any], country: str, keyword: str) ->
         # when a real email address was actually found. A website or social link alone isn't
         # enough to send anything - ticking those too just meant unticking them by hand on
         # every run, since they can't be emailed without an address being added first.
-        "selected": bool(candidate.get("email")),
+        #
+        # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): that rule didn't account for a
+        # MOCK candidate - _search_with_mock_provider fabricates a plausible-looking
+        # "info@{slug}.com" for every demo row (see its own docstring), which satisfied
+        # bool(candidate.get("email")) exactly like a real one and pre-ticked fabricated
+        # suppliers for sending. One click on the review screen's "Send" button would have
+        # emailed an address that was never real. Mock candidates are never pre-ticked now,
+        # regardless of whether they carry a (fabricated) email.
+        "selected": bool(candidate.get("email")) and not bool(candidate.get("isMock")),
         "isMock": bool(candidate.get("isMock")),
     }
 
@@ -1508,7 +1629,12 @@ def normalize_url_key(url: Optional[str]) -> Optional[str]:
     if not host:
         return url.strip().lower()
     path = re.sub(r"/+$", "", _pathname(url)).lower()
-    return f"{re.sub(r'^www.', '', host)}{path}"
+    # CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): the "." in "www." was unescaped, so
+    # this matched "www" plus ANY single character, not just a literal dot - a host genuinely
+    # starting "wwwX..." (rare, but not impossible) would have four characters wrongly stripped
+    # instead of none, causing a false dedupe collision with an unrelated host. Escaped now.
+    stripped_host = re.sub(r"^www\.", "", host)
+    return f"{stripped_host}{path}"
 
 
 def merge_supplier_records(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
@@ -1992,7 +2118,17 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
             "ai_dropped": ai_dropped,
             "no_contact_dropped": no_contact_dropped,
             "final": len(suppliers),
-            "used_mock_provider": not (os.getenv("TAVILY_API_KEY") or os.getenv("SERPAPI_API_KEY")),
+            # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): this check used to ignore
+            # GEMINI_API_KEY entirely - a real Gemini-only run (a legitimate configuration, see
+            # _select_and_run_provider's own docstring on Gemini being usable as the sole
+            # provider) got mislabeled "these are mock results, don't email them" despite every
+            # candidate being genuinely found, and the reverse gap existed too: with none of the
+            # three keys set, this was the only sanity check standing between a real send and a
+            # batch of fabricated addresses, so it must recognize every provider the chain
+            # actually supports, not just the first two historically added. Uses
+            # _configured_provider_chain() - the single source of truth for which providers are
+            # actually configured - instead of re-listing keys here a second time.
+            "used_mock_provider": not _configured_provider_chain(),
             "provider_error_count": len(provider_errors),
             "provider_error_sample": provider_errors[0] if provider_errors else None,
             "remembered_available": len(remembered_suppliers),

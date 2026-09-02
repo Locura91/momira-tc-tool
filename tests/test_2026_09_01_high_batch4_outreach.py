@@ -102,7 +102,11 @@ def test_on_progress_records_each_sent_entry_immediately_not_after_the_whole_bat
     source = _read_outreach_tool_py()
     marker = "def on_progress(entry):"
     idx = source.index(marker)
-    window = source[idx:idx + 2000]
+    # Widened from 2000 (2026-09-02, full-app audit Batch 4): a durable-write failure explaining
+    # comment was added ahead of the ofw.record_send( call for the "silent platform_store.set
+    # failures on send-log writes" LOW finding - be generous with window sizes rather than
+    # brittle against explanatory comments growing, per this suite's established convention.
+    window = source[idx:idx + 2800]
     assert 'ofw.record_send(' in window, (
         "on_progress must record a durable send row for each entry as dispatch_batch reports "
         "it, not wait for the whole batch to finish"

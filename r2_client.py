@@ -66,9 +66,12 @@ Same interface as freeimage_client.py (upload_images / upload_images_with_errors
 drop-in replacement - only the import line in app.py / ui_components.py needs to change.
 """
 import os
+import time
 import uuid
 import mimetypes
 from dotenv import load_dotenv
+
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old
@@ -119,6 +122,66 @@ def _get_client():
     )
 
 
+# CONFIRMED (full-app audit MED, 2026-09-02): the lifecycle-rule expiry window this module's
+# own setup docs recommend (2 days, step 6 above) can legitimately be shorter than a real review
+# - a document can sit in review for several days before the operator publishes. Travel
+# Compositor's fetch at publish time would then silently 404 against an already-expired object,
+# with nothing in the app telling the operator why. The upload key now embeds the upload
+# timestamp so a caller can warn BEFORE publish that a given image URL is old enough to plausibly
+# have expired already, rather than only finding out from a downstream publish failure. Kept
+# comfortably under the 2-day (48h) lifecycle rule so the warning fires with room to re-upload.
+STALE_IMAGE_WARNING_THRESHOLD_HOURS = 42
+
+
+def _upload_timestamp_key(ext: str) -> str:
+    # Embeds the upload time as a leading decimal segment so it can be recovered later purely
+    # from the URL, with no separate database - `image_upload_age_hours` below is the reader.
+    return f"{int(time.time())}-{uuid.uuid4().hex}.{ext}"
+
+
+def image_upload_age_hours(url: str):
+    """Returns how many hours ago an R2 URL from this module was uploaded, or None if the URL
+    doesn't carry a recognizable embedded timestamp (e.g. a manually pasted URL, or one uploaded
+    before this timestamp-embedding was added)."""
+    if not url:
+        return None
+    key = url.rsplit("/", 1)[-1]
+    ts_part = key.split("-", 1)[0]
+    if not ts_part.isdigit():
+        return None
+    uploaded_at = int(ts_part)
+    return max(0.0, (time.time() - uploaded_at) / 3600.0)
+
+
+def stale_image_urls(urls, threshold_hours: float = STALE_IMAGE_WARNING_THRESHOLD_HOURS) -> list:
+    """Given an iterable of R2 URLs, returns the subset old enough to plausibly have already
+    expired under the bucket's lifecycle rule (or be about to). URLs with no recoverable
+    timestamp (manual/legacy URLs) are never flagged - there's nothing to warn about reliably."""
+    stale = []
+    for url in urls or []:
+        age = image_upload_age_hours(url)
+        if age is not None and age >= threshold_hours:
+            stale.append(url)
+    return stale
+
+
+def stale_image_warning(urls) -> str:
+    """Human-readable warning for the operator's review screen if any of `urls` looks stale, or
+    "" if none do. Callers wire this into whichever review/publish screen holds the URLs, the
+    same "surface it, don't publish silently wrong" pattern this app uses for scanned-document
+    and short-page-text warnings."""
+    stale = stale_image_urls(urls)
+    if not stale:
+        return ""
+    plural = "s" if len(stale) != 1 else ""
+    return (
+        f"⚠️ {len(stale)} image{plural} were uploaded more than "
+        f"{int(STALE_IMAGE_WARNING_THRESHOLD_HOURS)}h ago and may have already expired from "
+        f"temporary hosting - if Travel Compositor's own fetch fails at publish time, re-extract "
+        f"or re-upload the affected image(s) first."
+    )
+
+
 def upload_image(image_bytes: bytes, filename: str = "image.jpg") -> str:
     """Uploads raw image bytes to your R2 bucket, returns the public URL."""
     bucket = os.getenv("R2_BUCKET_NAME", "")
@@ -132,8 +195,9 @@ def upload_image(image_bytes: bytes, filename: str = "image.jpg") -> str:
     ext = (filename.rsplit(".", 1)[-1] if "." in filename else "jpg").lower()
     content_type = _EXT_TO_CONTENT_TYPE.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     # A random key, not the original filename - every document reuses generic names like
-    # "image.jpg", which would silently overwrite unrelated uploads sharing the same key.
-    key = f"{uuid.uuid4().hex}.{ext}"
+    # "image.jpg", which would silently overwrite unrelated uploads sharing the same key. Also
+    # now carries the upload timestamp as a leading segment - see _upload_timestamp_key.
+    key = _upload_timestamp_key(ext)
     try:
         client.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
     except Exception as e:
@@ -158,10 +222,15 @@ def upload_images_with_errors(image_list: list) -> tuple:
     Same upload as upload_images(), but returns (urls, errors) instead of discarding the reason
     for each failure - errors is a list of "filename: message" strings, one per failed image, in
     the order they were attempted.
+
+    CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): every failed upload used to be labeled
+    the same generic "image.jpg" regardless of which one it actually was, so a batch with several
+    failures gave no way to tell which image(s) failed. Each attempt is now numbered
+    (1-based, matching the image's position in image_list) so failures are distinguishable.
     """
     urls, errors = [], []
-    for img_bytes, ext in image_list:
-        filename = f"image.{ext or 'jpg'}"
+    for idx, (img_bytes, ext) in enumerate(image_list, start=1):
+        filename = f"image_{idx}.{ext or 'jpg'}"
         try:
             urls.append(upload_image(img_bytes, filename=filename))
         except Exception as e:

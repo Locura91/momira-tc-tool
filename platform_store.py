@@ -37,7 +37,7 @@ see state_store.py, transfer_matcher.py and transport_matcher.py.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
 import json
 import os
@@ -55,6 +55,18 @@ _LOCAL_DB_PATH = os.getenv(
 
 _INIT_LOCK = threading.Lock()
 _initialized_for: Optional[str] = None
+_initialized_at: float = 0.0
+
+# CONFIRMED (full-app audit MED plausible, 2026-09-02): _ensure_schema's cache was sticky for
+# the entire process lifetime once a marker succeeded once - if the table was ever dropped or
+# the database reset at the SAME URL (schema migration gone wrong, a dev wiping a shared
+# dev/staging database), every read/write silently kept "succeeding" against a table that no
+# longer existed (each swallowed by its own except block, per this module's own design) until
+# the process itself restarted. Re-running "CREATE TABLE IF NOT EXISTS" is a cheap, idempotent
+# single query - re-checked periodically (same cadence as health()'s own cache) rather than
+# trusted forever, so a dropped table is re-created within a bounded window instead of staying
+# invisible indefinitely.
+_SCHEMA_RECHECK_SECONDS = 60
 
 
 def _database_url() -> Optional[str]:
@@ -181,7 +193,7 @@ def _connect():
 
 
 def _ensure_schema(conn, is_postgres: bool) -> None:
-    global _initialized_for
+    global _initialized_for, _initialized_at
     # Keyed by the actual URL, not the constant string "pg". CONFIRMED REAL BUG (audit):
     # with a fixed marker, pointing DATABASE_URL at a different database in a live process -
     # correcting a typo'd password in Streamlit secrets does exactly this - left the flag
@@ -190,7 +202,7 @@ def _ensure_schema(conn, is_postgres: bool) -> None:
     # running and silently forgot every learned rule and standing note.
     marker = (_database_url() or "pg") if is_postgres else _LOCAL_DB_PATH
     with _INIT_LOCK:
-        if _initialized_for == marker:
+        if _initialized_for == marker and (time.time() - _initialized_at) < _SCHEMA_RECHECK_SECONDS:
             return
         cur = conn.cursor()
         cur.execute("""
@@ -204,6 +216,7 @@ def _ensure_schema(conn, is_postgres: bool) -> None:
         """)
         conn.commit()
         _initialized_for = marker
+        _initialized_at = time.time()
 
 
 def _ph(is_postgres: bool) -> str:
@@ -297,11 +310,20 @@ _HEALTH_NAMESPACE = "__healthcheck__"
 def _scrub(text: str, url: Optional[str]) -> str:
     """Driver errors shouldn't quote the password back into a UI or a log. psycopg2 does
     not normally include it, but 'normally' is not a guarantee worth taking with a
-    credential, so it is removed explicitly."""
+    credential, so it is removed explicitly.
+
+    CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): splitting the userinfo off the URL on
+    the FIRST "@" mis-extracted (and therefore failed to scrub) a password that itself contains
+    an "@" - e.g. "postgres://user:p@ss@host/db" was split into creds="user:p", losing the rest
+    of the real password "ss@host/db" entirely off the end. Per URL syntax the userinfo section
+    ends at the LAST "@" before the host (an "@" inside the password must be percent-encoded per
+    RFC 3986, but real-world connection strings aren't always careful about that) - splitting on
+    the last "@" instead recovers the real, full password even when it contains one.
+    """
     if not url:
         return text
     try:
-        creds = url.split("://", 1)[1].split("@", 1)[0]
+        creds = url.split("://", 1)[1].rsplit("@", 1)[0]
         password = creds.split(":", 1)[1] if ":" in creds else ""
     except Exception:
         password = ""

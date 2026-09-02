@@ -75,3 +75,19 @@ def fake_api_client():
 def fake_api_client_factory():
     """For tests that need to control which destination names fail to resolve."""
     return FakeTravelCompositorAPI
+
+
+@pytest.fixture(autouse=True)
+def _reset_outreach_discovery_circuit_breaker():
+    """CONFIRMED TEST-ISOLATION FIX (full-app audit Batch 4, 2026-09-02): outreach_discovery's
+    provider circuit breaker (added to stop a dead provider being re-hit on every query within
+    one real run - see its own module-level comment) is deliberately process-lifetime state, the
+    same pattern geocoding_client's failure cache and platform_store's health cache already use.
+    Left un-reset, a test that deliberately simulates a 429/quota error trips it for real, and
+    every LATER test in the same pytest session then sees that provider as still "tripped" - a
+    cross-test leak with no relationship to the app's own behavior. Reset before and after every
+    test so each one starts and ends with a clean breaker state, regardless of import order."""
+    import outreach_discovery as _od
+    _od.reset_circuit_breakers()
+    yield
+    _od.reset_circuit_breakers()

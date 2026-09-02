@@ -20,10 +20,11 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
 import re
 import math
+import html as _html_module
 from datetime import datetime
 
 import streamlit as st
@@ -872,9 +873,14 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
         with vcol:
             st.markdown(f"**{label}**")
             if current_value:
+                # CONFIRMED BUG (was unescaped): current_value is supplier-controlled extracted
+                # text, interpolated directly into raw HTML with unsafe_allow_html=True. A pickup
+                # note or any field containing "<...>" was silently swallowed as markup instead of
+                # shown - and it's a real injection surface for supplier-controlled text. Escaped
+                # here so the value always displays as literal text, never as markup.
                 st.markdown(
                     f"<div style='white-space: pre-wrap; background:#f6f6f6; padding:8px; "
-                    f"border-radius:4px;'>{current_value}</div>",
+                    f"border-radius:4px;'>{_html_module.escape(str(current_value))}</div>",
                     unsafe_allow_html=True
                 )
             else:
@@ -1267,18 +1273,33 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
     under-7s unbookable - it makes them INFANTS, priced at the infant rate. If the supplier meant
     "we do not take under-7s at all", that is a different thing entirely and needs handling as a
     restriction, not an age band. Nobody can be expected to know that from two number boxes."""
+    # Streamlit's number_input crashes the whole page with a StreamlitAPIException if `value`
+    # falls outside [min_value, max_value] - an extracted age outside the widget's 0-17 range
+    # (e.g. a document saying "18 and under") used to take down the ENTIRE review screen (publish,
+    # geolocation, everything below it became unreachable). Clamped here so an out-of-range
+    # extracted value degrades to the nearest valid age instead of crashing.
     acol1, acol2 = st.columns(2)
     with acol1:
         raw_min = data.get(min_key)
+        # NOT `or 2`: a legitimate 0 is falsy, and would have been silently rewritten to 2.
+        min_default = int(raw_min if raw_min not in (None, "") else 2)
+        clamped_min = max(0, min(min_default, 17))
+        if clamped_min != min_default:
+            st.warning(f"⚠️ Min Child Age was extracted as {min_default}, outside the allowed "
+                       f"0-17 range - clamped to {clamped_min} here. Please check the document.")
         data[min_key] = st.number_input(
             "Min Child Age", min_value=0, max_value=17,
-            # NOT `or 2`: a legitimate 0 is falsy, and would have been silently rewritten to 2.
-            value=int(raw_min if raw_min not in (None, "") else 2), key=f"{key_prefix}_min_child_age")
+            value=clamped_min, key=f"{key_prefix}_min_child_age")
     with acol2:
         raw_max = data.get(max_key)
+        max_default = int(raw_max if raw_max not in (None, "") else 12)
+        clamped_max = max(0, min(max_default, 17))
+        if clamped_max != max_default:
+            st.warning(f"⚠️ Max Child Age was extracted as {max_default}, outside the allowed "
+                       f"0-17 range - clamped to {clamped_max} here. Please check the document.")
         data[max_key] = st.number_input(
             "Max Child Age", min_value=0, max_value=17,
-            value=int(raw_max if raw_max not in (None, "") else 12), key=f"{key_prefix}_max_child_age")
+            value=clamped_max, key=f"{key_prefix}_max_child_age")
 
     low, high = data[min_key], data[max_key]
     if low > high:

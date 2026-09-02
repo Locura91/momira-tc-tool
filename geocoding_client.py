@@ -38,6 +38,8 @@ provider - no extra attribution needed.
 import time
 import requests
 
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
 USER_AGENT = "MomiraTravelCompositorTool/1.0 (internal DMC-to-TravelCompositor upload tool)"
@@ -76,14 +78,24 @@ def _nominatim_search(clean_query: str, limit: int):
     if elapsed < 1.1:
         time.sleep(1.1 - elapsed)
 
+    # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): the throttle clock used to only advance
+    # inside the try block, right after a successful `requests.get` call - if the request itself
+    # raised (timeout, connection error, DNS failure), the clock was never updated at all. The
+    # NEXT call then measured elapsed time against a stale (possibly very old, or 0.0 on the
+    # first-ever call) timestamp, saw it comfortably over 1.1s, and skipped the sleep entirely -
+    # so a burst of failures produced a burst of requests against donated infrastructure with no
+    # throttling, exactly the risk this delay exists to prevent. Recorded in a `finally` now, so
+    # every actual network attempt advances the clock whether it succeeds or fails.
     try:
-        res = requests.get(
-            NOMINATIM_URL,
-            params={"q": clean_query, "format": "json", "limit": limit, "addressdetails": 0},
-            headers={"User-Agent": USER_AGENT},
-            timeout=10
-        )
-        _last_nominatim_request_time[0] = time.time()
+        try:
+            res = requests.get(
+                NOMINATIM_URL,
+                params={"q": clean_query, "format": "json", "limit": limit, "addressdetails": 0},
+                headers={"User-Agent": USER_AGENT},
+                timeout=10
+            )
+        finally:
+            _last_nominatim_request_time[0] = time.time()
         if res.status_code != 200:
             return [], False
         return [

@@ -23,16 +23,30 @@ Nothing here writes to Travel Compositor. It only edits the platform's own memor
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
+import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import platform_store
 import extraction_memory
 
 _NAMESPACE = "weekly_review"
 _STATE_KEY = "state"
+
+# CONFIRMED (full-app audit LOW, 2026-09-02): this module's whole state (last-reviewed date AND
+# every dismissal) lives in one JSON blob, read-modify-written with no compare-and-swap. Two
+# concurrent sessions each dismissing a DIFFERENT question around the same time could race: both
+# read the same starting state, both compute their own change, and whichever write lands second
+# silently overwrote the first session's dismissal entirely - it would resurface as if never
+# answered. platform_store has no true compare-and-swap primitive (get/set/delete only), so this
+# narrows the race rather than eliminating it: re-reads the state immediately before writing and
+# retries against whatever's actually there if it changed underneath, instead of blindly
+# clobbering it. A genuinely simultaneous write within the final re-read-and-write instant can
+# still race in principle - true elimination would need row-level locking in platform_store
+# itself - but this closes the much larger, easily-hit window the plain read-then-write had.
+_CAS_RETRIES = 5
 
 REVIEW_INTERVAL_DAYS = 7
 
@@ -57,6 +71,26 @@ def _save_state(state: Dict[str, Any]) -> bool:
     return platform_store.set(_NAMESPACE, _STATE_KEY, state)
 
 
+def _read_modify_write(mutate: Callable[[Dict[str, Any]], None]) -> bool:
+    """Applies `mutate` (mutates the passed-in state dict in place) against the freshest
+    available read of the state, retrying if another session's write is found to have landed
+    between the read and the write - see the _CAS_RETRIES comment above for what this does and
+    does not guarantee."""
+    for _ in range(_CAS_RETRIES):
+        state = _state()
+        before = json.dumps(state, sort_keys=True, default=str)
+        mutate(state)
+        latest = _state()
+        if json.dumps(latest, sort_keys=True, default=str) != before:
+            continue  # someone else wrote in between - retry against their newer state
+        return _save_state(state)
+    # Contention persisted through every retry - write anyway rather than silently dropping the
+    # operator's action; a very rare double-write here is preferable to it never landing at all.
+    state = _state()
+    mutate(state)
+    return _save_state(state)
+
+
 def last_reviewed_at():
     raw = _state().get("last_reviewed_at")
     if not raw:
@@ -75,17 +109,17 @@ def days_since_review():
 
 
 def mark_reviewed() -> bool:
-    state = _state()
-    state["last_reviewed_at"] = _now().isoformat()
-    return _save_state(state)
+    def _mutate(state):
+        state["last_reviewed_at"] = _now().isoformat()
+    return _read_modify_write(_mutate)
 
 
 def snooze(days: int = REVIEW_INTERVAL_DAYS) -> bool:
     """Push the next check-in out without answering. Recorded as a review so the banner does not
     reappear on the next page load - being nagged is how a useful prompt becomes an ignored one."""
-    state = _state()
-    state["last_reviewed_at"] = (_now() - timedelta(days=REVIEW_INTERVAL_DAYS - max(1, days))).isoformat()
-    return _save_state(state)
+    def _mutate(state):
+        state["last_reviewed_at"] = (_now() - timedelta(days=REVIEW_INTERVAL_DAYS - max(1, days))).isoformat()
+    return _read_modify_write(_mutate)
 
 
 def _dismissed() -> Dict[str, str]:
@@ -94,13 +128,13 @@ def _dismissed() -> Dict[str, str]:
 
 
 def dismiss(question_id: str) -> bool:
-    state = _state()
-    dismissed = state.get("dismissed")
-    if not isinstance(dismissed, dict):
-        dismissed = {}
-    dismissed[question_id] = _now().isoformat()
-    state["dismissed"] = dismissed
-    return _save_state(state)
+    def _mutate(state):
+        dismissed = state.get("dismissed")
+        if not isinstance(dismissed, dict):
+            dismissed = {}
+        dismissed[question_id] = _now().isoformat()
+        state["dismissed"] = dismissed
+    return _read_modify_write(_mutate)
 
 
 def is_due() -> bool:

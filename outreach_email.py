@@ -37,6 +37,13 @@ approximating it.
 REMOVED FROM THE ORIGINAL: the TEST_MODE_RECIPIENTS redirect - see the note
 where it used to live, further down this file.
 """
+
+# Stamped on every delivery. app.py compares this against its own build string and says so on
+# screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
+# outreach_followups.py were the only two of the outreach subsystem's files with no MODULE_BUILD
+# constant at all, invisible to app.py's partial-deploy detector - added now.
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+
 import base64
 import hashlib
 import os
@@ -45,6 +52,7 @@ import smtplib
 import time
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
+from email.utils import make_msgid
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -435,6 +443,13 @@ def send_supplier_email(supplier: Dict[str, Any], session: Dict[str, Any],
     if message["replyTo"]:
         msg["Reply-To"] = message["replyTo"]
     msg["Subject"] = message["subject"]
+    # CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): Python's EmailMessage does not set a
+    # Message-ID header on its own - nothing here ever set one either, so msg.get("Message-ID")
+    # always returned None and every SMTP send went out with no ID this app could later use to
+    # trace it back to a specific delivery (in a mail server's own logs, or a delivery-status
+    # bounce referencing it). Generated explicitly now, the same way the stdlib's own
+    # smtplib/email documentation recommends.
+    msg["Message-ID"] = make_msgid()
     msg.set_content(message["text"])
     msg.add_alternative(message["html"], subtype="html")
     if pdf_bytes:
@@ -473,8 +488,16 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
     """
     results: List[Dict[str, Any]] = []
     throttle_s = _default_throttle_s()
+    last_index = len(suppliers) - 1
+    # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): nothing deduped by email WITHIN one
+    # batch - two supplier rows sharing the same address (a manually-added duplicate, the same
+    # business surfacing under two different names that a name-based dedupe pass upstream missed
+    # - see dedupe_candidates' own comment on exactly that risk) both got a real send, so the
+    # same recipient could receive two cold emails in one click. Every occurrence after the
+    # first for a given address is now skipped, not sent.
+    seen_emails = set()
 
-    for supplier in suppliers:
+    for idx, supplier in enumerate(suppliers):
         started_at = _now_iso()
 
         # A supplier with no email is skipped - there's genuinely nowhere to send.
@@ -488,6 +511,20 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
             if on_progress:
                 on_progress(entry)
             continue
+
+        normalized_email = supplier["email"].strip().lower()
+        if normalized_email in seen_emails:
+            entry = {
+                "supplierId": supplier.get("id"), "supplierName": supplier.get("name"),
+                "email": supplier.get("email"), "status": "skipped",
+                "reason": "Duplicate email address already sent to earlier in this same batch",
+                "timestamp": started_at,
+            }
+            results.append(entry)
+            if on_progress:
+                on_progress(entry)
+            continue
+        seen_emails.add(normalized_email)
 
         if dry_run:
             try:
@@ -529,7 +566,13 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
         if on_progress:
             on_progress(entry)
 
-        time.sleep(throttle_s)
+        # CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): this used to sleep after EVERY
+        # recipient unconditionally, including the last one in the batch - a throttle exists to
+        # pace the NEXT provider call, and there is no next call after the last recipient, so
+        # that final sleep did nothing but add dead time before dispatch_batch returned (and
+        # before the UI could show the batch as finished). Skipped on the last iteration now.
+        if idx != last_index:
+            time.sleep(throttle_s)
 
     return results
 

@@ -29,6 +29,8 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
+
 _NAMESPACE = "translation_state"
 
 # Only read, once, to migrate an existing local database. Nothing writes here now.
@@ -61,9 +63,26 @@ class StateStore:
     def _migrate_legacy_if_present(self) -> None:
         """Copies an existing nbext_state.db into durable storage once, so upgrading
         doesn't discard translations already paid for. Only runs while the durable store
-        still has no translation rows."""
+        still has no translation rows.
+
+        CONFIRMED BUG FIX (full-app audit MED plausible, 2026-09-02): platform_store.get_namespace
+        swallows every read failure and returns {} - identical to "this namespace genuinely has
+        no rows yet" (the same ambiguity already fixed elsewhere in this codebase for the
+        outreach duplicate-send guard). A momentary Postgres blip at exactly the wrong moment
+        used to look exactly like "never migrated," re-triggering this migration path and
+        overwriting whatever's currently in durable storage with the (possibly much older)
+        legacy SQLite snapshot - the opposite of what this function exists to protect. Now checks
+        platform_store.health() (a real round-trip, not a cache-backed read) before trusting an
+        empty namespace read as genuinely empty; an unreachable store skips migration entirely
+        rather than risking an overwrite, and simply gets tried again on the next run."""
         try:
-            if platform_store.get_namespace(_NAMESPACE):
+            existing = platform_store.get_namespace(_NAMESPACE)
+            if existing:
+                return
+            if not platform_store.health().get("ok"):
+                print("⚠️ Skipping legacy translation-tracker migration check - the durable "
+                      "store didn't answer a health check just now, so an empty read here can't "
+                      "be trusted as genuinely empty. Will re-check on the next run.")
                 return
             if not os.path.exists(self.db_path):
                 return

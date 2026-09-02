@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-01-audit-medium-batch3-builder"
+MODULE_BUILD = "2026-09-02-audit-medium-batch4-5-final"
 
 import csv
 import io
@@ -415,6 +415,14 @@ def _finalize_queue_result(merged, stats, failures, drop_log=None, stopped_early
     if dropped:
         stats["capped_at"] = _MAX_MERGED_RESULTS
         stats["dropped_over_cap"] = dropped
+
+    # CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): stats["final"] was a straight sum of
+    # each combination's OWN "final" count (see _merge_one_job_result), never adjusted for the
+    # cross-combination fingerprint dedup that same function does inline, nor for this second
+    # dedupe_suppliers_by_contact pass, nor for the _MAX_MERGED_RESULTS cap just above - so the
+    # number shown to the operator could overstate how many suppliers actually ended up in the
+    # results table. Set to the real, final count here, after every dedupe/cap step has run.
+    stats["final"] = len(merged)
     if stopped_early:
         stats["stopped_early"] = True
         stats["searched"] = searched
@@ -591,10 +599,15 @@ def _render_search():
     with col3:
         keyword = st.text_input("What they should offer", placeholder="e.g. Nile Cruise", key="or_keyword")
 
-    if not (os.getenv("TAVILY_API_KEY") or os.getenv("SERPAPI_API_KEY")):
-        st.warning("🔍 No search API key configured (`TAVILY_API_KEY` or `SERPAPI_API_KEY`), so this runs "
-                   "against clearly-labelled **mock data** — useful for trying the workflow, but the "
-                   "suppliers won't be real.")
+    # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): this check used to ignore
+    # GEMINI_API_KEY entirely - a real Gemini-only configuration (a legitimate setup, see
+    # outreach_discovery._select_and_run_provider's own docstring) was told it was about to run
+    # against mock data when it wasn't. Uses od._configured_provider_chain() - the single source
+    # of truth this module already exposes for exactly this check - instead of re-listing keys.
+    if not od._configured_provider_chain():
+        st.warning("🔍 No search API key configured (`TAVILY_API_KEY`, `SERPAPI_API_KEY`, or "
+                   "`GEMINI_API_KEY`), so this runs against clearly-labelled **mock data** — "
+                   "useful for trying the workflow, but the suppliers won't be real.")
 
     if st.button("🔎 Find suppliers", type="primary", disabled=not (country.strip() and keyword.strip())):
         progress_box = st.empty()
@@ -734,10 +747,23 @@ def _apply_review_table_edits(suppliers, diff):
             s["selectionReason"] = _clean_text_cell(changes["Why selected"]) or s["selectionReason"]
         rebuilt.append(s)
 
+    new_suppliers = []
     for row in added:
         new_supplier = _new_supplier_from_table_row(row)
         if new_supplier:
-            rebuilt.append(new_supplier)
+            new_suppliers.append(new_supplier)
+
+    if new_suppliers:
+        # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): a row added directly in the table
+        # (same bug, same fix, as the "Add a supplier by hand" expander below - see its own
+        # comment) used to skip the "already contacted" check entirely and arrive pre-ticked
+        # (see _new_supplier_from_table_row's own selected= default) - a supplier genuinely
+        # already emailed could get re-selected with no warning, one click away from a real
+        # duplicate send. Run through the same durable-history check every searched-up supplier
+        # already goes through, so a hand-typed row that matches a past send is pre-unticked and
+        # flagged exactly like any other repeat, not silently exempt from the safety default.
+        _mark_already_contacted(new_suppliers)
+        rebuilt.extend(new_suppliers)
 
     return rebuilt
 
@@ -874,6 +900,15 @@ def _render_review_and_send():
             new_supplier = _new_supplier_from_table_row(
                 {"Name": manual_name, "Email": manual_email, "Website": manual_link})
             if new_supplier:
+                # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): hand-added suppliers used
+                # to bypass the "already contacted" check entirely and arrive pre-ticked (see
+                # _new_supplier_from_table_row's selected= default) - if the operator (or a
+                # colleague) had already emailed this exact address before, nothing here caught
+                # it, one click away from a real duplicate send. Same guard the searched-up
+                # suppliers already go through, run here too.
+                _, _dup_check_ok = _mark_already_contacted([new_supplier])
+                if not _dup_check_ok:
+                    result["duplicate_check_unavailable"] = True
                 suppliers.append(new_supplier)
                 result["suppliers"] = suppliers
                 st.session_state.or_result = result
@@ -1134,7 +1169,19 @@ def _render_review_and_send():
     template["textBody"] = st.text_area("Body", value=template["textBody"], height=320, key="or_body")
 
     selected = [s for s in suppliers if s.get("selected")]
+    # CONFIRMED BUG FIX (full-app audit MED, 2026-09-02): to_supplier_record() no longer
+    # pre-ticks a mock/fabricated candidate (see its own comment - the mock provider's
+    # "info@{slug}.com" addresses used to satisfy the same email-present check as a real one),
+    # but a human can still deliberately re-tick any row, same as any other safety default in
+    # this screen. A hard defense-in-depth guard here as well: a mock row can never actually be
+    # sent, re-ticked or not, so a fabricated address is never one click away from a real send.
+    mock_reticked = [s for s in selected if s.get("isMock")]
+    selected = [s for s in selected if not s.get("isMock")]
     sendable = [s for s in selected if s.get("email")]
+    if mock_reticked:
+        st.warning(f"⚠️ {len(mock_reticked)} mock/demo supplier(s) were ticked but skipped - these "
+                   f"are fabricated placeholder rows (no search API key is configured), not real "
+                   f"suppliers, and can never actually be sent.")
 
     if selected:
         with st.expander(f"👀 Preview as {selected[0]['name']} would receive it"):
@@ -1196,6 +1243,7 @@ def _render_review_and_send():
     if send_clicked:
         progress_box = st.empty()
         live = []
+        record_failures = []
 
         def on_progress(entry):
             live.append(entry)
@@ -1217,12 +1265,28 @@ def _render_review_and_send():
                      if (s.get("email") or "").strip().lower() == entry["email"].strip().lower()),
                     {"email": entry["email"], "name": entry.get("supplierName")},
                 )
-                ofw.record_send(supplier, session, entry.get("subject") or template.get("subject", ""),
-                                entry.get("timestamp"))
+                # CONFIRMED BUG FIX (full-app audit LOW, 2026-09-02): record_send's own return
+                # value (platform_store.set's success flag) used to be discarded here entirely -
+                # a real send that failed to record durably looked identical, from this screen,
+                # to one that recorded fine. Every OTHER durable write on this same screen
+                # (duplicate-check, etc.) already surfaces a store failure; this one silently
+                # didn't. Collected here and surfaced once after the batch finishes, rather than
+                # per-entry mid-send (which would compete with the live progress caption above).
+                if not ofw.record_send(supplier, session,
+                                       entry.get("subject") or template.get("subject", ""),
+                                       entry.get("timestamp")):
+                    record_failures.append(entry.get("supplierName") or entry.get("email"))
 
         with st.spinner("Sending…"):
             st.session_state.or_send_log = oe.dispatch_batch(selected, session, template,
                                                               on_progress=on_progress, dry_run=False)
+
+        if record_failures:
+            st.error(f"⚠️ {len(record_failures)} email(s) were sent but could NOT be recorded to "
+                     f"durable send history: {', '.join(record_failures)}. These will look "
+                     f"un-contacted on the next search and could be emailed again - check "
+                     f"DATABASE_URL / the platform_store connection, then verify manually before "
+                     f"re-sending to these suppliers.")
 
         # CONFIRMED FIX (2026-08-19 audit): previously nothing disarmed the send button after a
         # successful send - the confirm checkbox and the "Send" ticks stayed exactly as they
