@@ -58,7 +58,7 @@ MODULE_BUILD are tested via direct import since those modules import cleanly sta
 """
 import os
 
-MODULE_BUILD = "2026-09-02-active-supplier-filter"
+MODULE_BUILD = "2026-09-02-hotel-images-required"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)
@@ -297,7 +297,7 @@ def test_start_a_new_hotel_button_is_rendered_outside_the_publish_button_block()
 
 def test_hp_publish_succeeded_is_reset_when_a_new_publish_attempt_starts():
     src = _read_app_py()
-    idx = src.index('key="hp_publish", disabled=not rooms_ok or not priced_rooms):')
+    idx = src.index('key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok):')
     window = src[idx:idx + 200]
     assert "st.session_state.hp_publish_succeeded = False" in window
 

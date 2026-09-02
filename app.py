@@ -8253,6 +8253,23 @@ def render_hotel_flow(client):
             with st.spinner("Gathering content and extracting the hotel contract..."):
                 try:
                     combined_parts = []
+                    # CONFIRMED BUG FIX (reported 2026-09-02: "no image has been extracted from
+                    # the url" - createHotel failed with "contract.images: Size must be between 1
+                    # and 2147483647 ([])"): Hotel's Input Source step fetched the page URL's TEXT
+                    # for extraction but never looked for IMAGES on that page or inside an uploaded
+                    # document, unlike every other product-type flow (Ticket/ClosedTour/Transfer/
+                    # Transport all pull embedded-document images via extract_images() and page
+                    # images via _add_page_images_to_doc_pool()). Hotel's "Image URLs" field was a
+                    # bare manual-paste table with nothing to paste FROM - so a real hotel contract
+                    # with real property photos on its website reached Publish with an empty images
+                    # list every time, and Travel Compositor's API (which requires at least 1 image
+                    # per hotel, unlike this app's own schema default of []) rejected it with a raw
+                    # technical error instead of a clear "add an image" message. Same
+                    # doc_raw_images/doc_image_urls pipeline as Ticket now runs here too - see the
+                    # picker section below (Step 4) for where these surface for the human to pick.
+                    doc_raw_images = []
+                    doc_image_urls = []
+                    seen_image_hashes = set()
                     if hp_url:
                         page_text, page_text_err = _fetch_url_text_safe(hp_url)
                         if page_text is not None:
@@ -8269,11 +8286,31 @@ def render_hotel_flow(client):
                         if _scan_warning:
                             st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
                         combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
+                        remaining_budget = 12 - len(doc_raw_images)
+                        _doc_image_errors = []
+                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
+                        if embedded_images:
+                            for i, (img_bytes, ext) in enumerate(embedded_images):
+                                doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                            try:
+                                new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                                doc_image_urls.extend(new_urls)
+                                _doc_image_errors.extend(_upload_errors)
+                            except Exception as e:
+                                _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+                        _warn_page_image_upload_errors(_doc_image_errors)
                         os.remove(tmp_path)
 
                     if not combined_parts:
                         st.error("Nothing to extract - the hotel page URL couldn't be fetched and no document(s) were provided.")
                         st.stop()
+
+                    # Same page-URL image scrape every other flow already does (server-side
+                    # download, not a raw hotlink - see _add_page_images_to_doc_pool's own
+                    # docstring for why a direct <img src=originalsite> breaks for real suppliers).
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(hp_url, doc_raw_images, doc_image_urls))
+                    if len(doc_image_urls) >= len(doc_raw_images):
+                        doc_raw_images = []
 
                     raw_text = "\n\n".join(combined_parts)
 
@@ -8295,6 +8332,8 @@ def render_hotel_flow(client):
                     # here at extraction time, not inside the review widgets.
                     st.session_state.hp_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                         st.session_state.hp_data, supplier_id, "Hotel")
+                    st.session_state.hp_doc_raw_images = doc_raw_images
+                    st.session_state.hp_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     st.session_state.hp_phase = "reviewing"
                     st.rerun()
                 except Exception as e:
@@ -8414,12 +8453,61 @@ def render_hotel_flow(client):
     st.caption("This API supports only ONE children age range (unlike the Travel Compositor admin screen's "
               "up-to-4-range widget), so infants and children share one combined band - 0-12 by default.")
 
+    st.markdown("#### Images")
+    st.caption("Travel Compositor requires at least one image to publish a hotel - paste a URL below, or "
+              "use one of the pickers to add a photo found on the hotel's page/document or a free stock photo.")
     img_df = pd.DataFrame({"url": data.get("images") or [""]})
 
     def _hp_save_images(edited_df):
         data["images"] = [str(u).strip() for u in edited_df["url"].tolist() if str(u or "").strip()]
 
     editable_table("Image URLs", img_df, "hp_images", on_save=_hp_save_images)
+
+    default_hp_img_query = data.get("hotelname", "")
+
+    def _hp_add_pexels():
+        selected = render_stock_photo_picker("Pexels", search_images, default_hp_img_query, "hp_pexels")
+        if selected:
+            data["images"] = (data.get("images") or []) + selected
+            return len(selected)
+        return 0
+
+    render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "hp_pexels_closed", _hp_add_pexels)
+
+    def _hp_add_pixabay():
+        selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_hp_img_query, "hp_pixabay")
+        if selected:
+            data["images"] = (data.get("images") or []) + selected
+            return len(selected)
+        return 0
+
+    render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "hp_pixabay_closed", _hp_add_pixabay)
+
+    def _hp_add_url_images():
+        selected = render_url_image_picker(st.session_state.get("hp_hosted_image_candidates"), "hp_found_images")
+        if selected:
+            data["images"] = (data.get("images") or []) + selected
+            return len(selected)
+        return 0
+
+    render_closable_image_section(
+        bool(st.session_state.get("hp_hosted_image_candidates")),
+        f"🖼️ Images found ({len(st.session_state.get('hp_hosted_image_candidates') or [])}) - from the page/document",
+        "hp_found_images_closed", _hp_add_url_images
+    )
+
+    def _hp_add_doc_image():
+        added = render_doc_image_picker(st.session_state.get("hp_doc_raw_images"), "hp_doc_images")
+        if added:
+            data["images"] = (data.get("images") or []) + [added]
+            return 1
+        return 0
+
+    render_closable_image_section(
+        bool(st.session_state.get("hp_doc_raw_images")),
+        f"📥 Images extracted from your document(s) ({len(st.session_state.get('hp_doc_raw_images') or [])}) - need hosting",
+        "hp_doc_images_closed", _hp_add_doc_image
+    )
 
     # ---- Rooms ----
     st.markdown("#### Rooms")
@@ -8759,10 +8847,12 @@ def render_hotel_flow(client):
         1 for r in (data.get("rates") or []) for s in (r.get("seasons") or [])
         for rp in (s.get("room_prices") or []) if rp.get("distribution_prices")
     )
+    images_ok = bool(contract_result["hotel_payload"].get("images"))
     st.caption(f"Ready to publish: **{len(contract_result['hotel_payload'].get('rooms') or [])}** room(s), "
               f"**{len(contract_result['hotel_payload'].get('mealPlans') or [])}** meal plan(s), "
               f"**{len(data.get('offers') or [])}** offer(s), **{len(data.get('supplements') or [])}** "
-              f"supplement(s), **{len(data.get('rates') or [])}** rate(s) with **{seasons_total}** season(s).")
+              f"supplement(s), **{len(data.get('rates') or [])}** rate(s) with **{seasons_total}** season(s), "
+              f"**{len(contract_result['hotel_payload'].get('images') or [])}** image(s).")
 
     rooms_ok = bool(room_names) and not rooms_missing_dist
     # CONFIRMED PRODUCT-OWNER DECISION (2026-08-19 audit): Hotel used to be the only one of the
@@ -8772,8 +8862,19 @@ def render_hotel_flow(client):
         st.error("⚠️ No room in any season has prices yet - publishing is blocked until at least "
                  "one room has a price, so nothing unsellable goes live.")
 
+    # CONFIRMED BUG FIX (reported 2026-09-02): Travel Compositor's createHotel/updateHotel
+    # rejects an empty images list outright - "contract.images: Size must be between 1 and
+    # 2147483647 ([])" - a raw technical error surfacing only AFTER the publish call, by which
+    # point everything else about the hotel was already validated and ready. Same "block before
+    # the API call, not after" pattern as the priced_rooms gate right above: caught here with a
+    # clear, actionable message instead of letting it reach Travel Compositor at all.
+    if not images_ok:
+        st.error("⚠️ No image has been added yet - Travel Compositor requires at least one image to "
+                 "publish a hotel. Use the Images section above (search stock photos, or pick one found "
+                 "on the hotel's page/document) before publishing.")
+
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
-                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms):
+                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok):
         st.session_state.hp_publish_succeeded = False
         progress = st.container()
         try:
@@ -10649,7 +10750,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-02-active-supplier-filter"
+BUILD_VERSION = "2026-09-02-hotel-images-required"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

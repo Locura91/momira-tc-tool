@@ -38,7 +38,7 @@ provider - no extra attribution needed.
 import time
 import requests
 
-MODULE_BUILD = "2026-09-02-active-supplier-filter"
+MODULE_BUILD = "2026-09-02-hotel-images-required"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
