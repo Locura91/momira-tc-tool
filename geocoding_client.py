@@ -35,14 +35,37 @@ Photon (https://photon.komoot.io) is also built on OpenStreetMap data, so the
 same "(c) OpenStreetMap contributors" attribution covers results from either
 provider - no extra attribution needed.
 """
+import re
 import time
+from urllib.parse import urlparse
+
 import requests
 
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
 USER_AGENT = "MomiraTravelCompositorTool/1.0 (internal DMC-to-TravelCompositor upload tool)"
+
+# CONFIRMED FEATURE (product owner, 2026-09-03): "If I have to manually change the coordinates,
+# I would like to just add the URL with the correct place from google. Could the app then get the
+# correct data like longitude and latitude?" - a human who already found the right pin in Google
+# Maps shouldn't have to read the lat/lng off the screen and retype it by hand (error-prone, easy
+# to transpose). This lets them paste the Maps URL/share-link instead and extracts the coordinates
+# automatically.
+_SHORT_LINK_HOSTS = ("goo.gl", "maps.app.goo.gl", "g.co")
+
+# Tried in this order - a place URL's own precise pin (the "!3d..!4d.." pair Google Maps embeds
+# for the actual marked place) is preferred over the map's current viewport center (the "@lat,lng"
+# in the URL, which just reflects wherever the map happened to be panned/zoomed to and can be
+# noticeably off from the actual pin for a small/precise location). "q=" and "ll=" cover the
+# simpler share-link/plain-coordinate-search URL shapes.
+_COORD_PATTERNS = (
+    re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)"),
+    re.compile(r"[?&]q=(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)"),
+    re.compile(r"[?&]ll=(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)"),
+    re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)"),
+)
 
 _cache = {}
 _failure_cache = {}  # cache_key -> monotonic time.time() of the last failed attempt
@@ -223,3 +246,75 @@ def geocode(query: str) -> dict:
         "valid": True,
         "provider": top.get("provider"),
     }
+
+
+def _resolve_short_google_maps_url(url: str) -> str:
+    """Google Maps share-links are often shortened (maps.app.goo.gl/..., goo.gl/maps/...) and
+    carry no coordinates themselves - they redirect (a normal HTTP redirect, not JS) to the real,
+    long google.com/maps URL that does. Follows the redirect chain and returns wherever it lands;
+    on any failure (network error, non-redirecting host, timeout) returns the input unchanged so
+    the caller's own regex pass still runs against it - some short links don't even need this.
+    A HEAD request is tried first since it's cheap and Google honors it for these links; GET is
+    the fallback for any host that doesn't."""
+    try:
+        res = requests.head(url, allow_redirects=True, timeout=10, headers={"User-Agent": USER_AGENT})
+        if res.url and res.url != url:
+            return res.url
+    except Exception:
+        pass
+    try:
+        res = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent": USER_AGENT}, stream=True)
+        return res.url or url
+    except Exception:
+        return url
+
+
+def parse_google_maps_url(url: str) -> dict:
+    """
+    Extracts {"latitude": float, "longitude": float} straight out of a Google Maps URL the human
+    pastes in, instead of them having to read the coordinates off the page and type them by hand.
+    Returns {"latitude": float|None, "longitude": float|None, "valid": bool, "error": str|None}.
+
+    Handles every URL shape actually seen from Google Maps' own "Share" / address-bar copy:
+      - A place page with its own precise pin, e.g.
+        .../maps/place/Some+Place/@27.39,33.67,17z/data=!4m6!3m5!...!8m2!3d27.3949!4d33.6784!...
+        (uses the !3d/!4d pin, NOT the @ viewport center - see _COORD_PATTERNS' comment for why)
+      - A bare coordinate search/share link, e.g. .../maps?q=27.3949,33.6784 or .../maps?ll=...
+      - A plain "current view" link, e.g. .../maps/@27.3949,33.6784,15z
+      - A shortened share-link (maps.app.goo.gl/..., goo.gl/maps/...) - resolved to its real,
+        long URL first (one network round-trip), then parsed the same as any other Maps URL.
+
+    Never raises - a URL that isn't recognized, isn't reachable (for a short link), or simply
+    doesn't contain coordinates in any of the shapes above comes back as valid=False with a
+    human-readable `error`, so the caller can show it rather than silently doing nothing.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return {"latitude": None, "longitude": None, "valid": False, "error": "Paste a Google Maps link first."}
+
+    candidate = raw if re.match(r"^https?://", raw, re.I) else f"https://{raw}"
+    try:
+        host = urlparse(candidate).netloc.lower()
+    except Exception:
+        host = ""
+
+    if not host or ("google" not in host and "goo.gl" not in host and "g.co" not in host):
+        return {"latitude": None, "longitude": None, "valid": False,
+                "error": "That doesn't look like a Google Maps link."}
+
+    resolved = candidate
+    if any(h in host for h in _SHORT_LINK_HOSTS):
+        resolved = _resolve_short_google_maps_url(candidate)
+
+    for pattern in _COORD_PATTERNS:
+        m = pattern.search(resolved)
+        if not m:
+            continue
+        lat, lng = float(m.group(1)), float(m.group(2))
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            return {"latitude": lat, "longitude": lng, "valid": True, "error": None}
+
+    return {"latitude": None, "longitude": None, "valid": False,
+            "error": "Couldn't find coordinates in that link - try copying the link again from "
+                     "Google Maps' own Share button, or right-click the exact pin and copy the "
+                     "coordinates shown at the top of the menu."}

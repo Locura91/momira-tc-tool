@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 _PHASE_KEY = "pkr_phase"
 

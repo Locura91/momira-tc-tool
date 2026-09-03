@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 _NAMESPACE = "translation_state"
 

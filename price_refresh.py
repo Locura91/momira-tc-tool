@@ -35,7 +35,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple

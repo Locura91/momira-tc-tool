@@ -39,7 +39,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

@@ -42,7 +42,7 @@ where it used to live, further down this file.
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_followups.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
+MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
 
 import base64
 import hashlib

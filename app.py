@@ -124,7 +124,7 @@ from pixabay_client import search_images as search_images_pixabay
 from r2_client import upload_images as upload_images_r2
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from r2_client import stale_image_warning
-from geocoding_client import geocode_search, geocode
+from geocoding_client import geocode_search, geocode, parse_google_maps_url
 import transfer_matcher
 import transport_matcher
 import platform_store
@@ -4464,6 +4464,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                 current["geo_search_results"] = None
                                 st.rerun()
 
+                st.markdown("**Or paste a Google Maps link:**")
+                st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
+                          "it here - the coordinates are read out of the link automatically.")
+                mt_maps_url = st.text_input("Google Maps link", key=f"mt_geo_maps_url_{idx}", placeholder="https://maps.google.com/...")
+                if st.button("🔗 Use this link's coordinates", key=f"mt_geo_maps_url_btn_{idx}", disabled=not mt_maps_url.strip()):
+                    with st.spinner("Reading coordinates from the link..."):
+                        mt_url_geo = parse_google_maps_url(mt_maps_url)
+                    if mt_url_geo["valid"]:
+                        data["manual_latitude"] = mt_url_geo["latitude"]
+                        data["manual_longitude"] = mt_url_geo["longitude"]
+                        data["manual_coords_for_city"] = mt_city
+                        _mt_clear_geo_confirmation(current, idx)
+                        st.rerun()
+                    else:
+                        st.error(mt_url_geo["error"])
+
                 st.markdown("**Or enter coordinates manually:**")
                 mgcol1, mgcol2 = st.columns(2)
                 with mgcol1:
@@ -6020,6 +6036,28 @@ def render_ticket_flow(client):
                                         st.session_state.tk_geo_search_results = None
                                         st.rerun()
 
+                        st.markdown("**Or paste a Google Maps link:**")
+                        st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), "
+                                  "and paste it here - the coordinates are read out of the link automatically.")
+                        tk_maps_url = st.text_input("Google Maps link", key="tk_geo_maps_url", placeholder="https://maps.google.com/...")
+                        if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn", disabled=not tk_maps_url.strip()):
+                            with st.spinner("Reading coordinates from the link..."):
+                                tk_url_geo = parse_google_maps_url(tk_maps_url)
+                            if tk_url_geo["valid"]:
+                                data["manual_latitude"] = tk_url_geo["latitude"]
+                                data["manual_longitude"] = tk_url_geo["longitude"]
+                                pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                                    currency=currency, modality_code=modality_code, on_request=on_request,
+                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                                )
+                                st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                                st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
+                                _tk_clear_geo_confirmation()
+                                st.rerun()
+                            else:
+                                st.error(tk_url_geo["error"])
+
                     if payloads.get("is_indonesia"):
                         st.info(f"🇮🇩 Indonesia detected — Vesak Day and Nyepi are automatically blocked as "
                                 f"stop-sale dates, no excursion may start on either day. "
@@ -6086,6 +6124,28 @@ def render_ticket_flow(client):
                                     _tk_clear_geo_confirmation()
                                     st.session_state.tk_geo_search_results2 = None
                                     st.rerun()
+
+                    st.markdown("**Or paste a Google Maps link:**")
+                    st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and "
+                              "paste it here - the coordinates are read out of the link automatically.")
+                    tk_maps_url2 = st.text_input("Google Maps link", key="tk_geo_maps_url2", placeholder="https://maps.google.com/...")
+                    if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn2", disabled=not tk_maps_url2.strip()):
+                        with st.spinner("Reading coordinates from the link..."):
+                            tk_url_geo2 = parse_google_maps_url(tk_maps_url2)
+                        if tk_url_geo2["valid"]:
+                            data["manual_latitude"] = tk_url_geo2["latitude"]
+                            data["manual_longitude"] = tk_url_geo2["longitude"]
+                            pre_config = TicketHumanPreConfig(
+                                supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
+                                currency=currency, modality_code=modality_code, on_request=on_request,
+                                days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                            )
+                            st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
+                            st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
+                            _tk_clear_geo_confirmation()
+                            st.rerun()
+                        else:
+                            st.error(tk_url_geo2["error"])
 
                     st.markdown("**Or enter coordinates manually:**")
                     gcol1, gcol2 = st.columns(2)
@@ -10816,7 +10876,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-03-ticket-modality-code-default-and-html-preview"
+BUILD_VERSION = "2026-09-03-google-maps-url-coordinates"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
