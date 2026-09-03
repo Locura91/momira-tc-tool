@@ -16,6 +16,12 @@ Still guarded: the code is embedded directly into a URL path
 (api_client.create_closed_tour_option), so '/' or '\\' would genuinely break that lookup - same
 reasoning TicketHumanPreConfig.modality_code's own "no_slash_in_modality_code" validator already
 uses for the same reason.
+
+UPDATE (2026-09-03): a '/' or '\\' is now silently stripped rather than hard-rejected - see
+test_2026_09_03_ticket_modality_code_slash_fix_and_batch_recovery.py for the full story (the
+sibling Ticket Modality Code validator hit the exact same real-world failure from a human-typed
+value the UI's own sanitization hadn't covered, and hard-rejecting forced a manual re-type
+instead of just fixing it automatically).
 """
 import pytest
 from pydantic import ValidationError
@@ -61,13 +67,19 @@ def test_a_blank_tour_code_is_still_rejected():
         _config("")
 
 
-def test_a_tour_code_with_a_forward_slash_is_still_rejected():
+def test_a_tour_code_with_a_forward_slash_has_the_slash_silently_stripped():
     """It becomes part of a URL path (create_closed_tour_option) - a slash would break the
-    lookup, same reasoning modality_code's own no-slash rule uses."""
-    with pytest.raises(ValidationError, match="cannot contain"):
-        _config("RAK/2")
+    lookup, same reasoning modality_code's own no-slash rule uses. Sanitized (2026-09-03), not
+    hard-rejected - see this file's module docstring UPDATE note."""
+    cfg = _config("RAK/2")
+    assert cfg.provider_code == "RAK2"
 
 
-def test_a_tour_code_with_a_backslash_is_still_rejected():
-    with pytest.raises(ValidationError, match="cannot contain"):
-        _config("RAK\\2")
+def test_a_tour_code_with_a_backslash_has_the_backslash_silently_stripped():
+    cfg = _config("RAK\\2")
+    assert cfg.provider_code == "RAK2"
+
+
+def test_a_tour_code_that_is_only_slashes_is_still_rejected_as_blank():
+    with pytest.raises(ValidationError, match="cannot be blank"):
+        _config("//")

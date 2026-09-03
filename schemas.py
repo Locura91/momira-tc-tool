@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator
@@ -61,13 +61,14 @@ class HumanPreConfig(BaseModel):
         #
         # Still worth guarding: this code gets embedded directly into a URL path
         # (api_client.create_closed_tour_option: f".../closedtour/{supplier_id}/{closed_tour_code}"),
-        # so a slash/backslash would genuinely break that lookup - same reasoning
-        # TicketHumanPreConfig.modality_code's own "no_slash_in_modality_code" validator already
-        # uses. Kept that one real constraint, dropped the arbitrary case/shape requirement.
-        if not v or not v.strip():
+        # so a slash/backslash would genuinely break that lookup. CONFIRMED PRODUCT-OWNER FIX
+        # (2026-09-03) - see TicketHumanPreConfig.modality_code's sibling validator below for the
+        # full story: sanitize (strip) instead of hard-rejecting, since a human-typed value can
+        # carry a stray "/" straight from a supplier's tour name, same as a Ticket's Modality Code
+        # can. Everything else (parentheses, "!", "-", ".", etc.) is fine and left untouched.
+        v = (v or "").replace("/", "").replace("\\", "")
+        if not v.strip():
             raise ValueError("Tour Code cannot be blank")
-        if "/" in v or "\\" in v:
-            raise ValueError("Tour Code cannot contain '/' or '\\' - it becomes part of a URL and breaks lookups")
         return v
 
     @validator("min_pax")
@@ -300,9 +301,20 @@ class TicketHumanPreConfig(BaseModel):
 
     @validator("modality_code")
     def no_slash_in_modality_code(cls, v):
-        if "/" in v or "\\" in v:
-            raise ValueError("Modality Code cannot contain '/' or '\\' - it becomes part of a URL and breaks lookups")
-        return v
+        # CONFIRMED PRODUCT-OWNER FIX (2026-09-03): this used to hard-reject with a pydantic
+        # ValidationError, forcing the human to notice the technical-details panel, go find the
+        # offending character, and manually retype the whole field. Even after app.py's own
+        # default/auto-sync logic was fixed to already sanitize its OWN suggestions (see
+        # app.py's _clean_modality_code), a value the human typed or edited by hand (e.g.
+        # shortening "Turtles/Tortoises: Three Island Cruise (Praslin)" to "Turtles/Tort: 3
+        # Island Cruise (Praslin)", keeping the "/") could still reach here unsanitized and hit
+        # the exact same real error again. "The modality code can include () or ! or - that is
+        # not a problem any more" (product owner) - only "/" and "\\" actually break the URL this
+        # code is embedded into (see api_client's ticket-option endpoints), so this is now the
+        # one unavoidable choke point: it silently strips ONLY those two characters instead of
+        # rejecting the whole value, covering every current and future path that builds a
+        # TicketHumanPreConfig, not just the ones the UI happens to pre-sanitize.
+        return (v or "").replace("/", "").replace("\\", "")
 
 
 class GeolocationVO(BaseModel):

@@ -128,3 +128,56 @@ def test_recovery_box_has_its_own_retry_button_that_recreates_the_ticket():
 def test_start_a_new_batch_also_clears_the_new_recovery_list():
     src = _read_app_py()
     assert '"mt_failed_items",\n                       "mt_precreate_failed_items"' in src
+
+
+# ======================================================================
+# Root-cause fix (follow-up, same day): the validator itself now sanitizes instead of
+# hard-rejecting - this is the single choke point every TicketHumanPreConfig construction goes
+# through, so it can never resurface again regardless of which UI path (auto-default, auto-sync,
+# or a human directly editing the Modality Code text box) let a "/" or "\" through.
+#
+# CONFIRMED real recurrence (product owner, 2026-09-03, same day): "1 validation error for
+# TicketHumanPreConfig modality_code [...] input_value='Turtles/Tort: 3 Island Cruise (Praslin)'"
+# - a human had shortened the AI-suggested (already-sanitized) label by hand, re-typing the "/"
+# back in themselves, past the UI-only sanitization added earlier. "The modality code can
+# include () or ! or - that is not a problem any more" (product owner) - confirming only '/' and
+# '\' are genuinely forbidden; everything else must be left untouched.
+# ======================================================================
+def test_schema_validator_strips_forward_slash_instead_of_rejecting():
+    from schemas import TicketHumanPreConfig
+    cfg = TicketHumanPreConfig(
+        supplier_id="48940", ticket_code="SEZ-T7", currency="EUR",
+        modality_code="Turtles/Tort: 3 Island Cruise (Praslin)",
+    )
+    assert cfg.modality_code == "TurtlesTort: 3 Island Cruise (Praslin)"
+
+
+def test_schema_validator_strips_backslash_instead_of_rejecting():
+    from schemas import TicketHumanPreConfig
+    cfg = TicketHumanPreConfig(
+        supplier_id="48940", ticket_code="SEZ-T8", currency="EUR",
+        modality_code="Island Duo: Praslin and La Digue B\\B (Mahe)",
+    )
+    assert cfg.modality_code == "Island Duo: Praslin and La Digue BB (Mahe)"
+
+
+def test_schema_validator_leaves_parentheses_bang_and_dash_untouched():
+    # CONFIRMED (product owner, 2026-09-03): "The modality code can include () or ! or - that
+    # is not a problem any more" - only '/' and '\' are actually rejected by the real API.
+    from schemas import TicketHumanPreConfig
+    cfg = TicketHumanPreConfig(
+        supplier_id="48940", ticket_code="SEZ-T9", currency="EUR",
+        modality_code="Standard! - (Private Tour)",
+    )
+    assert cfg.modality_code == "Standard! - (Private Tour)"
+
+
+def test_closed_tour_provider_code_validator_also_strips_instead_of_rejecting():
+    # Same choke-point fix applied to HumanPreConfig.provider_code (the ClosedTour "Tour Code"),
+    # which embeds into a URL path the same way and had the identical hard-reject validator.
+    from schemas import HumanPreConfig
+    cfg = HumanPreConfig(
+        supplier_id="48940", provider_code="RAK/2", min_pax=1, max_pax=4,
+        currency="EUR", modality_code="STANDARD",
+    )
+    assert cfg.provider_code == "RAK2"

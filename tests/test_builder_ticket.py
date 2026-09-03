@@ -220,13 +220,20 @@ def test_child_age_minimum_with_no_stated_ceiling_does_not_invert(fake_api_clien
     assert option["childAgeMax"] >= 14
 
 
-def test_modality_code_with_a_slash_is_rejected_by_the_schema_before_building(fake_api_client):
-    """This is a pydantic validator on the pre_config itself (schemas.py), not builder.py -
-    confirming it fires means a bad code can never even reach build_ticket_payloads."""
-    import pytest
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        make_pre_config(modality_code="BAD/CODE")
+def test_modality_code_with_a_slash_has_the_slash_silently_stripped_by_the_schema(fake_api_client):
+    """This is a pydantic validator on the pre_config itself (schemas.py), not builder.py.
+
+    UPDATE (2026-09-03, real product-owner report): this used to hard-reject with a
+    ValidationError, forcing a manual retype - but a human-edited Modality Code (not just an
+    AI/UI default) could carry a stray "/" straight from a supplier's excursion name, and
+    hard-rejecting just repeated the same error the human had already been forced to fix once.
+    "The modality code can include () or ! or - that is not a problem any more" (product owner) -
+    only "/" and "\\" actually break the URL this code is embedded into, so those two are now
+    silently stripped instead of rejecting the whole value. See
+    test_2026_09_03_ticket_modality_code_slash_fix_and_batch_recovery.py.
+    """
+    pre_config = make_pre_config(modality_code="BAD/CODE")
+    assert pre_config.modality_code == "BADCODE"
 
 
 # CONFIRMED (product owner, 2026-08-22): code and client-facing name are NOT the same thing.
