@@ -43,7 +43,7 @@ value is wrong — not bad data reaching Travel Compositor.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-02-hotel-images-required"
+MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
 
 import re
 from datetime import datetime, timedelta, timezone
@@ -96,9 +96,18 @@ _APPLY_BLOCKED_PATTERNS = (
 # genuinely depart at 09:00. charge_unit decides whether a price is multiplied by headcount,
 # so this is a money error of exactly the class the price block exists to prevent. They are
 # still RECORDED and visible - just never auto-filled.
+#
+# CONFIRMED REAL BUG (audit, HIGH finding #2): min_billable_pax also defaults to a FIXED
+# value (1) whenever a Transfer/Transport document doesn't state a minimum-billable
+# headcount (see ai_extractor.py's "min_billable_pax" fields), and was missing from this
+# list even though it is exactly the same failure shape as min_pax/max_pax right above it.
+# Two corrections in a row (e.g. a supplier whose rate sheets always price "from 2 pax up")
+# would have looked like a confident rule and been auto-applied to every future document
+# from that supplier - silently charging a solo traveller for 2 people even on a document
+# that genuinely allows 1. Added here so it is only ever RECORDED, never pre-filled.
 _APPLY_BLOCKED_FIELDS = {
     "charge_unit", "currency", "is_zone_based", "min_occupancy", "max_occupancy",
-    "plus_days", "price_type", "min_pax", "max_pax",
+    "plus_days", "price_type", "min_pax", "max_pax", "min_billable_pax",
 }
 
 

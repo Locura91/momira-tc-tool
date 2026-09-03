@@ -42,7 +42,7 @@ where it used to live, further down this file.
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_followups.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-02-hotel-images-required"
+MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
 
 import base64
 import hashlib

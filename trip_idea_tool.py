@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-02-hotel-images-required"
+MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
 
 _PHASE_KEY = "ti_phase"
 

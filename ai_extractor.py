@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-02-hotel-images-required"
+MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
 
 import os
 import re
@@ -455,6 +455,7 @@ Rules:
   start_time) one of the two defaults above applies.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this tour genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. Empty list if genuinely none.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
   {
     "name": "optional label, e.g. the season or date range description",
@@ -608,7 +609,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "what_to_bring": {"type": "string"},
         "cancellation_policy_tiers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "cancellation_policy_text": {"type": "string"},
-        "itinerary_destinations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "itinerary_destinations": {"type": "array", "items": {"type": "string"}},
         "nights": {"type": "integer"},
         "start_time": {"type": "string"},
         "end_time": {"type": "string"},
@@ -1229,6 +1230,31 @@ def _record_detection(list_key, found, flag, raw_text, depth):
     })
 
 
+def _detection_schema(flag_key: str, list_key: str) -> dict:
+    """CONFIRMED REAL BUG (audit, HIGH finding #4): every detect_* function below calls
+    _detect_items, which called _call_claude_with_stop with no input_schema at all - the
+    fully-permissive schema (see _call_claude's docstring), the EXACT failure pattern this
+    file already fixed for extraction (see _required_keys_schema) but left open here. A
+    dropped list_key (e.g. the model naming the field "routes" instead of "transfers" on an
+    off day, or simply omitting it) came back as an empty/missing list, which
+    _detect_items.get(list_key) or [] then silently reads as "found nothing" - on screen
+    indistinguishable from "this 40-route sheet genuinely only has one product", with no
+    error raised anywhere.
+
+    Only enforces PRESENCE of the two keys this whole pipeline actually depends on (see
+    "TRUST THE LIST, NOT THE FLAG" above) - list items themselves stay untyped
+    (additionalProperties: True) so this can never block or distort a genuine per-product
+    field, matching _required_keys_schema's own "presence only" philosophy."""
+    return {
+        "type": "object",
+        "properties": {
+            flag_key: {"type": "boolean"},
+            list_key: {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        },
+        "required": [flag_key, list_key],
+    }
+
+
 def _dedupe_detected(items, key_fn):
     """Collapse candidates that are the same product, preserving the order they came in.
 
@@ -1263,7 +1289,9 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
         # the wrong document. A diagnostic that lies is worse than none.
         LAST_DETECTION.clear()
     try:
-        data, stop_reason = _call_claude_with_stop(system_prompt, raw_text, model, max_tokens)
+        data, stop_reason = _call_claude_with_stop(
+            system_prompt, raw_text, model, max_tokens,
+            input_schema=_detection_schema(flag_key, list_key))
     except _RECOVERABLE_DETECTION_ERRORS as e:
         # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): this used to be a bare
         # `except Exception`, so a genuine 429 rate-limit, an auth failure, or a network drop
@@ -2645,6 +2673,17 @@ Extract:
   "to be confirmed"), say so plainly here so the human knows operational_days is a placeholder default,
   not a real confirmed schedule. Also use this field for the multi-language schedule discrepancy note
   described above. Empty string otherwise.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this excursion genuinely
+  CANNOT be booked/does not operate, even though they'd otherwise fall inside its normal operational_days
+  schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use
+  the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available
+  on/between", "not operating", "no departures", "closed for maintenance/renovation", "excluded dates",
+  "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period,
+  or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE
+  separate, non-contiguous date ranges (e.g. two different closures plus a holiday closure) - include
+  EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one
+  if the source is simply silent about closures - only include a range the source actually states or
+  clearly implies. Empty list if genuinely none.
 - time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
   gives specific time slots - empty list if not applicable.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
@@ -3345,6 +3384,17 @@ Extract:
   schedule and note any other languages' differing days in schedule_notes.
 - schedule_notes: if operational days are NOT YET DETERMINED (e.g. "TBD by Operations"), say so plainly.
   Also use this field for the multi-language schedule discrepancy note described above. Empty otherwise.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this specific Modality
+  genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside its normal
+  operational_days schedule. This is COMMON in real contracts but easy to under-recognize because DMC
+  documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead:
+  "not available on/between", "not operating", "no departures", "closed for maintenance/renovation",
+  "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a
+  sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this
+  can be MULTIPLE separate, non-contiguous date ranges (e.g. two different closures plus a holiday
+  closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do
+  NOT invent one if the source is simply silent about closures - only include a range the source actually
+  states or clearly implies. Empty list if genuinely none.
 - time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
   gives specific time slots - empty list if not applicable.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
