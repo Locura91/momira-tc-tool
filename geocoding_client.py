@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
+MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"

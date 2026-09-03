@@ -304,10 +304,16 @@ def test_ticket_modality_supplements_reach_the_real_payload(fake_api_client):
 def test_a_stray_none_string_in_time_tables_is_filtered_not_sent_to_the_api(fake_api_client):
     """CONFIRMED FIX (real production crash): a blank data_editor row's None getting
     str()'d into the literal text "None" used to reach LocalTime deserialization server-side
-    and blow up with a raw DateTimeParseException."""
+    and blow up with a raw DateTimeParseException.
+
+    UPDATED (product owner, 2026-09-03): "If mentioned a start time, just use the earliest time
+    of all mentioned and just one" - a Ticket only ever publishes ONE start time now (see
+    test_2026_09_03_ticket_start_time_range_and_single_earliest.py), so this keeps only the
+    earliest of the genuinely-valid entries once the "None"/blank/"nan" junk is filtered out.
+    """
     data = minimal_ticket_data(time_tables=["09:00", "None", "", "nan", "14:30"])
     result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    assert result["ticket_option_payload"]["timeTables"] == ["09:00", "14:30"]
+    assert result["ticket_option_payload"]["timeTables"] == ["09:00"]
 
 
 def test_has_real_pricing_reflects_whether_any_base_price_was_actually_entered(fake_api_client):

@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
+MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 import re
 import math
@@ -32,7 +32,7 @@ import pandas as pd
 
 from builder import (
     coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
-    resolve_ticket_child_price_ratio, sanitize_supplement_name,
+    resolve_ticket_child_price_ratio, sanitize_supplement_name, format_what_to_bring_line,
 )
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts the ISO wire format, so every screen converts at the
@@ -838,16 +838,16 @@ def merge_what_to_bring_into_voucher_remarks(data):
     for every product) - this does that same merge once, up front in the editor, so the human
     edits a single box instead of two that were always going to be concatenated anyway.
 
-    Folds what_to_bring into voucher_remarks using the exact same "What to bring:\n{items}"
-    block format _with_what_to_bring uses, then CLEARS what_to_bring - so builder's own append
+    Folds what_to_bring into voucher_remarks using the exact same single-line "What to bring:
+    Example 1, Example 2" format builder.format_what_to_bring_line produces (see its docstring
+    for the 2026-09-03 product-owner fix), then CLEARS what_to_bring - so builder's own append
     logic (still shared by the other four products, which keep their two separate fields) finds
     nothing left to add and doesn't double it up. Safe to call on every rerun: once merged,
     what_to_bring is empty, so there's nothing left to fold in on subsequent calls."""
-    items = (data.get("what_to_bring") or "").strip()
-    if not items:
+    block = format_what_to_bring_line(data.get("what_to_bring"))
+    if not block:
         return
     voucher = (data.get("voucher_remarks") or "").strip()
-    block = f"What to bring:\n{items}"
     data["voucher_remarks"] = f"{voucher}\n\n{block}".strip() if voucher else block
     data["what_to_bring"] = ""
 
@@ -1295,6 +1295,44 @@ def render_closedtour_supplements(data, key_prefix):
     if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):
         st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement "
                    "needs a clear Name.")
+
+
+DURATION_UNIT_OPTIONS = ["HOURS", "DAYS", "MINUTES"]
+DURATION_UNIT_LABELS = {"HOURS": "Hours", "DAYS": "Days", "MINUTES": "Minutes"}
+
+
+def render_duration_editor(data, key_prefix, duration_key="duration", duration_type_key="duration_type"):
+    """The Ticket's estimated duration, shown as a number PLUS the unit it's actually in.
+
+    CONFIRMED PRODUCT-OWNER FIX (2026-09-03): "estimated duration must be seen within the app if
+    used days, minutes or hours." Before this, the review screen always showed a plain number
+    under a hardcoded "Duration (hours)" label - if the document actually stated a duration in
+    days (duration_type "DAYS", already extracted and published, see builder.py's durationType=
+    extracted_ticket_data.get("duration_type", "HOURS")), the human had no way to see that on
+    screen, or to set/correct a duration in days or minutes themselves. This renders the value
+    and a Hours/Days/Minutes selector together, always in sync with whatever duration_type is
+    currently stored, and lets a human change either half.
+
+    "If nothing is mentioned, it is not required field": min_value=0.0 and a 0 duration is left
+    exactly as extracted, with a caption explaining that's fine - never forced non-zero, never
+    flagged as an error, unlike genuinely required fields such as Ticket name/Description."""
+    dcol1, dcol2 = st.columns([2, 1])
+    with dcol1:
+        raw = data.get(duration_key)
+        current_value = float(raw) if raw not in (None, "") else 0.0
+        data[duration_key] = st.number_input(
+            "Estimated Duration (optional)", min_value=0.0, value=current_value, step=0.5,
+            key=f"{key_prefix}_duration_value")
+    with dcol2:
+        current_unit = str(data.get(duration_type_key) or "HOURS").upper()
+        if current_unit not in DURATION_UNIT_OPTIONS:
+            current_unit = "HOURS"
+        data[duration_type_key] = st.selectbox(
+            "Unit", DURATION_UNIT_OPTIONS, index=DURATION_UNIT_OPTIONS.index(current_unit),
+            format_func=lambda u: DURATION_UNIT_LABELS[u], key=f"{key_prefix}_duration_unit")
+    if not data.get(duration_key):
+        st.caption("ℹ️ No duration stated in the document - leaving this at 0 is fine, it's not "
+                  "a required field.")
 
 
 def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="max_child_age"):

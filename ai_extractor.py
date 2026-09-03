@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
+MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 import os
 import re
@@ -863,6 +863,44 @@ def _apply_guaranteed_departure_rule(data: dict) -> None:
     )
     existing_notes = str(data.get("schedule_notes") or "").strip()
     data["schedule_notes"] = f"{existing_notes} {note}".strip() if existing_notes else note
+
+
+# CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "add to remarks, if there is a minimum pax number
+# needed for guaranteed departure. If Ticket or Closedtour has minimum of 3 pax or higher, we must
+# set the ticket or closedtour on request." This is a SIMPLER, more common pattern than
+# guaranteed_departure_rule above (a flat "minimum N passengers to guarantee this runs" statement,
+# not tied to a specific weekly/ordinal calendar exception) - e.g. "Minimum 3 pax required for
+# guaranteed departure", "operates with a minimum group size of 4". Extracted per Modality/Option
+# (see min_pax_guaranteed_departure in OPTION_ONLY_SYSTEM_PROMPT / MODALITY_EXTRACTION_SYSTEM_PROMPT
+# / TICKET_MODALITY_SYSTEM_PROMPT / TICKET_OPTION_ONLY_SYSTEM_PROMPT / TICKET_EXTRACTION_SYSTEM_PROMPT
+# below); app.py folds the note into the item's own remarks field(s) and forces On Request at
+# publish time - see _apply_min_pax_guaranteed_departure_note() there.
+MIN_PAX_FOR_MANDATORY_ON_REQUEST = 3
+
+
+def min_pax_guaranteed_departure_note(min_pax) -> str:
+    """Plain-English remarks note for a stated minimum-pax-for-guaranteed-departure, or "" if
+    min_pax is missing/not a real positive number. Shared by ClosedTour and Ticket so the exact
+    phrasing is identical everywhere it gets appended (Condition/Policy remarks, Voucher Remarks)."""
+    try:
+        n = int(min_pax)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    return f"Minimum {n} passengers required for guaranteed departure."
+
+
+def min_pax_forces_on_request(min_pax) -> bool:
+    """True when the stated minimum-pax-for-guaranteed-departure is high enough that this
+    Ticket/ClosedTour Modality must be published On Request rather than instantly bookable -
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-03), see MIN_PAX_FOR_MANDATORY_ON_REQUEST above. False
+    for a missing/non-numeric/zero-or-negative value, same permissive handling as
+    min_pax_guaranteed_departure_note above."""
+    try:
+        return int(min_pax) >= MIN_PAX_FOR_MANDATORY_ON_REQUEST
+    except (TypeError, ValueError):
+        return False
 
 
 _client_singleton = None
@@ -2027,6 +2065,13 @@ Extract ONLY:
   passenger count required for the non-guaranteed occurrences. Set this to null if the source does not
   describe this specific pattern (a plain weekly schedule with no guaranteed-vs-not distinction is NOT
   this - leave null in that ordinary case). Never invent a rule that isn't actually stated.
+- min_pax_guaranteed_departure: a SIMPLER, more common pattern than guaranteed_departure_rule above - a
+  flat statement that a minimum number of passengers is needed to guarantee this Modality departs/
+  operates, with NO specific weekly/ordinal calendar exception attached (e.g. "Minimum 3 pax required
+  for guaranteed departure", "operates with a minimum group size of 4", "requires min. 2 passengers to
+  run"). Extract just the integer (e.g. 3). Set to null if no such minimum is stated anywhere for this
+  Modality - do not confuse with a Modality Code min/max PRICING bracket (e.g. a "2 pax" pricing tier),
+  which is a different concept entirely.
 - child_discount_percentage: if the source states what a child pays relative to the adult rate,
   extract it as a plain percentage OFF the adult price - "children are free" -> 100, "child rate is
   50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the DISCOUNT, not
@@ -2056,7 +2101,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "stop_sales": [],
-  "guaranteed_departure_rule": null
+  "guaranteed_departure_rule": null,
+  "min_pax_guaranteed_departure": null
 }"""
 
 
@@ -2191,6 +2237,13 @@ Extract:
   plain weekly schedule with no guaranteed-vs-not distinction is NOT this - leave null in that ordinary
   case, and null if this rule clearly belongs to a DIFFERENT Modality than the one you're extracting).
   Never invent a rule that isn't actually stated.
+- min_pax_guaranteed_departure: a SIMPLER, more common pattern than guaranteed_departure_rule above - a
+  flat statement that a minimum number of passengers is needed to guarantee THIS Modality departs/
+  operates, with NO specific weekly/ordinal calendar exception attached (e.g. "Minimum 3 pax required
+  for guaranteed departure", "operates with a minimum group size of 4", "requires min. 2 passengers to
+  run"). Extract just the integer (e.g. 3). Set to null if no such minimum is stated for THIS Modality -
+  do not confuse with a Modality Code min/max PRICING bracket (e.g. a "2 pax" pricing tier), which is a
+  different concept entirely, and null if this minimum clearly belongs to a DIFFERENT Modality.
 - child_discount_percentage: if the source states what a child pays relative to the adult rate for
   THIS Modality, extract it as a plain percentage OFF the adult price - "children are free" -> 100,
   "child rate is 50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the
@@ -2217,7 +2270,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
   "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-  "stop_sales": [], "guaranteed_departure_rule": null
+  "stop_sales": [], "guaranteed_departure_rule": null, "min_pax_guaranteed_departure": null
 }"""
 
 
@@ -2276,7 +2329,7 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [], "guaranteed_departure_rule": None,
+        "stop_sales": [], "guaranteed_departure_rule": None, "min_pax_guaranteed_departure": None,
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -2322,7 +2375,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [], "guaranteed_departure_rule": None,
+        "stop_sales": [], "guaranteed_departure_rule": None, "min_pax_guaranteed_departure": None,
         # Defensive: fields builder.py's main_tour_payload construction still
         # reads, even though it's unused/not sent for option-only actions.
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1,
@@ -2625,8 +2678,12 @@ Extract:
   default used across all products, so it doesn't get incorrectly geocoded as if it were one specific fixed
   location.
 - meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
-- duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
-  (NOT how many days a pass is valid for - that's start_date/end_date on the modality). Use 0/"HOURS" if unclear.
+- duration: a number, and duration_type: one of "HOURS"/"DAYS"/"MINUTES" - how long the
+  experience/activity itself lasts (NOT how many days a pass is valid for - that's
+  start_date/end_date on the modality). Pick whichever unit the source actually used (e.g. "45
+  minutes" -> duration 45, duration_type "MINUTES"; "3 days" -> 3, "DAYS"; "2.5 hours" -> 2.5,
+  "HOURS") rather than always converting to hours. NOT a required field: if the source states no
+  duration at all, use 0/"HOURS" - leave it at that rather than guessing one.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
 - is_private: true if the source describes this as a PRIVATE experience (e.g. "private tour", "private
   transfers", "private guide", "exclusively for your group") as opposed to a joint/shared/group/public
@@ -2684,8 +2741,19 @@ Extract:
   EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one
   if the source is simply silent about closures - only include a range the source actually states or
   clearly implies. Empty list if genuinely none.
-- time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
-  gives specific time slots - empty list if not applicable.
+- min_pax_guaranteed_departure: a flat statement that a minimum number of passengers is needed to
+  guarantee this excursion actually departs (e.g. "Minimum 3 pax required for guaranteed departure",
+  "operates with a minimum group size of 4", "requires min. 2 passengers to run"). Extract just the
+  integer (e.g. 3). Set to null if no such minimum is stated - do not confuse with a private transfer's
+  own "Min.2 pax in Vehicle" pricing basis, which is a different concept.
+- time_tables: the ticket's start time, as a list with AT MOST ONE entry, "HH:MM" 24-hour (e.g.
+  ["09:00"]) - empty list if the source states no time at all. CONFIRMED via a real API failure:
+  Travel Compositor only ever accepts ONE start time here, so if the source states a pickup
+  WINDOW ("07:50-08:30", "pickup between 7:45 and 8:30am") or gives several times for what is
+  really the same departure, that is still just ONE start time - extract only its single
+  EARLIEST clock time (e.g. "07:45"), never the range/window text itself and never more than one
+  entry. NEVER a value containing a dash/hyphen like "07:50-08:30" - that is not a valid time and
+  the API rejects it outright.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
@@ -2830,7 +2898,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [],
-  "modality_supplements": [], "pricing_notes": "", "languages": ["EN"],
+  "modality_supplements": [], "pricing_notes": "", "languages": ["EN"], "min_pax_guaranteed_departure": null,
   "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
 }"""
 
@@ -2931,6 +2999,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "pricing_notes": "", "stop_sales": [], "image_urls": [], "languages": ["EN"],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
+        "min_pax_guaranteed_departure": None,
     }
 
     # 16384 (up from a previous 8192) for the same headroom reason as the
@@ -3187,8 +3256,12 @@ Extract:
   default used across all products, so it doesn't get incorrectly geocoded as if it were one specific fixed
   location.
 - meeting_point_summary: one short plain-text sentence describing the meeting point(s) for the datasheet.
-- duration: a number, and duration_type: one of "HOURS"/"DAYS" - how long the experience/activity itself lasts
-  (NOT how many days a pass is valid for). Use 0/"HOURS" if unclear.
+- duration: a number, and duration_type: one of "HOURS"/"DAYS"/"MINUTES" - how long the
+  experience/activity itself lasts (NOT how many days a pass is valid for). Pick whichever unit
+  the source actually used (e.g. "45 minutes" -> duration 45, duration_type "MINUTES"; "3 days"
+  -> 3, "DAYS"; "2.5 hours" -> 2.5, "HOURS") rather than always converting to hours. NOT a
+  required field: if the source states no duration at all, use 0/"HOURS" - leave it at that
+  rather than guessing one.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
 - is_private: true if the source describes this as a PRIVATE experience (e.g. "private tour", "private
   transfers", "private guide", "exclusively for your group") as opposed to a joint/shared/group/public
@@ -3395,8 +3468,19 @@ Extract:
   closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do
   NOT invent one if the source is simply silent about closures - only include a range the source actually
   states or clearly implies. Empty list if genuinely none.
-- time_tables: list of specific departure/start times as strings (e.g. ["09:00", "14:00"]) if the source
-  gives specific time slots - empty list if not applicable.
+- min_pax_guaranteed_departure: a flat statement that a minimum number of passengers is needed to
+  guarantee THIS Modality/excursion actually departs (e.g. "Minimum 3 pax required for guaranteed
+  departure", "operates with a minimum group size of 4", "requires min. 2 passengers to run"). Extract
+  just the integer (e.g. 3). Set to null if no such minimum is stated - do not confuse with a private
+  transfer's own "Min.2 pax in Vehicle" pricing basis, which is a different concept.
+- time_tables: the ticket's start time, as a list with AT MOST ONE entry, "HH:MM" 24-hour (e.g.
+  ["09:00"]) - empty list if the source states no time at all. CONFIRMED via a real API failure:
+  Travel Compositor only ever accepts ONE start time here, so if the source states a pickup
+  WINDOW ("07:50-08:30", "pickup between 7:45 and 8:30am") or gives several times for what is
+  really the same departure, that is still just ONE start time - extract only its single
+  EARLIEST clock time (e.g. "07:45"), never the range/window text itself and never more than one
+  entry. NEVER a value containing a dash/hyphen like "07:50-08:30" - that is not a valid time and
+  the API rejects it outright.
 - start_date, end_date: the validity date range for this specific modality/price (YYYY-MM-DD). If the
   source gives no clear range, use a wide default like today's year to 3 years out.
 - adult_taxes_amount, child_taxes_amount, infant_taxes_amount: any separately-stated taxes/fees, else 0.
@@ -3486,7 +3570,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "disallow_infant": false, "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
-  "modality_supplements": [], "pricing_notes": "",
+  "modality_supplements": [], "pricing_notes": "", "min_pax_guaranteed_departure": null,
   "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": []
 }"""
 
@@ -3529,7 +3613,7 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
         "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
         "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
-        "supplements": [],
+        "supplements": [], "min_pax_guaranteed_departure": None,
     }
     data = _call_claude(TICKET_MODALITY_SYSTEM_PROMPT, user_content, model, max_tokens=16384,
                        input_schema=_required_keys_schema(defaults))
@@ -3646,7 +3730,18 @@ extract ticket name, description, city, meeting points, includes/excludes, or ca
 when just adding/updating a modality). The source is often just a pricing table for an ALREADY-EXISTING ticket.
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
-start_date, end_date (this modality's validity window), operational_days, time_tables,
+start_date, end_date (this modality's validity window), operational_days,
+time_tables (the ticket's start time, as a list with AT MOST ONE entry, "HH:MM" 24-hour, e.g.
+["09:00"] - empty list if the source states no time at all. CONFIRMED via a real API failure:
+Travel Compositor only ever accepts ONE start time here, so a pickup WINDOW like "07:50-08:30"
+or several times for what is really the same departure is still just ONE start time - extract
+only its single EARLIEST clock time ("07:45"), never the range/window text itself and never more
+than one entry. NEVER a value containing a dash/hyphen like "07:50-08:30" - the API rejects it
+outright),
+min_pax_guaranteed_departure (a flat statement that a minimum number of passengers is needed to
+guarantee THIS Modality departs, e.g. "Minimum 3 pax required for guaranteed departure" - extract just
+the integer, null if no such minimum is stated - do not confuse with a private transfer's own
+"Min.2 pax in Vehicle" pricing basis, which is a different concept),
 modality_supplements (EVERY priced extra this Modality can carry - a genuinely dated change like a
 seasonal price table or holiday surcharge, AND a priced choice like a foreign-language guide or a
 Seat-in-Coach upgrade, go in the SAME list: each entry is {"name", "adult_price_supplement",
@@ -3702,7 +3797,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "child_age_min": 2, "child_age_max": 12, "start_date": "", "end_date": "",
   "operational_days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"],
   "time_tables": [], "supplements": [], "modality_supplements": [], "pricing_notes": "",
-  "languages": ["EN"], "occupancy_prices": []
+  "languages": ["EN"], "occupancy_prices": [], "min_pax_guaranteed_departure": null
 }"""
 
 
@@ -3721,6 +3816,7 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         "time_tables": [], "languages": ["EN"],
         "supplements": [], "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
+        "min_pax_guaranteed_departure": None,
         # Defensive - fields main ticket payload construction still reads even if unused for this action
         "ticket_name": "", "description": "", "city": "", "includes": [], "excludes": [], "what_to_bring": "",
         "meeting_points": [], "meeting_point_summary": "", "duration": 0, "duration_type": "HOURS",

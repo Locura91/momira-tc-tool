@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
+MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 import math
 import datetime
@@ -565,14 +565,29 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     Single shared helper now used by every product builder (ClosedTour/Ticket/Transfer,
     and Transport once built) so this can't drift out of sync again.
 
-    Priority: (1) the source's own natural-language summary, verbatim, if the AI extracted
-    one - its own wording is more trustworthy than a synthesized rewrite; (2) if the source
-    gave structured tiers but no separate summary text, synthesize one from the tiers so a
-    real, document-stated policy is never silently dropped; (3) otherwise, the standing
-    30-day/100%-refund default text, so the voucher is never blank about cancellation.
+    CONFIRMED BUG FIX (product owner, 2026-09-03): "We can't write this information on the
+    Conditions shown to the customer: More than 24 hours before the excursion: no cancellation
+    fee. Less than 24 hours before the excursion: 100% of the excursion price charged. --> We
+    have our own condition which is 30 days or prior for 100% and we use tour condition because
+    we could make money out of it." `cancellation_tiers` here is already the FLOORED structured
+    policy (see _cancellation_ranges_from_tiers's own docstring - a supplier tier more lenient
+    than Momira's 30-day/100%-refund house standard gets pushed out to 30 days there). This
+    function used to return the SOURCE's raw natural-language cancellation_policy_text verbatim
+    FIRST, before ever looking at the (correctly floored) tiers - so the customer-facing voucher
+    text could still describe the supplier's real, more lenient wording (e.g. "24 hours' notice")
+    even though the structured policy Travel Compositor actually enforces had already been
+    floored to 30 days. That handed the customer a MORE GENEROUS cancellation window than the one
+    genuinely in effect - exactly the revenue the house floor exists to protect, and the opposite
+    of what "Condition" is supposed to communicate.
+
+    Priority is now: (1) synthesize the text from the (floored) structured tiers whenever any
+    exist - this is guaranteed to match the policy actually enforced, never the supplier's
+    unfloored wording; (2) the source's own raw text, ONLY as a last resort when no structured
+    tiers exist at all (extraction always pairs the two together - see ai_extractor.py's
+    cancellation_policy_text rule - so this path is effectively legacy/malformed-data-only); (3)
+    otherwise, the standing 30-day/100%-refund default text, so the voucher is never blank about
+    cancellation.
     """
-    if cancellation_policy_text:
-        return cancellation_policy_text
     if cancellation_tiers:
         lines = ["Cancellation Policy:"]
         for days, refund_pct in cancellation_tiers:
@@ -601,6 +616,8 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
                 lines.append(f"- {fee_pct:g}% cancellation fee if cancelled less than {days} days before "
                               f"arrival ({refund_pct:g}% refund).")
         return "\n".join(lines)
+    if cancellation_policy_text:
+        return cancellation_policy_text
     return default_text
 
 
@@ -695,6 +712,36 @@ def _with_manual_notes(voucher_text, extracted_data):
     return strip_stray_html(combined)
 
 
+def format_what_to_bring_line(items_text):
+    """Turns the stored what_to_bring text - a newline-separated "- Item" list, per
+    ai_extractor.py's own extraction format (e.g. "- Passports\\n- Sun cream\\n- Pocket torch") -
+    into the single voucher-text LINE the product owner asked for.
+
+    CONFIRMED PRODUCT-OWNER FIX (2026-09-03): "if mentioned What to bring and we include them in
+    the Voucher remark, just write it like this: 'What to bring: Example 1, Example 2 etc'" -
+    replacing the previous multi-line "What to bring:\\n- Item\\n- Item\\n- Item" block, which is
+    what both _with_what_to_bring (below) and ui_components.merge_what_to_bring_into_voucher_
+    remarks used to write. Shared here so both call sites - the four products that keep What to
+    bring as its own field, and Ticket's up-front merge - format it identically and can't drift
+    apart. Strips each line's leading "- " bullet before joining; a line with no bullet (e.g. a
+    human just typed free text) passes through unchanged. Returns "" if there's nothing to say."""
+    raw = (items_text or "").strip()
+    if not raw:
+        return ""
+    items = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            line = line[2:].strip()
+        elif line.startswith("-"):
+            line = line[1:].strip()
+        if line:
+            items.append(line)
+    if not items:
+        return ""
+    return f"What to bring: {', '.join(items)}"
+
+
 def _with_what_to_bring(voucher_text, extracted_data):
     """Appends the document's own "what to bring"/packing list to whatever voucher text was
     already built.
@@ -708,11 +755,13 @@ def _with_what_to_bring(voucher_text, extracted_data):
 
     APPENDED, never substituted: this is additional customer-facing information, not a
     correction to the cancellation text. Placed AFTER the cancellation text but BEFORE manual
-    notes (manual notes stay last - see _with_manual_notes' own docstring for why)."""
-    items = ((extracted_data or {}).get("what_to_bring") or "").strip()
-    if not items:
+    notes (manual notes stay last - see _with_manual_notes' own docstring for why).
+
+    Formatting delegated to format_what_to_bring_line - see its docstring for the 2026-09-03
+    single-line-comma-separated fix."""
+    block = format_what_to_bring_line((extracted_data or {}).get("what_to_bring"))
+    if not block:
         return voucher_text
-    block = f"What to bring:\n{items}"
     return f"{voucher_text}\n\n{block}".strip() if voucher_text else block
 
 
@@ -1463,13 +1512,28 @@ def normalize_time_hhmm(value: str) -> str:
     (index 5 is exactly where the trailing ":00" seconds starts). This
     strips any seconds instead, guaranteeing bare HH:MM regardless of what
     was extracted or typed in.
+
+    CONFIRMED BUG FIX (product owner, 2026-09-03), real API error: "Cannot deserialize value of
+    type `java.time.LocalTime` from String "07:50-08"" - a source describing a pickup WINDOW
+    ("07:50-08:30") reached here as one whole string, and the old code just split on ":" without
+    ever noticing the dash, mangling it into "07:50-08" (LocalTime's HH:MM parser rejects that
+    outright - the exact failure this fixes). Product owner's own rule: "If mentioned a start
+    time, just use the earliest time of all mentioned and just one, never like this:
+    07:50-08:30" - a window/range is ONE start time, not two, so this now takes only the
+    EARLIEST clock time out of it (splitting on "-", an en/em dash, or the word "to") before
+    doing the HH:MM extraction. Also zero-pads a single-digit hour ("9:00" -> "09:00") so the
+    list this feeds into sorts and compares correctly.
     """
     value = (value or "").strip()
     if not value:
         return ""
+    value = re.split(r"\s*(?:-|–|—|\bto\b)\s*", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     parts = value.split(":")
     if len(parts) >= 2:
-        return f"{parts[0]}:{parts[1]}"
+        hour, minute = parts[0].strip(), parts[1].strip()[:2]
+        if hour.isdigit() and minute.isdigit():
+            return f"{int(hour):02d}:{minute}"
+        return value  # still malformed - pass through, let the API's own validation catch it clearly
     return value  # malformed input - pass through, let the API's own validation catch it clearly
 
 
@@ -2130,6 +2194,14 @@ def build_ticket_payloads(
         normalize_time_hhmm(t) for t in (extracted_ticket_data.get("time_tables", []) or [])
         if t and str(t).strip() and str(t).strip().lower() not in ("none", "nan")
     ]
+    # CONFIRMED business rule (product owner, 2026-09-03): "If mentioned a start time, just use
+    # the earliest time of all mentioned and just one" - whatever the document or the human typed
+    # in (one window restated across several lines, several genuinely distinct times, a stray
+    # duplicate), a Ticket only ever gets ONE start time published: the single earliest of
+    # everything extracted. Dropping this down to at most one entry here, after each entry is
+    # already a clean zero-padded "HH:MM" (see normalize_time_hhmm), means a plain lexicographic
+    # sort picks the true earliest time correctly.
+    time_tables_list = sorted(set(time_tables_list))[:1]
 
     effective_release_days = resolve_release_days(
         pre_config.days_available_before_release, extracted_ticket_data.get("release_days_mentions")

@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-03-google-maps-url-coordinates"
+MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 _NAMESPACE = "cancellation_links"
 

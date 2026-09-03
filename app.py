@@ -101,6 +101,7 @@ from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data, extract_ticket_main_info, extract_ticket_modality_data, detect_ticket_modalities
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
+from ai_extractor import min_pax_guaranteed_departure_note, min_pax_forces_on_request
 import ai_extractor as ai_extractor_module
 # Shared Streamlit building blocks used by all five product-type flows (ClosedTour, Ticket,
 # Transfer, Transport, Hotel) - see ui_components.py's module docstring.
@@ -111,7 +112,7 @@ from ui_components import (
     render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
-    render_child_discount_editor, is_active_supplier,
+    render_child_discount_editor, render_duration_editor, is_active_supplier,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
@@ -196,6 +197,35 @@ def _warn_stale_images(urls):
     if not message:
         return
     st.warning(message)
+
+
+def _apply_min_pax_guaranteed_departure_note(remarks_data, remarks_fields, min_pax, label=None):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "add to remarks, if there is a minimum pax
+    number needed for guaranteed departure. If Ticket or Closedtour has minimum of 3 pax or
+    higher, we must set the ticket or closedtour on request." This handles the "add to remarks"
+    half - folding min_pax_guaranteed_departure_note()'s plain-English note into every remarks
+    field named in remarks_fields that's actually present on remarks_data (Ticket: Condition +
+    Voucher Remarks, both per the product owner's answer; ClosedTour: Policy remarks, its only
+    one). Safe to call on every rerun/re-extraction: skips the append when that exact note is
+    already present, so it never duplicates. `label` (a Modality code) is included when the note
+    is being folded into a field SHARED across several Modalities (ClosedTour's tour-level Policy
+    remarks) so a human reading it can tell which Modality the minimum applies to; omit it for
+    Ticket, where each Ticket item already has its own dedicated data/remarks scoped to just the
+    one Modality being created. See min_pax_forces_on_request() (ai_extractor.py) for the other
+    half - forcing On Request at publish time - applied separately, at each publish call site."""
+    note = min_pax_guaranteed_departure_note(min_pax)
+    if not note:
+        return
+    if label:
+        note = f"{label}: {note}"
+    for field in remarks_fields:
+        if field not in remarks_data:
+            continue
+        existing = (remarks_data.get(field) or "").strip()
+        if note in existing:
+            continue
+        remarks_data[field] = f"{existing}\n\n{note}".strip() if existing else note
+
 
 # Session-state key prefixes used ONLY by the shared editable_field/
 # editable_table widget helpers - never by any flow's own phase/queue
@@ -557,6 +587,12 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         if data.get("schedule_notes"):
             st.info(f"🔎 {data['schedule_notes']}")
 
+        if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+                      f"This Modality will be published **On Request** regardless of the On Request "
+                      f"setting below - this flow doesn't edit the tour's Policy remarks, so add this "
+                      f"note there yourself in Travel Compositor if it isn't already stated.")
+
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mm_days_{idx}"
         )
@@ -672,7 +708,15 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                                 if fetched_tour_matches_code(existing_tour_code) else None
                             ) or "XXX-1",
                             min_pax=1, max_pax=9, currency=currency,
-                            modality_code=q["code"], on_request=on_request
+                            modality_code=q["code"],
+                            # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "If Ticket or Closedtour
+                            # has minimum of 3 pax or higher, we must set the ticket or closedtour
+                            # on request" - this flow has no tour-level Policy remarks in scope
+                            # (see extract_option_only_data's own docstring), so only the On
+                            # Request forcing applies here; the note itself is surfaced as an
+                            # on-screen warning below instead (see the min_pax_forces_on_request
+                            # check right before the pricing table further up this screen).
+                            on_request=on_request or min_pax_forces_on_request(q["data"].get("min_pax_guaranteed_departure"))
                         )
                         payloads = build_closed_tour_payloads(pre_config, q["data"], client)
                         if payloads["tour_option_error"]:
@@ -1293,6 +1337,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             clarify_supplier_id(supplier_id), "ClosedTour",
                             mod["hint"] or mod["code"])
                     )
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "add to remarks, if there is a
+                    # minimum pax number needed for guaranteed departure." ClosedTour's only
+                    # remarks field (Policy remarks) is shared across every Modality on the tour,
+                    # so the note is prefixed with this Modality's code so a human reading it can
+                    # tell which one it applies to.
+                    _apply_min_pax_guaranteed_departure_note(
+                        tour["main_data"], ("policy_remarks",),
+                        mod["data"].get("min_pax_guaranteed_departure"), label=mod["code"])
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key=f"mct_mod_retry_{midx}"):
@@ -1331,6 +1383,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         if data.get("schedule_notes"):
             st.info(f"🔎 {data['schedule_notes']}")
+
+        if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+                      f"This Modality will be published **On Request** regardless of the On Request "
+                      f"setting above - a note was also added to Policy remarks.")
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS),
@@ -1565,7 +1622,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 preview_pre_config = HumanPreConfig(
                     supplier_id=supplier_id, provider_code=tour["tour_code"],
                     min_pax=min_pax, max_pax=max_pax, currency=currency,
-                    modality_code=modalities[0]["code"], on_request=on_request,
+                    modality_code=modalities[0]["code"],
+                    on_request=on_request or min_pax_forces_on_request(combined_data.get("min_pax_guaranteed_departure")),
                     days_available_before_release=release_days
                 )
                 preview_payloads = build_closed_tour_payloads(preview_pre_config, combined_data, client)
@@ -1647,7 +1705,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     pre_config = HumanPreConfig(
                         supplier_id=supplier_id, provider_code=tour["tour_code"],
                         min_pax=min_pax, max_pax=max_pax, currency=currency,
-                        modality_code=modalities[0]["code"], on_request=on_request,
+                        modality_code=modalities[0]["code"],
+                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "If Ticket or Closedtour has
+                        # minimum of 3 pax or higher, we must set the ticket or closedtour on
+                        # request" - forced regardless of the human's own On Request checkbox.
+                        on_request=on_request or min_pax_forces_on_request(combined_data.get("min_pax_guaranteed_departure")),
                         days_available_before_release=release_days
                     )
                     payloads = build_closed_tour_payloads(pre_config, combined_data, client)
@@ -1713,7 +1775,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                         mod_pre_config = HumanPreConfig(
                                             supplier_id=supplier_id, provider_code=tour["tour_code"],
                                             min_pax=min_pax, max_pax=max_pax, currency=currency,
-                                            modality_code=m["code"], on_request=on_request,
+                                            modality_code=m["code"],
+                                            on_request=on_request or min_pax_forces_on_request(m["data"].get("min_pax_guaranteed_departure")),
                                             days_available_before_release=release_days
                                         )
                                         mod_payloads = build_closed_tour_payloads(mod_pre_config, m["data"], client)
@@ -4300,7 +4363,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         current = queue[idx]
         current.setdefault("step", "main")
 
-        st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: **{current['label'] or current['ticket_code']}** (code: {current['ticket_code']})")
         st.progress(idx / len(queue))
         with st.expander("Not what you wanted?"):
             if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mt_cancel_{idx}"):
@@ -4309,6 +4371,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     st.session_state.pop(key, None)
                 _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
                 st.rerun()
+
+        # CONFIRMED PRODUCT-OWNER FIX (2026-09-03): this used to sit near the bottom of Step 1,
+        # after the name/description/cancellation fields already had a chance to load - "remove
+        # this one" is a decision made from the ticket's NAME alone, so it belongs at the very
+        # top of the screen, before that name is even shown, not buried below several fields of
+        # detail nobody needs to read for something they're about to discard.
+        render_skip_item_button(
+            current['label'] or current['ticket_code'], queue, idx,
+            "mt_queue", "mt_queue_index",
+            ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
+             "mt_doc_raw_images", "mt_hosted_image_candidates"],
+            button_key=f"mt_skip_{idx}",
+            widget_state_prefixes=["mt_"] + SHARED_WIDGET_STATE_PREFIXES
+        )
+
+        st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: **{current['label'] or current['ticket_code']}** (code: {current['ticket_code']})")
 
         # Same fix as the ClosedTour batch flow: only pass a variant_hint when this
         # label came from a REAL AI-detected excursion (is_genuine_variant) - the
@@ -4383,16 +4461,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             # can add anything a document doesn't say straight into the real field instead of a
             # side note that only gets appended to Voucher Remarks at publish time.
 
-            render_skip_item_button(
-                current['label'] or current['ticket_code'], queue, idx,
-                "mt_queue", "mt_queue_index",
-                ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
-                 "mt_doc_raw_images", "mt_hosted_image_candidates"],
-                button_key=f"mt_skip_{idx}",
-                widget_state_prefixes=["mt_"] + SHARED_WIDGET_STATE_PREFIXES
-            )
-
-            editable_field("City", data, "city", widget="text_input", key_suffix=f"_{idx}")
+            # CONFIRMED PRODUCT-OWNER FIX (2026-09-03): "The City is not needed to write down
+            # there, the information is coming from the geolocation and we don't need to write it
+            # here" - a raw City text box here duplicated the "Location for ..." section right
+            # below, which already shows the resolved place and lets you search for or paste a
+            # better one. Removed; `data["city"]` (still set by extraction) continues to seed
+            # that geolocation search below, it's just no longer shown as its own editable field.
 
             # ------------------------------------------------------------------
             # Geolocation resolve + human confirm - REQUIRED before this ticket
@@ -4560,10 +4634,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
             render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
 
-            # CONFIRMED FIX (2026-08-19): min_value=0 so an unset duration stays honestly blank
-            # (0) instead of the shared widget silently substituting a fabricated 1.
-            editable_field("Duration (hours)", data, "duration", widget="number_input", key_suffix=f"_{idx}",
-                          min_value=0)
+            # CONFIRMED FIX (2026-09-03, product owner): "estimated duration must be seen within
+            # the app if used days, minutes or hours" - a hardcoded "(hours)" label was wrong
+            # whenever duration_type was actually "DAYS", and there was no way to enter minutes
+            # at all. render_duration_editor shows/edits the real unit alongside the number, and
+            # never requires a value (see its own docstring).
+            render_duration_editor(data, f"mt_{idx}")
 
             inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
             def _save_mt_includes(edf, data=data):
@@ -4597,6 +4673,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
                     data.update(modality_data)
+                    _apply_min_pax_guaranteed_departure_note(
+                        data, ("cancellation_policy_text", "voucher_remarks"),
+                        data.get("min_pax_guaranteed_departure"))
                     reset_child_age_band_widgets(f"mt_{idx}")
                     floor_start_date_for_new_data(data, widget_key=f"mt_start_date_{idx}")
                     # Same fixed-key staleness as the child-age boxes above (see
@@ -4648,6 +4727,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if st.button("🔙 Back to main info", key=f"mt_back_to_main_{idx}"):
             current["step"] = "main"
             st.rerun()
+
+        if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+                      f"This Ticket will be published **On Request** regardless of the On Request setting "
+                      f"above - a note was also added to Condition/Voucher Remarks.")
 
         # CONFIRMED FIX (2026-08-19 audit): was inline `... or 2)` / `... or 12)`, which silently
         # rewrote a legitimate child-age minimum of 0 back to 2 - the exact trap ClosedTour already
@@ -4843,7 +4927,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     try:
                         pre_config = TicketHumanPreConfig(
                             supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
-                            modality_code=q["modality_code"], modality_name=q.get("modality_name"), on_request=on_request,
+                            modality_code=q["modality_code"], modality_name=q.get("modality_name"),
+                            # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "If Ticket or Closedtour has
+                            # minimum of 3 pax or higher, we must set the ticket or closedtour on
+                            # request" - forced regardless of the human's own On Request checkbox above.
+                            on_request=on_request or min_pax_forces_on_request(q["data"].get("min_pax_guaranteed_departure")),
                             days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                         )
                         payloads = build_ticket_payloads(pre_config, q["data"], client)
@@ -5641,9 +5729,10 @@ def render_ticket_flow(client):
                            f"going back to Step 3 (Details) and adding \"Private\" to it if you'd like "
                            f"this reflected there.")
 
-                # CONFIRMED FIX (2026-08-19): min_value=0 so an unset duration stays honestly
-                # blank (0) instead of the shared widget silently substituting a fabricated 1.
-                editable_field("Duration (hours)", data, "duration", widget="number_input", min_value=0)
+                # CONFIRMED FIX (2026-09-03, product owner): "estimated duration must be seen
+                # within the app if used days, minutes or hours" - see render_duration_editor's
+                # own docstring; never requires a value.
+                render_duration_editor(data, "legacy_ticket")
 
                 # CONFIRMED FIX (2026-08-19 audit): same "0 is falsy" trap as the batch Ticket
                 # screen above - now routed through the shared helper instead of a local copy.
@@ -10876,7 +10965,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-03-google-maps-url-coordinates"
+BUILD_VERSION = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
