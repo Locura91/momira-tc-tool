@@ -23,7 +23,7 @@ Nothing here writes to Travel Compositor. It only edits the platform's own memor
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-stale-image-warning-wired"
+MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
 
 import json
 from datetime import datetime, timedelta, timezone

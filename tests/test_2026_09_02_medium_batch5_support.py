@@ -247,7 +247,14 @@ def test_dismiss_and_mark_reviewed_route_through_read_modify_write():
 def test_editable_field_source_escapes_current_value():
     import inspect
     source = inspect.getsource(ui_components.editable_field)
-    assert "_html_module.escape(str(current_value))" in source
+    # CONFIRMED FIX (product owner screenshot, 2026-09-03): the read-only preview now escapes
+    # "_display_value" rather than "current_value" directly, because for html_text_area/
+    # html_list_area fields (real stored HTML - Description, Included/Excluded) it's first run
+    # through the same plain-text conversion the edit widget already used, so raw "<p>"/"<li>"
+    # markup no longer leaks onto the review screen. Escaping itself (the safety net this test
+    # originally guarded) is unchanged - it still wraps whatever ends up in _display_value.
+    assert "_html_module.escape(str(_display_value))" in source
+    assert "_display_value = current_value" in source
 
 
 def test_html_escape_neutralizes_markup():

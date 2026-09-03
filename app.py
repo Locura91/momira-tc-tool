@@ -4074,14 +4074,20 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         # supplier happens to print their own reference code on this row (e.g. a
                         # "Tour Code" column reading "WT1", "WT2", ...). That supplier code
                         # exists for the SUPPLIER's benefit only, so it's appended to the CODE,
-                        # never substituted into the name. When the document gives no such code
-                        # (the normal case), modality_code stays exactly the base name, unchanged
-                        # from before this split existed.
+                        # never substituted into the name.
+                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): when the document gives NO
+                        # such supplier code, the Modality Code now defaults to the excursion's
+                        # own name instead of the generic "Standard" - "Standard" is meaningless
+                        # once a batch has several excursions (every row would start out
+                        # identical), while the excursion name is already unique and immediately
+                        # recognizable. modality_name (what the CLIENT sees) is unaffected by
+                        # this - it stays the plain "Standard"/"Standard Private" convention.
                         _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
                         _supplier_code = str(e.get("supplier_code") or "").strip()
+                        _excursion_label = str(e.get("label") or "").strip()
                         _modality_code = (
-                            f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}"
-                            if _supplier_code else _base_modality_name
+                            f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}" if _supplier_code
+                            else (_excursion_label or _base_modality_name)
                         )
                         candidates.append({
                             "label": e.get("label", ""), "ticket_code": "",
@@ -4091,6 +4097,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             # Real AI-detected excursion - safe to later restrict extraction
                             # to just this one (see is_genuine_variant usage in PHASE 3 below).
                             "is_genuine_variant": True,
+                            # Only when a real supplier code was actually used does modality_code
+                            # deliberately differ from the excursion name - mark it "touched" so
+                            # PHASE 2's auto-sync (below) never overwrites a genuine supplier code
+                            # with the plain excursion name.
+                            "_modcode_touched": bool(_supplier_code),
                         })
                     if not candidates:
                         # No real excursion variants detected (single-excursion case) - the
@@ -4101,7 +4112,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         # an empty extraction - same bug as the ClosedTour flow had).
                         # Prefill the Ticket Code from what was already entered back in Step 3
                         # (default_ticket_code) so the human doesn't have to type it again here.
-                        candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "Standard",
+                        # modality_code starts blank (not "Standard") because there's no excursion
+                        # name yet to default it to - PHASE 2 below auto-fills it from the Ticket
+                        # Name the human types there, per the same "default to the excursion name"
+                        # rule as the multi-excursion branch above.
+                        candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "",
                                       "modality_name": "Standard",
                                       "selected": True, "is_genuine_variant": False}]
 
@@ -4167,16 +4182,29 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                          "normal descriptive name, never a supplier reference code."
                 )
             with ccol5:
+                _modcode_key = f"mt_modcode_{i}"
+                # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): a Modality Code that's still blank
+                # (no supplier code was detected, and this is the no-variants-detected fallback
+                # candidate where the excursion name wasn't known until the Ticket Name above was
+                # typed) defaults to that name, kept in sync as the human keeps typing it - right
+                # up until they type into this field directly, at which point their own value
+                # wins permanently. Writing st.session_state[key] before the widget call below is
+                # the standard Streamlit way to update an already-created widget's value.
+                if not cand.get("_modcode_touched") and (cand.get("label") or "").strip():
+                    st.session_state[_modcode_key] = cand["label"].strip()
                 cand["modality_code"] = st.text_input(
-                    "Modality Code", value=cand["modality_code"], key=f"mt_modcode_{i}",
+                    "Modality Code", value=cand["modality_code"], key=_modcode_key,
                     help="What the SUPPLIER sees. If the document assigns this exact service its own "
                          "reference code (e.g. a 'Tour Code' column reading 'WT1'), that code has "
                          "already been appended here automatically - edit if needed. Otherwise this "
-                         "matches the Modality Name above."
+                         "defaults to the excursion's name and stays in sync with it until you edit "
+                         "this field yourself."
                 )
+                if cand["modality_code"].strip() != (cand.get("label") or "").strip():
+                    cand["_modcode_touched"] = True
 
         if st.button("➕ Add another excursion manually"):
-            candidates.append({"label": "", "ticket_code": "", "modality_code": "Standard",
+            candidates.append({"label": "", "ticket_code": "", "modality_code": "",
                               "modality_name": "Standard",
                               "selected": True, "is_genuine_variant": False})
             st.rerun()
@@ -5416,9 +5444,19 @@ def render_ticket_flow(client):
                   "them all as separate Tickets in one batch (you'll assign each its own Code next).")
 
         if "tk_pending_variant_selection" not in st.session_state:
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): same rule as render_multi_ticket_flow's
+            # PHASE 1 candidates - when the document doesn't assign this excursion its own supplier
+            # code, the Modality Code defaults to the excursion's own name (already fully known
+            # here, unlike that flow's async single-fallback case) instead of the generic
+            # "Standard"/"Standard Private". modality_name (client-facing) is unaffected.
             st.session_state.tk_pending_variant_selection = [
                 {"label": e.get("label", f"Excursion {i+1}"), "selected": False,
-                 "ticket_code": "", "modality_code": "Standard Private" if e.get("is_private") else "Standard"}
+                 "ticket_code": "",
+                 "modality_code": (
+                     f"{('Standard Private' if e.get('is_private') else 'Standard').upper().replace(' ', '_')}_{str(e.get('supplier_code') or '').strip()}"
+                     if str(e.get("supplier_code") or "").strip()
+                     else (str(e.get("label") or "").strip() or ("Standard Private" if e.get("is_private") else "Standard"))
+                 )}
                 for i, e in enumerate(excursions)
             ]
         tkpv_selection = st.session_state.tk_pending_variant_selection
@@ -10778,7 +10816,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-03-stale-image-warning-wired"
+BUILD_VERSION = "2026-09-03-ticket-modality-code-default-and-html-preview"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

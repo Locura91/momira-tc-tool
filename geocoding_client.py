@@ -38,7 +38,7 @@ provider - no extra attribution needed.
 import time
 import requests
 
-MODULE_BUILD = "2026-09-03-stale-image-warning-wired"
+MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"

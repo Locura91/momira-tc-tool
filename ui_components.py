@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-stale-image-warning-wired"
+MODULE_BUILD = "2026-09-03-ticket-modality-code-default-and-html-preview"
 
 import re
 import math
@@ -897,9 +897,27 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 # note or any field containing "<...>" was silently swallowed as markup instead of
                 # shown - and it's a real injection surface for supplier-controlled text. Escaped
                 # here so the value always displays as literal text, never as markup.
+                #
+                # CONFIRMED BUG (product owner screenshot, 2026-09-03): for the two widgets whose
+                # STORED value is deliberately real HTML (html_text_area's <p>/<strong> description
+                # markup, html_list_area's <ul><li> bullets - see
+                # closedtour-description-html-stripped-2026-08-26.md for why that HTML must stay
+                # in the data sent to the API), escaping the raw markup made the read-only preview
+                # show literal "<p>", "</p>" etc. right on the review screen. The edit widget
+                # already converts this same value to human-friendly plain text before showing it
+                # (_html_to_plain_for_editing / _html_list_to_plain_for_editing) - the read-only
+                # preview above it just wasn't using the same conversion. Reuse it here so the
+                # human never sees raw markup in either mode; the escape() call above still runs
+                # afterward as the same safety net for genuinely plain fields and for anything the
+                # plain-text conversion doesn't strip.
+                _display_value = current_value
+                if widget == "html_text_area":
+                    _display_value = _html_to_plain_for_editing(current_value)
+                elif widget == "html_list_area":
+                    _display_value = _html_list_to_plain_for_editing(current_value)
                 st.markdown(
                     f"<div style='white-space: pre-wrap; background:#f6f6f6; padding:8px; "
-                    f"border-radius:4px;'>{_html_module.escape(str(current_value))}</div>",
+                    f"border-radius:4px;'>{_html_module.escape(str(_display_value))}</div>",
                     unsafe_allow_html=True
                 )
             else:
