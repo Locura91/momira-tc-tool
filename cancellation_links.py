@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
+MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
 
 _NAMESPACE = "cancellation_links"
 

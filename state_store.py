@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
+MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
 
 _NAMESPACE = "translation_state"
 

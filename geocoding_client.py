@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
+MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
@@ -246,6 +246,97 @@ def geocode(query: str) -> dict:
         "valid": True,
         "provider": top.get("provider"),
     }
+
+
+# CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "when searching for Coordinates, use the name of
+# the City and then the Country. Example: Phuket, Thailand." A bare city name is often ambiguous
+# (there are places called "Phuket", "Praslin", "Mahe", etc. attached to more than one real-world
+# result, or with a country-less result Nominatim/Photon rank lower than the intended one) -
+# appending the country disambiguates the search the same way a human would naturally search it.
+# This is a small, self-contained ISO 3166-1 alpha-2 -> English short name table (not the full
+# UN list of every dependency/territory, but every country Travel Compositor's own destination
+# data is realistically going to return) so a 2-letter code coming back from
+# TravelCompositorAPI.get_destination_country() (which CONFIRMED may hold either an ISO code or
+# a full name already - see builder.py's _is_indonesia_country_value) can be turned into the kind
+# of readable name a geocoder query expects, without adding a new dependency (pycountry is not in
+# requirements.txt) for what is otherwise a handful of lines.
+_ISO3166_ALPHA2_TO_NAME = {
+    "AD": "Andorra", "AE": "United Arab Emirates", "AF": "Afghanistan", "AG": "Antigua and Barbuda",
+    "AI": "Anguilla", "AL": "Albania", "AM": "Armenia", "AO": "Angola", "AR": "Argentina",
+    "AS": "American Samoa", "AT": "Austria", "AU": "Australia", "AW": "Aruba", "AZ": "Azerbaijan",
+    "BA": "Bosnia and Herzegovina", "BB": "Barbados", "BD": "Bangladesh", "BE": "Belgium",
+    "BF": "Burkina Faso", "BG": "Bulgaria", "BH": "Bahrain", "BI": "Burundi", "BJ": "Benin",
+    "BM": "Bermuda", "BN": "Brunei", "BO": "Bolivia", "BR": "Brazil", "BS": "Bahamas", "BT": "Bhutan",
+    "BW": "Botswana", "BY": "Belarus", "BZ": "Belize", "CA": "Canada", "CD": "DR Congo",
+    "CF": "Central African Republic", "CG": "Congo", "CH": "Switzerland", "CI": "Ivory Coast",
+    "CK": "Cook Islands", "CL": "Chile", "CM": "Cameroon", "CN": "China", "CO": "Colombia",
+    "CR": "Costa Rica", "CU": "Cuba", "CV": "Cape Verde", "CW": "Curacao", "CY": "Cyprus",
+    "CZ": "Czechia", "DE": "Germany", "DJ": "Djibouti", "DK": "Denmark", "DM": "Dominica",
+    "DO": "Dominican Republic", "DZ": "Algeria", "EC": "Ecuador", "EE": "Estonia", "EG": "Egypt",
+    "ER": "Eritrea", "ES": "Spain", "ET": "Ethiopia", "FI": "Finland", "FJ": "Fiji",
+    "FM": "Micronesia", "FR": "France", "GA": "Gabon", "GB": "United Kingdom", "GD": "Grenada",
+    "GE": "Georgia", "GH": "Ghana", "GI": "Gibraltar", "GL": "Greenland", "GM": "Gambia",
+    "GN": "Guinea", "GQ": "Equatorial Guinea", "GR": "Greece", "GT": "Guatemala", "GU": "Guam",
+    "GW": "Guinea-Bissau", "GY": "Guyana", "HK": "Hong Kong", "HN": "Honduras", "HR": "Croatia",
+    "HT": "Haiti", "HU": "Hungary", "ID": "Indonesia", "IE": "Ireland", "IL": "Israel",
+    "IN": "India", "IQ": "Iraq", "IR": "Iran", "IS": "Iceland", "IT": "Italy", "JM": "Jamaica",
+    "JO": "Jordan", "JP": "Japan", "KE": "Kenya", "KG": "Kyrgyzstan", "KH": "Cambodia",
+    "KI": "Kiribati", "KM": "Comoros", "KN": "Saint Kitts and Nevis", "KP": "North Korea",
+    "KR": "South Korea", "KW": "Kuwait", "KY": "Cayman Islands", "KZ": "Kazakhstan", "LA": "Laos",
+    "LB": "Lebanon", "LC": "Saint Lucia", "LI": "Liechtenstein", "LK": "Sri Lanka", "LR": "Liberia",
+    "LS": "Lesotho", "LT": "Lithuania", "LU": "Luxembourg", "LV": "Latvia", "LY": "Libya",
+    "MA": "Morocco", "MC": "Monaco", "MD": "Moldova", "ME": "Montenegro", "MG": "Madagascar",
+    "MH": "Marshall Islands", "MK": "North Macedonia", "ML": "Mali", "MM": "Myanmar",
+    "MN": "Mongolia", "MO": "Macau", "MP": "Northern Mariana Islands", "MQ": "Martinique",
+    "MR": "Mauritania", "MT": "Malta", "MU": "Mauritius", "MV": "Maldives", "MW": "Malawi",
+    "MX": "Mexico", "MY": "Malaysia", "MZ": "Mozambique", "NA": "Namibia", "NC": "New Caledonia",
+    "NE": "Niger", "NG": "Nigeria", "NI": "Nicaragua", "NL": "Netherlands", "NO": "Norway",
+    "NP": "Nepal", "NR": "Nauru", "NU": "Niue", "NZ": "New Zealand", "OM": "Oman", "PA": "Panama",
+    "PE": "Peru", "PF": "French Polynesia", "PG": "Papua New Guinea", "PH": "Philippines",
+    "PK": "Pakistan", "PL": "Poland", "PR": "Puerto Rico", "PT": "Portugal", "PW": "Palau",
+    "PY": "Paraguay", "QA": "Qatar", "RE": "Reunion", "RO": "Romania", "RS": "Serbia", "RU": "Russia",
+    "RW": "Rwanda", "SA": "Saudi Arabia", "SB": "Solomon Islands", "SC": "Seychelles",
+    "SD": "Sudan", "SE": "Sweden", "SG": "Singapore", "SI": "Slovenia", "SK": "Slovakia",
+    "SL": "Sierra Leone", "SM": "San Marino", "SN": "Senegal", "SO": "Somalia", "SR": "Suriname",
+    "SS": "South Sudan", "ST": "Sao Tome and Principe", "SV": "El Salvador", "SY": "Syria",
+    "SZ": "Eswatini", "TC": "Turks and Caicos Islands", "TD": "Chad", "TG": "Togo", "TH": "Thailand",
+    "TJ": "Tajikistan", "TL": "Timor-Leste", "TM": "Turkmenistan", "TN": "Tunisia", "TO": "Tonga",
+    "TR": "Turkey", "TT": "Trinidad and Tobago", "TV": "Tuvalu", "TW": "Taiwan", "TZ": "Tanzania",
+    "UA": "Ukraine", "UG": "Uganda", "US": "United States", "UY": "Uruguay", "UZ": "Uzbekistan",
+    "VA": "Vatican City", "VC": "Saint Vincent and the Grenadines", "VE": "Venezuela",
+    "VG": "British Virgin Islands", "VI": "U.S. Virgin Islands", "VN": "Vietnam", "VU": "Vanuatu",
+    "WS": "Samoa", "YE": "Yemen", "YT": "Mayotte", "ZA": "South Africa", "ZM": "Zambia",
+    "ZW": "Zimbabwe",
+}
+
+
+def country_display_name(country_value) -> str:
+    """Normalizes a country value from TravelCompositorAPI.get_destination_country() - which may
+    hold either a 2-letter ISO code or a full name depending on account/version (see
+    builder.py's _is_indonesia_country_value docstring) - into a readable name for a geocoding
+    query. Returns "" if country_value is empty; returns the value unchanged if it isn't a
+    recognized 2-letter code (already a full name, or an unrecognized/unusual code - still better
+    than dropping it silently)."""
+    value = (str(country_value).strip() if country_value else "")
+    if len(value) == 2:
+        return _ISO3166_ALPHA2_TO_NAME.get(value.upper(), value)
+    return value
+
+
+def build_place_query(place_name: str, country_value=None) -> str:
+    """Builds a "Place, Country" geocoding search query out of a bare place name and an optional
+    country value (2-letter code or full name - see country_display_name above). CONFIRMED
+    PRODUCT-OWNER RULE (2026-09-03): "when searching for Coordinates, use the name of the City
+    and then the Country. Example: Phuket, Thailand." Returns place_name unchanged if there's no
+    place name, no country, or the country is already mentioned in the place name (avoids
+    "Phuket, Thailand, Thailand" when a document's own city field already spelled it out)."""
+    place_name = (place_name or "").strip()
+    country_name = country_display_name(country_value)
+    if not place_name or not country_name:
+        return place_name
+    if country_name.lower() in place_name.lower():
+        return place_name
+    return f"{place_name}, {country_name}"
 
 
 def _resolve_short_google_maps_url(url: str) -> str:

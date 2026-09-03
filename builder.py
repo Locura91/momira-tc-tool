@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
+MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
 
 import math
 import datetime
@@ -16,7 +16,7 @@ from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocation
 from schemas import TransportHumanPreConfig, ContractTransportVO, TransportSegmentVO, TransportDataSheetVO, ContractTransportCancellationRangeVO, ContractTransportOptionVO, ContractTransportOptionPriceVO, ContractTransportOptionInventoryVO, LocalDateRangeVO
 from schemas import HotelAddressVO, TranslationVO, ContractRoomDistributionVO, ContractRoomVO, ContractMealPlanVO, ContractRoomDistributionPriceVO, ContractHotelSeasonPricesVO, ContractHotelSeasonVO, ContractHotelRoomStopSalesVO, ContractHotelRateVO, ContractHotelOffersVO, ContractHotelSupplementVO, ContractHotelVO
 from api_client import TravelCompositorAPI
-from geocoding_client import geocode
+from geocoding_client import geocode, build_place_query
 from date_format import to_iso_date
 
 # LAST LINE OF DEFENCE for the DD/MM/YYYY house rule. Screens convert on the way in and out
@@ -2109,6 +2109,16 @@ def build_ticket_payloads(
     city = extracted_ticket_data.get("city", "")
     manual_lat = extracted_ticket_data.get("manual_latitude")
     manual_lng = extracted_ticket_data.get("manual_longitude")
+    # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "when searching for Coordinates, use the name of
+    # the City and then the Country. Example: Phuket, Thailand." Travel Compositor's own
+    # destination list (already queried for the Indonesia/Vietnam holiday rules below) is the
+    # authoritative source for a place's country when it has a record for it - reused here rather
+    # than a second lookup. A miss (city not in TC's destination list) just means the geocode
+    # query falls back to the bare city name, same as before this fix.
+    try:
+        _tk_geo_country = api_client.get_destination_country(city) if city else None
+    except Exception:
+        _tk_geo_country = None
     if manual_lat is not None and manual_lng is not None:
         geoloc = {"latitude": float(manual_lat), "longitude": float(manual_lng), "name": city, "valid": True, "source": "manual override"}
     else:
@@ -2127,7 +2137,7 @@ def build_ticket_payloads(
                 "source": "Travel Compositor transfer zone (this supplier's own data)",
             }
         else:
-            geo_result = geocode(city)
+            geo_result = geocode(build_place_query(city, _tk_geo_country))
             # geocode() tries Nominatim first, then falls back to Photon if
             # Nominatim comes back empty (confirmed real issue: Nominatim often
             # returns zero results for cloud-hosted traffic like this app's,
@@ -2177,7 +2187,8 @@ def build_ticket_payloads(
             if mp_tz.get("valid"):
                 lat, lng = mp_tz["latitude"], mp_tz["longitude"]
             else:
-                mp_geo = geocode(f"{mp_desc}, {city}" if city else mp_desc)
+                mp_geo = geocode(build_place_query(
+                    f"{mp_desc}, {city}" if city else mp_desc, _tk_geo_country))
                 lat = mp_geo["latitude"] if mp_geo["valid"] else geoloc.get("latitude")
                 lng = mp_geo["longitude"] if mp_geo["valid"] else geoloc.get("longitude")
         if lat is not None and lng is not None:

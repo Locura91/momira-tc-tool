@@ -125,7 +125,7 @@ from pixabay_client import search_images as search_images_pixabay
 from r2_client import upload_images as upload_images_r2
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from r2_client import stale_image_warning
-from geocoding_client import geocode_search, geocode, parse_google_maps_url
+from geocoding_client import geocode_search, geocode, parse_google_maps_url, build_place_query
 import transfer_matcher
 import transport_matcher
 import platform_store
@@ -238,6 +238,24 @@ SHARED_WIDGET_STATE_PREFIXES = ["_editing_", "_widgetval_", "pencil_", "save_", 
                                 # without this a one-off note typed on one service reappears
                                 # on the next one and gets published to the wrong voucher.
                                 "sn_"]
+
+
+def _geo_search_default(client, place_name):
+    """Builds the "City, Country" default search query for the Ticket geolocation boxes.
+
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "when searching for Coordinates, use the name of
+    the City and then the Country. Example: Phuket, Thailand." Travel Compositor's own
+    destination list (the same one get_destination_country() already serves for the Indonesia/
+    Vietnam holiday rules in builder.py) is the authoritative source when it has a record for
+    this place; a miss (or any lookup error) just falls back to the bare place name, same as
+    before this fix - never blocks the search."""
+    if not place_name:
+        return place_name
+    try:
+        country = client.get_destination_country(place_name)
+    except Exception:
+        country = None
+    return build_place_query(place_name, country)
 
 # Currency dropdown options - EUR/USD first as the ones actually used in
 # practice, then the rest of the common ISO codes a DMC document might quote
@@ -770,6 +788,16 @@ def _reset_mct_state():
     # Code/hint inputs, geo-confirm checkboxes, etc.), so a fresh ClosedTour could inherit
     # leftover typed values from the previous one's positionally-identical widgets.
     _clear_batch_widget_state(["mct_"] + SHARED_WIDGET_STATE_PREFIXES)
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating a new
+    # service, please allow to change the currency as this can be always vary" - same fix as
+    # Ticket's "Start a new batch". cfg_currency was left set from whichever ClosedTour was just
+    # published, so Step 3's lock (see "Locked - a currency, once set, cannot be changed" there)
+    # kept applying to the NEXT ClosedTour too, even from a different supplier/rate sheet.
+    # Reopening Step 3 and clearing the stored currency here gives a genuinely new ClosedTour a
+    # fresh, editable currency choice, while an in-progress tour's own Modalities are still
+    # protected by the same lock as before.
+    st.session_state.step2_confirmed = False
+    st.session_state.pop("cfg_currency", None)
 
 
 def _new_mct_tour(candidate, tour_code):
@@ -4385,7 +4413,17 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                            "mt_doc_raw_images", "mt_hosted_image_candidates"]:
                     st.session_state.pop(key, None)
-                _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+                # CONFIRMED BUG FIX (product owner, 2026-09-03): "if I start a new batch, this
+                # cant be seen: I have not included images to the new service" - this used to
+                # sweep only SHARED_WIDGET_STATE_PREFIXES, missing this flow's own "mt_"-prefixed
+                # widget keys entirely (the skip button a few lines below already includes "mt_" -
+                # see its widget_state_prefixes= - this reset point was just never updated to
+                # match). A per-item stock-photo picker's "closed, N image(s) added" state
+                # (mt_pixabay_{idx}_closed / mt_pexels_{idx}_closed, keyed by the item's
+                # POSITION in the queue) survived into the next batch's positionally-identical
+                # item, showing "1 image(s) added" for a brand-new service that never had any
+                # images added at all.
+                _clear_batch_widget_state(["mt_"] + SHARED_WIDGET_STATE_PREFIXES)
                 st.rerun()
 
         # CONFIRMED PRODUCT-OWNER FIX (2026-09-03): this used to sit near the bottom of Step 1,
@@ -4513,7 +4551,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 mt_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
                           "display_name": mt_city, "valid": True}
             else:
-                mt_geo = geocode(mt_city)  # cached in geocoding_client - cheap to call every rerun
+                mt_geo = geocode(_geo_search_default(client, mt_city))  # cached in geocoding_client - cheap to call every rerun
 
             if mt_geo.get("valid"):
                 mt_lat, mt_lng = mt_geo["latitude"], mt_geo["longitude"]
@@ -4535,7 +4573,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 )
 
             with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
-                mt_geo_query = st.text_input("Search for a location", value=mt_city, key=f"mt_geo_query_{idx}")
+                mt_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mt_city), key=f"mt_geo_query_{idx}")
                 if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
                     with st.spinner("Searching..."):
                         current["geo_search_results"] = geocode_search(mt_geo_query, limit=5)
@@ -5271,7 +5309,23 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                        "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items",
                        "mt_precreate_failed_items"]:
                 st.session_state.pop(key, None)
-            _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
+            # CONFIRMED BUG FIX (product owner, 2026-09-03): "if I start a new batch, this cant
+            # be seen: I have not included images to the new service" - this swept only
+            # SHARED_WIDGET_STATE_PREFIXES, missing this flow's own "mt_"-prefixed widget keys
+            # (e.g. mt_pixabay_{idx}_closed / mt_pexels_{idx}_closed, which remember "closed, N
+            # image(s) added" per queue position) - see the same fix a few hundred lines above
+            # on the "Cancel this batch" button for the full explanation.
+            _clear_batch_widget_state(["mt_"] + SHARED_WIDGET_STATE_PREFIXES)
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating
+            # a new service, please allow to change the currency as this can be always vary" -
+            # tk_cfg_currency was left set from the batch that just finished, so Step 3's lock
+            # (see "Locked - a currency, once set, cannot be changed" above) kept applying to
+            # every batch after it too, even a brand-new one from a different supplier/rate
+            # sheet. Reopening Step 3 (tk_step2_confirmed) and clearing the stored currency here
+            # gives a genuinely new batch a fresh, editable currency choice, while an in-progress
+            # batch's own Modalities are still protected by the same lock as before.
+            st.session_state.tk_step2_confirmed = False
+            st.session_state.pop("tk_cfg_currency", None)
             st.rerun()
         return
 
@@ -5302,6 +5356,13 @@ def render_ticket_flow(client):
         if st.button("🔄 Change action / supplier", key="tk_change_action"):
             st.session_state.tk_step1_confirmed = False
             st.session_state.tk_step2_confirmed = False
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating
+            # a new service, please allow to change the currency as this can be always vary" -
+            # tk_cfg_currency's lock (below, in Step 3) is meant to stop the currency changing
+            # mid-way through ONE ticket's Modalities, not to survive into an unrelated new
+            # supplier/action picked here. Clearing it lets Step 3 offer a fresh, editable
+            # currency choice for whatever comes next.
+            st.session_state.pop("tk_cfg_currency", None)
             st.rerun()
     else:
         action_key = st.radio(
@@ -6267,7 +6328,7 @@ def render_ticket_flow(client):
                                   "region, which can be far from the actual location. Try something more "
                                   "specific - a landmark, neighborhood, or meeting point name - and pick the "
                                   "correct result below.")
-                        tk_geo_search_query = st.text_input("Search for a location", value=data.get("city", ""), key=flow_widget_key("tk", "geo_search_query"))
+                        tk_geo_search_query = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key=flow_widget_key("tk", "geo_search_query"))
                         if st.button("🔎 Search", key="tk_geo_search_btn"):
                             with st.spinner("Searching..."):
                                 st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
@@ -6356,7 +6417,7 @@ def render_ticket_flow(client):
                     st.caption("Search for the correct location below (easier than looking up exact "
                               "coordinates), or enter coordinates manually if you already have them.")
 
-                    tk_geo_search_query2 = st.text_input("Search for a location", value=data.get("city", ""), key="tk_geo_search_query2")
+                    tk_geo_search_query2 = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key="tk_geo_search_query2")
                     if st.button("🔎 Search", key="tk_geo_search_btn2"):
                         with st.spinner("Searching..."):
                             st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
@@ -11132,7 +11193,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-03-modality-code-slash-sanitize-not-reject"
+BUILD_VERSION = "2026-09-03-new-batch-currency-image-state-and-geo-country"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -11652,6 +11713,12 @@ if st.session_state.step1_confirmed:
         # CONFIRMED BUG FIX note where it's rendered) so its typed text survives reruns -
         # correct within one action/supplier, but it must NOT leak into a different one.
         st.session_state.pop("ct_existing_tour_code_in", None)
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating a
+        # new service, please allow to change the currency as this can be always vary" - a
+        # different supplier/action picked here can easily mean a different currency, so the
+        # Step 3 lock (see "Locked - a currency, once set, cannot be changed" below) must not
+        # carry over from whatever was last confirmed.
+        st.session_state.pop("cfg_currency", None)
         st.rerun()
 else:
     action_key = st.radio(
