@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
+MODULE_BUILD = "2026-09-03-stale-image-warning-wired"
 
 _NAMESPACE = "supplier_images"
 

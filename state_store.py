@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-02-ai-extractor-high-findings"
+MODULE_BUILD = "2026-09-03-stale-image-warning-wired"
 
 _NAMESPACE = "translation_state"
 

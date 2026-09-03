@@ -123,6 +123,7 @@ from pixabay_client import search_images as search_images_pixabay
 # docstring for why and for the one-time setup this requires.
 from r2_client import upload_images as upload_images_r2
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
+from r2_client import stale_image_warning
 from geocoding_client import geocode_search, geocode
 import transfer_matcher
 import transport_matcher
@@ -180,6 +181,21 @@ def _warn_page_image_upload_errors(errors):
     if not errors:
         return
     st.warning("⚠️ " + errors[0] + (f" (+{len(errors) - 1} more issue(s))" if len(errors) > 1 else ""))
+
+
+def _warn_stale_images(urls):
+    """Surfaces r2_client.stale_image_warning right before a publish button, on every product's
+    review screen. CONFIRMED PARTIAL FIX, now completed (full-app audit, Batch 5 / 2026-09-03):
+    stale_image_urls/stale_image_warning were built and unit-tested to catch R2's ~2-day image-
+    expiry lifecycle rule biting a document image that was uploaded during a multi-day review and
+    hadn't been published yet, but the capability was never actually called from any of app.py's
+    5 publish screens - built, tested, and silently unused. Thin wrapper, same shape as
+    _warn_page_image_upload_errors right above: does nothing if r2_client sees nothing stale,
+    otherwise a single st.warning with its own complete, self-explanatory message."""
+    message = stale_image_warning(urls)
+    if not message:
+        return
+    st.warning(message)
 
 # Session-state key prefixes used ONLY by the shared editable_field/
 # editable_table widget helpers - never by any flow's own phase/queue
@@ -1607,6 +1623,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 on_save=_save_mct_publish_destinations,
                 column_config={"#": st.column_config.NumberColumn(disabled=True)}
             )
+
+        _warn_stale_images(main_data.get("image_urls"))
 
         mct_activation_choice = st.radio(
             "After publishing, should this Tour be Active or Inactive (draft)?",
@@ -4765,6 +4783,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             extra_note = f" + {extra_count} additional modalit{'y' if extra_count == 1 else 'ies'}" if extra_count else ""
             st.write(f"- **{q['ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}{extra_note}")
 
+        _warn_stale_images([u for q in queue for u in (q.get("data", {}).get("image_urls") or [])])
+
         mt_activation_choice = st.radio(
             "After publishing, should these Tickets be Active or Inactive (draft)?",
             ["Inactive (draft) - recommended, review inside Travel Compositor before they go live",
@@ -6097,6 +6117,8 @@ def render_ticket_flow(client):
                 if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
                     st.warning("⚠️ Confirm the location above (checkbox in Step 6) before you can publish.")
 
+            _warn_stale_images(data.get("image_urls"))
+
             action_descriptions = {
                 "Create a brand-new ticket (+ first option)": "Will POST a new ticket, then POST a new option.",
                 "Add a new option to an existing ticket": f"Will POST a new option under existing ticket `{target_ticket_code}`.",
@@ -7129,6 +7151,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                           "is the only safeguard against accidentally creating a duplicate of a transfer that "
                           "already exists in Travel Compositor.")
 
+            _warn_stale_images(data.get("image_urls"))
+
             publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transfer")
             # CONFIRMED RULE (product owner, 2026-08-24): an expired document blocks publish
@@ -7952,6 +7976,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             if not match_checked:
                 st.warning("⚠️ Click **Check for a matching existing transport** above before publishing - this "
                           "is the only safeguard against accidentally creating a duplicate.")
+
+            _warn_stale_images(data.get("image_urls"))
 
             publish_label = (f"🚀 Publish — UPDATE existing transport {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transport")
@@ -8872,6 +8898,8 @@ def render_hotel_flow(client):
         st.error("⚠️ No image has been added yet - Travel Compositor requires at least one image to "
                  "publish a hotel. Use the Images section above (search stock photos, or pick one found "
                  "on the hotel's page/document) before publishing.")
+    else:
+        _warn_stale_images(data.get("images"))
 
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
                  type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok):
@@ -10750,7 +10778,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-02-ai-extractor-high-findings"
+BUILD_VERSION = "2026-09-03-stale-image-warning-wired"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -12521,6 +12549,8 @@ if st.session_state.extracted:
             "Update an existing option": f"Will PUT (update) the option under tour `{target_tour_code}`.",
         }
         st.caption(action_descriptions[publish_action])
+
+        _warn_stale_images(data.get("image_urls"))
 
         if creating_new_tour:
             dup_warning = check_duplicate_tour_name(client, payloads["supplier_id"], data.get("tour_name"))
