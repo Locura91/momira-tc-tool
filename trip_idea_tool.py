@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
+MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
 
 _PHASE_KEY = "ti_phase"
 

@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
+MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
 
 _NAMESPACE = "supplier_images"
 

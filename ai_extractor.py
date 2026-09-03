@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
+MODULE_BUILD = "2026-09-03-ticket-modality-code-slash-fix-and-batch-recovery"
 
 import os
 import re
@@ -20,6 +20,12 @@ from typing import List, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# CONFIRMED BUG FIX (product owner, 2026-09-03): see the voucher_remarks seeding fix in
+# extract_ticket_data/extract_ticket_main_info below - reuses builder.py's own (already-fixed,
+# 2026-09-03) cancellation-text logic so the two can never drift out of sync again. builder.py
+# has no import of ai_extractor, so this one-directional import carries no circularity risk.
+from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text
 
 VARIANT_DETECTION_PROMPT = """You are checking whether a DMC (Destination Management Company) supplier document/page describes ONE tour, or MULTIPLE distinct tour variants bundled together (e.g. a 3-night and a 4-night version of the same Nile cruise, or a Luxor-to-Aswan and an Aswan-to-Luxor direction of the same itinerary).
 
@@ -3084,8 +3090,31 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     # also show up on the customer-facing Voucher Remarks field, not just
     # internally - default it here from the same extracted text (a human can
     # still edit the two independently afterward in the review UI).
-    if data.get("cancellation_policy_text") and not data.get("voucher_remarks"):
-        data["voucher_remarks"] = data["cancellation_policy_text"]
+    #
+    # CONFIRMED BUG FIX (product owner, 2026-09-03): "why is following information seen in the
+    # condition for the client: ... 24 hours ... --> in this case we must write more like nothing
+    # regarding the conditions, because our rules with 30 days or prior are better for our
+    # company." This used to copy the SOURCE's raw supplier wording (data["cancellation_policy_
+    # text"], verbatim - including things like a "cancellations due to sea sickness" clause)
+    # straight into voucher_remarks. Because builder.py's ticket composition uses voucher_remarks
+    # AS-IS whenever it is non-empty (see build_ticket_payloads' _ticket_voucher_base, "voucher_
+    # remarks still wins as the BASE text if set"), that raw copy completely bypassed builder.
+    # _cancellation_voucher_text's own (already-fixed, 2026-09-03) floored-tiers-first logic -
+    # the exact same "customer sees the supplier's more lenient wording instead of our enforced
+    # 30-day policy" bug, just reached through the seeding path instead of the fallback path.
+    # Seeding through that SAME shared, already-correct function instead closes this off: the
+    # customer-facing copy is always either the floored tiers (if the source's tiers extracted at
+    # all), or nothing here (leaving voucher_remarks blank so builder's own fallback default -
+    # Momira's standing 30-day/100%-refund text - applies at publish time) - never the supplier's
+    # raw prose. cancellation_policy_text itself is untouched and still shown in full on
+    # "Condition (internal remarks)", which is staff-only, never customer-facing.
+    if not data.get("voucher_remarks"):
+        _voucher_cancellation_text = _cancellation_voucher_text(
+            data.get("cancellation_policy_text"),
+            _cancellation_ranges_from_tiers(data.get("cancellation_policy_tiers")),
+            default_text="")
+        if _voucher_cancellation_text:
+            data["voucher_remarks"] = _voucher_cancellation_text
 
     return _finalize_ticket_price_type(data)
 
@@ -3391,8 +3420,22 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
-    if data.get("cancellation_policy_text") and not data.get("voucher_remarks"):
-        data["voucher_remarks"] = data["cancellation_policy_text"]
+    # CONFIRMED BUG FIX (product owner, 2026-09-03) - same fix as extract_ticket_data above, see
+    # its comment for the full story: seeding voucher_remarks from the SOURCE's raw supplier
+    # wording verbatim bypassed builder.py's floored-tiers-first cancellation logic entirely
+    # (voucher_remarks wins outright over that logic whenever it's non-empty), so a document's
+    # raw, more lenient policy (or an extra clause like a "no refund for sea sickness" note) could
+    # still reach the customer-facing voucher even though the structured/enforced policy had
+    # already been floored to Momira's 30-day standard. Seeded through the same shared,
+    # already-correct builder._cancellation_voucher_text function instead, so review-time and
+    # publish-time always agree and the raw supplier prose is never shown outright.
+    if not data.get("voucher_remarks"):
+        _voucher_cancellation_text = _cancellation_voucher_text(
+            data.get("cancellation_policy_text"),
+            _cancellation_ranges_from_tiers(data.get("cancellation_policy_tiers")),
+            default_text="")
+        if _voucher_cancellation_text:
+            data["voucher_remarks"] = _voucher_cancellation_text
 
     return data
 

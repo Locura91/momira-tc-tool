@@ -4148,9 +4148,17 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
                         _supplier_code = str(e.get("supplier_code") or "").strip()
                         _excursion_label = str(e.get("label") or "").strip()
+                        # CONFIRMED BUG FIX (product owner, 2026-09-03), real API error: "Modality
+                        # Code cannot contain '/' or '\' - it becomes part of a URL and breaks
+                        # lookups" for e.g. "Turtles/Tortoises: Three Island Cruise (Praslin)" - the
+                        # 2026-09-03 "default Modality Code to the excursion name" rule (see
+                        # comment above) started feeding raw excursion names straight into
+                        # modality_code without running them through the SAME sanitizer every
+                        # other AI-suggested-code call site already uses (_clean_modality_code,
+                        # defined above - strips / \ + - . that Travel Compositor's API rejects).
                         _modality_code = (
                             f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}" if _supplier_code
-                            else (_excursion_label or _base_modality_name)
+                            else (_clean_modality_code(_excursion_label) or _base_modality_name)
                         )
                         candidates.append({
                             "label": e.get("label", ""), "ticket_code": "",
@@ -4254,7 +4262,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 # wins permanently. Writing st.session_state[key] before the widget call below is
                 # the standard Streamlit way to update an already-created widget's value.
                 if not cand.get("_modcode_touched") and (cand.get("label") or "").strip():
-                    st.session_state[_modcode_key] = cand["label"].strip()
+                    # Same sanitizer as the PHASE 1 default above - a label like "Island Duo:
+                    # Praslin and La Digue B/B (Mahe)" contains "/" and would otherwise be synced
+                    # here verbatim, straight into a field the real API rejects any "/" or "\" in.
+                    st.session_state[_modcode_key] = _clean_modality_code(cand["label"].strip()) or cand["label"].strip()
                 cand["modality_code"] = st.text_input(
                     "Modality Code", value=cand["modality_code"], key=_modcode_key,
                     help="What the SUPPLIER sees. If the document assigns this exact service its own "
@@ -4263,7 +4274,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                          "defaults to the excursion's name and stays in sync with it until you edit "
                          "this field yourself."
                 )
-                if cand["modality_code"].strip() != (cand.get("label") or "").strip():
+                # Compare against the SANITIZED label (not the raw one) - otherwise a label
+                # containing "/" or similar would never equal its own (necessarily different,
+                # cleaned) auto-synced code, permanently and incorrectly marking this "touched"
+                # on the very first render, before the human ever typed into this field.
+                _clean_label = _clean_modality_code((cand.get("label") or "").strip()) or (cand.get("label") or "").strip()
+                if cand["modality_code"].strip() != _clean_label:
                     cand["_modcode_touched"] = True
 
         if st.button("➕ Add another excursion manually"):
@@ -4905,6 +4921,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         queue = st.session_state.mt_queue
         if "mt_failed_items" not in st.session_state:
             st.session_state.mt_failed_items = []
+        # CONFIRMED PRODUCT-OWNER BUG (2026-09-03): "i have an error here, but I can not go back to
+        # change the error - this is very bad, the human must be able to go back and solve the
+        # error and not start completely new over." Root cause: `mt_failed_items` (below) only ever
+        # captured the ONE specific failure mode where the Ticket itself was created but its
+        # Modality option POST then failed. Any failure that happened BEFORE the Ticket was
+        # created at all - e.g. TicketHumanPreConfig(...) raising a pydantic validation error, such
+        # as the real one reported ("Modality Code cannot contain '/' or '\\'") - fell into the
+        # generic `except Exception` below with no recovery captured whatsoever: the item was just
+        # skipped, and the ONLY way forward was "Start a new batch", discarding every already-typed
+        # field for every ticket in the whole batch, not just the one that failed. This new list
+        # captures exactly that "failed before the Ticket could be created" case, with its full
+        # editable data (including Modality Code, the field the real error was actually about), so
+        # it can be fixed and retried right here - same pattern as mt_failed_items below, just one
+        # stage earlier.
+        if "mt_precreate_failed_items" not in st.session_state:
+            st.session_state.mt_precreate_failed_items = []
         st.subheader(f"Ready to publish {len(queue)} Tickets - one by one")
         for q in queue:
             extra_count = len(q.get("extra_modalities", []))
@@ -4924,6 +4956,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
                 with st.spinner(f"Publishing '{q['ticket_code']}'..."):
+                    # CONFIRMED PRODUCT-OWNER BUG FIX (2026-09-03): every "skip this item" path
+                    # below (a failed TicketHumanPreConfig(...)/build_ticket_payloads(...) call,
+                    # unresolved geolocation, a publish blocker, or any other unexpected exception)
+                    # now records the item into mt_precreate_failed_items - see that list's
+                    # docstring above - instead of just vanishing with no way to fix and retry it.
+                    def _park_for_recovery(q=q):
+                        st.session_state.mt_precreate_failed_items.append({
+                            "ticket_code": q["ticket_code"], "label": q["label"],
+                            "modality_code": q["modality_code"], "modality_name": q.get("modality_name"),
+                            "data": q["data"], "extra_modalities": q.get("extra_modalities", []),
+                        })
+                    _ticket_was_created = False
                     try:
                         pre_config = TicketHumanPreConfig(
                             supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
@@ -4938,10 +4982,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         if payloads["main_ticket_error"] or payloads["ticket_option_error"]:
                             show_publish_error(f"prepare **{q['ticket_code']}**'s payload",
                                               payloads['main_ticket_error'] or payloads['ticket_option_error'])
+                            _park_for_recovery()
                             continue
                         if not payloads["geolocation_resolved"]:
                             st.error(f"❌ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
                                     f"field and create this one individually via the normal Create flow instead.")
+                            _park_for_recovery()
                             continue
                         # CONFIRMED REAL GAP (functionality audit, 2026-08-24): render_publish_blockers
                         # (expired validity window / zero-priced occupancies - see its own docstring)
@@ -4952,6 +4998,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         # actually matters: right before the real API calls.
                         if not render_publish_blockers(payloads):
                             st.error(f"🚫 **{q['ticket_code']}**: skipped - see the error(s) above.")
+                            _park_for_recovery()
                             continue
 
                         creation_payload = dict(payloads["main_ticket_payload"])
@@ -4959,8 +5006,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         result = client.create_ticket(supplier_id, creation_payload)
                         if "error" in result:
                             show_publish_error(f"create **{q['ticket_code']}**", result)
+                            _park_for_recovery()
                             continue
                         real_code = result.get("code", payloads["main_ticket_code"])
+                        # Once the Ticket record itself exists in Travel Compositor, a later failure
+                        # (e.g. the deactivate-back-to-draft call below) must NOT be parked for
+                        # "retry from scratch" recovery below - retrying would try to create a
+                        # DUPLICATE ticket. mt_failed_items (option-creation failure) and manual
+                        # follow-up inside Travel Compositor cover everything past this point.
+                        _ticket_was_created = True
                         # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
                         # mark_code_as_taken's docstring.
                         mark_code_as_taken("ticket", supplier_id, q["ticket_code"], result.get("name"))
@@ -5028,6 +5082,15 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                 st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}` (inactive/draft).")
                     except Exception as e:
                         show_publish_error(f"publish **{q['ticket_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
+                        # CONFIRMED PRODUCT-OWNER BUG FIX (2026-09-03): this is the exact spot the
+                        # reported failure landed - TicketHumanPreConfig(...) raising a pydantic
+                        # validation error (e.g. "Modality Code cannot contain '/' or '\\'") happens
+                        # before the Ticket is created, so it's always safe (and necessary) to park
+                        # it for recovery here. Only skip parking if the Ticket record was already
+                        # created (see _ticket_was_created above) - retrying that would create a
+                        # duplicate ticket instead of fixing anything.
+                        if not _ticket_was_created:
+                            _park_for_recovery()
                         continue
 
         if st.session_state.mt_failed_items:
@@ -5103,11 +5166,110 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             except Exception as e:
                                 show_publish_error(f"retry **{fi['ticket_code']}**'s option (unexpected error)", str(e))
 
+        # CONFIRMED PRODUCT-OWNER BUG FIX (2026-09-03): "i have an error here, but I can not go
+        # back to change the error - this is very bad, the human must be able to go back and solve
+        # the error and not start completely new over" - see mt_precreate_failed_items' docstring
+        # above. This is the recovery box for a Ticket that failed BEFORE it was even created
+        # (unlike mt_failed_items above, which is for the Ticket-created-but-option-failed case) -
+        # most commonly a rejected Modality Code, so that field is editable right here, same as
+        # Ticket Name/Description/pricing/dates.
+        if st.session_state.mt_precreate_failed_items:
+            st.divider()
+            st.subheader(f"⚠️ {len(st.session_state.mt_precreate_failed_items)} ticket(s) couldn't be created")
+            st.caption("These never made it into Travel Compositor at all - fix whatever the error above "
+                      "pointed at (often the Modality Code) and retry just this one, no need to redo the "
+                      "whole batch.")
+            for pf_idx, pf in enumerate(list(st.session_state.mt_precreate_failed_items)):
+                with st.expander(f"🔧 {pf['ticket_code']} — {pf['label']}", expanded=True):
+                    pfdata = pf["data"]
+                    pf_col1, pf_col2 = st.columns(2)
+                    with pf_col1:
+                        pf["ticket_code"] = st.text_input(
+                            "Ticket Code", value=pf["ticket_code"], key=f"mtp_code_{pf_idx}")
+                    with pf_col2:
+                        pf["modality_code"] = st.text_input(
+                            "Modality Code", value=pf["modality_code"], key=f"mtp_modcode_{pf_idx}",
+                            help="What the SUPPLIER sees. Travel Compositor rejects '/' and '\\' in this "
+                                 "field - if that's what the error above mentioned, remove them here."
+                        )
+
+                    currency = render_currency_check(currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtp_currency_{pf_idx}")
+                    render_ticket_pricing_editor(pfdata, f"mtp_{pf_idx}", currency, max_passengers)
+
+                    pf_tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in pfdata.get("time_tables", [])]) if pfdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                    def _save_mtp_tt(edf, pfdata=pfdata):
+                        pfdata["time_tables"] = _clean_time_table_rows(edf)
+                    editable_table("Start Time(s)", pf_tt_df, f"mtp_tt_{pf_idx}", on_save=_save_mtp_tt)
+                    pf_dcol1, pf_dcol2 = st.columns(2)
+                    with pf_dcol1:
+                        pfdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(pfdata.get("start_date", "")), key=f"mtp_start_{pf_idx}"))
+                    with pf_dcol2:
+                        pfdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(pfdata.get("end_date", "")), key=f"mtp_end_{pf_idx}"))
+
+                    if st.button(f"🔄 Retry creating `{pf['ticket_code']}`", key=f"mtp_retry_{pf_idx}", type="primary"):
+                        with st.spinner(f"Retrying '{pf['ticket_code']}'..."):
+                            try:
+                                retry_pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=pf["ticket_code"], currency=currency,
+                                    modality_code=pf["modality_code"], modality_name=pf.get("modality_name"),
+                                    on_request=on_request or min_pax_forces_on_request(pfdata.get("min_pax_guaranteed_departure")),
+                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
+                                )
+                                retry_payloads = build_ticket_payloads(retry_pre_config, pfdata, client)
+                                if retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"]:
+                                    show_publish_error(f"prepare **{pf['ticket_code']}**'s payload",
+                                                      retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"])
+                                elif not retry_payloads["geolocation_resolved"]:
+                                    st.error("❌ Geolocation not resolved - fix the City field via the normal Create flow instead.")
+                                elif not render_publish_blockers(retry_payloads):
+                                    pass  # render_publish_blockers already showed the specific error(s)
+                                else:
+                                    retry_creation_payload = dict(retry_payloads["main_ticket_payload"])
+                                    retry_creation_payload["active"] = True
+                                    retry_result = client.create_ticket(supplier_id, retry_creation_payload)
+                                    if "error" in retry_result:
+                                        show_publish_error(f"create **{pf['ticket_code']}**", retry_result)
+                                    else:
+                                        retry_real_code = retry_result.get("code", retry_payloads["main_ticket_code"])
+                                        mark_code_as_taken("ticket", supplier_id, pf["ticket_code"], retry_result.get("name"))
+                                        if retry_real_code and retry_real_code != pf["ticket_code"]:
+                                            mark_code_as_taken("ticket", supplier_id, retry_real_code, retry_result.get("name"))
+                                        retry_option_result = client.create_ticket_option(
+                                            supplier_id, retry_real_code, retry_payloads["ticket_option_payload"])
+                                        if "error" in retry_option_result:
+                                            show_publish_error(f"create **{pf['ticket_code']}**'s option (created as `{retry_real_code}`)", retry_option_result)
+                                            st.session_state.mt_failed_items.append({
+                                                "ticket_code": pf["ticket_code"], "label": pf["label"],
+                                                "real_code": retry_real_code,
+                                                "modality_code": pf["modality_code"], "data": pfdata,
+                                            })
+                                        else:
+                                            st.success(f"✅ **{pf['ticket_code']}**: base modality '{pf['modality_code']}' created.")
+                                            if not mt_publish_as_active:
+                                                retry_deactivate_payload = dict(retry_creation_payload)
+                                                retry_deactivate_payload["active"] = False
+                                                retry_deactivate_payload["code"] = retry_real_code
+                                                retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
+                                                if "error" in retry_deactivate_result:
+                                                    st.warning(f"⚠️ **{pf['ticket_code']}**: created and published, but switching "
+                                                              f"back to inactive failed - {retry_deactivate_result}")
+                                                else:
+                                                    st.success(f"✅ **{pf['ticket_code']}** published successfully as `{retry_real_code}` (inactive/draft).")
+                                            else:
+                                                st.success(f"✅ **{pf['ticket_code']}** published and left ACTIVE as `{retry_real_code}` (as chosen above).")
+                                        st.session_state.mt_precreate_failed_items = [
+                                            x for x in st.session_state.mt_precreate_failed_items if x is not pf
+                                        ]
+                                        st.rerun()
+                            except Exception as e:
+                                show_publish_error(f"retry creating **{pf['ticket_code']}** (unexpected error)", str(e))
+
         st.write("")
         st.divider()
         if st.button("🆕 Start a new batch"):
             for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
-                       "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items"]:
+                       "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items",
+                       "mt_precreate_failed_items"]:
                 st.session_state.pop(key, None)
             _clear_batch_widget_state(SHARED_WIDGET_STATE_PREFIXES)
             st.rerun()
@@ -5559,7 +5721,12 @@ def render_ticket_flow(client):
                  "modality_code": (
                      f"{('Standard Private' if e.get('is_private') else 'Standard').upper().replace(' ', '_')}_{str(e.get('supplier_code') or '').strip()}"
                      if str(e.get("supplier_code") or "").strip()
-                     else (str(e.get("label") or "").strip() or ("Standard Private" if e.get("is_private") else "Standard"))
+                     # CONFIRMED BUG FIX (product owner, 2026-09-03): same real API rejection
+                     # ("Modality Code cannot contain '/' or '\\'") as render_multi_ticket_flow's
+                     # sibling default above - run the excursion label through the same
+                     # _clean_modality_code sanitizer before using it as the default here too.
+                     else (_clean_modality_code(str(e.get("label") or "").strip())
+                           or ("Standard Private" if e.get("is_private") else "Standard"))
                  )}
                 for i, e in enumerate(excursions)
             ]
@@ -10965,7 +11132,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
+BUILD_VERSION = "2026-09-03-ticket-modality-code-slash-fix-and-batch-recovery"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

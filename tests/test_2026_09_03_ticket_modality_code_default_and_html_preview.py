@@ -39,7 +39,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODULE_BUILD = "2026-09-03-time-window-fix-what-to-bring-duration-unit"
+MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 
@@ -66,7 +66,12 @@ def test_phase1_candidates_default_modality_code_to_excursion_label_when_no_supp
         'tk_url, tk_files, min_passengers=1, max_passengers=9, default_ticket_code=""):')
     assert '_excursion_label = str(e.get("label") or "").strip()' in window
     assert 'f"{_base_modality_name.upper().replace(\' \', \'_\')}_{_supplier_code}" if _supplier_code' in window
-    assert 'else (_excursion_label or _base_modality_name)' in window
+    # CONFIRMED BUG FIX (product owner, 2026-09-03, same day): a raw excursion label can contain
+    # "/" (e.g. "Turtles/Tortoises: Three Island Cruise (Praslin)"), which the real Travel
+    # Compositor API rejects outright in modality_code - the default now goes through the same
+    # _clean_modality_code sanitizer every other AI-suggested-code call site already uses. See
+    # test_2026_09_03_ticket_modality_code_slash_fix_and_batch_recovery.py for the full story.
+    assert 'else (_clean_modality_code(_excursion_label) or _base_modality_name)' in window
     # modality_name (client-facing) must still be the plain base name, unaffected.
     assert '"modality_name": _base_modality_name,' in window
 
@@ -93,8 +98,9 @@ def test_phase2_modality_code_widget_syncs_to_label_until_touched():
         'def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, '
         'tk_url, tk_files, min_passengers=1, max_passengers=9, default_ticket_code=""):')
     assert 'if not cand.get("_modcode_touched") and (cand.get("label") or "").strip():' in window
-    assert 'st.session_state[_modcode_key] = cand["label"].strip()' in window
-    assert 'if cand["modality_code"].strip() != (cand.get("label") or "").strip():' in window
+    # Sanitized the same way as PHASE 1's default (see the 2026-09-03 slash-fix test file).
+    assert 'st.session_state[_modcode_key] = _clean_modality_code(cand["label"].strip()) or cand["label"].strip()' in window
+    assert 'if cand["modality_code"].strip() != _clean_label:' in window
     assert 'cand["_modcode_touched"] = True' in window
 
 
@@ -117,9 +123,11 @@ def test_tk_pending_variant_selection_defaults_modality_code_to_label_when_no_su
     window = _function_source(src, "def render_ticket_flow(client):")
     assert '"tk_pending_variant_selection" not in st.session_state' in window
     idx = window.index('st.session_state.tk_pending_variant_selection = [')
-    block = window[idx:idx + 700]
+    block = window[idx:idx + 1000]
     assert 'str(e.get("supplier_code") or "").strip()' in block
-    assert 'str(e.get("label") or "").strip() or (' in block
+    # CONFIRMED BUG FIX (product owner, 2026-09-03, same day): sanitized the same way as the
+    # sibling defaults above - a raw label can contain "/" (real API rejection).
+    assert '_clean_modality_code(str(e.get("label") or "").strip())' in block
 
 
 def test_tk_pending_variant_selection_preserves_supplier_code_shape_when_present():
