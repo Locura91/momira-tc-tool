@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import builder
 
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 
 def test_lenient_raw_text_is_overridden_by_the_floored_tiers_synthesis():

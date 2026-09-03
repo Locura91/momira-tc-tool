@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 _NAMESPACE = "translation_state"
 

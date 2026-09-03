@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"

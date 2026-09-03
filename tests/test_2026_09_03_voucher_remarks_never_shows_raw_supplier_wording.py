@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ai_extractor as ax
 
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 RAW_SUPPLIER_TEXT = (
     "More than 24 hours before the excursion: no cancellation fee. Less than 24 hours before the "

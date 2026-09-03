@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-03-voucher-remarks-no-raw-supplier-cancellation-text"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -29,7 +29,7 @@ suite's established pattern for testing app.py-only functions.
 """
 import os
 
-MODULE_BUILD = "2026-09-03-ticket-modality-code-slash-fix-and-batch-recovery"
+MODULE_BUILD = "2026-09-03-modality-code-slash-sanitize-not-reject"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 
