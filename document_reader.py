@@ -1,5 +1,5 @@
 """
-Extracts raw text content from PDF, Word (.docx), and Excel (.xlsx) files.
+Extracts raw text content from PDF, Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files.
 
 This is deliberately dumb/mechanical - it just gets everything readable
 out of the file as plain text. The actual understanding (what's the tour
@@ -31,7 +31,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
+MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
@@ -252,6 +252,50 @@ def extract_text_from_docx(file_path: str) -> str:
     return "\n".join(parts)
 
 
+def extract_text_from_pptx(file_path: str) -> str:
+    """Slide text (title/body/text-box shapes, in shape order, including inside grouped shapes)
+    plus speaker notes, with a simple flattened rendering for any table shapes.
+
+    CONFIRMED REAL GAP (Chris, 2026-09-04): a supplier can send a whole tour/excursion writeup as
+    a PowerPoint deck (e.g. "1 Day Diving Course.pptx") - this module raised "Unsupported file
+    type" for '.pptx' before this fix, so the document couldn't even be uploaded. PowerPoint
+    decks from suppliers are typically photo-heavy marketing material, not rate-grid tables like
+    the Word/Excel documents this module was originally built to survive - so unlike
+    extract_text_from_docx/extract_text_from_xlsx, this does NOT do merge-aware grid
+    reconstruction (_render_grid) for tables yet. If a real pptx rate table with merged cells
+    turns up, that's the trigger to bring the same treatment here."""
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    prs = Presentation(file_path)
+    parts = []
+
+    def _walk_shapes(shapes):
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _walk_shapes(shape.shapes)
+                continue
+            if shape.has_text_frame:
+                text = shape.text_frame.text.strip()
+                if text:
+                    parts.append(text)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if any(cells):
+                        parts.append(" | ".join(cells))
+
+    for slide_num, slide in enumerate(prs.slides, start=1):
+        parts.append(f"[SLIDE {slide_num}]")
+        _walk_shapes(slide.shapes)
+        if slide.has_notes_slide:
+            notes = (slide.notes_slide.notes_text_frame.text or "").strip()
+            if notes:
+                parts.append(f"[SLIDE {slide_num} NOTES] {notes}")
+
+    return "\n".join(parts)
+
+
 def extract_text_from_xlsx(file_path: str) -> str:
     """Sheets, grid-preserving - the same span/ruler treatment extract_text_from_pdf and
     extract_text_from_docx already give their tables.
@@ -396,13 +440,15 @@ def extract_raw_text(file_path: str) -> str:
         return extract_text_from_docx(file_path)
     elif ext == ".xlsx":
         return extract_text_from_xlsx(file_path)
-    elif ext in (".doc", ".xls"):
+    elif ext == ".pptx":
+        return extract_text_from_pptx(file_path)
+    elif ext in (".doc", ".xls", ".ppt"):
         raise ValueError(
             f"Legacy '{ext}' format isn't supported directly. "
-            f"Please re-save/export the file as '.docx' or '.xlsx' first."
+            f"Please re-save/export the file as '.docx', '.xlsx', or '.pptx' first."
         )
     else:
-        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx")
+        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx, .pptx")
 
 
 import hashlib
@@ -488,6 +534,69 @@ def extract_images_from_xlsx(file_path: str, max_images: int = 12, seen_hashes: 
     return images
 
 
+def extract_images_from_pptx(file_path: str, max_images: int = 12, seen_hashes: set = None) -> list:
+    """Returns list of (image_bytes, extension) tuples for images embedded in a PowerPoint deck.
+    Skips duplicate images via content hash, and walks into grouped shapes - a supplier deck
+    commonly groups a photo together with a caption or logo overlay, and python-pptx only
+    iterates top-level shapes by default.
+
+    CONFIRMED REAL GAP, found testing against Chris's actual "1 Day Diving Course.pptx"
+    (2026-09-04): two separate problems, both on the SAME real file, each hiding the other.
+
+    1) The deck's real hero photos (5 images, ~80KB-1.1MB each) were NOT plain
+       MSO_SHAPE_TYPE.PICTURE shapes - they were "Picture Placeholder" shapes
+       (MSO_SHAPE_TYPE.PLACEHOLDER, whose placeholder_format.type is PICTURE), a normal pattern
+       in a polished slide template. An earlier version of this function only matched
+       MSO_SHAPE_TYPE.PICTURE and so found 12 tiny decorative icons (600-3300 bytes each) while
+       silently missing every real photo in the deck. Fixed by trying shape.image on every
+       non-group shape rather than gating on shape_type first - shape.image raises (caught
+       below) for any shape that isn't actually holding a picture, including an empty, unfilled
+       placeholder, so this is a broader net that also matches picture placeholders and any
+       other picture-holding shape type without hand-listing each one.
+
+    2) Even with (1) fixed, the SAME deck's decorative icons (there were 12 of them, sitting
+       earlier in shape order than the 5 real photos) still filled the default max_images=12 cap
+       before the walk ever reached a real photo - a genuine 0-real-images-returned result that
+       would have looked identical to "this deck has no images", exactly the silent-failure
+       shape this whole pipeline has been bitten by before (see the 2026-08-30/08-31 incident
+       docs). Real tour/product photos are essentially always far larger than a decorative
+       icon/logo/divider graphic, so instead of capping during the walk (which just keeps
+       whatever was found first), every image on the slide(s) is collected, then sorted largest
+       first before max_images is applied - the biggest, most likely-to-be-real images win a
+       slot over small decorative graphics regardless of where they sit in the shape tree."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx import Presentation
+
+    if seen_hashes is None:
+        seen_hashes = set()
+    candidates = []  # every deduped image found, unranked - sorted/capped after the full walk
+
+    def _walk(shapes):
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _walk(shape.shapes)
+                continue
+            try:
+                image = shape.image
+            except Exception:
+                continue
+            try:
+                img_bytes = image.blob
+                img_hash = hashlib.sha256(img_bytes).hexdigest()
+                if img_hash in seen_hashes:
+                    continue
+                seen_hashes.add(img_hash)
+                candidates.append((img_bytes, image.ext))
+            except Exception:
+                continue
+
+    prs = Presentation(file_path)
+    for slide in prs.slides:
+        _walk(slide.shapes)
+    candidates.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return candidates[:max_images]
+
+
 def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None,
                     errors: list = None, label: str = None) -> list:
     """
@@ -527,9 +636,11 @@ def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None
             return extract_images_from_docx(file_path, max_images, seen_hashes)
         elif ext == ".xlsx":
             return extract_images_from_xlsx(file_path, max_images, seen_hashes)
-        # No else/error here for an unsupported extension (.doc, .pptx, etc.) - that's a normal,
+        elif ext == ".pptx":
+            return extract_images_from_pptx(file_path, max_images, seen_hashes)
+        # No else/error here for an unsupported extension (.doc, .xls, etc.) - that's a normal,
         # expected case (image extraction is a bonus, not a requirement, for a format that isn't
-        # PDF/.docx/.xlsx), not a failure worth flagging.
+        # PDF/.docx/.xlsx/.pptx), not a failure worth flagging.
     except Exception as e:
         print(f"⚠️ Image extraction failed for {file_path}: {e}")
         if errors is not None:

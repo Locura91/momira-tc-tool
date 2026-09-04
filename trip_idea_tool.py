@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
+MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
 
 _PHASE_KEY = "ti_phase"
 

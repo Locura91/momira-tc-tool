@@ -8,6 +8,7 @@ anthropic
 pdfplumber
 pymupdf
 python-docx
+python-pptx
 openpyxl
 google-genai
 psycopg2-binary

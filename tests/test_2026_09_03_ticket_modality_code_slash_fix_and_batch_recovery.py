@@ -29,7 +29,7 @@ suite's established pattern for testing app.py-only functions.
 """
 import os
 
-MODULE_BUILD = "2026-09-03-new-batch-currency-image-state-and-geo-country"
+MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 
