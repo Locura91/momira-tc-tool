@@ -38,7 +38,7 @@ from pptx.util import Emu
 
 import document_reader
 
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REQUIREMENTS_TXT = os.path.join(

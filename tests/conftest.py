@@ -59,6 +59,20 @@ class FakeTravelCompositorAPI:
         self.calls.append(("resolve_destination_geolocation", query_term))
         return {"valid": False}
 
+    def resolve_transport_base(self, query_term):
+        # Mirrors api_client.py's real resolve_transport_base return shape - see its own
+        # docstring. Added 2026-09-05 for the first Transport-level builder tests.
+        self.calls.append(("resolve_transport_base", query_term))
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return {"code": None, "name": None, "type": None, "latitude": None,
+                    "longitude": None, "valid": False, "match_type": "empty_query"}
+        if clean_query in self.unresolvable:
+            return {"code": None, "name": None, "type": None, "latitude": None,
+                    "longitude": None, "valid": False, "match_type": "not_found"}
+        return {"code": self._code_for(clean_query), "name": clean_query, "type": "CITY",
+                "latitude": 0.0, "longitude": 0.0, "valid": True, "match_type": "name_exact"}
+
     def get_closed_tours(self, *a, **kw):
         return []
 

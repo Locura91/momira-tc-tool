@@ -93,6 +93,11 @@ def test_closed_tour_voucher_remarks_carry_the_packing_list(fake_api_client):
 
 
 def test_closed_tour_voucher_keeps_cancellation_and_packing_list_together(fake_api_client):
+    """CHANGED BEHAVIOR (2026-09-04): the document's own cancellation_policy_text is no longer
+    read at the ClosedTour call site at all (see builder.build_closed_tour_payloads' own
+    "CANCELLATION POLICY" comment) - the voucher always gets Momira's flat 30-day/100%-refund
+    house standard instead of the supplier's stated 45-day/100%-fee terms, still followed by the
+    packing list."""
     result = build_closed_tour_payloads(
         make_pre_config(),
         minimal_extracted_data(
@@ -100,10 +105,12 @@ def test_closed_tour_voucher_keeps_cancellation_and_packing_list_together(fake_a
             cancellation_policy_text="Cancellation Policy:\n- 45 days to check-in: 100% fee"),
         fake_api_client)
     voucher = result["main_tour_payload"]["datasheets"]["EN"]["voucherRemarks"]
-    assert "100% fee" in voucher
+    assert "45 days" not in voucher
+    assert "30 days" in voucher
     assert "What to bring:" in voucher
-    # Cancellation first, packing list after - see _with_what_to_bring's docstring on ordering.
-    assert voucher.index("100% fee") < voucher.index("What to bring:")
+    # House-standard cancellation text first, packing list after - see _with_what_to_bring's
+    # docstring on ordering.
+    assert voucher.index("30 days") < voucher.index("What to bring:")
 
 
 def test_manual_notes_stay_last_after_the_packing_list(fake_api_client):

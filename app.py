@@ -4203,12 +4203,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             "_modcode_touched": bool(_supplier_code),
                         })
                     if not candidates:
-                        # No real excursion variants detected (single-excursion case) - the
-                        # "Ticket Name" typed in PHASE 2 is just a display label, not a real
-                        # variant to filter the source by - is_genuine_variant stays False so
-                        # PHASE 3 never sends it to the AI as a variant filter (doing so
-                        # caused the AI to search for a nonexistent named variant and return
-                        # an empty extraction - same bug as the ClosedTour flow had).
+                        # No usable excursion name/title could be found at all (rare - see
+                        # detect_ticket_variants' own docstring) - the "Ticket Name" typed in
+                        # PHASE 2 is just a display label, not a real variant to filter the
+                        # source by - is_genuine_variant stays False so PHASE 3 never sends it
+                        # to the AI as a variant filter (doing so caused the AI to search for a
+                        # nonexistent named variant and return an empty extraction - same bug as
+                        # the ClosedTour flow had).
                         # Prefill the Ticket Code from what was already entered back in Step 3
                         # (default_ticket_code) so the human doesn't have to type it again here.
                         # modality_code starts blank (not "Standard") because there's no excursion
@@ -4218,6 +4219,20 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         candidates = [{"label": "", "ticket_code": default_ticket_code, "modality_code": "",
                                       "modality_name": "Standard",
                                       "selected": True, "is_genuine_variant": False}]
+                    elif len(candidates) == 1:
+                        # CONFIRMED BUG FIX (product owner, 2026-09-05): "To set up a new ticket,
+                        # the ticket name must be the name of the detected excursion." A
+                        # single-excursion document now still comes back from
+                        # detect_ticket_variants with its own real label (see that function's
+                        # docstring) instead of an empty list, so it flows through the same loop
+                        # as the multi-excursion branch above and already gets that real label as
+                        # its "Ticket Name" on the "Set up this Ticket" screen - no more forcing
+                        # the human to retype a name the AI already found. The one thing that
+                        # loop doesn't set for a lone real excursion is the Ticket Code, which the
+                        # human already typed back in Step 3 - carry that over here exactly like
+                        # the no-name fallback above does, so it isn't lost just because a real
+                        # name was detected this time.
+                        candidates[0]["ticket_code"] = default_ticket_code
 
                     _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
 
@@ -11193,7 +11208,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-04-pptx-text-and-image-extraction"
+BUILD_VERSION = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

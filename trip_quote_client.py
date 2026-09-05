@@ -79,7 +79,7 @@ from api_client import TravelCompositorAPI
 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): named in the audit as the newest file in
 # the repo with no MODULE_BUILD stamp - see api_client.py's matching note for why the detector
 # being blind to files like this one is worth closing.
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 # CONFIRMED, 2026-08-31 (project doc, the "four booking-shape fields" the conversational flow
 # collects once the customer approves the itinerary): "number of rooms (max 4), number of

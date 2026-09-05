@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 import math
 import datetime
@@ -41,8 +41,23 @@ _MAX_OCCUPANCY_PAX = 9
 
 # CONFIRMED STANDING RULE (product owner, 2026-08-24): "if no specific [cancellation policy is]
 # mentioned, leave the standardized Cancellation policy to 30 days or prior for 100% refund. It
-# cannot be better than this." Applies universally, same "for all services" scope as the pax cap
-# above - see _cancellation_ranges_from_tiers for where it's enforced as a floor, not a ceiling.
+# cannot be better than this." Still the live rule for a HUMAN deliberately typing/editing a
+# policy by hand (bulk-cancellation screens, cancellation_links.py saved defaults) - see
+# _cancellation_ranges_from_tiers's own docstring: a floor there, not a full override, for that
+# case only.
+#
+# DOCUMENT/AI-EXTRACTION EXTENDED THIS to a full override, not a floor (product owner, 2026-09-04,
+# given this exact example: "More than 48 hours before the tour: no fee. Within 48 hours: 50%
+# fee. No show: no refund. --> Do not show as remark, as our internal cancellation with 30 days
+# or prior is better for our Momira company."). The floor alone still let a supplier's own extra
+# or stricter tiers through unmodified in the customer-facing text/structured field whenever they
+# weren't a too-generous 100%-refund tier - now every one of builder.py's 5 product builders
+# stops reading the document's own extracted cancellation_policy_tiers/cancellation_policy_text
+# at all (see each builder's own "CANCELLATION POLICY" comment at its call site), so a document's
+# stated terms - generous, strict, or anything in between - never reach cancellationRanges or the
+# voucher text. Only Momira's own flat 30-day/100%-refund standard is ever published from a
+# document upload; a human explicitly using the bulk-cancellation tools can still set something
+# else on purpose.
 _MIN_FULL_REFUND_NOTICE_DAYS = 30
 
 
@@ -493,6 +508,19 @@ def _cancellation_ranges_from_tiers(tiers):
     Compositor once one is live, and adjust here if the actual behavior
     turns out to be different.
 
+    STILL USED FOR: a human deliberately typing/editing tiers by hand (the bulk-cancellation
+    screens' review tables, cancellation_links.py's saved company-wide/per-supplier defaults) -
+    that is real, intentional input a person is choosing right now, not a supplier's document
+    being auto-applied, so the FLOOR behavior below (protect against an accidentally-too-generous
+    typed value, but otherwise honor what was typed) is exactly right there.
+
+    NO LONGER FED FROM DOCUMENT EXTRACTION (product owner, 2026-09-04 - see this module's own
+    _MIN_FULL_REFUND_NOTICE_DAYS comment for the full history): every one of builder.py's 5
+    product builders (ClosedTour/Ticket/Transfer/Transport/Hotel) now passes None here instead of
+    the document's own extracted cancellation_policy_tiers, regardless of what the supplier's
+    contract states - see each builder's own "CANCELLATION POLICY" comment at its call site. This
+    function itself is unchanged; only what auto-extraction feeds into it changed.
+
     CONFIRMED REAL RULE (human feedback): this used to be hardcoded to a
     flat 30-days/100%-refund default regardless of what the source document
     actually said. Returns None (not an empty list) when `tiers` is falsy,
@@ -518,17 +546,16 @@ def _cancellation_ranges_from_tiers(tiers):
     # mentioned, leave the standardized Cancellation policy to 30 days or prior for 100%
     # refund. It cannot be better than this." Momira's 30-day/100%-refund default (see
     # _DEFAULT_CANCELLATION_VOUCHER_TEXT / CancellationRange()'s own default) is a FLOOR, not
-    # just a fallback for when a document says nothing - a document offering a full refund on
-    # SHORTER notice than 30 days must not be published as stated, since that undercuts the
-    # house standard. A document that is stricter (more days required, or a lower refund at
-    # the same days) is a real, intentional supplier term and is always honored as-is - only a
-    # 100%-refund tier priced at fewer than 30 days gets pushed out to 30.
+    # just a fallback for when nothing was typed - a value asking for full refund on SHORTER
+    # notice than 30 days must not be applied as typed, since that undercuts the house standard.
+    # A value that is stricter (more days required, or a lower refund at the same days) is
+    # honored as-is - only a 100%-refund tier priced at fewer than 30 days gets pushed out to 30.
     floored = [
         (_MIN_FULL_REFUND_NOTICE_DAYS if refund_pct >= 100.0 and days < _MIN_FULL_REFUND_NOTICE_DAYS else days,
          refund_pct)
         for days, refund_pct in cleaned
     ]
-    # Flooring two different stated tiers up to the same day count would otherwise publish two
+    # Flooring two different tiers up to the same day count would otherwise publish two
     # contradictory ranges for day 30 - keep the more generous (higher) refund for that day.
     merged_by_day = {}
     for days, refund_pct in floored:
@@ -580,13 +607,21 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     genuinely in effect - exactly the revenue the house floor exists to protect, and the opposite
     of what "Condition" is supposed to communicate.
 
-    Priority is now: (1) synthesize the text from the (floored) structured tiers whenever any
-    exist - this is guaranteed to match the policy actually enforced, never the supplier's
-    unfloored wording; (2) the source's own raw text, ONLY as a last resort when no structured
-    tiers exist at all (extraction always pairs the two together - see ai_extractor.py's
-    cancellation_policy_text rule - so this path is effectively legacy/malformed-data-only); (3)
-    otherwise, the standing 30-day/100%-refund default text, so the voucher is never blank about
-    cancellation.
+    CONFIRMED FINAL RULE (product owner, 2026-09-04 - see _cancellation_ranges_from_tiers's own
+    docstring and _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full history):
+    `cancellation_tiers` is now always None at every real call site (all 5 callers get it from
+    _cancellation_ranges_from_tiers, which now always returns None), so the tier-formatting
+    branch below is unreachable in practice today - kept, not deleted, since it's still directly
+    testable and becomes live again with a one-line reversal of that other function, same
+    reasoning as leaving this function's own parameters in place. The `cancellation_policy_text`
+    raw-source-text fallback that used to sit here as priority (2) is REMOVED outright (not just
+    deprioritized) - the exact same "hand the customer a more generous window than the one
+    genuinely in effect" problem the 2026-09-03 fix closed for the tiers branch was still open
+    for this one: a supplier's own stated wording (e.g. "48 hours' notice, 50% fee") could still
+    reach the voucher verbatim whenever no structured tiers existed to prioritize over it. Now:
+    (1) synthesize from cancellation_tiers if ever passed (dead path today, see above); (2)
+    otherwise, always the standing 30-day/100%-refund default text - never the source's own
+    words, so the voucher can never describe a policy Momira doesn't actually enforce.
     """
     if cancellation_tiers:
         lines = ["Cancellation Policy:"]
@@ -616,8 +651,8 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
                 lines.append(f"- {fee_pct:g}% cancellation fee if cancelled less than {days} days before "
                               f"arrival ({refund_pct:g}% refund).")
         return "\n".join(lines)
-    if cancellation_policy_text:
-        return cancellation_policy_text
+    # cancellation_policy_text (the source's own raw wording) is deliberately never returned -
+    # see this function's own docstring, CONFIRMED FINAL RULE 2026-09-04.
     return default_text
 
 
@@ -1917,24 +1952,21 @@ def build_closed_tour_payloads(
                                   fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage")))
         supplements_list = build_supplement_vos(_consistent_supplements)
 
-        # CONFIRMED REAL RULE (human feedback): cancellation used to be
-        # hardcoded to a flat 30-days/100%-refund default for every tour
-        # regardless of what the supplier's own contract actually said -
-        # that was wrong. Use the source's own extracted tiers (see
-        # _cancellation_ranges_from_tiers's docstring for the fee->refund%
-        # conversion and days-threshold assumption) whenever the source
-        # stated a specific policy; otherwise keep the existing flat default
-        # (CancellationRange()'s own 30-days/100% default) untouched.
-        cancellation_tiers = _cancellation_ranges_from_tiers(extracted_dmc_data.get("cancellation_policy_tiers"))
+        # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+        # cancellation_policy_tiers is deliberately NOT read here anymore - see
+        # _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full history. Passing None
+        # always yields Momira's own flat 30-day/100%-refund house standard
+        # (CancellationRange()'s own default), regardless of what the supplier's contract states.
+        cancellation_tiers = _cancellation_ranges_from_tiers(None)
         cancellation_ranges = (
             [CancellationRange(days=d, percentage=p) for d, p in cancellation_tiers]
             if cancellation_tiers else [CancellationRange()]
         )
 
-        # CONFIRMED REAL RULE (product owner): voucherRemarks used to be hardcoded blank
-        # here always, silently dropping the document's own stated cancellation policy from
-        # the voucher entirely - see _cancellation_voucher_text()'s docstring for the full
-        # rule and the cross-product inconsistency this fixes.
+        # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+        # cancellation_policy_text is deliberately NOT read here either (see
+        # _cancellation_voucher_text's own docstring) - voucherRemarks always gets Momira's own
+        # standing 30-day/100%-refund wording, never the supplier's stated terms.
         # strip_stray_html applied to every plain-text field below EXCEPT included/excluded AND
         # description - those are deliberately HTML. included/excluded because Travel
         # Compositor's own API expects `<ul><li>` there (see that field's own extraction rule /
@@ -1960,7 +1992,7 @@ def build_closed_tour_payloads(
             hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
             voucherRemarks=_with_manual_notes(
                 _with_what_to_bring(
-                    _cancellation_voucher_text(extracted_dmc_data.get("cancellation_policy_text"), cancellation_tiers),
+                    _cancellation_voucher_text(None, cancellation_tiers),
                     extracted_dmc_data),
                 extracted_dmc_data),
             included=extracted_dmc_data.get("included") or "",
@@ -2300,36 +2332,38 @@ def build_ticket_payloads(
             for s in (extracted_ticket_data.get("supplements") or []) if isinstance(s, dict)
         ]
 
-        # CONFIRMED REAL RULE (human feedback): cancellation used to be
-        # hardcoded to a flat 30-days/100%-refund default for every ticket
-        # regardless of what the supplier's own contract actually said -
-        # that was wrong. Use the source's own extracted tiers whenever the
-        # source stated a specific policy (see _cancellation_ranges_from_tiers's
-        # docstring for the fee->refund% conversion and days-threshold
-        # assumption); otherwise keep the existing flat default untouched.
-        ticket_cancellation_tiers = _cancellation_ranges_from_tiers(extracted_ticket_data.get("cancellation_policy_tiers"))
+        # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+        # cancellation_policy_tiers is deliberately NOT read here anymore - see
+        # _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full history. Passing None
+        # always yields Momira's own flat 30-day/100%-refund house standard
+        # (TicketCancellationRange()'s own default), regardless of what the supplier's contract
+        # states.
+        ticket_cancellation_tiers = _cancellation_ranges_from_tiers(None)
         ticket_cancellation_ranges = (
             [TicketCancellationRange(cancellationDays=d, cancellationPercentage=p) for d, p in ticket_cancellation_tiers]
             if ticket_cancellation_tiers else [TicketCancellationRange()]
         )
         # CONFIRMED REAL RULE (product owner): the cancellation policy that actually applies
-        # (document-stated, or our standing default) must always reach the voucher - see
-        # _cancellation_voucher_text()'s docstring. `voucher_remarks` (a broader, human-
-        # editable field, not cancellation-specific) still wins as the BASE text if set.
+        # must always reach the voucher - see _cancellation_voucher_text()'s docstring.
+        # `voucher_remarks` (a broader, human-editable field, not cancellation-specific) still
+        # wins as the BASE text if a human set it directly in the review UI - but ai_extractor.py
+        # no longer seeds it from the document's own cancellation data (2026-09-04), so in the
+        # normal document-extraction case this falls straight to Momira's flat 30-day/100%-refund
+        # house standard, never the supplier's stated terms.
         #
         # CONFIRMED REAL BUG (audit, 2026-08-24): the datasheet used to short-circuit the whole
         # composition - `voucher_remarks or <composed text>` - so whenever voucher_remarks was
-        # non-empty the packing list and the standing supplier notes were both discarded. That was
-        # the COMMON case, not an edge case: ticket extraction copies cancellation_policy_text into
-        # voucher_remarks for every ticket whose document states a policy (ai_extractor.py ~2810).
-        # The result was one record publishing two contradictory versions of its own remarks - the
-        # modality's composed one, and a truncated customer-facing one on the datasheet.
+        # non-empty the packing list and the standing supplier notes were both discarded.
         # Composing from whichever base applies fixes both: the human's text still wins over the
         # cancellation default, and what-to-bring/manual notes are appended either way.
+        # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+        # cancellation_policy_text is deliberately NOT read here either (see
+        # _cancellation_voucher_text's own docstring) - voucherRemarks always gets Momira's own
+        # standing 30-day/100%-refund wording, never the supplier's stated terms, unless a human
+        # has directly set voucher_remarks in the review UI.
         _ticket_voucher_base = (
             (extracted_ticket_data.get("voucher_remarks") or "").strip()
-            or _cancellation_voucher_text(
-                extracted_ticket_data.get("cancellation_policy_text"), ticket_cancellation_tiers)
+            or _cancellation_voucher_text(None, ticket_cancellation_tiers)
         )
         # CONFIRMED REAL RULE (product owner, 2026-08-24): "if the Ticket description from the
         # supplier says, no Entrance fees included, this information must be stated in the Title
@@ -2840,18 +2874,16 @@ def build_transfer_payload(
             "description", extracted_transfer_data.get("description") or "")
         effective_description = strip_stray_html(effective_description)
 
-        # CONFIRMED FALLBACK RULE (product owner decision): when the document states no
-        # specific cancellation terms, fall back to the same 30-day/100%-refund default
-        # used everywhere else in this app - expressed as text here since Transfer has no
-        # structured cancellation field, unlike ClosedTour/Ticket. See
-        # _cancellation_voucher_text()'s docstring: this used to go BLANK whenever the
-        # source had real tiers but no separate summary sentence - a genuinely
-        # document-stated policy could silently vanish from the voucher. Now synthesizes
-        # text from the tiers themselves in that case, instead of dropping it.
-        cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transfer_data.get("cancellation_policy_tiers"))
+        # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+        # cancellation_policy_tiers/cancellation_policy_text is deliberately NOT read here
+        # anymore - see _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full
+        # history. Expressed as text here since Transfer has no structured cancellation field,
+        # unlike ClosedTour/Ticket - passing None for both always yields Momira's own flat
+        # 30-day/100%-refund house standard text, never the supplier's stated terms.
+        cancellation_tiers = _cancellation_ranges_from_tiers(None)
         voucher_text = _with_manual_notes(
             _with_what_to_bring(
-                _cancellation_voucher_text(extracted_transfer_data.get("cancellation_policy_text"), cancellation_tiers),
+                _cancellation_voucher_text(None, cancellation_tiers),
                 extracted_transfer_data),
             extracted_transfer_data)
         # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
@@ -3675,17 +3707,21 @@ def build_transport_payloads(
     charge_unit = (extracted_transport_data.get("charge_unit") or "per_pax").lower()
     price_per_pax = charge_unit != "per_service"
 
-    # Cancellation: Transport has a genuine structured field (unlike Transfer) - still reuses
-    # the shared cross-product voucher-text rule (_cancellation_voucher_text) since the AI's
-    # source-stated text/tiers are exactly the same shape either way.
-    cancellation_tiers = _cancellation_ranges_from_tiers(extracted_transport_data.get("cancellation_policy_tiers"))
+    # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+    # cancellation_policy_tiers/cancellation_policy_text is deliberately NOT read here anymore -
+    # see _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full history. Transport has
+    # a genuine structured field (unlike Transfer), but still reuses the shared cross-product
+    # voucher-text rule (_cancellation_voucher_text) for the customer-facing copy. Passing None
+    # for both always yields Momira's own flat 30-day/100%-refund house standard
+    # (ContractTransportCancellationRangeVO()'s own default), never the supplier's stated terms.
+    cancellation_tiers = _cancellation_ranges_from_tiers(None)
     cancellation_ranges = (
         [ContractTransportCancellationRangeVO(days=d, percentage=p) for d, p in cancellation_tiers]
         if cancellation_tiers else [ContractTransportCancellationRangeVO()]
     )
     voucher_text = _with_manual_notes(
         _with_what_to_bring(
-            _cancellation_voucher_text(extracted_transport_data.get("cancellation_policy_text"), cancellation_tiers),
+            _cancellation_voucher_text(None, cancellation_tiers),
             extracted_transport_data),
         extracted_transport_data)
 
@@ -4274,22 +4310,21 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     # ---- Cancellation text + manual notes -> voucherRemarks only (CONFIRMED: no structured
     # cancellation field exists on Hotel) ----
-    # CONFIRMED REAL CRASH (audit, 2026-08-24): this passed the extractor's RAW tier shape
+    # CONFIRMED REAL CRASH (audit, 2026-08-24): this used to pass the extractor's RAW tier shape
     # ([{"days": 30, "fee_percentage": 25}]) straight into _cancellation_voucher_text, which
     # expects the CONVERTED (days, refund_pct) pairs that _cancellation_ranges_from_tiers
-    # produces - every other builder converts first (ClosedTour 1336, Ticket 1609, Transfer 2028,
-    # Transport 2736). Iterating a dict yields its KEYS, so the helper computed
-    # 100.0 - "fee_percentage" -> TypeError. The call sits OUTSIDE this function's try/except and
-    # app.py's call site is unguarded, so a hotel with stated cancellation tiers but no prose
-    # summary (exactly what happens when a human types tiers into the cancellation editor without
-    # also writing a summary) crashed the app with a raw traceback and could never be published.
-    # Converting here also restores the fee->refund inversion Hotel was silently skipping.
+    # produces - every other builder converts first. Iterating a dict yields its KEYS, so the
+    # helper computed 100.0 - "fee_percentage" -> TypeError. Converting here also restored the
+    # fee->refund inversion Hotel was silently skipping.
+    #
+    # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
+    # cancellation_policy_tiers/cancellation_policy_text is deliberately NOT read here anymore -
+    # see _MIN_FULL_REFUND_NOTICE_DAYS's module-level comment for the full history. Passing None
+    # for both always yields Momira's own flat 30-day/100%-refund house standard text, never the
+    # supplier's stated terms.
     voucher_text = _with_manual_notes(
         _with_what_to_bring(
-            _cancellation_voucher_text(
-                extracted.get("cancellation_policy_text"),
-                _cancellation_ranges_from_tiers(extracted.get("cancellation_policy_tiers")),
-            ),
+            _cancellation_voucher_text(None, _cancellation_ranges_from_tiers(None)),
             extracted,
         ),
         extracted,

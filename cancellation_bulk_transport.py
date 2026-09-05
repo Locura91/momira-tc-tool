@@ -51,7 +51,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple

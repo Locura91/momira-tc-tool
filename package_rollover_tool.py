@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 _PHASE_KEY = "pkr_phase"
 

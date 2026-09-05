@@ -16,10 +16,20 @@ bypassed builder._cancellation_voucher_text's own (already-fixed, same day - see
 test_2026_09_03_cancellation_voucher_text_uses_floored_tiers.py) floored-tiers-first logic. Same
 underlying bug as that earlier fix, reached through the seeding path instead of the fallback path.
 
-Fix: seed voucher_remarks through that SAME shared, already-correct function, so a document's raw,
-more lenient supplier wording is never shown to the customer - only the floored tiers (matching
-what's actually enforced), or nothing (default_text="") if no tiers exist, leaving builder's own
-publish-time fallback (Momira's standing 30-day/100%-refund default) to apply.
+Fix (2026-09-03): seed voucher_remarks through that SAME shared, already-correct function, so a
+document's raw, more lenient supplier wording is never shown to the customer - only the floored
+tiers (matching what's actually enforced), or nothing (default_text="") if no tiers exist, leaving
+builder's own publish-time fallback (Momira's standing 30-day/100%-refund default) to apply.
+
+TIGHTENED FURTHER (2026-09-04, given a near-identical follow-up example: "More than 48 hours
+before the tour: no fee. Within 48 hours: 50% fee. No show: no refund. --> Do not show as remark,
+as our internal cancellation with 30 days or prior is better for our Momira company."): even
+seeding from the FLOORED tiers wasn't enough - a supplier's own stricter/partial extra tiers (e.g.
+a 50%-fee-within-48-hours step) still reached the customer-facing voucher untouched, since flooring
+only touches a too-generous full-refund tier. Per the standing rule, extraction no longer seeds
+voucher_remarks from the document's own cancellation data AT ALL anymore - it's left blank, so
+builder.py's own None-based cancellation composition applies Momira's flat 30-day/100%-refund house
+standard at publish time instead, regardless of what the supplier's document states.
 """
 import os
 import sys
@@ -28,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ai_extractor as ax
 
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 RAW_SUPPLIER_TEXT = (
     "More than 24 hours before the excursion: no cancellation fee. Less than 24 hours before the "
@@ -63,10 +73,13 @@ def test_main_info_never_seeds_voucher_remarks_with_the_raw_sea_sickness_clause(
     assert "24 hour" not in data["voucher_remarks"]
 
 
-def test_main_info_seeds_voucher_remarks_from_the_floored_tiers_instead(monkeypatch):
+def test_main_info_no_longer_seeds_voucher_remarks_from_the_document_at_all(monkeypatch):
+    """CHANGED BEHAVIOR (2026-09-04): even the previously-floored-tiers text is no longer seeded -
+    voucher_remarks stays blank so builder.py's own flat 30-day/100%-refund default applies at
+    publish time instead."""
     monkeypatch.setattr(ax, "_call_claude", lambda *a, **k: _fake_extraction_result())
     data = ax.extract_ticket_main_info("some raw document text")
-    assert "30 days" in data["voucher_remarks"]
+    assert data["voucher_remarks"] == ""
 
 
 def test_main_info_never_overwrites_a_human_or_ai_supplied_voucher_remarks(monkeypatch):
@@ -95,7 +108,8 @@ def test_extract_ticket_data_never_seeds_voucher_remarks_with_the_raw_sea_sickne
     assert "24 hour" not in data["voucher_remarks"]
 
 
-def test_extract_ticket_data_seeds_voucher_remarks_from_the_floored_tiers_instead(monkeypatch):
+def test_extract_ticket_data_no_longer_seeds_voucher_remarks_from_the_document_at_all(monkeypatch):
+    """CHANGED BEHAVIOR (2026-09-04): same as extract_ticket_main_info above."""
     monkeypatch.setattr(ax, "_call_claude", lambda *a, **k: _fake_extraction_result())
     data = ax.extract_ticket_data("some raw document text")
-    assert "30 days" in data["voucher_remarks"]
+    assert data["voucher_remarks"] == ""

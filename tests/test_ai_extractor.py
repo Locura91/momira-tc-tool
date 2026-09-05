@@ -130,6 +130,61 @@ def test_detect_tour_variants_deduplicates_by_label():
 
 
 # ============================================================
+# detect_ticket_variants
+# ============================================================
+def test_detect_ticket_variants_still_returns_the_single_excursions_own_label():
+    """CONFIRMED BUG FIX (product owner, 2026-09-05): "To set up a new ticket, the ticket name
+    must be the name of the detected excursion." This used to return an empty list whenever only
+    one excursion was found (multiple_excursions: false), so app.py's "Set up this Ticket" screen
+    had no detected name to prefill the Ticket Name field with - the human had to type it by hand
+    even though the AI clearly knew the excursion's name. The prompt now asks for the single
+    excursion's own entry even in the one-excursion case, so the label survives."""
+    ax._get_anthropic_client = lambda: object()
+    ax._stream_claude_tool_call = fake_claude({
+        "multiple_excursions": False,
+        "excursions": [{"label": "1 Day Diving Course", "is_private": False, "supplier_code": None}],
+    })
+    result = ax.detect_ticket_variants("A single one-day diving course excursion.")
+    assert len(result) == 1
+    assert result[0]["label"] == "1 Day Diving Course"
+
+
+def test_detect_ticket_variants_returns_each_excursion_found():
+    ax._get_anthropic_client = lambda: object()
+    ax._stream_claude_tool_call = fake_claude({
+        "multiple_excursions": True,
+        "excursions": [
+            {"label": "City Tour", "is_private": False, "supplier_code": None},
+            {"label": "Desert Safari", "is_private": True, "supplier_code": "WT2"},
+        ],
+    })
+    result = ax.detect_ticket_variants("A city tour AND a desert safari, same document.")
+    assert len(result) == 2
+    assert {e["label"] for e in result} == {"City Tour", "Desert Safari"}
+
+
+def test_detect_ticket_variants_returns_empty_only_when_no_usable_name_exists_at_all():
+    ax._get_anthropic_client = lambda: object()
+    ax._stream_claude_tool_call = fake_claude({"multiple_excursions": False, "excursions": []})
+    result = ax.detect_ticket_variants("Unreadable/garbled content with no excursion title.")
+    assert result == []
+
+
+def test_detect_ticket_variants_deduplicates_by_label():
+    ax._get_anthropic_client = lambda: object()
+    ax._stream_claude_tool_call = fake_claude({
+        "multiple_excursions": True,
+        "excursions": [
+            {"label": "  City Tour  ", "is_private": False, "supplier_code": None},
+            {"label": "city tour", "is_private": False, "supplier_code": None},
+            {"label": "Desert Safari", "is_private": True, "supplier_code": None},
+        ],
+    })
+    result = ax.detect_ticket_variants("doc")
+    assert len(result) == 2
+
+
+# ============================================================
 # detect_multiple_modalities
 # ============================================================
 def test_detect_multiple_modalities_returns_empty_for_one_price_table():

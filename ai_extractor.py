@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-04-pptx-text-and-image-extraction"
+MODULE_BUILD = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
 
 import os
 import re
@@ -21,11 +21,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# CONFIRMED BUG FIX (product owner, 2026-09-03): see the voucher_remarks seeding fix in
-# extract_ticket_data/extract_ticket_main_info below - reuses builder.py's own (already-fixed,
-# 2026-09-03) cancellation-text logic so the two can never drift out of sync again. builder.py
-# has no import of ai_extractor, so this one-directional import carries no circularity risk.
-from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text
+# CONFIRMED BUG FIX (product owner, 2026-09-03, further tightened 2026-09-04): see the
+# voucher_remarks handling in extract_ticket_data/extract_ticket_main_info below. Document
+# extraction no longer seeds voucher_remarks from the document's own cancellation data at all
+# (left blank so builder.py's own None-based composition applies Momira's flat 30-day/100%-
+# refund house standard at publish time) - so this module no longer needs builder's
+# cancellation-text helpers directly.
 
 VARIANT_DETECTION_PROMPT = """You are checking whether a DMC (Destination Management Company) supplier document/page describes ONE tour, or MULTIPLE distinct tour variants bundled together (e.g. a 3-night and a 4-night version of the same Nile cruise, or a Luxor-to-Aswan and an Aswan-to-Luxor direction of the same itinerary).
 
@@ -2930,24 +2931,32 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
        code and null is the normal/expected answer."}
   ]
 }
-If there is only one excursion, set "multiple_excursions": false and "excursions": [] ."""
+IMPORTANT: even when there is only ONE excursion, still include it as a single entry in "excursions"
+(with its own real label, is_private, supplier_code) and set "multiple_excursions": false - "excursions"
+should only ever be genuinely empty if the document gives no usable excursion name/title at all."""
 
 
 def detect_ticket_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     """
-    Checks whether the source describes MULTIPLE distinct excursions/
-    activities bundled in one document, as opposed to just one ticket.
-    Returns an empty list if only one is found, or a list of
-    {"label": ...} dicts if genuinely multiple are found.
+    Checks whether the source describes one or several distinct excursions/activities. Always
+    returns a list with one {"label": ...} entry per excursion detected - a single-excursion
+    document still comes back as a one-item list (see the prompt's own "even when there is only
+    ONE excursion" instruction, added 2026-09-05: this list used to be genuinely empty for the
+    single-excursion case, so app.py's PHASE 1 "Set up this Ticket" screen had no detected name to
+    prefill the Ticket Name field with, forcing every single-excursion upload to be named by hand
+    even though the AI clearly knew the excursion's name all along). An empty list now means only
+    that no usable excursion name/title could be found at all.
     """
     print("🔎 Checking for multiple excursions/tickets in this content...")
     excursions = _detect_items(
         TICKET_VARIANT_DETECTION_PROMPT, raw_text, model, "multiple_excursions", "excursions",
         lambda e: " ".join(str(e.get("label") or "").split()).lower())
-    if excursions:
+    if len(excursions) > 1:
         print(f"⚠️ Detected {len(excursions)} distinct excursions: {[e.get('label') for e in excursions]}")
+    elif excursions:
+        print(f"✅ Only one excursion detected: {excursions[0].get('label')!r}")
     else:
-        print("✅ Only one excursion detected.")
+        print("✅ Only one excursion detected (no usable name/title found to prefill).")
     return excursions
 
 
@@ -3091,30 +3100,25 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
     # internally - default it here from the same extracted text (a human can
     # still edit the two independently afterward in the review UI).
     #
-    # CONFIRMED BUG FIX (product owner, 2026-09-03): "why is following information seen in the
-    # condition for the client: ... 24 hours ... --> in this case we must write more like nothing
-    # regarding the conditions, because our rules with 30 days or prior are better for our
-    # company." This used to copy the SOURCE's raw supplier wording (data["cancellation_policy_
-    # text"], verbatim - including things like a "cancellations due to sea sickness" clause)
-    # straight into voucher_remarks. Because builder.py's ticket composition uses voucher_remarks
-    # AS-IS whenever it is non-empty (see build_ticket_payloads' _ticket_voucher_base, "voucher_
-    # remarks still wins as the BASE text if set"), that raw copy completely bypassed builder.
-    # _cancellation_voucher_text's own (already-fixed, 2026-09-03) floored-tiers-first logic -
-    # the exact same "customer sees the supplier's more lenient wording instead of our enforced
-    # 30-day policy" bug, just reached through the seeding path instead of the fallback path.
-    # Seeding through that SAME shared, already-correct function instead closes this off: the
-    # customer-facing copy is always either the floored tiers (if the source's tiers extracted at
-    # all), or nothing here (leaving voucher_remarks blank so builder's own fallback default -
-    # Momira's standing 30-day/100%-refund text - applies at publish time) - never the supplier's
-    # raw prose. cancellation_policy_text itself is untouched and still shown in full on
-    # "Condition (internal remarks)", which is staff-only, never customer-facing.
-    if not data.get("voucher_remarks"):
-        _voucher_cancellation_text = _cancellation_voucher_text(
-            data.get("cancellation_policy_text"),
-            _cancellation_ranges_from_tiers(data.get("cancellation_policy_tiers")),
-            default_text="")
-        if _voucher_cancellation_text:
-            data["voucher_remarks"] = _voucher_cancellation_text
+    # CONFIRMED BUG FIX (product owner, 2026-09-03), TIGHTENED TO A FULL OVERRIDE (2026-09-04):
+    # "why is following information seen in the condition for the client: ... 24 hours ... -->
+    # in this case we must write more like nothing regarding the conditions, because our rules
+    # with 30 days or prior are better for our company." followed by the near-identical
+    # follow-up example ("More than 48 hours before the tour: no fee. Within 48 hours: 50% fee.
+    # No show: no refund. --> Do not show as remark, as our internal cancellation with 30 days
+    # or prior is better for our Momira company.").
+    #
+    # This used to seed voucher_remarks from the source's own cancellation_policy_tiers/text via
+    # builder._cancellation_voucher_text - an improvement over copying the raw text verbatim, but
+    # still not enough: that helper's tiers branch only FLOORS a too-generous tier, so a
+    # supplier's own stricter/partial extra tiers (e.g. a 50%-fee-within-48-hours step) still
+    # reached the customer-facing voucher untouched. Per the standing rule (product owner,
+    # 2026-09-04): document extraction never seeds voucher_remarks from the document's own
+    # cancellation data at all anymore - left blank here, so builder.py's own None-based
+    # cancellation composition (see build_ticket_payloads' _ticket_voucher_base) applies Momira's
+    # flat 30-day/100%-refund house standard at publish time instead. cancellation_policy_text
+    # itself is untouched and still shown in full on "Condition (internal remarks)", which is
+    # staff-only, never customer-facing.
 
     return _finalize_ticket_price_type(data)
 
@@ -3420,22 +3424,11 @@ def extract_ticket_main_info(raw_text: str, model: str = "claude-sonnet-5", vari
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
-    # CONFIRMED BUG FIX (product owner, 2026-09-03) - same fix as extract_ticket_data above, see
-    # its comment for the full story: seeding voucher_remarks from the SOURCE's raw supplier
-    # wording verbatim bypassed builder.py's floored-tiers-first cancellation logic entirely
-    # (voucher_remarks wins outright over that logic whenever it's non-empty), so a document's
-    # raw, more lenient policy (or an extra clause like a "no refund for sea sickness" note) could
-    # still reach the customer-facing voucher even though the structured/enforced policy had
-    # already been floored to Momira's 30-day standard. Seeded through the same shared,
-    # already-correct builder._cancellation_voucher_text function instead, so review-time and
-    # publish-time always agree and the raw supplier prose is never shown outright.
-    if not data.get("voucher_remarks"):
-        _voucher_cancellation_text = _cancellation_voucher_text(
-            data.get("cancellation_policy_text"),
-            _cancellation_ranges_from_tiers(data.get("cancellation_policy_tiers")),
-            default_text="")
-        if _voucher_cancellation_text:
-            data["voucher_remarks"] = _voucher_cancellation_text
+    # CONFIRMED BUG FIX (product owner, 2026-09-03), TIGHTENED TO A FULL OVERRIDE (2026-09-04) -
+    # same fix as extract_ticket_data above, see its comment for the full story: voucher_remarks
+    # is deliberately left un-seeded from the document's own cancellation data here too, so
+    # builder.py's own None-based cancellation composition applies Momira's flat 30-day/100%-
+    # refund house standard at publish time instead of anything the supplier's document states.
 
     return data
 
