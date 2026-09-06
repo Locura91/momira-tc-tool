@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import geocoding_client
 
-MODULE_BUILD = "2026-09-06-hotel-geo-checkbox-key-fix"
+MODULE_BUILD = "2026-09-06-image-size-filter"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

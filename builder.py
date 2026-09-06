@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-06-hotel-geo-checkbox-key-fix"
+MODULE_BUILD = "2026-09-06-image-size-filter"
 
 import math
 import datetime
@@ -17,6 +17,7 @@ from schemas import TransportHumanPreConfig, ContractTransportVO, TransportSegme
 from schemas import HotelAddressVO, TranslationVO, ContractRoomDistributionVO, ContractRoomVO, ContractMealPlanVO, ContractRoomDistributionPriceVO, ContractHotelSeasonPricesVO, ContractHotelSeasonVO, ContractHotelRoomStopSalesVO, ContractHotelRateVO, ContractHotelOffersVO, ContractHotelSupplementVO, ContractHotelVO
 from api_client import TravelCompositorAPI
 from geocoding_client import geocode, build_place_query
+from image_dimensions import ensure_images_meet_minimum_size
 from date_format import to_iso_date
 
 # LAST LINE OF DEFENCE for the DD/MM/YYYY house rule. Screens convert on the way in and out
@@ -2002,6 +2003,15 @@ def build_closed_tour_payloads(
             remarksDescription=strip_stray_html(extracted_dmc_data.get("policy_remarks") or "")
         )
 
+        # ---- Images (product owner, 2026-09-06): same real production failure confirmed on
+        # Hotel (HRG-T1, "Minimum size of 500x400 required") applies equally here - ClosedTour's
+        # own image field goes through the identical Pexels/Pixabay pickers, so drop any
+        # confirmed-too-small image before it can reach Travel Compositor. Only falls back to the
+        # placeholder when there WAS at least one picked image and every one of them failed the
+        # size check - a genuinely empty pick is left alone.
+        _dmc_images_raw = extracted_dmc_data.get("image_urls") or []
+        _dmc_images = ensure_images_meet_minimum_size(_dmc_images_raw)[0] if _dmc_images_raw else []
+
         main_tour = ContractClosedTourVO(
             supplier=pre_config.supplier_code or pre_config.supplier_id,
             userId=pre_config.user_id,
@@ -2009,7 +2019,7 @@ def build_closed_tour_payloads(
             providerCode=pre_config.provider_code,
             name=_tour_display_name,
             datasheets=build_datasheets(datasheet_en),
-            images=extracted_dmc_data.get("image_urls") or [],
+            images=_dmc_images,
             itinerary=validated_itinerary,
             transports=transports_count,
             hotels=hotels_count or 0,
@@ -2435,6 +2445,17 @@ def build_ticket_payloads(
             languageOptions=list(_ticket_languages),
         )
 
+        # ---- Images (product owner, 2026-09-06): same real production failure confirmed on
+        # Hotel (HRG-T1, "Minimum size of 500x400 required") applies equally here - Ticket's own
+        # image field goes through the identical Pexels/Pixabay pickers, so drop any confirmed-
+        # too-small image before it can reach Travel Compositor rather than waiting to hit this
+        # for real. Only falls back to the placeholder when there WAS at least one picked image
+        # and every one of them failed the size check - a genuinely empty pick is left alone.
+        _ticket_images_raw = extracted_ticket_data.get("image_urls") or []
+        _ticket_images = (
+            ensure_images_meet_minimum_size(_ticket_images_raw)[0] if _ticket_images_raw else []
+        )
+
         main_ticket_kwargs = dict(
             code=pre_config.ticket_code,
             name=_ticket_display_name,
@@ -2445,7 +2466,7 @@ def build_ticket_payloads(
             city=city,
             datasheets={"EN": datasheet_en},
             currency=pre_config.currency,
-            imageUrls=extracted_ticket_data.get("image_urls", []),
+            imageUrls=_ticket_images,
             adultTaxesAmount=_safe_float(extracted_ticket_data.get("adult_taxes_amount", 0)),
             childTaxesAmount=_safe_float(extracted_ticket_data.get("child_taxes_amount", 0)),
             infantTaxesAmount=_safe_float(extracted_ticket_data.get("infant_taxes_amount", 0)),
@@ -4382,6 +4403,23 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         "valid": geolocation_valid, "source": geolocation_source,
     }
 
+    # ---- Images (product owner, 2026-09-06): CONFIRMED REAL PUBLISH FAILURE - HRG-T1 was
+    # rejected outright with "Minimum size of 500x400 required, 433x650 found" for a Pexels pick
+    # that came back narrower than requested (a portrait-oriented source photo). Per the
+    # instruction "if an image is not big enough, take the default image ... and skip the error -
+    # same as tickets and closedtours", every image is now checked in advance and a confirmed-
+    # too-small one is dropped rather than ever reaching Travel Compositor; if nothing is left,
+    # the shared FALLBACK_IMAGE placeholder is used instead of blocking the publish.
+    _hotel_images_raw = extracted.get("images") or (existing_hotel_snapshot or {}).get("images") or []
+    if _hotel_images_raw:
+        # Only fall back to the placeholder when there WERE images and every single one failed
+        # the size check - a hotel with genuinely zero images picked yet still hits the existing
+        # "at least one image required" block below (CONFIRMED BUG FIX, reported 2026-09-02),
+        # rather than silently publishing on the placeholder with nobody ever having tried.
+        hotel_images, hotel_images_dropped_too_small = ensure_images_meet_minimum_size(_hotel_images_raw)
+    else:
+        hotel_images, hotel_images_dropped_too_small = [], []
+
     hotel_kwargs = dict(
         providerCode=pre_config.provider_code,
         hotelname=strip_stray_html(extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or ""),
@@ -4411,7 +4449,7 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         mealPlans=meal_plan_payloads,
         descriptions=_translation_list_or_existing(extracted.get("description"), (existing_hotel_snapshot or {}).get("descriptions")),
         voucherRemarks=_translation_list_or_existing(voucher_text, (existing_hotel_snapshot or {}).get("voucherRemarks")),
-        images=extracted.get("images") or (existing_hotel_snapshot or {}).get("images") or [],
+        images=hotel_images,
     )
 
     hotel_error = None
@@ -4430,6 +4468,7 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         "is_update": is_update,
         "room_name_matches": room_name_matches,
         "geolocation": geolocation,
+        "images_dropped_too_small": hotel_images_dropped_too_small,
     }
 
 

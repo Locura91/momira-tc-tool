@@ -159,7 +159,10 @@ from trip_idea_tool import render_trip_idea_tool
 # "package-auto-rollover-rules" project note.
 from package_rollover_tool import render_package_rollover_tool
 
-FALLBACK_IMAGE = "https://multiwander.com/wp-content/uploads/2026/07/Please-load-images.png"
+# CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
+# too-small-image fallback (see builder.py's ensure_images_meet_minimum_size) and this app's own
+# "no real image picked" fallback can never drift apart into two different placeholder URLs.
+from image_dimensions import FALLBACK_IMAGE
 ALL_WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
 
 
@@ -9431,6 +9434,17 @@ def render_hotel_flow(client):
                  "on the hotel's page/document) before publishing.")
     else:
         _warn_stale_images(data.get("images"))
+        # CONFIRMED REAL PUBLISH FAILURE (reported 2026-09-06, HRG-T1): a picked image measuring
+        # under Travel Compositor's hard 500x400 minimum used to reject the ENTIRE publish with a
+        # raw "Minimum size of 500x400 required, WxH found" error. It's now dropped automatically
+        # before publish (falling back to a placeholder if nothing else is left) - this just lets
+        # the human know it happened, since the image list they see above still shows the
+        # original pick.
+        _hp_dropped_images = contract_result.get("images_dropped_too_small") or []
+        if _hp_dropped_images:
+            st.warning(f"⚠️ {len(_hp_dropped_images)} image(s) were skipped for being smaller than "
+                      f"Travel Compositor's required 500x400 minimum, so publishing isn't blocked: "
+                      f"{', '.join(_hp_dropped_images)}")
 
     geo_ok = bool(hp_geo.get("valid")) and hp_geo_confirmed
     if not geo_ok:
@@ -11358,7 +11372,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-06-hotel-geo-checkbox-key-fix"
+BUILD_VERSION = "2026-09-06-image-size-filter"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

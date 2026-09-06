@@ -9,6 +9,7 @@ pdfplumber
 pymupdf
 python-docx
 python-pptx
+Pillow
 openpyxl
 google-genai
 psycopg2-binary
