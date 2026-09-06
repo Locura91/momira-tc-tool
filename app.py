@@ -1979,6 +1979,17 @@ _PUBLISH_ERROR_PATTERNS = [
      "the Modality Code - it needs to exactly match (spelling and case) an option that actually exists for this tour/ticket"),
     ("closed tour not found", "code", "the Tour Code - it doesn't match an existing ClosedTour on Travel Compositor"),
     ("ticket not found", "code", "the Ticket Code - it doesn't match an existing Ticket on Travel Compositor"),
+    # CONFIRMED REAL BUG (reported 2026-09-05, first hotel with 3 brand-new rooms in one go):
+    # a real "Room null already exists for contract HRG-H1" error used to fall through to the
+    # generic "already exists" pattern below, which told the human to go change the "Tour/Ticket
+    # Code" - nonsensical for a Hotel publish, which has no such field at all. Matched here,
+    # earlier in the list so it wins, with guidance that's actually about rooms. This exact error
+    # should now be rare in practice (see the "add extra new rooms one at a time" fix in the
+    # hotel publish button above), but a genuine room-name collision could still surface it.
+    ("already exists for contract", "rooms",
+     "the hotel's Rooms section - Travel Compositor reported a room-level conflict for this "
+     "contract, not a Tour/Ticket code issue; check whether a room with this name already "
+     "exists for this hotel, or try publishing again (rooms are now added one at a time)"),
     ("already taken", "code", "the Tour/Ticket Code - choose a different one, the one entered is already in use"),
     ("already exists", "code", "the Tour/Ticket Code - choose a different one, the one entered is already in use"),
     ("localdate", "pricing", "every Start Date / End Date field (the Pricing table and Stop Sales) - one is blank or invalid"),
@@ -9337,11 +9348,33 @@ def render_hotel_flow(client):
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
+            # CONFIRMED REAL BUG (reported 2026-09-05, first hotel with 3 brand-new rooms in one
+            # go, HRG-H1 - Steigenberger Golf Resort El Gouna): Travel Compositor's create/update
+            # endpoint rejects more than ONE brand-new room (providerCode still None, since it's
+            # system-assigned and only comes back in the response - see ContractRoomVO's own
+            # docstring) submitted inline in the SAME contract payload - "Room null already
+            # exists for contract HRG-H1" on the second null-coded room, even though the contract
+            # itself was genuinely new and nothing had actually been published yet. Every
+            # confirmed real example before this (CAI-H1, Four Seasons Cairo) only ever had ONE
+            # brand-new room at a time, so this never surfaced. Fix: submit the main contract
+            # with AT MOST one new room inline (plus every room that already has a real
+            # providerCode - i.e. existing rooms being preserved on an update), then add each
+            # remaining new room afterward one at a time via POST /hotel/room
+            # (client.create_hotel_room) - the per-room endpoint this tool already had available
+            # but had never actually used, since the main call used to be trusted to carry the
+            # whole rooms[] array safely in one shot.
+            all_rooms = contract_result["hotel_payload"].get("rooms") or []
+            rooms_with_code = [r for r in all_rooms if r.get("providerCode")]
+            new_rooms = [r for r in all_rooms if not r.get("providerCode")]
+            extra_new_rooms = new_rooms[1:]
+            phase1_payload = dict(contract_result["hotel_payload"])
+            phase1_payload["rooms"] = rooms_with_code + new_rooms[:1]
+
             with st.spinner("Phase 1 of 2 — publishing the hotel contract, rooms and meal plans..."):
                 if existing_snapshot:
-                    hotel_response = client.update_hotel(supplier_id, contract_result["hotel_payload"])
+                    hotel_response = client.update_hotel(supplier_id, phase1_payload)
                 else:
-                    hotel_response = client.create_hotel(supplier_id, contract_result["hotel_payload"])
+                    hotel_response = client.create_hotel(supplier_id, phase1_payload)
 
             if isinstance(hotel_response, dict) and "error" in hotel_response:
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
@@ -9349,8 +9382,29 @@ def render_hotel_flow(client):
 
             progress.success("✅ Phase 1 — hotel contract, rooms and meal plans published.")
 
+            # Any further brand-new rooms beyond the first are added one at a time here (see the
+            # comment above) - only ever needed for a hotel with more than one genuinely new room
+            # at once. Each response is merged into the same room list resolve_room_provider_codes
+            # reads below, so phase 2 (offers/supplements/rates) sees every room regardless of
+            # which call actually created it.
+            all_room_responses = list(hotel_response.get("rooms") or [])
+            if extra_new_rooms:
+                room_add_failures = []
+                with st.spinner(f"Adding {len(extra_new_rooms)} more room(s) one at a time..."):
+                    for room_payload in extra_new_rooms:
+                        room_resp = client.create_hotel_room(supplier_id, provider_code, room_payload)
+                        if isinstance(room_resp, dict) and "error" in room_resp:
+                            room_add_failures.append((room_payload.get("name") or "(unnamed)", room_resp.get("message")))
+                        elif isinstance(room_resp, dict):
+                            all_room_responses.append(room_resp)
+                added_ok = len(extra_new_rooms) - len(room_add_failures)
+                if added_ok:
+                    progress.success(f"✅ Added {added_ok} more room(s).")
+                for name, msg in room_add_failures:
+                    progress.error(f"⚠️ Couldn't add room **{name}**: {msg}")
+
             # Travel Compositor assigns each room its providerCode here - phase 2 can't run without them.
-            room_map = resolve_room_provider_codes(hotel_response.get("rooms") or [])
+            room_map = resolve_room_provider_codes(all_room_responses)
             unresolved = [n for n in room_names if not room_map.get(n)]
             if unresolved:
                 progress.warning(f"⚠️ Travel Compositor didn't return a code for these room(s): "
@@ -11208,7 +11262,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-05-cancellation-house-standard-and-ticket-name-fix"
+BUILD_VERSION = "2026-09-05-hotel-multi-room-create-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
