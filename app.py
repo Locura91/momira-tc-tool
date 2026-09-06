@@ -9294,10 +9294,6 @@ def render_hotel_flow(client):
 
     service_notes.render_notes_editor(supplier_id, "Hotel", data)
 
-    # ------------------------------------------------------------------
-    # PUBLISH - two phases, in order
-    # ------------------------------------------------------------------
-    st.markdown("#### Publish")
     pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
                                       currency=currency, days_available_before_release=release_days)
     contract_result = build_hotel_contract_payload(pre_config, data, existing_hotel_snapshot=existing_snapshot)
@@ -9305,6 +9301,94 @@ def render_hotel_flow(client):
     if contract_result.get("hotel_error"):
         st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")
         return
+
+    # ---- Geolocation (product owner, 2026-09-06): CONFIRMED REAL PUBLISH FAILURE - Travel
+    # Compositor rejected the first-ever hotel (HRG-H1) with "The hotel is not located inside any
+    # destination, please check the coordinates". Per the explicit instruction "same issue as with
+    # tickets, human must select the coordinates", Hotel now gets the same manual-coordinate
+    # review/override UI Ticket already has (see the "mt_" Ticket geolocation section above) -
+    # search for a better match, paste a Google Maps link, or type coordinates directly, then
+    # confirm before publish is allowed.
+    st.markdown("#### Geolocation")
+    hp_geo = contract_result.get("geolocation") or {}
+    if hp_geo.get("valid"):
+        hp_lat, hp_lng = hp_geo["latitude"], hp_geo["longitude"]
+        hp_maps_link = f"https://www.google.com/maps?q={hp_lat},{hp_lng}"
+        st.markdown(
+            f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
+            f"border-radius:4px;'>📍 Resolved: <strong>{data.get('hotelname') or provider_code}</strong>"
+            f"<br>Coordinates: {hp_lat:.6f}, {hp_lng:.6f} (source: {hp_geo.get('source')}) — "
+            f"<a href='{hp_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
+            unsafe_allow_html=True
+        )
+        if hp_geo.get("source") not in ("manual override", "document", "existing hotel record", None):
+            st.caption("Geocoding data © OpenStreetMap contributors")
+    else:
+        st.markdown(
+            "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+            "border-radius:4px;'>❌ Geolocation NOT resolved - Travel Compositor will reject this hotel "
+            "without valid coordinates. Search below or enter coordinates manually.</div>",
+            unsafe_allow_html=True
+        )
+
+    with st.expander("🔍 Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
+        hp_geo_default_query = (data.get("address") or {}).get("location_name") or data.get("hotelname") or ""
+        hp_geo_query = st.text_input("Search for a location", value=hp_geo_default_query, key="hp_geo_query")
+        if st.button("🔎 Search", key="hp_geo_search_btn"):
+            with st.spinner("Searching..."):
+                st.session_state.hp_geo_search_results = geocode_search(hp_geo_query, limit=5)
+        if st.session_state.get("hp_geo_search_results"):
+            for gi, candidate in enumerate(st.session_state.hp_geo_search_results):
+                hgcol1, hgcol2 = st.columns([4, 1])
+                with hgcol1:
+                    st.write(f"**{candidate['display_name']}**")
+                    st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                with hgcol2:
+                    if st.button("Use this", key=f"hp_geo_pick_{gi}"):
+                        data["manual_latitude"] = candidate["latitude"]
+                        data["manual_longitude"] = candidate["longitude"]
+                        st.session_state.hp_geo_confirmed = False
+                        st.session_state.hp_geo_search_results = None
+                        st.rerun()
+
+        st.markdown("**Or paste a Google Maps link:**")
+        st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
+                  "it here - the coordinates are read out of the link automatically.")
+        hp_maps_url = st.text_input("Google Maps link", key="hp_geo_maps_url", placeholder="https://maps.google.com/...")
+        if st.button("🔗 Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
+            with st.spinner("Reading coordinates from the link..."):
+                hp_url_geo = parse_google_maps_url(hp_maps_url)
+            if hp_url_geo["valid"]:
+                data["manual_latitude"] = hp_url_geo["latitude"]
+                data["manual_longitude"] = hp_url_geo["longitude"]
+                st.session_state.hp_geo_confirmed = False
+                st.rerun()
+            else:
+                st.error(hp_url_geo["error"])
+
+        st.markdown("**Or enter coordinates manually:**")
+        hgmcol1, hgmcol2 = st.columns(2)
+        with hgmcol1:
+            hp_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key="hp_geo_manlat", placeholder="e.g. 27.394900")
+        with hgmcol2:
+            hp_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key="hp_geo_manlng", placeholder="e.g. 33.678400")
+        if st.button("📍 Use these coordinates", key="hp_geo_manual_btn", disabled=hp_man_lat is None or hp_man_lng is None):
+            data["manual_latitude"] = hp_man_lat
+            data["manual_longitude"] = hp_man_lng
+            st.session_state.hp_geo_confirmed = False
+            st.rerun()
+
+    hp_geo_confirmed = st.checkbox(
+        "✅ I've checked this location on the map and it's correct for this hotel",
+        value=st.session_state.get("hp_geo_confirmed", False),
+        key="hp_geo_confirmed",
+        disabled=not hp_geo.get("valid"),
+    )
+
+    # ------------------------------------------------------------------
+    # PUBLISH - two phases, in order
+    # ------------------------------------------------------------------
+    st.markdown("#### Publish")
 
     with st.expander("🔎 Preview hotel contract payload (phase 1)"):
         st.json(contract_result["hotel_payload"])
@@ -9342,8 +9426,14 @@ def render_hotel_flow(client):
     else:
         _warn_stale_images(data.get("images"))
 
+    geo_ok = bool(hp_geo.get("valid")) and hp_geo_confirmed
+    if not geo_ok:
+        st.error("⚠️ Geolocation isn't confirmed yet - Travel Compositor rejects a hotel whose "
+                 "coordinates don't fall inside any of its known destinations, so a human must "
+                 "check the map above and tick the confirmation box before publishing.")
+
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
-                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok):
+                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok):
         st.session_state.hp_publish_succeeded = False
         progress = st.container()
         try:
@@ -11262,7 +11352,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-05-hotel-multi-room-create-fix"
+BUILD_VERSION = "2026-09-06-hotel-manual-geolocation"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

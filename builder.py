@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-05-hotel-multi-room-create-fix"
+MODULE_BUILD = "2026-09-06-hotel-manual-geolocation"
 
 import math
 import datetime
@@ -4333,19 +4333,60 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     address_data = extracted.get("address") or {}
     existing_address = (existing_hotel_snapshot or {}).get("address") or {}
 
+    # ---- Geolocation (product owner, 2026-09-06): CONFIRMED REAL PUBLISH FAILURE - Travel
+    # Compositor rejected the first-ever hotel (HRG-H1) with "The hotel is not located inside any
+    # destination, please check the coordinates". Per the explicit instruction "same issue as with
+    # tickets, human must select the coordinates", Hotel now gets the same manual-override
+    # capability Ticket already has (build_ticket_payloads above): a human-entered
+    # manual_latitude/manual_longitude ALWAYS wins, since only a human can judge whether TC's
+    # destination boundaries actually contain a given point. Short of a manual override, fall back
+    # to the document's own stated coordinates, then an existing live snapshot's, then a free
+    # OpenStreetMap geocode of the hotel's own address as a last resort - same provider/fallback
+    # chain Ticket uses, just keyed off the hotel's location name + country instead of a "city".
+    manual_lat = extracted.get("manual_latitude")
+    manual_lng = extracted.get("manual_longitude")
+    doc_lat = extracted.get("latitude")
+    doc_lng = extracted.get("longitude")
+    existing_lat = (existing_hotel_snapshot or {}).get("latitude")
+    existing_lng = (existing_hotel_snapshot or {}).get("longitude")
+    if manual_lat is not None and manual_lng is not None:
+        resolved_latitude = _safe_float(manual_lat)
+        resolved_longitude = _safe_float(manual_lng)
+        geolocation_source = "manual override"
+        geolocation_valid = True
+    elif doc_lat is not None and doc_lng is not None:
+        resolved_latitude = doc_lat
+        resolved_longitude = doc_lng
+        geolocation_source = "document"
+        geolocation_valid = True
+    elif existing_lat is not None and existing_lng is not None:
+        resolved_latitude = existing_lat
+        resolved_longitude = existing_lng
+        geolocation_source = "existing hotel record"
+        geolocation_valid = True
+    else:
+        place_name = address_data.get("location_name") or existing_address.get("locationName") or ""
+        country_name = address_data.get("country") or existing_address.get("country") or ""
+        if place_name or country_name:
+            geo_result = geocode(build_place_query(place_name, country_name))
+        else:
+            geo_result = {"valid": False, "latitude": None, "longitude": None, "provider": None}
+        provider_labels = {"nominatim": "OpenStreetMap/Nominatim", "photon": "OpenStreetMap/Photon"}
+        resolved_latitude = geo_result.get("latitude")
+        resolved_longitude = geo_result.get("longitude")
+        geolocation_valid = bool(geo_result.get("valid"))
+        geolocation_source = provider_labels.get(geo_result.get("provider"), "OpenStreetMap") if geolocation_valid else "not_found"
+
+    geolocation = {
+        "latitude": resolved_latitude, "longitude": resolved_longitude,
+        "valid": geolocation_valid, "source": geolocation_source,
+    }
+
     hotel_kwargs = dict(
         providerCode=pre_config.provider_code,
         hotelname=strip_stray_html(extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or ""),
-        # CONFIRMED REAL BUG (audit, 2026-08-24): `.get(key, fallback)` is the wrong idiom here -
-        # it only falls back when the key is ABSENT, and the hotel extractor ALWAYS sets these two
-        # keys, to None when the document states no coordinates ("null otherwise - do NOT
-        # estimate"). So the key was present, the snapshot fallback never fired, and a PUT (which
-        # replaces the record) wiped a live hotel's map position on EVERY price refresh. Every
-        # neighbouring field on this payload already uses the `or` form for exactly this reason.
-        # Unrecoverable in-tool once lost: the Hotel screen has no lat/long field and, unlike
-        # Ticket/Transfer/ClosedTour, the Hotel flow never calls geocode().
-        latitude=extracted.get("latitude") or (existing_hotel_snapshot or {}).get("latitude"),
-        longitude=extracted.get("longitude") or (existing_hotel_snapshot or {}).get("longitude"),
+        latitude=resolved_latitude,
+        longitude=resolved_longitude,
         address=HotelAddressVO(
             address=address_data.get("address") or existing_address.get("address"),
             locationName=address_data.get("location_name") or existing_address.get("locationName"),
@@ -4388,6 +4429,7 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         "hotel_error": hotel_error,
         "is_update": is_update,
         "room_name_matches": room_name_matches,
+        "geolocation": geolocation,
     }
 
 
