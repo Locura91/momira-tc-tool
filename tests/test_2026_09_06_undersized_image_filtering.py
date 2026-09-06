@@ -30,7 +30,7 @@ import image_dimensions as imgdim
 from schemas import HumanPreConfig
 from builder import build_hotel_contract_payload, build_ticket_payloads, build_closed_tour_payloads
 
-MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
+MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
 
 
 def setup_function(_):

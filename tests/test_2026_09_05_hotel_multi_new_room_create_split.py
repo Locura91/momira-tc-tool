@@ -19,14 +19,23 @@ Four Seasons Cairo) only ever had ONE brand-new room at a time, so this never su
 Compositor's backend apparently can't tell two simultaneously-null room entries in the same
 payload apart and rejects the second as already existing.
 
-Fix: the main create_hotel()/update_hotel() call now submits AT MOST one brand-new room inline
-(plus every room that already has a real providerCode, i.e. existing rooms being preserved on an
-update) - any additional brand-new rooms are added afterward ONE AT A TIME via the existing (but
-previously unused) POST /hotel/room endpoint (client.create_hotel_room), with each response
-merged into the same room list resolve_room_provider_codes reads for phase 2. Separately, the
-"already exists" error-guidance pattern was given a more specific, earlier-matching entry for
-this exact room-conflict message, so a human seeing it (if it recurs, e.g. a genuine room-name
-collision) gets guidance about the Rooms section, not a made-up Tour/Ticket Code field.
+Fix (2026-09-05, superseded 2026-09-06 - see test_2026_09_06_hotel_zero_new_rooms_inline.py for
+the follow-up): the main create_hotel()/update_hotel() call submitted AT MOST one brand-new room
+inline (plus every room that already has a real providerCode, i.e. existing rooms being preserved
+on an update) - any additional brand-new rooms were added afterward ONE AT A TIME via the existing
+(but previously unused) POST /hotel/room endpoint (client.create_hotel_room), with each response
+merged into the same room list resolve_room_provider_codes reads for phase 2.
+
+CONFIRMED FOLLOW-UP (2026-09-06): the "one new room inline is always safe" half of this fix turned
+out to be wrong too - Travel Compositor rejected even a SINGLE null-providerCode room inline for a
+100%-brand-new hotel ("HotelContractRoom.providerCode:must not be null"). The main call now tries
+ZERO new rooms inline first, falling back to one new room inline only if TC's server separately
+complains about an empty rooms list. This file's tests below are updated to match that new
+default while still confirming the same one-at-a-time per-room-endpoint mechanism, existing-room
+preservation, and merged room-response tracking this fix established. Separately, the "already
+exists" error-guidance pattern was given a more specific, earlier-matching entry for this exact
+room-conflict message, so a human seeing it (if it recurs, e.g. a genuine room-name collision)
+gets guidance about the Rooms section, not a made-up Tour/Ticket Code field.
 
 app.py can't be imported in a test process (heavy top-level Streamlit/API-client setup), so this
 is verified by reading its own source text, per this suite's established pattern (see
@@ -44,25 +53,25 @@ def _read_app_py():
 
 
 # ======================================================================
-# The room-splitting fix itself
+# The room-splitting mechanism itself (per-room endpoint, existing-room preservation, merged
+# room-response tracking) - still true after the 2026-09-06 zero-new-rooms-inline follow-up.
 # ======================================================================
-def test_only_one_brand_new_room_is_sent_inline_on_the_main_create_or_update_call():
+def test_room_candidates_are_tried_with_zero_new_rooms_inline_before_one():
     src = _read_app_py()
     assert 'new_rooms = [r for r in all_rooms if not r.get("providerCode")]' in src
-    assert 'extra_new_rooms = new_rooms[1:]' in src
-    assert 'phase1_payload["rooms"] = rooms_with_code + new_rooms[:1]' in src
+    assert '_hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]' in src
 
 
 def test_existing_rooms_with_a_real_provider_code_are_still_sent_inline():
     """An update must still preserve already-published rooms in the same main call - only
-    genuinely NEW (providerCode still None) rooms beyond the first get split out."""
+    genuinely NEW (providerCode still None) rooms get split out / tried inline separately."""
     src = _read_app_py()
     assert 'rooms_with_code = [r for r in all_rooms if r.get("providerCode")]' in src
 
 
 def test_extra_new_rooms_are_added_one_at_a_time_via_the_per_room_endpoint():
     src = _read_app_py()
-    idx = src.index("extra_new_rooms = new_rooms[1:]")
+    idx = src.index("_hp_inline_new_room_count = len(_hp_room_candidates")
     window = src[idx:idx + 5000]
     assert "for room_payload in extra_new_rooms:" in window
     assert "client.create_hotel_room(supplier_id, provider_code, room_payload)" in window
@@ -70,7 +79,7 @@ def test_extra_new_rooms_are_added_one_at_a_time_via_the_per_room_endpoint():
 
 def test_room_add_failures_are_surfaced_not_silently_swallowed():
     src = _read_app_py()
-    idx = src.index("extra_new_rooms = new_rooms[1:]")
+    idx = src.index("_hp_inline_new_room_count = len(_hp_room_candidates")
     window = src[idx:idx + 5000]
     assert "room_add_failures" in window
     assert 'progress.error(f"⚠️ Couldn\'t add room' in window
@@ -81,7 +90,7 @@ def test_phase_2_room_map_is_built_from_every_room_response_merged_together():
     same {room_name: providerCode} map phase 2 (offers/supplements/rates) reads - otherwise a
     room added via the per-room endpoint would silently have no prices/offers reach it."""
     src = _read_app_py()
-    idx = src.index("extra_new_rooms = new_rooms[1:]")
+    idx = src.index("_hp_inline_new_room_count = len(_hp_room_candidates")
     window = src[idx:idx + 5000]
     assert "all_room_responses.append(room_resp)" in window
     assert "room_map = resolve_room_provider_codes(all_room_responses)" in window

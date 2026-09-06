@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
+MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator
@@ -897,11 +897,26 @@ class ContractRoomVO(BaseModel):
     (Four Seasons Hotel Cairo) had typeId completely unset on both its real rooms, confirming
     it's safe to omit rather than guess at a value.
 
-    providerCode: CONFIRMED (product owner) - unlike the HOTEL's own providerCode (human-
-    assigned), a ROOM's providerCode is system-generated (real examples: "AUTO_jr9fFXzBSX1YlVmT
-    LVOw8PuP") - "I don't set any other AUTO code to it." Leave unset on create and capture
-    whatever Travel Compositor assigns back for our own tracking (see hotel_matcher.py) - never
-    invent one ourselves.
+    providerCode: unlike the HOTEL's own providerCode (human-assigned), a ROOM's providerCode is
+    system-generated (real examples: "AUTO_jr9fFXzBSX1YlVmTLVOw8PuP") - never invent one
+    ourselves; capture whatever Travel Compositor assigns back for our own tracking (see
+    hotel_matcher.py). CORRECTED (2026-09-06, real production failure on HRG-H1, a 100%-brand-new
+    hotel): submitting a room inline on the MAIN /hotel create-or-update call with providerCode
+    left None/unset is NOT safe - Travel Compositor's server rejected it outright with "Bean
+    Validation constraint(s) violated on callback event:'prePersist'. Errors:
+    HotelContractRoom.providerCode:must not be null". The earlier "leave unset on create" claim
+    here was based on CAI-H1 (Four Seasons Cairo), which - on closer inspection - was only ever
+    observed via a GET of an already-populated hotel record, never an actual create-time success,
+    so it never actually proved this was safe. The confirmed-safe sequencing is: the main call
+    only ever carries rooms that ALREADY have a real providerCode (an empty rooms[] for a
+    brand-new hotel), and every brand-new room - including the very first - is added afterward,
+    one at a time, via POST /hotel/room (client.create_hotel_room, api_client.py), which DOES
+    accept providerCode=None and returns the system-generated code in its response. See
+    app.py's Hotel publish button (search "_hp_room_candidates") for the exact retry sequencing,
+    including a fallback to one new room inline if TC's server ever separately complains that an
+    empty rooms[] isn't allowed on the main call (ContractHotelVO's Swagger docs claim "min 1
+    item required" there, which - like the CAI-H1 precedent above - has never actually been
+    confirmed against a real create call either).
 
     typeId: optional passthrough (string) - no confirmed master-list reference found in either
     Swagger group explored (Contract Hotel or Web Content Accommodations); left None unless a

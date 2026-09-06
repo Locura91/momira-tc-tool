@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import builder
 
-MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
+MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
 
 
 def test_lenient_raw_text_is_overridden_by_the_floored_tiers_synthesis():

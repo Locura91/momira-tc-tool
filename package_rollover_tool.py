@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
+MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
 
 _PHASE_KEY = "pkr_phase"
 

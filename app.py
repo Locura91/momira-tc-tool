@@ -9491,27 +9491,37 @@ def render_hotel_flow(client):
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
-            # CONFIRMED REAL BUG (reported 2026-09-05, first hotel with 3 brand-new rooms in one
-            # go, HRG-H1 - Steigenberger Golf Resort El Gouna): Travel Compositor's create/update
-            # endpoint rejects more than ONE brand-new room (providerCode still None, since it's
-            # system-assigned and only comes back in the response - see ContractRoomVO's own
-            # docstring) submitted inline in the SAME contract payload - "Room null already
-            # exists for contract HRG-H1" on the second null-coded room, even though the contract
-            # itself was genuinely new and nothing had actually been published yet. Every
-            # confirmed real example before this (CAI-H1, Four Seasons Cairo) only ever had ONE
-            # brand-new room at a time, so this never surfaced. Fix: submit the main contract
-            # with AT MOST one new room inline (plus every room that already has a real
-            # providerCode - i.e. existing rooms being preserved on an update), then add each
-            # remaining new room afterward one at a time via POST /hotel/room
-            # (client.create_hotel_room) - the per-room endpoint this tool already had available
-            # but had never actually used, since the main call used to be trusted to carry the
-            # whole rooms[] array safely in one shot.
+            # CONFIRMED REAL BUG, part 2 (reported 2026-09-06, HRG-H1 - Steigenberger Golf Resort
+            # El Gouna, a 100%-brand-new hotel with zero pre-existing rooms): the 2026-09-05 fix
+            # below assumed submitting AT MOST ONE brand-new room (providerCode still None) inline
+            # in the main create/update call was safe, based on the only real precedent this tool
+            # had (CAI-H1, Four Seasons Cairo, which came back with providerCode
+            # "AUTO_jr9fFXzBSX1YlVmTLVOw8PuP"). That precedent turned out to be a GET of an
+            # already-populated hotel record (schemas.py/api_client.py's own comments only ever
+            # cite CAI-H1 as "real GET pulls") - never an observed create-time success - so it
+            # never actually proved a null-providerCode room inline was accepted. The real error
+            # that just occurred proves the opposite for at least the one-brand-new-hotel case:
+            #     Bean Validation constraint(s) violated on callback event:'prePersist'.
+            #     Errors: HotelContractRoom.providerCode:must not be null ( Id: null)
+            # Fix: Phase 1 now tries the main call FIRST with ZERO new rooms inline (only rooms
+            # that already carry a real providerCode - i.e. rooms being preserved on an update;
+            # this can be an empty list for a 100%-new hotel). Every brand-new room, including the
+            # very first, is then added afterward one at a time via POST /hotel/room
+            # (client.create_hotel_room). ContractHotelVO's own Swagger docs claim rooms are
+            # "required, min 1 item" inline, which - if actually enforced server-side - would
+            # reject an empty inline array with a DIFFERENT error (about the rooms list itself,
+            # not about a specific room's providerCode); if that happens, this falls back
+            # automatically to the old shape (exactly one new room inline, providerCode still
+            # None) since that's the only other combination this tool has ever tried.
             all_rooms = contract_result["hotel_payload"].get("rooms") or []
             rooms_with_code = [r for r in all_rooms if r.get("providerCode")]
             new_rooms = [r for r in all_rooms if not r.get("providerCode")]
-            extra_new_rooms = new_rooms[1:]
+            # Two room shapes to try, in order: no new rooms inline first (today's fix), then the
+            # old one-new-room-inline shape as a fallback if TC's server insists on a non-empty list.
+            _hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]
+            _hp_room_candidate_idx = 0
             phase1_payload = dict(contract_result["hotel_payload"])
-            phase1_payload["rooms"] = rooms_with_code + new_rooms[:1]
+            phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
 
             # CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): the in-tool 500x400 size check
             # above (image_dimensions.py) doesn't catch every way Travel Compositor can reject a
@@ -9531,6 +9541,7 @@ def render_hotel_flow(client):
                 if not (isinstance(hotel_response, dict) and "error" in hotel_response):
                     break
 
+                _hp_error_text = str(_extract_error_message_detail(hotel_response) or "")
                 _hp_bad_image = _extract_rejected_image_url(hotel_response)
                 _hp_current_images = phase1_payload.get("images") or []
                 if _hp_image_retries_left > 0 and _hp_bad_image and _hp_bad_image in _hp_current_images:
@@ -9544,16 +9555,31 @@ def render_hotel_flow(client):
                                      f"being skipped and publishing retried: {_hp_bad_image}")
                     continue
 
+                if (_hp_room_candidate_idx < len(_hp_room_candidates) - 1
+                        and "room" in _hp_error_text.lower()
+                        and "providerCode" not in _hp_error_text):
+                    # Only escalate on a rooms-shaped complaint that ISN'T the null-providerCode
+                    # error our new default already avoids - e.g. a "rooms must not be empty"
+                    # style rejection of the zero-new-rooms shape tried first.
+                    _hp_room_candidate_idx += 1
+                    phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
+                    progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
+                                     "attached yet, so publishing is being retried with one new "
+                                     "room included.")
+                    continue
+
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
                 return
 
             progress.success("✅ Phase 1 — hotel contract, rooms and meal plans published.")
 
-            # Any further brand-new rooms beyond the first are added one at a time here (see the
-            # comment above) - only ever needed for a hotel with more than one genuinely new room
-            # at once. Each response is merged into the same room list resolve_room_provider_codes
-            # reads below, so phase 2 (offers/supplements/rates) sees every room regardless of
-            # which call actually created it.
+            # Every brand-new room NOT included inline in whichever shape actually succeeded above
+            # is added here afterward, one at a time (see the comment above) - for most brand-new
+            # hotels that's now ALL of them, not just the second-and-beyond room. Each response is
+            # merged into the same room list resolve_room_provider_codes reads below, so phase 2
+            # (offers/supplements/rates) sees every room regardless of which call actually created it.
+            _hp_inline_new_room_count = len(_hp_room_candidates[_hp_room_candidate_idx]) - len(rooms_with_code)
+            extra_new_rooms = new_rooms[_hp_inline_new_room_count:]
             all_room_responses = list(hotel_response.get("rooms") or [])
             if extra_new_rooms:
                 room_add_failures = []
@@ -11429,7 +11455,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-06-hotel-image-reject-retry"
+BUILD_VERSION = "2026-09-06-hotel-zero-new-rooms-inline"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
