@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ai_extractor as ax
 
-MODULE_BUILD = "2026-09-06-image-size-filter"
+MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
 
 RAW_SUPPLIER_TEXT = (
     "More than 24 hours before the excursion: no cancellation fee. Less than 24 hours before the "

@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-06-image-size-filter"
+MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
 
 _PHASE_KEY = "pkr_phase"
 

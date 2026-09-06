@@ -2129,15 +2129,12 @@ def humanise_validation_error(raw_error, limit=6):
     return out
 
 
-def show_publish_error(context_label, raw_error, flow=None):
-    """
-    Shows a simple, human-readable error summary by default - extracted from
-    Travel Compositor's own nested error message when possible - with the
-    full raw technical detail available in an expander for anyone who needs
-    to see or report the exact API response. Also shows an actionable
-    "go back and check ___" hint (see _publish_error_guidance) so a human
-    isn't just left staring at a rejected error with no idea what to change.
-    """
+def _extract_error_message_detail(raw_error):
+    """Shared with show_publish_error below - pulls the human-readable detail text out of
+    Travel Compositor's own nested error shape ({'error': 400, 'message': '{"error": [...]}'})
+    or a raw Pydantic validation error string. Factored out so retry logic (see
+    _extract_rejected_image_url) can inspect the same text show_publish_error would display,
+    without duplicating this parsing."""
     extracted_detail = None
     try:
         if isinstance(raw_error, dict) and "message" in raw_error:
@@ -2158,6 +2155,42 @@ def show_publish_error(context_label, raw_error, flow=None):
             extracted_detail = first_line + ("..." if "\n" in raw_error.strip() else "")
     except Exception:
         pass
+    return extracted_detail
+
+
+# CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): even after the in-tool 500x400 size check
+# (image_dimensions.py), Travel Compositor still rejected a DIFFERENT picked image outright with
+# "Not valid image. Image: '<url>'" - a rejection this tool has no way to predict client-side
+# (the image measured fine locally; whatever Travel Compositor's own fetch/validation didn't like
+# about it isn't something a pixel-dimension check can catch in advance). Both this and the
+# 500x400 message end with the exact rejected URL in the same `Image: '...'` shape, so rather
+# than trying to guess every possible server-side image rule in advance, the Hotel publish button
+# below now reads this pattern out of a rejection and retries with that one image removed - see
+# the retry loop around client.create_hotel/update_hotel.
+_REJECTED_IMAGE_URL_RE = re.compile(r"Image:\s*'([^']+)'")
+
+
+def _extract_rejected_image_url(raw_error):
+    """Returns the image URL Travel Compositor's own error message named as rejected (either
+    the 500x400 minimum-size message or the "Not valid image" message - both end in the same
+    `Image: '<url>'` shape), or None if this error wasn't about a specific image."""
+    detail = _extract_error_message_detail(raw_error)
+    if not detail:
+        return None
+    m = _REJECTED_IMAGE_URL_RE.search(detail)
+    return m.group(1) if m else None
+
+
+def show_publish_error(context_label, raw_error, flow=None):
+    """
+    Shows a simple, human-readable error summary by default - extracted from
+    Travel Compositor's own nested error message when possible - with the
+    full raw technical detail available in an expander for anyone who needs
+    to see or report the exact API response. Also shows an actionable
+    "go back and check ___" hint (see _publish_error_guidance) so a human
+    isn't just left staring at a rejected error with no idea what to change.
+    """
+    extracted_detail = _extract_error_message_detail(raw_error)
 
     field_lines = humanise_validation_error(raw_error)
 
@@ -9480,13 +9513,37 @@ def render_hotel_flow(client):
             phase1_payload = dict(contract_result["hotel_payload"])
             phase1_payload["rooms"] = rooms_with_code + new_rooms[:1]
 
-            with st.spinner("Phase 1 of 2 — publishing the hotel contract, rooms and meal plans..."):
-                if existing_snapshot:
-                    hotel_response = client.update_hotel(supplier_id, phase1_payload)
-                else:
-                    hotel_response = client.create_hotel(supplier_id, phase1_payload)
+            # CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): the in-tool 500x400 size check
+            # above (image_dimensions.py) doesn't catch every way Travel Compositor can reject a
+            # picked image - a later attempt was rejected outright with "Not valid image" for an
+            # image that measured fine locally. Rather than block on an image issue this tool
+            # can't fully predict client-side, retry with that ONE image removed (falling back to
+            # the shared placeholder if it was the last one) - up to once per image in the list,
+            # so a handful of bad picks can't loop forever.
+            _hp_image_retries_left = len(phase1_payload.get("images") or [])
+            while True:
+                with st.spinner("Phase 1 of 2 — publishing the hotel contract, rooms and meal plans..."):
+                    if existing_snapshot:
+                        hotel_response = client.update_hotel(supplier_id, phase1_payload)
+                    else:
+                        hotel_response = client.create_hotel(supplier_id, phase1_payload)
 
-            if isinstance(hotel_response, dict) and "error" in hotel_response:
+                if not (isinstance(hotel_response, dict) and "error" in hotel_response):
+                    break
+
+                _hp_bad_image = _extract_rejected_image_url(hotel_response)
+                _hp_current_images = phase1_payload.get("images") or []
+                if _hp_image_retries_left > 0 and _hp_bad_image and _hp_bad_image in _hp_current_images:
+                    _hp_new_images = [u for u in _hp_current_images if u != _hp_bad_image] or [FALLBACK_IMAGE]
+                    if _hp_new_images == _hp_current_images:
+                        show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
+                        return
+                    phase1_payload["images"] = _hp_new_images
+                    _hp_image_retries_left -= 1
+                    progress.warning(f"⚠️ Travel Compositor rejected this image at publish time, so it's "
+                                     f"being skipped and publishing retried: {_hp_bad_image}")
+                    continue
+
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
                 return
 
@@ -11372,7 +11429,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-06-image-size-filter"
+BUILD_VERSION = "2026-09-06-hotel-image-reject-retry"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

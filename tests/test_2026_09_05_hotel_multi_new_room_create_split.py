@@ -63,7 +63,7 @@ def test_existing_rooms_with_a_real_provider_code_are_still_sent_inline():
 def test_extra_new_rooms_are_added_one_at_a_time_via_the_per_room_endpoint():
     src = _read_app_py()
     idx = src.index("extra_new_rooms = new_rooms[1:]")
-    window = src[idx:idx + 3000]
+    window = src[idx:idx + 5000]
     assert "for room_payload in extra_new_rooms:" in window
     assert "client.create_hotel_room(supplier_id, provider_code, room_payload)" in window
 
@@ -71,7 +71,7 @@ def test_extra_new_rooms_are_added_one_at_a_time_via_the_per_room_endpoint():
 def test_room_add_failures_are_surfaced_not_silently_swallowed():
     src = _read_app_py()
     idx = src.index("extra_new_rooms = new_rooms[1:]")
-    window = src[idx:idx + 3000]
+    window = src[idx:idx + 5000]
     assert "room_add_failures" in window
     assert 'progress.error(f"⚠️ Couldn\'t add room' in window
 
@@ -82,7 +82,7 @@ def test_phase_2_room_map_is_built_from_every_room_response_merged_together():
     room added via the per-room endpoint would silently have no prices/offers reach it."""
     src = _read_app_py()
     idx = src.index("extra_new_rooms = new_rooms[1:]")
-    window = src[idx:idx + 3000]
+    window = src[idx:idx + 5000]
     assert "all_room_responses.append(room_resp)" in window
     assert "room_map = resolve_room_provider_codes(all_room_responses)" in window
 

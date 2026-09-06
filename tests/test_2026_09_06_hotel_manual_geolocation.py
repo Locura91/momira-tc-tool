@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from schemas import HumanPreConfig
 from builder import build_hotel_contract_payload
 
-MODULE_BUILD = "2026-09-06-image-size-filter"
+MODULE_BUILD = "2026-09-06-hotel-image-reject-retry"
 
 
 def make_pre_config(**overrides):
