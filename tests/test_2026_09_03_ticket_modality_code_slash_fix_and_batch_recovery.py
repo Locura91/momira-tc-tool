@@ -29,7 +29,7 @@ suite's established pattern for testing app.py-only functions.
 """
 import os
 
-MODULE_BUILD = "2026-09-06-hotel-manual-geolocation"
+MODULE_BUILD = "2026-09-06-hotel-geo-checkbox-key-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

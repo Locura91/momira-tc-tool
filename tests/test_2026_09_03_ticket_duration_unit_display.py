@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai_extractor
 import ui_components
 
-MODULE_BUILD = "2026-09-06-hotel-manual-geolocation"
+MODULE_BUILD = "2026-09-06-hotel-geo-checkbox-key-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

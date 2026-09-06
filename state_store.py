@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-06-hotel-manual-geolocation"
+MODULE_BUILD = "2026-09-06-hotel-geo-checkbox-key-fix"
 
 _NAMESPACE = "translation_state"
 

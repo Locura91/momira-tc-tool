@@ -9378,12 +9378,18 @@ def render_hotel_flow(client):
             st.session_state.hp_geo_confirmed = False
             st.rerun()
 
-    hp_geo_confirmed = st.checkbox(
+    # CONFIRMED REAL BUG (reported 2026-09-06): this used to pass BOTH `key="hp_geo_confirmed"`
+    # AND `value=...` to the checkbox - unlike Ticket's own, already-proven tk_geo_confirmed
+    # checkbox (which never combines a widget key with an explicit value=), that combination
+    # can leave the checkbox stuck showing its stale/disabled state on some Streamlit versions.
+    # Matching Ticket's exact pattern: no key on the widget itself, read/write the confirmed
+    # flag through session_state explicitly instead.
+    st.session_state.hp_geo_confirmed = st.checkbox(
         "✅ I've checked this location on the map and it's correct for this hotel",
         value=st.session_state.get("hp_geo_confirmed", False),
-        key="hp_geo_confirmed",
         disabled=not hp_geo.get("valid"),
     )
+    hp_geo_confirmed = st.session_state.hp_geo_confirmed
 
     # ------------------------------------------------------------------
     # PUBLISH - two phases, in order
@@ -11352,7 +11358,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-06-hotel-manual-geolocation"
+BUILD_VERSION = "2026-09-06-hotel-geo-checkbox-key-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
