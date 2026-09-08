@@ -205,14 +205,17 @@ def test_app_py_every_extract_images_call_passes_errors_and_label():
     document/page-image discovery every other product-type flow already had (see
     test_2026_09_02_hotel_images_required.py - Hotel previously had NO image discovery at all,
     which is what let a real hotel contract reach Publish with an empty images list and fail
-    Travel Compositor's own "at least 1 image" requirement). The count grows accordingly; the
-    guarantee this test protects - errors=/label= always passed, never silently dropped - still
-    holds for every site, old and new."""
+    Travel Compositor's own "at least 1 image" requirement). CONFIRMED (2026-09-08): a 6th call
+    site was added for the new Ticket batch-UPDATE flow (render_multi_ticket_update_flow) - its
+    PHASE 1 "gather" step reuses the exact same document/page-image discovery as every other
+    batch/legacy flow. The count grows accordingly; the guarantee this test protects -
+    errors=/label= always passed, never silently dropped - still holds for every site, old and
+    new."""
     source = _read_app_py()
     count = source.count("embedded_images = extract_images(tmp_path")
-    assert count == 5  # all five call sites present (Hotel added 2026-09-02)
+    assert count == 6  # all six call sites present (Ticket batch-update added 2026-09-08)
     count_with_errors = source.count("errors=_doc_image_errors, label=uploaded.name")
-    assert count_with_errors == 5  # and every single one now reports failures
+    assert count_with_errors == 6  # and every single one now reports failures
 
 
 def test_app_py_warn_helper_is_generalized_not_r2_specific():

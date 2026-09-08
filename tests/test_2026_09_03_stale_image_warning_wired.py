@@ -156,9 +156,10 @@ def test_closed_tour_update_flow_warns_with_data_image_urls_before_its_publish_b
 
 def test_exactly_seven_warn_stale_images_call_sites_plus_the_definition():
     src = _read_app_py()
-    # 1 def + 7 call sites (ClosedTour create, ClosedTour update, Ticket batch, Ticket single,
-    # Transfer, Transport, Hotel) = 8 occurrences of the name total.
-    assert src.count("_warn_stale_images") == 8
+    # 1 def + 8 call sites (ClosedTour create, ClosedTour update, Ticket batch-create,
+    # Ticket batch-update (added 2026-09-08), Ticket single, Transfer, Transport, Hotel) = 9
+    # occurrences of the name total.
+    assert src.count("_warn_stale_images") == 9
 
 
 # ======================================================================

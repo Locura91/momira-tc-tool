@@ -280,6 +280,15 @@ TICKET_ACTION_LABELS = {
     "add_option": "2: Add new Modality to existing Ticket",
     "update_ticket": "3: Update an existing Ticket",
     "update_option": "4: Update existing Ticket Modality",
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "yes please fix it first, that's the reason
+    # i reached out to you first." The single-ticket "3: Update an existing Ticket" flow only
+    # ever updates ONE ticket at a time - there was no equivalent of the batch-CREATE flow
+    # (render_multi_ticket_flow) for updating MANY EXISTING tickets from one supplier document
+    # (e.g. a whole new price-list covering 20+ existing excursions). Routes to
+    # render_multi_ticket_update_flow, the same phase/state-machine pattern as
+    # render_multi_ticket_flow, but matching each detected excursion to an EXISTING ticket code
+    # instead of creating a new one.
+    "update_tickets_batch": "5: Update multiple existing Tickets from one document",
 }
 TICKET_ACTION_FIELDS = {
     # NOTE: "create" deliberately does NOT include "modality_code" - Step 4's
@@ -300,6 +309,14 @@ TICKET_ACTION_FIELDS = {
     # Option the pricing half applies to, so modality_code is asked unconditionally.
     "update_ticket": ["existing_ticket_code", "modality_code", "release_days"],
     "update_option": ["existing_ticket_code", "modality_code", "on_request"],
+    # NOTE: deliberately does NOT include "existing_ticket_code" or "modality_code" - the new
+    # batch-update flow (render_multi_ticket_update_flow) collects a target existing Ticket Code
+    # (and which of ITS live Modality Codes to update) per detected excursion, right in its own
+    # matching step - see that function's PHASE "match". Also does NOT include "currency" or
+    # min/max passengers - each matched ticket's OWN live currency/passenger limits win (same
+    # "an UPDATE never asks for things the live record already has" rule as every other update
+    # action here), fetched fresh per item rather than asked once for the whole batch.
+    "update_tickets_batch": ["release_days"],
 }
 
 ACTION_LABELS = {
@@ -5404,6 +5421,971 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         return
 
 
+def _mtu_fetch_live_ticket(client, supplier_id, code):
+    """Fetches+caches a Ticket's full live GET response for render_multi_ticket_update_flow -
+    shared by the "match" phase (which only needs modalityCodes, to offer as a default) and the
+    "reviewing" phase (which needs the whole record as the merge baseline, and for the
+    content-drift check). Cached per (supplier_id, code) in session_state so re-rendering the
+    same item doesn't re-fetch every rerun - same pattern as check_code_availability's own
+    cache above. Returns whatever client.get_ticket() returns (an error dict on failure)."""
+    clean = (code or "").strip()
+    if not clean:
+        return None
+    cache = st.session_state.setdefault("mtu_live_ticket_cache", {})
+    cache_key = (supplier_id, clean.lower())
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        result = client.get_ticket(supplier_id, clean)
+    except Exception as e:
+        result = {"error": True, "message": str(e)}
+    cache[cache_key] = result
+    return result
+
+
+def _mtu_clear_geo_confirmation(current, idx):
+    """Twin of _mt_clear_geo_confirmation for this ("mtu_") flow's own separate geo-confirm
+    state/checkbox - see that function's docstring for the full bug this pattern closes."""
+    current["geo_confirmed"] = False
+    st.session_state.pop(f"mtu_geo_confirm_{idx}", None)
+
+
+def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):
+    """
+    Batch flow for UPDATING MANY EXISTING Tickets from one document (e.g. a new supplier
+    price-list that restates 20+ excursions already live on Travel Compositor).
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): the app already had a batch-CREATE flow for
+    several NEW excursions from one document (render_multi_ticket_flow) but no equivalent for
+    updating several EXISTING tickets from one document - "yes please fix it first, that's the
+    reason i reached out to you first," said before attempting the Egypt catalogue import this
+    was built for (nearly every LIVE ticket there needs its title/includes/excludes corrected
+    from "(Entrance Ticket not included)" to entrance-included wording, plus a price update -
+    all in one pass, across many tickets, from one uploaded price-list).
+
+    Same phase/state-machine shape as render_multi_ticket_flow (its own docstring explains the
+    "one real POST at a time, own success/failure status" reasoning - identical here), with its
+    own "mtu_"-prefixed session_state throughout so it never collides with that flow's "mt_"
+    state:
+      1. GATHER: reuse the URL/document(s) already provided above, detect distinct excursions
+         (detect_ticket_variants - same detector the create flow uses).
+      2. MATCH: for each detected excursion, match it to an EXISTING live Ticket Code for this
+         supplier. Defaults to the excursion's own detected supplier code/label when it exactly
+         matches a live ticket's code (the confirmed common case: "Same codes - direct match")
+         but always stays human-editable - other suppliers may not share that guarantee. Also
+         picks which of that ticket's live Modality Codes to update.
+      3. REVIEWING: per matched item, fetch the live ticket, run the SAME two-step extraction
+         the create flow uses (extract_ticket_main_info then extract_ticket_modality_data,
+         focused on this excursion via variant_hint), merge the main-info extraction OVER the
+         live baseline (_merge_extraction_over_baseline / _map_fetched_ticket_to_data - same
+         helpers the single-ticket "Whole ticket" update path already uses) so anything the new
+         document doesn't restate is preserved rather than blanked, and surface
+         check_ticket_content_drift so the human sees at a glance whether this is more than a
+         price refresh.
+      4. PUBLISHING: client.update_ticket + client.update_ticket_option per item, sequentially,
+         each with its own clear status and a recovery path that doesn't lose the rest of the
+         batch's edits if one item fails (mtu_update_failed_items / mtu_option_failed_items,
+         same principle as the create flow's mt_precreate_failed_items / mt_failed_items).
+    """
+    if "mtu_phase" not in st.session_state:
+        st.session_state.mtu_phase = "gather"
+
+    # ------------------------------------------------------------------
+    # PHASE 1: detect excursions from the source already provided above (same detector, same
+    # gathering code as render_multi_ticket_flow's PHASE 1 - see that function for why URL fetch
+    # failures/embedded-image extraction are handled the way they are).
+    # ------------------------------------------------------------------
+    if st.session_state.mtu_phase == "gather":
+        if not (tk_url or tk_files):
+            st.info("Provide a URL and/or upload document(s) above, then click below.")
+        if st.button("🔎 Detect Excursions", disabled=not (tk_url or tk_files), key="mtu_detect_btn"):
+            with st.spinner("Gathering content and detecting distinct excursions..."):
+                try:
+                    combined_parts = []
+                    doc_raw_images = []
+                    doc_image_urls = []
+                    seen_image_hashes = set()
+                    if tk_url:
+                        page_text, page_text_err = _fetch_url_text_safe(tk_url)
+                        if page_text is not None:
+                            combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
+                        else:
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
+                    for uploaded in (tk_files or []):
+                        suffix = os.path.splitext(uploaded.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded.getbuffer())
+                            tmp_path = tmp.name
+                        _doc_text = extract_raw_text(tmp_path)
+                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+                        if _scan_warning:
+                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
+                        remaining_budget = 12 - len(doc_raw_images)
+                        _doc_image_errors = []
+                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
+                        if embedded_images:
+                            for i, (img_bytes, ext) in enumerate(embedded_images):
+                                doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                            try:
+                                new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                                doc_image_urls.extend(new_urls)
+                                _doc_image_errors.extend(_upload_errors)
+                            except Exception as e:
+                                _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+                        _warn_page_image_upload_errors(_doc_image_errors)
+                        os.remove(tmp_path)
+
+                    if not combined_parts:
+                        st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")
+                        st.stop()
+
+                    raw_text = "\n\n".join(combined_parts)
+                    detected = detect_ticket_variants(raw_text)
+
+                    candidates = [
+                        {
+                            "label": e.get("label", ""),
+                            "supplier_code": str(e.get("supplier_code") or "").strip(),
+                            "selected": True,
+                            "is_genuine_variant": True,
+                        }
+                        for e in detected
+                    ]
+                    if not candidates:
+                        candidates = [{"label": "", "supplier_code": "", "selected": True, "is_genuine_variant": False}]
+
+                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
+                    if len(doc_image_urls) >= len(doc_raw_images):
+                        doc_raw_images = []
+
+                    st.session_state.mtu_raw_text = raw_text
+                    st.session_state.mtu_candidates = candidates
+                    st.session_state.mtu_doc_raw_images = doc_raw_images
+                    st.session_state.mtu_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
+                    st.session_state.mtu_phase = "match"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Detection failed: {friendly_error_message(e)}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 2: match each detected excursion to an EXISTING live Ticket Code for this supplier.
+    # ------------------------------------------------------------------
+    if st.session_state.mtu_phase == "match":
+        candidates = st.session_state.mtu_candidates
+        st.subheader(f"Match {len(candidates)} detected excursion(s) to existing Tickets")
+        st.caption("This UPDATES existing tickets - it never creates a new one. Each ticked row below "
+                  "needs a Ticket Code that already exists for this supplier. When the document assigns "
+                  "this excursion its own supplier reference code (or its name matches an existing "
+                  "ticket's code) it's pre-filled below - always double-check and override it if it "
+                  "picked the wrong one.")
+
+        existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
+        if list_error:
+            st.warning(f"⚠️ Couldn't load the existing ticket list to help pre-fill matches: {list_error}. "
+                      f"You can still type codes in manually below.")
+        existing_lookup = {
+            (item.get("code") or "").strip().lower(): item
+            for item in existing_items if (item.get("code") or "").strip()
+        }
+
+        for i, cand in enumerate(candidates):
+            if "target_ticket_code" not in cand:
+                # CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "Same codes - direct match" is the
+                # common case (confirmed for the Egypt catalogue: CAI-01/LXR-01/ASW-01 etc. match
+                # existing live ticket codes exactly) - default to it when the detected supplier
+                # code (or, failing that, the excursion's own label) exactly matches an existing
+                # ticket's code, but this is only ever a DEFAULT - the text_input below always
+                # stays human-editable, since other suppliers may not share this guarantee.
+                default_code = ""
+                _sc = cand.get("supplier_code", "").strip().lower()
+                _lbl = (cand.get("label") or "").strip().lower()
+                if _sc and _sc in existing_lookup:
+                    default_code = existing_lookup[_sc]["code"]
+                elif _lbl and _lbl in existing_lookup:
+                    default_code = existing_lookup[_lbl]["code"]
+                cand["target_ticket_code"] = default_code
+
+            ccol1, ccol2, ccol3 = st.columns([1, 3, 3])
+            with ccol1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"mtu_sel_{i}")
+            with ccol2:
+                cand["label"] = st.text_input("Excursion", value=cand["label"], key=f"mtu_label_{i}")
+            with ccol3:
+                cand["target_ticket_code"] = st.text_input(
+                    "Existing Ticket Code to update", value=cand["target_ticket_code"], key=f"mtu_code_{i}",
+                    placeholder="e.g. CAI-01",
+                    help="The ALREADY-LIVE Ticket Code this excursion's new info/pricing should be "
+                         "published onto - not a new code."
+                )
+
+            cand["_live_modalities"] = []
+            cand["_match_status"] = None
+            code_val = cand["target_ticket_code"].strip()
+            if cand["selected"] and code_val:
+                # CONFIRMED PRODUCT-OWNER ADJUSTMENT (2026-09-08): check_code_availability's
+                # normal framing ("exists" = bad, already taken) is inverted for an UPDATE flow -
+                # here "exists" is exactly what's wanted (a real ticket to update), and "doesn't
+                # exist" is the actual problem.
+                check = check_code_availability(client, "ticket", supplier_id, code_val)
+                if check is None:
+                    st.warning(f"⚠️ Couldn't confirm `{code_val}` exists yet (connectivity) - will be "
+                              f"re-checked before publishing.")
+                    cand["_match_status"] = "unknown"
+                elif check["exists"]:
+                    st.success(f"✅ Matches existing ticket **{check.get('name') or '(unnamed)'}** "
+                              f"(`{code_val}`) - will be UPDATED, not created.")
+                    cand["_match_status"] = "ok"
+                    live = _mtu_fetch_live_ticket(client, supplier_id, code_val)
+                    if isinstance(live, dict) and "error" not in live:
+                        cand["_live_modalities"] = live.get("modalityCodes") or []
+                else:
+                    st.error(f"🚫 No existing ticket found with code `{code_val}` for this supplier - "
+                            f"this flow only UPDATES tickets that already exist. If this is genuinely a "
+                            f"brand-new excursion, use **'1: Create new Ticket + 1 Modality'** instead.")
+                    cand["_match_status"] = "not_found"
+
+            default_mod = cand.get("modality_code", "")
+            if not default_mod and cand["_live_modalities"]:
+                _sc = cand.get("supplier_code", "").strip().lower()
+                _sc_match = next((m for m in cand["_live_modalities"] if (m or "").strip().lower() == _sc), None) if _sc else None
+                default_mod = _sc_match or cand["_live_modalities"][0]
+            mod_help = (
+                f"Known Modality Codes on this ticket: {', '.join(cand['_live_modalities'])}"
+                if cand["_live_modalities"] else
+                "Type the exact live Modality Code to update (enter the Ticket Code above first to "
+                "see this ticket's known Modality Codes here)."
+            )
+            cand["modality_code"] = st.text_input(
+                f"Existing Modality Code to update — {cand['label'] or code_val or f'row {i + 1}'}",
+                value=default_mod, key=f"mtu_modcode_{i}", help=mod_help
+            )
+            st.divider()
+
+        if st.button("➕ Add another excursion manually", key="mtu_add_row"):
+            candidates.append({"label": "", "supplier_code": "", "selected": True, "is_genuine_variant": False})
+            st.rerun()
+
+        missing = []
+        not_found = []
+        new_queue = []
+        seen_codes = {}
+        for cand in candidates:
+            if not cand["selected"]:
+                continue
+            code = cand["target_ticket_code"].strip()
+            mod_code = cand["modality_code"].strip()
+            label = cand["label"] or "(unnamed excursion)"
+            if not code or not mod_code:
+                missing.append(label)
+                continue
+            if cand.get("_match_status") == "not_found":
+                not_found.append(f"{label} (`{code}`)")
+                continue
+            seen_codes.setdefault(code.lower(), []).append(label)
+            new_queue.append({
+                "label": cand["label"], "target_ticket_code": code, "modality_code": mod_code,
+                "data": None, "live_ticket": None, "drift": None, "confirmed": False,
+                "is_genuine_variant": cand.get("is_genuine_variant", False),
+            })
+
+        duplicate_codes = {code: labels for code, labels in seen_codes.items() if len(labels) > 1}
+
+        if missing:
+            st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
+                    f"excluded: {missing}")
+        if not_found:
+            st.error(f"🚫 These selected excursions don't match any existing ticket and were excluded: {not_found}")
+        if duplicate_codes:
+            for code, labels in duplicate_codes.items():
+                st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion "
+                        f"({', '.join(labels)}) - each row must update a DIFFERENT ticket.")
+
+        ready_to_review = new_queue and not missing and not not_found and not duplicate_codes
+        st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
+                  "Fix the issues above before continuing.")
+
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not ready_to_review, key="mtu_start_review"):
+            st.session_state.mtu_queue = new_queue
+            st.session_state.mtu_queue_index = 0
+            st.session_state.mtu_phase = "reviewing"
+            st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 3: review each matched ticket individually, one at a time - same two-step
+    # main-info/modality shape as render_multi_ticket_flow's PHASE 3 (see that function's own
+    # comment for why main info and pricing are two separate AI calls/steps), but starting from
+    # the LIVE ticket as a baseline instead of a blank slate.
+    # ------------------------------------------------------------------
+    if st.session_state.mtu_phase == "reviewing":
+        idx = st.session_state.mtu_queue_index
+        queue = st.session_state.mtu_queue
+        current = queue[idx]
+        current.setdefault("step", "main")
+
+        st.progress(idx / len(queue))
+        with st.expander("Not what you wanted?"):
+            if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mtu_cancel_{idx}"):
+                for key in ["mtu_phase", "mtu_raw_text", "mtu_candidates", "mtu_queue", "mtu_queue_index",
+                           "mtu_doc_raw_images", "mtu_hosted_image_candidates", "mtu_live_ticket_cache"]:
+                    st.session_state.pop(key, None)
+                _clear_batch_widget_state(["mtu_"] + SHARED_WIDGET_STATE_PREFIXES)
+                st.rerun()
+
+        render_skip_item_button(
+            current['label'] or current['target_ticket_code'], queue, idx,
+            "mtu_queue", "mtu_queue_index",
+            ["mtu_phase", "mtu_raw_text", "mtu_candidates", "mtu_queue", "mtu_queue_index",
+             "mtu_doc_raw_images", "mtu_hosted_image_candidates"],
+            button_key=f"mtu_skip_{idx}",
+            widget_state_prefixes=["mtu_"] + SHARED_WIDGET_STATE_PREFIXES
+        )
+
+        st.subheader(f"Reviewing ticket {idx + 1} of {len(queue)}: "
+                    f"**{current['label'] or current['target_ticket_code']}** "
+                    f"(updating: `{current['target_ticket_code']}` / Modality `{current['modality_code']}`)")
+
+        variant_hint = current["label"] if current.get("is_genuine_variant") else None
+
+        if current.get("live_ticket") is None:
+            current["live_ticket"] = _mtu_fetch_live_ticket(client, supplier_id, current["target_ticket_code"])
+        live_ticket = current["live_ticket"]
+        live_ok = isinstance(live_ticket, dict) and "error" not in live_ticket
+        if not live_ok:
+            st.error(f"❌ Couldn't fetch the live ticket `{current['target_ticket_code']}`: {live_ticket}")
+            if st.button("🔄 Retry fetch", key=f"mtu_retry_fetch_{idx}"):
+                current["live_ticket"] = None
+                st.rerun()
+            return
+
+        if current["data"] is None:
+            with st.spinner(f"Extracting main ticket info{f' focused on ' + repr(current['label']) if variant_hint else ''} "
+                            f"and comparing against what's currently live..."):
+                try:
+                    # CONFIRMED FIX (2026-09-08): merges the fresh extraction OVER the live
+                    # ticket's own current data (_map_fetched_ticket_to_data /
+                    # _merge_extraction_over_baseline - same helpers the single-ticket "Whole
+                    # ticket" update path already uses) so a field the new document doesn't
+                    # restate is preserved instead of blanked - while a field the new document
+                    # DOES restate (e.g. a corrected title/includes/excludes once entrance
+                    # tickets become included) correctly overwrites the stale live value.
+                    baseline = _map_fetched_ticket_to_data(live_ticket)
+                    fresh = extract_ticket_main_info(
+                        st.session_state.mtu_raw_text, variant_hint=variant_hint,
+                        human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
+                    current["data"] = _merge_extraction_over_baseline(baseline, fresh)
+                    if not current["data"].get("image_urls"):
+                        current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                    current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
+                        current["data"], supplier_id, "Ticket")
+                    live_datasheet = (live_ticket.get("datasheets") or {}).get("EN") or {}
+                    try:
+                        current["drift"] = check_ticket_content_drift(
+                            st.session_state.mtu_raw_text, live_datasheet, human_hint=None)
+                    except Exception as e:
+                        current["drift"] = {"error": friendly_error_message(e)}
+                except Exception as e:
+                    st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mtu_retry_extract_{idx}"):
+                        st.rerun()
+                    return
+
+        data = current["data"]
+
+        # ==================================================================
+        # STEP A: MAIN TICKET INFO
+        # ==================================================================
+        if current["step"] == "main":
+            st.caption("**Step 1 of 2: Main ticket info.** Pricing/Modality comes next, as its own step.")
+
+            _drift = current.get("drift")
+            if isinstance(_drift, dict):
+                if _drift.get("error"):
+                    st.caption(f"(Couldn't run the AI content check against the live ticket: {_drift['error']})")
+                elif _drift.get("has_changes"):
+                    st.warning("⚠️ The new document may describe more than a price change vs. what's "
+                              "currently live - double-check the fields below before publishing:")
+                    for _c in _drift.get("changes") or []:
+                        st.markdown(f"- {_c}")
+                else:
+                    st.caption("✅ AI check: the new document doesn't appear to describe any content "
+                              "change beyond pricing.")
+
+            editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
+            editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
+            if not (data.get("ticket_name") or "").strip():
+                st.error("🚫 Ticket name is empty - fill it in above before continuing.")
+            if not (data.get("description") or "").strip():
+                st.error("🚫 Description is empty - fill it in above before continuing.")
+            if current.get("_cancellation_link_scope"):
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
+                          f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
+                          f"clear it if this ticket needs different terms.")
+            render_cancellation_policy_editor(data, f"mtu_{idx}")
+            editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
+            merge_what_to_bring_into_voucher_remarks(data)
+            editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
+                           "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
+            # Price-validity code (product owner, 2026-09-08) - build_ticket_payloads already
+            # bakes this into voucher_remarks via with_price_validity_code, same as the
+            # single-ticket "Whole ticket" update path - no separate voucher-remarks-only call
+            # needed here since this flow always republishes the full ticket payload anyway.
+            editable_field("Prices confirmed valid until (optional - the app adds the "
+                           "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
+                           "price_valid_until_date", widget="text_input", key_suffix=f"_{idx}")
+
+            st.markdown(f"**📍 Location for {current['label'] or current['target_ticket_code']}**")
+            mtu_city = data.get("city", "")
+            if (data.get("manual_latitude") is not None and data.get("manual_longitude") is not None
+                    and data.get("manual_coords_for_city") != mtu_city):
+                data["manual_latitude"] = None
+                data["manual_longitude"] = None
+                data.pop("manual_coords_for_city", None)
+                _mtu_clear_geo_confirmation(current, idx)
+            if data.get("manual_latitude") is not None and data.get("manual_longitude") is not None:
+                mtu_geo = {"latitude": data["manual_latitude"], "longitude": data["manual_longitude"],
+                          "display_name": mtu_city, "valid": True}
+            else:
+                mtu_geo = geocode(_geo_search_default(client, mtu_city))
+
+            if mtu_geo.get("valid"):
+                mtu_lat, mtu_lng = mtu_geo["latitude"], mtu_geo["longitude"]
+                mtu_maps_link = f"https://www.google.com/maps?q={mtu_lat},{mtu_lng}"
+                st.markdown(
+                    f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
+                    f"border-radius:4px;'>📍 Resolved: <strong>{mtu_geo.get('display_name') or mtu_city}</strong>"
+                    f"<br>Coordinates: {mtu_lat:.6f}, {mtu_lng:.6f} — "
+                    f"<a href='{mtu_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
+                    unsafe_allow_html=True
+                )
+                st.caption("Geocoding data © OpenStreetMap contributors")
+            else:
+                st.markdown(
+                    "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
+                    "location. Search below or enter coordinates manually.</div>",
+                    unsafe_allow_html=True
+                )
+
+            with st.expander("🔍 Search for a better match / fix this location", expanded=not mtu_geo.get("valid")):
+                mtu_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mtu_city), key=f"mtu_geo_query_{idx}")
+                if st.button("🔎 Search", key=f"mtu_geo_search_btn_{idx}"):
+                    with st.spinner("Searching..."):
+                        current["geo_search_results"] = geocode_search(mtu_geo_query, limit=5)
+                if current.get("geo_search_results"):
+                    for gi, candidate in enumerate(current["geo_search_results"]):
+                        ggcol1, ggcol2 = st.columns([4, 1])
+                        with ggcol1:
+                            st.write(f"**{candidate['display_name']}**")
+                            st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                        with ggcol2:
+                            if st.button("Use this", key=f"mtu_geo_pick_{idx}_{gi}"):
+                                data["manual_latitude"] = candidate["latitude"]
+                                data["manual_longitude"] = candidate["longitude"]
+                                data["manual_coords_for_city"] = mtu_city
+                                _mtu_clear_geo_confirmation(current, idx)
+                                current["geo_search_results"] = None
+                                st.rerun()
+
+                st.markdown("**Or paste a Google Maps link:**")
+                mtu_maps_url = st.text_input("Google Maps link", key=f"mtu_geo_maps_url_{idx}", placeholder="https://maps.google.com/...")
+                if st.button("🔗 Use this link's coordinates", key=f"mtu_geo_maps_url_btn_{idx}", disabled=not mtu_maps_url.strip()):
+                    with st.spinner("Reading coordinates from the link..."):
+                        mtu_url_geo = parse_google_maps_url(mtu_maps_url)
+                    if mtu_url_geo["valid"]:
+                        data["manual_latitude"] = mtu_url_geo["latitude"]
+                        data["manual_longitude"] = mtu_url_geo["longitude"]
+                        data["manual_coords_for_city"] = mtu_city
+                        _mtu_clear_geo_confirmation(current, idx)
+                        st.rerun()
+                    else:
+                        st.error(mtu_url_geo["error"])
+
+                st.markdown("**Or enter coordinates manually:**")
+                mgcol1, mgcol2 = st.columns(2)
+                with mgcol1:
+                    mtu_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mtu_geo_manlat_{idx}", placeholder="e.g. 27.394900")
+                with mgcol2:
+                    mtu_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mtu_geo_manlng_{idx}", placeholder="e.g. 33.678400")
+                if st.button("📍 Use these coordinates", key=f"mtu_geo_manual_btn_{idx}", disabled=mtu_man_lat is None or mtu_man_lng is None):
+                    data["manual_latitude"] = mtu_man_lat
+                    data["manual_longitude"] = mtu_man_lng
+                    data["manual_coords_for_city"] = mtu_city
+                    _mtu_clear_geo_confirmation(current, idx)
+                    st.rerun()
+
+            current["geo_confirmed"] = st.checkbox(
+                "✅ I've checked this location and it's correct for this ticket",
+                value=current.get("geo_confirmed", False), key=f"mtu_geo_confirm_{idx}",
+                disabled=not mtu_geo.get("valid")
+            )
+            if not mtu_geo.get("valid"):
+                st.info("👆 Resolve the location above before this ticket can be confirmed.")
+            elif not current["geo_confirmed"]:
+                st.info("👆 Please check the location above and confirm it's correct.")
+
+            st.markdown(f"**Images for {current['label'] or current['target_ticket_code']}**")
+            if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
+                st.caption("⚠️ No real image on file yet - using a generic placeholder. Pick at least one "
+                          "real image below (Travel Compositor requires at least one image per Ticket).")
+            else:
+                st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected "
+                          f"(carried over from the live ticket unless you change them below).")
+
+            def _mtu_add_url_images():
+                selected = render_url_image_picker(st.session_state.mtu_hosted_image_candidates, f"mtu_found_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(
+                bool(st.session_state.get("mtu_hosted_image_candidates")),
+                f"🖼️ Images found in your document/page ({len(st.session_state.get('mtu_hosted_image_candidates') or [])})",
+                f"mtu_found_{idx}_closed", _mtu_add_url_images
+            )
+
+            def _mtu_add_doc_image():
+                added = render_doc_image_picker(st.session_state.mtu_doc_raw_images, f"mtu_doc_{idx}")
+                if added:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + [added]
+                    return 1
+                return 0
+
+            render_closable_image_section(
+                bool(st.session_state.get("mtu_doc_raw_images")),
+                f"📥 Images needing hosting ({len(st.session_state.get('mtu_doc_raw_images') or [])})",
+                f"mtu_doc_{idx}_closed", _mtu_add_doc_image
+            )
+
+            mtu_default_query = current["label"] or data.get("ticket_name", "") or data.get("city", "")
+
+            def _mtu_add_pexels():
+                selected = render_stock_photo_picker("Pexels", search_images, mtu_default_query, f"mtu_pexels_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mtu_pexels_{idx}_closed", _mtu_add_pexels)
+
+            def _mtu_add_pixabay():
+                selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mtu_default_query, f"mtu_pixabay_{idx}")
+                if selected:
+                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                    data["image_urls"] = current_imgs + selected
+                    return len(selected)
+                return 0
+
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mtu_pixabay_{idx}_closed", _mtu_add_pixabay)
+
+            render_duration_editor(data, f"mtu_{idx}")
+
+            inc_df = pd.DataFrame([{"Item": x} for x in data.get("includes", [])]) if data.get("includes") else pd.DataFrame(columns=["Item"])
+            def _save_mtu_includes(edf, data=data):
+                data["includes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
+            editable_table("Includes", inc_df, f"mtu_includes_{idx}", on_save=_save_mtu_includes)
+
+            exc_df = pd.DataFrame([{"Item": x} for x in data.get("excludes", [])]) if data.get("excludes") else pd.DataFrame(columns=["Item"])
+            def _save_mtu_excludes(edf, data=data):
+                data["excludes"] = [str(r.get("Item") or "").strip() for _, r in edf.iterrows() if _safe_cell_str(r.get("Item")).strip()]
+            editable_table("Excludes", exc_df, f"mtu_excludes_{idx}", on_save=_save_mtu_excludes)
+
+            mp_default = [{"Description": m.get("description", "")} for m in data.get("meeting_points", [])] or [{"Description": "Hotel Lobby"}]
+            mp_df = pd.DataFrame(mp_default)
+            def _save_mtu_mp(edf, data=data):
+                data["meeting_points"] = [
+                    {"description": str(r.get("Description") or "").strip(), "variable_location": str(r.get("Description") or "").strip().lower() == "hotel lobby"}
+                    for _, r in edf.iterrows() if _safe_cell_str(r.get("Description")).strip()
+                ]
+            editable_table("Meeting Points", mp_df, f"mtu_mp_{idx}", on_save=_save_mtu_mp)
+
+            name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
+            ready_for_modality = name_and_description_valid and mtu_geo.get("valid") and current.get("geo_confirmed")
+
+            if st.button("➡️ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mtu_continue_modality_{idx}"):
+                with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
+                    try:
+                        modality_data = extract_ticket_modality_data(
+                            st.session_state.mtu_raw_text, variant_hint=variant_hint,
+                            human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
+                    except Exception as e:
+                        st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
+                        return
+                    data.update(modality_data)
+                    _apply_min_pax_guaranteed_departure_note(
+                        data, ("cancellation_policy_text", "voucher_remarks"),
+                        data.get("min_pax_guaranteed_departure"))
+                    reset_child_age_band_widgets(f"mtu_{idx}")
+                    floor_start_date_for_new_data(data, widget_key=f"mtu_start_date_{idx}")
+                    st.session_state.pop(f"mtu_{idx}_languages", None)
+                    st.session_state.pop(f"mtu_op_days_{idx}", None)
+                    st.session_state.pop(f"mtu_end_date_{idx}", None)
+                    st.session_state.pop(f"mtu_{idx}_price_type", None)
+                    st.session_state.pop(f"mtu_{idx}_service_price", None)
+                current["step"] = "modality"
+                st.rerun()
+            if not ready_for_modality:
+                st.info("Fill in Ticket name/Description and confirm the location above before continuing to Modality/Pricing.")
+            return
+
+        # ==================================================================
+        # STEP B: MODALITY / PRICING
+        # ==================================================================
+        st.caption(f"**Step 2 of 2: Modality/Pricing for {current['label'] or current['target_ticket_code']}.**")
+        if st.button("🔙 Back to main info", key=f"mtu_back_to_main_{idx}"):
+            current["step"] = "main"
+            st.rerun()
+
+        if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+                      f"This Ticket will be published **On Request** regardless of the On Request setting "
+                      f"above - a note was also added to Condition/Voucher Remarks.")
+
+        render_child_age_band(data, key_prefix=f"mtu_{idx}",
+                              min_key="child_age_min", max_key="child_age_max")
+
+        st.markdown("**Start Time(s)**")
+        tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in data.get("time_tables", [])]) if data.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+        def _save_mtu_timetables(edf, data=data):
+            data["time_tables"] = _clean_time_table_rows(edf)
+        editable_table("Start Time(s)", tt_df, f"mtu_timetables_{idx}", on_save=_save_mtu_timetables)
+        if not data.get("time_tables"):
+            st.caption("ℹ️ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
+
+        data["operational_days"] = st.multiselect(
+            "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mtu_op_days_{idx}"
+        )
+
+        # CONFIRMED REAL RULE (product owner): an UPDATE never asks for things the live record
+        # already has - this item's own live Currency (fetched with the ticket, not chosen once
+        # for the whole batch) wins here, same as the single-ticket update path.
+        item_currency = live_ticket.get("currency") or "EUR"
+        item_currency = render_currency_check(item_currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtu_currency_{idx}")
+        st.markdown(f"**Pricing (in {item_currency})**")
+        item_max_passengers = live_ticket.get("maxPassengers") or max_passengers
+        render_ticket_pricing_editor(data, f"mtu_{idx}", item_currency, item_max_passengers)
+        mtu_price_type = data["price_type"]
+
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=f"mtu_start_date_{idx}"))
+        with dcol2:
+            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=f"mtu_end_date_{idx}"))
+        if data.get("pricing_notes"):
+            st.warning(f"⚠️ {data['pricing_notes']}")
+
+        render_stop_sales_editor(data, f"mtu_{idx}")
+        render_ticket_modality_supplements_editor(data, f"mtu_{idx}")
+        render_ticket_language_options(data, f"mtu_{idx}")
+
+        st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['target_ticket_code']}**")
+        mtu_clarify_q = st.text_input("Your message", key=f"mtu_clarify_input_{idx}")
+        if render_house_rule_shortcut(mtu_clarify_q, "Ticket", f"mtu_{idx}"):
+            pass
+        elif not mtu_clarify_q.strip():
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                      f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
+                      f"supplier instead of a one-off fix.")
+        if not mtu_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+                "Send", disabled=not mtu_clarify_q.strip(), key=f"mtu_clarify_send_{idx}"):
+            with st.spinner("Thinking..."):
+                result = apply_clarification(st.session_state.mtu_raw_text, data, mtu_clarify_q)
+                st.session_state[f"mtu_clarify_result_{idx}"] = result
+                remember_clarification(clarify_supplier_id(supplier_id), "Ticket", mtu_clarify_q, result)
+                if result.get("changes"):
+                    apply_clarify_changes(data, result, item_currency)
+                    mtu_field_to_table_key = {
+                        "includes": f"_editing_table_mtu_includes_{idx}",
+                        "excludes": f"_editing_table_mtu_excludes_{idx}",
+                        "meeting_points": f"_editing_table_mtu_mp_{idx}",
+                        "time_tables": f"_editing_table_mtu_timetables_{idx}",
+                        "stop_sales": f"_editing_table_mtu_{idx}_stop_sales",
+                        "modality_supplements": f"_editing_table_mtu_{idx}_modality_supplements",
+                        "occupancy_prices": f"_editing_table_mtu_{idx}_occupancy",
+                    }
+                    for field_name in result["changes"]:
+                        table_key = mtu_field_to_table_key.get(field_name)
+                        if table_key:
+                            st.session_state[table_key] = False
+                    reset_stale_editable_field_widgets(result["changes"], key_suffix=f"_{idx}")
+                    if "operational_days" in result["changes"]:
+                        st.session_state.pop(f"mtu_op_days_{idx}", None)
+                st.rerun()
+        if st.session_state.get(f"mtu_clarify_result_{idx}"):
+            r = st.session_state[f"mtu_clarify_result_{idx}"]
+            render_clarify_result(r)
+        remember_memory_panel(clarify_supplier_id(supplier_id), "Ticket", "mtu")
+
+        if mtu_price_type == "SERVICE":
+            price_valid = bool(data.get("base_service_price", 0))
+        elif mtu_price_type == "OCCUPANCY":
+            _occ_rows = data.get("occupancy_prices") or []
+            _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
+            price_valid = bool(_occ_rows) and not _zero_occ
+            if _zero_occ:
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                         f"these would be sellable for free. Enter a price for each, or remove the row.")
+        else:
+            price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
+        name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
+        can_continue = price_valid and name_and_description_valid
+
+        is_last = idx == len(queue) - 1
+        btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
+        if st.button(btn_label, type="primary", disabled=not can_continue, key=f"mtu_confirm_{idx}"):
+            current["confirmed"] = True
+            current["_currency"] = item_currency
+            current["_max_passengers"] = item_max_passengers
+            if is_last:
+                st.session_state.mtu_phase = "publishing"
+            else:
+                st.session_state.mtu_queue_index += 1
+            st.rerun()
+        if not price_valid:
+            st.info("Add at least one non-zero price before continuing.")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 4: publish all confirmed Tickets, ONE BY ONE
+    # ------------------------------------------------------------------
+    if st.session_state.mtu_phase == "publishing":
+        queue = st.session_state.mtu_queue
+        if "mtu_update_failed_items" not in st.session_state:
+            # Failed BEFORE any live ticket was actually touched (payload build error,
+            # unresolved geolocation, a publish blocker) - always safe to retry in full.
+            st.session_state.mtu_update_failed_items = []
+        if "mtu_option_failed_items" not in st.session_state:
+            # The ticket's own details WERE updated successfully - only the Modality's
+            # pricing/schedule failed - retrying must only redo the option, not the ticket
+            # details again (same split as render_multi_ticket_flow's mt_failed_items).
+            st.session_state.mtu_option_failed_items = []
+
+        st.subheader(f"Ready to publish {len(queue)} Ticket updates - one by one")
+        for q in queue:
+            st.write(f"- **{q['target_ticket_code']}** ({q['label']}) - Modality: {q['modality_code']}")
+
+        _warn_stale_images([u for q in queue for u in (q.get("data", {}).get("image_urls") or [])])
+
+        if st.button("🚀 Publish all updates (one by one)", type="primary", key="mtu_publish_all"):
+            for q in queue:
+                with st.spinner(f"Updating '{q['target_ticket_code']}'..."):
+                    def _park_update_failure(q=q):
+                        st.session_state.mtu_update_failed_items.append({
+                            "target_ticket_code": q["target_ticket_code"], "label": q["label"],
+                            "modality_code": q["modality_code"], "data": q["data"],
+                            "live_ticket": q.get("live_ticket"),
+                        })
+                    _ticket_was_updated = False
+                    try:
+                        item_currency = q.get("_currency") or (q.get("live_ticket") or {}).get("currency") or "EUR"
+                        item_min_passengers = (q.get("live_ticket") or {}).get("minPassengers") or 1
+                        item_max_passengers = q.get("_max_passengers") or (q.get("live_ticket") or {}).get("maxPassengers") or max_passengers
+                        pre_config = TicketHumanPreConfig(
+                            supplier_id=supplier_id, ticket_code=q["target_ticket_code"], currency=item_currency,
+                            modality_code=q["modality_code"],
+                            on_request=on_request or min_pax_forces_on_request(q["data"].get("min_pax_guaranteed_departure")),
+                            days_available_before_release=release_days,
+                            min_passengers=item_min_passengers, max_passengers=item_max_passengers,
+                        )
+                        payloads = build_ticket_payloads(pre_config, q["data"], client)
+                        if payloads["main_ticket_error"] or payloads["ticket_option_error"]:
+                            show_publish_error(f"prepare **{q['target_ticket_code']}**'s payload",
+                                              payloads['main_ticket_error'] or payloads['ticket_option_error'])
+                            _park_update_failure()
+                            continue
+                        if not payloads["geolocation_resolved"]:
+                            st.error(f"❌ **{q['target_ticket_code']}**: geolocation not resolved - skipped.")
+                            _park_update_failure()
+                            continue
+                        if not render_publish_blockers(payloads):
+                            st.error(f"🚫 **{q['target_ticket_code']}**: skipped - see the error(s) above.")
+                            _park_update_failure()
+                            continue
+
+                        mtu_update_payload = dict(payloads["main_ticket_payload"])
+                        mtu_update_payload["code"] = q["target_ticket_code"]
+                        # CONFIRMED FIX (same class of bug as the single-ticket update path,
+                        # audit CRITICAL #2, 2026-09-01): build_ticket_payloads always sets
+                        # active=False (correct for a brand-new ticket) - the LIVE record's own
+                        # active state must win on an update instead, or every published update
+                        # here would silently take a live/active ticket off sale.
+                        _mtu_live_active = (q.get("live_ticket") or {}).get("active")
+                        if _mtu_live_active is not None:
+                            mtu_update_payload["active"] = _mtu_live_active
+
+                        result = client.update_ticket(supplier_id, mtu_update_payload)
+                        if "error" in result:
+                            show_publish_error(f"update **{q['target_ticket_code']}**", result)
+                            _park_update_failure()
+                            continue
+                        _ticket_was_updated = True
+                        st.success(f"✅ **{q['target_ticket_code']}**: ticket details updated.")
+
+                        mtu_update_option_payload = dict(payloads["ticket_option_payload"])
+                        mtu_update_option_payload["code"] = q["modality_code"]
+                        option_result = client.update_ticket_option(supplier_id, q["target_ticket_code"], mtu_update_option_payload)
+                        if "error" in option_result:
+                            show_publish_error(f"update **{q['target_ticket_code']}**'s Modality "
+                                              f"'{q['modality_code']}'", option_result)
+                            st.session_state.mtu_option_failed_items.append({
+                                "target_ticket_code": q["target_ticket_code"], "label": q["label"],
+                                "modality_code": q["modality_code"], "data": q["data"],
+                                "live_ticket": q.get("live_ticket"),
+                            })
+                            continue
+                        st.success(f"✅ **{q['target_ticket_code']}**: Modality '{q['modality_code']}' pricing/schedule updated.")
+                    except Exception as e:
+                        show_publish_error(f"update **{q['target_ticket_code']}** (unexpected error - "
+                                          f"skipped, rest of batch continues)", str(e))
+                        if not _ticket_was_updated:
+                            _park_update_failure()
+                        continue
+
+        if st.session_state.mtu_option_failed_items:
+            st.divider()
+            st.subheader(f"⚠️ {len(st.session_state.mtu_option_failed_items)} ticket(s) updated but their Modality failed")
+            st.caption("The ticket's own details WERE updated successfully - only the Modality's pricing/"
+                      "schedule failed. Adjust below and retry just the Modality - no need to redo the "
+                      "whole batch.")
+            for fi_idx, fi in enumerate(list(st.session_state.mtu_option_failed_items)):
+                with st.expander(f"🔧 {fi['target_ticket_code']} — {fi['label']}", expanded=True):
+                    fdata = fi["data"]
+                    fi_currency = (fi.get("live_ticket") or {}).get("currency") or "EUR"
+                    fi_currency = render_currency_check(fi_currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtuf_currency_{fi_idx}")
+                    fi_max_passengers = (fi.get("live_ticket") or {}).get("maxPassengers") or max_passengers
+                    render_ticket_pricing_editor(fdata, f"mtuf_{fi_idx}", fi_currency, fi_max_passengers)
+
+                    ftt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in fdata.get("time_tables", [])]) if fdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                    def _save_mtuf_tt(edf, fdata=fdata):
+                        fdata["time_tables"] = _clean_time_table_rows(edf)
+                    editable_table("Start Time(s)", ftt_df, f"mtuf_tt_{fi_idx}", on_save=_save_mtuf_tt)
+                    fdcol1, fdcol2 = st.columns(2)
+                    with fdcol1:
+                        fdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(fdata.get("start_date", "")), key=f"mtuf_start_{fi_idx}"))
+                    with fdcol2:
+                        fdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(fdata.get("end_date", "")), key=f"mtuf_end_{fi_idx}"))
+
+                    if st.button(f"🔄 Retry Modality for `{fi['target_ticket_code']}`", key=f"mtuf_retry_{fi_idx}", type="primary"):
+                        with st.spinner(f"Retrying '{fi['target_ticket_code']}'..."):
+                            try:
+                                retry_pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=fi["target_ticket_code"], currency=fi_currency,
+                                    modality_code=fi["modality_code"], on_request=on_request,
+                                    days_available_before_release=release_days,
+                                    min_passengers=(fi.get("live_ticket") or {}).get("minPassengers") or 1,
+                                    max_passengers=fi_max_passengers,
+                                )
+                                retry_payloads = build_ticket_payloads(retry_pre_config, fdata, client)
+                                if retry_payloads["ticket_option_error"]:
+                                    show_publish_error(f"prepare **{fi['target_ticket_code']}**'s payload", retry_payloads["ticket_option_error"])
+                                elif not retry_payloads["geolocation_resolved"]:
+                                    st.error("❌ Geolocation not resolved.")
+                                elif not render_publish_blockers(retry_payloads):
+                                    pass
+                                else:
+                                    retry_option_result = client.update_ticket_option(
+                                        supplier_id, fi["target_ticket_code"], {**retry_payloads["ticket_option_payload"], "code": fi["modality_code"]})
+                                    if "error" in retry_option_result:
+                                        show_publish_error(f"retry **{fi['target_ticket_code']}**'s Modality", retry_option_result)
+                                    else:
+                                        st.success(f"✅ **{fi['target_ticket_code']}**: Modality updated on retry.")
+                                        st.session_state.mtu_option_failed_items = [
+                                            x for x in st.session_state.mtu_option_failed_items if x is not fi
+                                        ]
+                                        st.rerun()
+                            except Exception as e:
+                                show_publish_error(f"retry **{fi['target_ticket_code']}**'s Modality (unexpected error)", str(e))
+
+        if st.session_state.mtu_update_failed_items:
+            st.divider()
+            st.subheader(f"⚠️ {len(st.session_state.mtu_update_failed_items)} ticket(s) couldn't be updated")
+            st.caption("Nothing was changed for these on Travel Compositor yet - fix whatever the error "
+                      "above pointed at and retry just this one.")
+            for pf_idx, pf in enumerate(list(st.session_state.mtu_update_failed_items)):
+                with st.expander(f"🔧 {pf['target_ticket_code']} — {pf['label']}", expanded=True):
+                    pfdata = pf["data"]
+                    pf_currency = (pf.get("live_ticket") or {}).get("currency") or "EUR"
+                    pf_currency = render_currency_check(pf_currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtup_currency_{pf_idx}")
+                    pf_max_passengers = (pf.get("live_ticket") or {}).get("maxPassengers") or max_passengers
+                    render_ticket_pricing_editor(pfdata, f"mtup_{pf_idx}", pf_currency, pf_max_passengers)
+
+                    pf_tt_df = pd.DataFrame([{"Time (HH:MM)": t} for t in pfdata.get("time_tables", [])]) if pfdata.get("time_tables") else pd.DataFrame(columns=["Time (HH:MM)"])
+                    def _save_mtup_tt(edf, pfdata=pfdata):
+                        pfdata["time_tables"] = _clean_time_table_rows(edf)
+                    editable_table("Start Time(s)", pf_tt_df, f"mtup_tt_{pf_idx}", on_save=_save_mtup_tt)
+                    pf_dcol1, pf_dcol2 = st.columns(2)
+                    with pf_dcol1:
+                        pfdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(pfdata.get("start_date", "")), key=f"mtup_start_{pf_idx}"))
+                    with pf_dcol2:
+                        pfdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(pfdata.get("end_date", "")), key=f"mtup_end_{pf_idx}"))
+
+                    if st.button(f"🔄 Retry updating `{pf['target_ticket_code']}`", key=f"mtup_retry_{pf_idx}", type="primary"):
+                        with st.spinner(f"Retrying '{pf['target_ticket_code']}'..."):
+                            try:
+                                retry_pre_config = TicketHumanPreConfig(
+                                    supplier_id=supplier_id, ticket_code=pf["target_ticket_code"], currency=pf_currency,
+                                    modality_code=pf["modality_code"],
+                                    on_request=on_request or min_pax_forces_on_request(pfdata.get("min_pax_guaranteed_departure")),
+                                    days_available_before_release=release_days,
+                                    min_passengers=(pf.get("live_ticket") or {}).get("minPassengers") or 1,
+                                    max_passengers=pf_max_passengers,
+                                )
+                                retry_payloads = build_ticket_payloads(retry_pre_config, pfdata, client)
+                                if retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"]:
+                                    show_publish_error(f"prepare **{pf['target_ticket_code']}**'s payload",
+                                                      retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"])
+                                elif not retry_payloads["geolocation_resolved"]:
+                                    st.error("❌ Geolocation not resolved.")
+                                elif not render_publish_blockers(retry_payloads):
+                                    pass
+                                else:
+                                    retry_update_payload = dict(retry_payloads["main_ticket_payload"])
+                                    retry_update_payload["code"] = pf["target_ticket_code"]
+                                    _retry_live_active = (pf.get("live_ticket") or {}).get("active")
+                                    if _retry_live_active is not None:
+                                        retry_update_payload["active"] = _retry_live_active
+                                    retry_result = client.update_ticket(supplier_id, retry_update_payload)
+                                    if "error" in retry_result:
+                                        show_publish_error(f"update **{pf['target_ticket_code']}**", retry_result)
+                                    else:
+                                        st.success(f"✅ **{pf['target_ticket_code']}**: ticket details updated on retry.")
+                                        retry_option_result = client.update_ticket_option(
+                                            supplier_id, pf["target_ticket_code"],
+                                            {**retry_payloads["ticket_option_payload"], "code": pf["modality_code"]})
+                                        if "error" in retry_option_result:
+                                            show_publish_error(f"update **{pf['target_ticket_code']}**'s Modality (updated as `{pf['target_ticket_code']}`)", retry_option_result)
+                                            st.session_state.mtu_option_failed_items.append({
+                                                "target_ticket_code": pf["target_ticket_code"], "label": pf["label"],
+                                                "modality_code": pf["modality_code"], "data": pfdata,
+                                                "live_ticket": pf.get("live_ticket"),
+                                            })
+                                        else:
+                                            st.success(f"✅ **{pf['target_ticket_code']}**: Modality '{pf['modality_code']}' updated too.")
+                                        st.session_state.mtu_update_failed_items = [
+                                            x for x in st.session_state.mtu_update_failed_items if x is not pf
+                                        ]
+                                        st.rerun()
+                            except Exception as e:
+                                show_publish_error(f"retry updating **{pf['target_ticket_code']}** (unexpected error)", str(e))
+
+        st.write("")
+        st.divider()
+        if st.button("🆕 Start a new batch update", key="mtu_new_batch"):
+            for key in ["mtu_phase", "mtu_raw_text", "mtu_candidates", "mtu_queue", "mtu_queue_index",
+                       "mtu_doc_raw_images", "mtu_hosted_image_candidates", "mtu_update_failed_items",
+                       "mtu_option_failed_items", "mtu_live_ticket_cache"]:
+                st.session_state.pop(key, None)
+            _clear_batch_widget_state(["mtu_"] + SHARED_WIDGET_STATE_PREFIXES)
+            st.rerun()
+        return
+
+
 def render_ticket_flow(client):
     """
     Full Ticket wizard (Steps 1-6), mirroring the ClosedTour flow's proven
@@ -5695,6 +6677,10 @@ def render_ticket_flow(client):
         "add_option": "Add a new option to an existing ticket",
         "update_ticket": "Update an existing ticket's details",
         "update_option": "Update an existing ticket option",
+        # Never actually reaches the publish_action-branching logic further below - this action
+        # returns straight into render_multi_ticket_update_flow (see Step 4 routing) - but the
+        # dict lookup above happens unconditionally, so a real label is still needed here.
+        "update_tickets_batch": "Batch-update existing tickets",
     }
     publish_action = _tk_action_to_publish_label[action]
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "Price only" under action "update_ticket"
@@ -5728,6 +6714,14 @@ def render_ticket_flow(client):
         render_multi_ticket_flow(client, supplier_id, currency, on_request, release_days, tk_url, tk_files,
                                 min_passengers=min_passengers, max_passengers=max_passengers,
                                 default_ticket_code=ticket_code)
+        return
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): batch-update MANY existing tickets from one
+    # document (e.g. a full new price-list covering 20+ excursions already live) - see
+    # render_multi_ticket_update_flow's own docstring.
+    if action == "update_tickets_batch":
+        render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files,
+                                       max_passengers=max_passengers)
         return
 
     if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
@@ -10934,7 +11928,11 @@ def _render_update_refresh_coded_service(client, service):
 
     if service == "Ticket":
         existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
-        kind_key, action_labels = "ticket", {k: v for k, v in TICKET_ACTION_LABELS.items() if k != "create"}
+        # "update_tickets_batch" excluded too - this screen is for picking ONE already-chosen
+        # existing Ticket and updating it; the batch flow does its own excursion detection and
+        # existing-ticket matching across possibly many tickets, which doesn't fit "you already
+        # picked ticket X" here. Reach it via the normal Ticket action menu (Step 2) instead.
+        kind_key, action_labels = "ticket", {k: v for k, v in TICKET_ACTION_LABELS.items() if k not in ("create", "update_tickets_batch")}
     elif service == "ClosedTour":
         existing_items, list_error = get_existing_tour_names(client, supplier_id)
         kind_key, action_labels = "tour", {k: v for k, v in ACTION_LABELS.items() if k != "create"}
@@ -11727,7 +12725,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-transfer-transport-renewal-fix"
+BUILD_VERSION = "2026-09-08-ticket-batch-update-flow"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
