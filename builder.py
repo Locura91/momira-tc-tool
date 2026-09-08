@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-ticket-renewal-workflow"
+MODULE_BUILD = "2026-09-08-transfer-transport-renewal-fix"
 
 import math
 import datetime
@@ -28,7 +28,7 @@ from date_format import to_iso_date
 # worse, a season silently shifted by a month.
 import transport_matcher
 import hotel_matcher
-from price_validity import with_price_validity_code
+from price_validity import with_price_validity_code, strip_price_validity_code
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
@@ -722,6 +722,25 @@ def strip_stray_html(text):
     return text.strip()
 
 
+def _append_if_new(base_text, addition):
+    """Appends `addition` to `base_text` unless it's already there (a plain substring check),
+    keeping repeated composition idempotent. CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "the old
+    Code, and only the old code, must be deleted and the new Code must be added. All other
+    informations in the Voucher remarks must stay, as long as the conditions itself has not
+    changed." On a Transfer/Transport UPDATE (see build_transfer_payload/build_transport_
+    payloads), `base_text` starts as the service's EXISTING LIVE voucher text rather than a
+    fresh recomposition - so a piece that's already there (the deterministic cancellation-policy
+    text, an unchanged standing note, an unchanged what-to-bring line) must not be bluntly
+    re-appended as a duplicate every single time this runs. A genuinely NEW addition (one not
+    already present) still lands normally. Blank/whitespace-only additions are always a no-op."""
+    addition = (addition or "").strip()
+    if not addition:
+        return base_text or ""
+    if base_text and addition in base_text:
+        return base_text
+    return f"{base_text}\n\n{addition}".strip() if base_text else addition
+
+
 def _with_manual_notes(voucher_text, extracted_data):
     """Appends the human's manual notes to whatever voucher text was already built.
 
@@ -745,7 +764,7 @@ def _with_manual_notes(voucher_text, extracted_data):
     cancellation policy, this note itself) all get cleaned in one place, for every product,
     rather than needing the same fix repeated five times."""
     note = ((extracted_data or {}).get("manual_notes") or "").strip()
-    combined = f"{voucher_text}\n\n{note}".strip() if (voucher_text and note) else (voucher_text or note)
+    combined = _append_if_new(voucher_text, note)
     return strip_stray_html(combined)
 
 
@@ -797,9 +816,7 @@ def _with_what_to_bring(voucher_text, extracted_data):
     Formatting delegated to format_what_to_bring_line - see its docstring for the 2026-09-03
     single-line-comma-separated fix."""
     block = format_what_to_bring_line((extracted_data or {}).get("what_to_bring"))
-    if not block:
-        return voucher_text
-    return f"{voucher_text}\n\n{block}".strip() if voucher_text else block
+    return _append_if_new(voucher_text, block)
 
 
 _ENTRANCE_FEE_TITLE_SUFFIX = " (Entrance fees not included)"
@@ -2945,18 +2962,30 @@ def build_transfer_payload(
         # unlike ClosedTour/Ticket - passing None for both always yields Momira's own flat
         # 30-day/100%-refund house standard text, never the supplier's stated terms.
         cancellation_tiers = _cancellation_ranges_from_tiers(None)
-        voucher_text = _with_manual_notes(
-            _with_what_to_bring(
-                _cancellation_voucher_text(None, cancellation_tiers),
-                extracted_transfer_data),
-            extracted_transfer_data)
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "once we receive new prices... the old
+        # Code, and only the old code, must be deleted and the new Code must be added. All
+        # other informations in the Voucher remarks must stay, as long as the conditions
+        # itself has not changed." Same "LIVE wins on update" principle already applied to
+        # name/description above (_locked_on_update) - a price-list-driven update must not
+        # silently drop a location note / what-to-bring line / standing note the current
+        # document simply doesn't happen to restate. On an UPDATE with real live voucher text,
+        # that text (its own old price-validity code stripped, re-added at the very end) is the
+        # BASE - every ingredient below is appended only if it isn't ALREADY there (see
+        # _append_if_new), so an update that changes nothing about the conditions really does
+        # publish byte-for-byte the same text (plus the new code). A genuinely NEW addition -
+        # a changed standing note, a new location note in this run's document - still lands,
+        # since it won't already be a substring of the old text. A brand-new create (no live
+        # text yet) builds the text fresh exactly as before.
+        voucher_text = strip_price_validity_code(existing_datasheet_en.get("voucherRemarks") or "") \
+            if existing_datasheet_en else ""
+        voucher_text = _append_if_new(voucher_text, _cancellation_voucher_text(None, cancellation_tiers))
+        voucher_text = _with_what_to_bring(voucher_text, extracted_transfer_data)
+        voucher_text = _with_manual_notes(voucher_text, extracted_transfer_data)
         # CONFIRMED RULE (product owner): a location-conditional cost that can't be safely
         # auto-applied to price (e.g. a harbor-only pickup fee on a route that also serves
         # airport pickups) becomes an informational voucher note instead - never a mandatory
         # charge applied to every booking on the route.
-        location_note = extracted_transfer_data.get("location_notes") or ""
-        if location_note:
-            voucher_text = f"{voucher_text}\n\n{location_note}" if voucher_text else location_note
+        voucher_text = _append_if_new(voucher_text, extracted_transfer_data.get("location_notes") or "")
         # location_note is appended AFTER _with_manual_notes' own strip_stray_html pass, so it
         # needs its own pass here too - otherwise stray markup in that one field would slip
         # through despite every other voucher-text ingredient being covered.
@@ -2965,10 +2994,16 @@ def build_transfer_payload(
         # docstring. Applied truly last, after every other voucher-text ingredient.
         voucher_text = with_price_validity_code(voucher_text, extracted_transfer_data)
 
+        # Same "LIVE wins unless blank" treatment as name/description above - a genuinely new
+        # pickup instruction in this run's document still wins when there was no live value yet
+        # (a brand-new create, or an existing record that never had one).
+        effective_pickup_info, _pickup_inherited = _locked_on_update(
+            existing_datasheet_en, "pickupDescription", extracted_transfer_data.get("pickup_information") or "")
+
         datasheet_en = TransferDescriptorVO(
             name=transfer_name,
             description=effective_description,
-            pickupDescription=strip_stray_html(extracted_transfer_data.get("pickup_information") or ""),
+            pickupDescription=strip_stray_html(effective_pickup_info),
             voucherRemarks=voucher_text,
         )
 
@@ -3791,11 +3826,11 @@ def build_transport_payloads(
             _cancellation_voucher_text(None, cancellation_tiers),
             extracted_transport_data),
         extracted_transport_data)
-    # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own docstring.
-    # Transport has no dedicated voucherRemarks field (see this function's own comment on
-    # ContractTransportDataSheetVO below) - voucher_text is folded into `description` further
-    # down, so appending the code here still gets it onto the one field Transport actually has.
-    voucher_text = with_price_validity_code(voucher_text, extracted_transport_data)
+    # NOTE: the price-validity code is deliberately NOT applied here anymore (moved to just
+    # before full_description is finalized below, AFTER the live-vs-fresh decision) - see the
+    # "CONFIRMED PRODUCT-OWNER RULE (2026-09-08)" comment further down for why: applying it here
+    # used to mean the code silently never actually changed on an update, since the whole
+    # description (code included) was then locked back to the OLD live value regardless.
 
     # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
     # owner rule, applies "for all services"), then apply the multi-vehicle synthesis rule.
@@ -3871,24 +3906,53 @@ def build_transport_payloads(
     if not extracted_transport_data.get("description_is_custom"):
         description_text = transport_description(
             extracted_transport_data.get("service_name"), departure_name, arrival_name)
-    full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
+
+    # CONFIRMED REAL RULE (product owner): "do not change the name and the description of
+    # transfer and transport" on an update/refresh - the "conditions" (house description +
+    # cancellation text) stay locked whole to the EXISTING live value, cancellation text
+    # included (product owner's explicit choice, given Transport has no separate cancellation-
+    # terms field the way ClosedTour/Ticket/Transfer do - a genuine cancellation-policy change
+    # would need a separate, deliberate path rather than riding in on every price refresh).
+    #
+    # CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "the old Code, and only the old code, must be
+    # deleted and the new Code must be added. All other informations in the Voucher remarks
+    # must stay, as long as the conditions itself has not changed." Transport has no separate
+    # voucherRemarks field - the code lives inside this same `description` field (see this
+    # function's own comment above) - so the whole-field lock above used to mean the code could
+    # NEVER actually change on an update either: the freshly-composed text (code included) got
+    # discarded wholesale in favor of the OLD live description (OLD code included). Fixed the
+    # same way as Transfer's own voucher-text composition: on an update, BASE is the EXISTING
+    # live description with its own old code stripped (still the locked "conditions", verbatim);
+    # a genuinely NEW what-to-bring/manual-notes addition this run still lands (idempotent - see
+    # _append_if_new, never duplicated if it's already there); the code is (re-)applied last, on
+    # every single publish, update or not.
+    existing_transport_datasheet_en = ((existing_transport_snapshot or {}).get("datasheets") or {}).get("EN") or {}
+    existing_full_description = existing_transport_datasheet_en.get("description") or ""
+    if existing_full_description:
+        full_description = strip_price_validity_code(existing_full_description)
+        full_description = _append_if_new(
+            full_description, format_what_to_bring_line(extracted_transport_data.get("what_to_bring")))
+        full_description = _append_if_new(
+            full_description, (extracted_transport_data.get("manual_notes") or "").strip())
+        _description_inherited = True
+    else:
+        full_description = f"{description_text}\n\n{voucher_text}".strip() if description_text else voucher_text
+        _description_inherited = False
     # CONFIRMED from the real live record: the EN description is HTML ("<p>...</p>"), not plain
     # text. Sent as plain text it renders as one unbroken run wherever Travel Compositor
     # expects markup. description_text/voucher_text are stripped of any STRAY markup above/
     # upstream first, so the "<" check below only ever fires on the deliberate <p> wrap this
-    # code itself adds on a second pass (e.g. rebuild) - never on leftover supplier junk.
+    # code itself adds on a second pass (e.g. rebuild) - never on leftover supplier junk. The
+    # existing live description (the `if existing_full_description:` branch above) is already
+    # in this same wrapped form from its own prior publish, so the check correctly skips
+    # re-wrapping it a second time.
     if full_description and "<" not in full_description:
         full_description = "".join(f"<p>{para.strip()}</p>"
                                    for para in full_description.split("\n\n") if para.strip())
-    # CONFIRMED REAL RULE (product owner): "do not change the name and the description of
-    # transfer and transport" on an update/refresh - locked whole, cancellation text included
-    # (product owner's explicit choice, given Transport has no separate cancellation-terms
-    # field the way ClosedTour/Ticket/Transfer do - a genuine cancellation-policy change would
-    # need a separate, deliberate path rather than riding in on every price refresh).
-    existing_transport_datasheet_en = ((existing_transport_snapshot or {}).get("datasheets") or {}).get("EN") or {}
-    full_description, _description_inherited = _locked_on_update(
-        {"description": existing_transport_datasheet_en.get("description")} if existing_transport_datasheet_en else None,
-        "description", full_description)
+    # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own docstring.
+    # Applied truly last, on every publish (update or create) - see the comment block above for
+    # why this can no longer sit any earlier in this function.
+    full_description = with_price_validity_code(full_description, extracted_transport_data)
     datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
 
     # Arrival is DERIVED from departure + duration whenever a duration is known, rather than
