@@ -281,3 +281,58 @@ def test_publishing_onto_the_matched_existing_code_not_a_new_one(fake_api_client
     result = build_ticket_payloads(pre_config, _entrance_included_corrected_data(), fake_api_client)
     assert result["ticket_option_error"] is None
     assert result["ticket_option_payload"]["code"] == "Standard"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-08 follow-up (real Egypt-catalogue run): matching used to compare the AI-detected
+# excursion's own supplier_code/label against live ticket codes - but an AI-read excursion
+# title ("Pyramids, Sphinx & Egyptian Museum") is never equal to a code ("CAI-01"), so 0 of 22
+# real excursions matched and the human had to type 22 codes by hand. "No reason for new
+# modality code if there is already modality code... Just check name, itinerary and
+# included/excluded and prices." Fixed by matching the other direction: start from the
+# supplier's real live ticket codes (get_existing_ticket_codes) and check whether the DOCUMENT
+# mentions each one, via a plain substring search - not by asking the AI to guess a code.
+# ---------------------------------------------------------------------------
+
+def test_gather_phase_matches_by_searching_the_document_for_each_live_ticket_code():
+    src = _read_app_py()
+    fn = _function_source(src, "def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):")
+    assert "get_existing_ticket_codes(client, supplier_id)" in fn
+    assert "_norm_code(code) in raw_norm" in fn
+    # The AI detector still runs, but must never be the PRIMARY source of target_ticket_code -
+    # a matched-by-code candidate is pre-filled and selected; an AI-only one is not.
+    assert '"target_ticket_code": code,' in fn
+    assert '"selected": True,' in fn
+    assert '"target_ticket_code": "",' in fn
+    assert '"selected": False,' in fn
+
+
+def test_norm_code_ignores_whitespace_and_case_the_same_way_a_real_document_would_need():
+    import re
+
+    def _norm_code(s):
+        return re.sub(r"\s+", "", (s or "")).strip().lower()
+
+    assert _norm_code("CAI-01") == _norm_code("cai-01")
+    assert _norm_code("CAI-01") == _norm_code(" CAI - 01".replace(" ", ""))
+    assert _norm_code("CAI-01") in _norm_code("Destination | Code | Excursion\nCairo | CAI-01 | Pyramids Tour")
+
+
+def test_a_live_code_present_in_the_document_is_matched_end_to_end():
+    """Simulates the real shape of the Egypt-catalogue table: a grid where the code column
+    ('CAI-01') sits next to (not equal to) the excursion's display name - the exact case that
+    used to score 0 matches."""
+    import re
+
+    def _norm_code(s):
+        return re.sub(r"\s+", "", (s or "")).strip().lower()
+
+    raw_text = ("Destination | Code | Excursion | 1 Pax\n"
+                "Cairo | CAI-01 | Pyramids, Sphinx & Egyptian Museum | 112\n"
+                "Cairo | CAI-02 | Pyramids, Sphinx & Grand Egyptian Museum | 137\n")
+    existing_items = [{"name": "Pyramids Tour (Entrance Ticket not included)", "code": "CAI-01"},
+                      {"name": "Some Unrelated Ticket", "code": "ZZZ-99"}]
+    raw_norm = _norm_code(raw_text)
+    matched = [item for item in existing_items
+              if (item.get("code") or "").strip() and _norm_code(item["code"]) in raw_norm]
+    assert [m["code"] for m in matched] == ["CAI-01"]

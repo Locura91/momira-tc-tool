@@ -5541,19 +5541,63 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                         st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
-                    detected = detect_ticket_variants(raw_text)
 
-                    candidates = [
-                        {
+                    # CONFIRMED REAL BUG (product owner, 2026-09-08, real Egypt-catalogue run):
+                    # matching used to start from the AI-DETECTED excursion's own supplier_code/
+                    # label and check whether THAT equalled a live Ticket's code - but an AI-read
+                    # excursion title ("Pyramids, Sphinx & Egyptian Museum") is never equal to a
+                    # code ("CAI-01"), so this matched 0 of 22 real excursions and forced 22
+                    # manual code entries by hand ("No reason for new modality code if there is
+                    # already modality code... Just check name, itinerary and included/excluded
+                    # and prices" - the human should not have to do this typing at all when the
+                    # codes already match). This flow only ever UPDATES existing tickets, so the
+                    # ground truth is what's already live in Travel Compositor, not what the AI
+                    # guesses from the document - exactly the same lesson price_refresh.py's
+                    # Transfer/Transport matching already learned ("the list of products here
+                    # comes from Travel Compositor, which is a fact, instead of from an AI
+                    # reading a document, which is a judgement"). So: fetch this supplier's real
+                    # ticket codes first, then just check whether the DOCUMENT mentions each one
+                    # (a plain substring search) - not the other way around.
+                    existing_items, _existing_items_err = get_existing_ticket_codes(client, supplier_id)
+
+                    def _norm_code(s):
+                        return re.sub(r"\s+", "", (s or "")).strip().lower()
+
+                    raw_norm = _norm_code(raw_text)
+                    matched_code_keys = set()
+                    candidates = []
+                    for item in existing_items:
+                        code = (item.get("code") or "").strip()
+                        if code and _norm_code(code) and _norm_code(code) in raw_norm:
+                            candidates.append({
+                                "label": item.get("name") or code,
+                                "supplier_code": code,
+                                "target_ticket_code": code,
+                                "selected": True,
+                                "is_genuine_variant": False,
+                            })
+                            matched_code_keys.add(code.strip().lower())
+
+                    # The AI detector still runs, but only to offer anything the code search
+                    # missed (a supplier who changed their own codes, or a genuinely new
+                    # excursion not yet live) - UNCHECKED by default and without a pre-filled
+                    # code, since matching those correctly is exactly what failed before.
+                    detected = detect_ticket_variants(raw_text)
+                    for e in detected:
+                        _dsc = str(e.get("supplier_code") or "").strip()
+                        if _dsc.lower() in matched_code_keys:
+                            continue
+                        candidates.append({
                             "label": e.get("label", ""),
-                            "supplier_code": str(e.get("supplier_code") or "").strip(),
-                            "selected": True,
+                            "supplier_code": _dsc,
+                            "target_ticket_code": "",
+                            "selected": False,
                             "is_genuine_variant": True,
-                        }
-                        for e in detected
-                    ]
+                        })
+
                     if not candidates:
-                        candidates = [{"label": "", "supplier_code": "", "selected": True, "is_genuine_variant": False}]
+                        candidates = [{"label": "", "supplier_code": "", "target_ticket_code": "",
+                                      "selected": True, "is_genuine_variant": False}]
 
                     _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
                     if len(doc_image_urls) >= len(doc_raw_images):
@@ -5574,12 +5618,17 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
     # ------------------------------------------------------------------
     if st.session_state.mtu_phase == "match":
         candidates = st.session_state.mtu_candidates
+        _pre_matched_count = sum(1 for c in candidates if (c.get("target_ticket_code") or "").strip())
         st.subheader(f"Match {len(candidates)} detected excursion(s) to existing Tickets")
-        st.caption("This UPDATES existing tickets - it never creates a new one. Each ticked row below "
-                  "needs a Ticket Code that already exists for this supplier. When the document assigns "
-                  "this excursion its own supplier reference code (or its name matches an existing "
-                  "ticket's code) it's pre-filled below - always double-check and override it if it "
-                  "picked the wrong one.")
+        st.caption(
+            f"This UPDATES existing tickets - it never creates a new one, and the Ticket Code never "
+            f"changes. **{_pre_matched_count} of {len(candidates)}** row(s) were matched automatically "
+            f"because this supplier's own code (e.g. \"CAI-01\") was found written in the document "
+            f"itself - those are already ticked and ready, no typing needed. Any row further down "
+            f"with no code pre-filled is something the document mentions but whose code couldn't be "
+            f"confirmed live - tick it and type the code by hand only if you want to include it "
+            f"anyway."
+        )
 
         existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
         if list_error:
@@ -12725,7 +12774,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-csv-support"
+BUILD_VERSION = "2026-09-08-ticket-batch-update-code-matching-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
