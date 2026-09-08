@@ -384,3 +384,41 @@ def test_modality_name_resolver_falls_back_to_truncated_excursion_label_when_not
     resolved = (live_name or (fallback_label or modality_code or "").strip()[:40] or modality_code)
     assert resolved == "A" * 40
     assert len(resolved) == 40
+
+
+# ---------------------------------------------------------------------------
+# 6. Match-phase widget staleness (product owner, 2026-09-08, real batch run):
+#    22 excursions detected, 10-11 correctly matched to real live ticket codes
+#    (shown with a green success message) - but "Existing Modality Code to
+#    update" stayed blank for every one of those rows, which is what actually
+#    triggered "missing a Ticket Code or Modality Code" for exactly the rows
+#    that HAD matched. Root cause: a st.text_input's value= is only honored the
+#    FIRST time a positional key (mtu_code_{i} / mtu_modcode_{i}) is created -
+#    a blank left over from an earlier attempt in the same browser session
+#    stays stuck even after the underlying default computation is correct.
+#    Fix: seed st.session_state[key] with the freshly computed default BEFORE
+#    creating the widget, but only when the key is currently blank, so a real
+#    human edit is never clobbered - the same pattern render_multi_ticket_flow
+#    already uses for its own modality_code auto-sync.
+# ---------------------------------------------------------------------------
+
+def test_target_ticket_code_widget_seeds_session_state_before_creation_when_blank():
+    src = _read_app_py()
+    fn = _function_source(src, "def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):")
+    assert '_code_key = f"mtu_code_{i}"' in fn
+    assert 'if cand["target_ticket_code"] and not (st.session_state.get(_code_key) or "").strip():' in fn
+    assert "st.session_state[_code_key] = cand[\"target_ticket_code\"]" in fn
+    # The widget itself must use the same key, so the seed actually takes effect.
+    assert 'key=_code_key,' in fn
+
+
+def test_modality_code_widget_seeds_session_state_before_creation_when_blank():
+    src = _read_app_py()
+    fn = _function_source(src, "def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):")
+    assert '_modcode_key = f"mtu_modcode_{i}"' in fn
+    assert "if default_mod and not (st.session_state.get(_modcode_key) or \"\").strip():" in fn
+    assert "st.session_state[_modcode_key] = default_mod" in fn
+    # The widget itself must use the same key, so the seed actually takes effect.
+    assert "key=_modcode_key, help=mod_help" in fn
+    # The old inline f-string key (which never got a seed applied to it) must be gone.
+    assert 'key=f"mtu_modcode_{i}"' not in fn

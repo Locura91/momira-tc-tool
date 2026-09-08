@@ -5702,8 +5702,22 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             with ccol2:
                 cand["label"] = st.text_input("Excursion", value=cand["label"], key=f"mtu_label_{i}")
             with ccol3:
+                _code_key = f"mtu_code_{i}"
+                # CONFIRMED REAL BUG (product owner, 2026-09-08, real batch-update run): a
+                # text_input's `value=` is only honored the FIRST TIME its key is ever created -
+                # every later rerun trusts whatever's already in session_state for that key,
+                # ignoring a freshly (and correctly) computed default. This key is POSITIONAL
+                # (mtu_code_{i}), so an earlier attempt in the same browser session - before the
+                # ground-truth code matching existed, or from a previous batch reusing the same
+                # row position - can leave a stale value permanently stuck here even after the
+                # matching logic is fixed underneath it. Writing session_state[key] directly
+                # BEFORE creating the widget (the same fix render_multi_ticket_flow's own
+                # modality_code auto-sync already uses) is what actually makes a fresh default
+                # visible - never overwrites a non-blank value the human already has there.
+                if cand["target_ticket_code"] and not (st.session_state.get(_code_key) or "").strip():
+                    st.session_state[_code_key] = cand["target_ticket_code"]
                 cand["target_ticket_code"] = st.text_input(
-                    "Existing Ticket Code to update", value=cand["target_ticket_code"], key=f"mtu_code_{i}",
+                    "Existing Ticket Code to update", value=cand["target_ticket_code"], key=_code_key,
                     placeholder="e.g. CAI-01",
                     help="The ALREADY-LIVE Ticket Code this excursion's new info/pricing should be "
                          "published onto - not a new code."
@@ -5740,6 +5754,15 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 _sc = cand.get("supplier_code", "").strip().lower()
                 _sc_match = next((m for m in cand["_live_modalities"] if (m or "").strip().lower() == _sc), None) if _sc else None
                 default_mod = _sc_match or cand["_live_modalities"][0]
+            _modcode_key = f"mtu_modcode_{i}"
+            # CONFIRMED REAL BUG (product owner, 2026-09-08, real batch-update run): same
+            # stale-widget-key issue as mtu_code_{i} above - a text_input's `value=` is only
+            # honored the FIRST time this positional key is created; a blank value left over
+            # from an earlier attempt in this browser session stays stuck even after the
+            # underlying default computation is fixed. Seed session_state BEFORE creating the
+            # widget, but only when it's currently blank, so a real human edit is never clobbered.
+            if default_mod and not (st.session_state.get(_modcode_key) or "").strip():
+                st.session_state[_modcode_key] = default_mod
             mod_help = (
                 f"Known Modality Codes on this ticket: {', '.join(cand['_live_modalities'])}"
                 if cand["_live_modalities"] else
@@ -5748,7 +5771,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             )
             cand["modality_code"] = st.text_input(
                 f"Existing Modality Code to update — {cand['label'] or code_val or f'row {i + 1}'}",
-                value=default_mod, key=f"mtu_modcode_{i}", help=mod_help
+                value=default_mod, key=_modcode_key, help=mod_help
             )
             st.divider()
 
@@ -12837,7 +12860,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-batch-release-days-modality-name-fix"
+BUILD_VERSION = "2026-09-08-batch-modality-widget-staleness-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

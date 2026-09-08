@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-08-batch-release-days-modality-name-fix"
+MODULE_BUILD = "2026-09-08-batch-modality-widget-staleness-fix"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
