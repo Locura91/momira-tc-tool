@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-08-ticket-batch-update-flow"
+MODULE_BUILD = "2026-09-08-csv-support"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

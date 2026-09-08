@@ -257,8 +257,12 @@ def test_extract_images_stays_silent_for_a_genuinely_unsupported_extension():
 def test_all_eight_file_uploaders_in_app_py_now_accept_pptx():
     src = _read_app_py()
     old_type_list = 'type=["pdf", "docx", "xlsx"]'
-    new_type_list = 'type=["pdf", "docx", "xlsx", "pptx"]'
+    # CONFIRMED (product owner, 2026-09-08): csv support added alongside pdf/docx/xlsx/pptx -
+    # see test_2026_09_08_csv_support.py. Every one of these eight uploaders was updated in
+    # lockstep the same way pptx was, so this check now looks for THAT literal instead.
+    new_type_list = 'type=["pdf", "docx", "xlsx", "pptx", "csv"]'
     assert old_type_list not in src, "an upload widget was missed when adding pptx support"
+    assert 'type=["pdf", "docx", "xlsx", "pptx"]' not in src, "an upload widget was missed when adding csv support"
     assert src.count(new_type_list) == 8
 
 

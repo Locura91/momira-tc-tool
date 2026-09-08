@@ -6698,7 +6698,7 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     st.header("Ticket — Step 4: Input Source")
     tk_url = st.text_input("Product page URL (optional)", key="tk_url")
-    tk_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx"],
+    tk_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                                 accept_multiple_files=True, key="tk_files")
     tk_hint = st.text_input("Extraction hint (optional)", key="tk_hint")
 
@@ -8109,7 +8109,7 @@ def render_transfer_flow(client):
               "vehicle class, sometimes repeated per guide language) - all of them get detected and "
               "queued for review below, same as multi-excursion Ticket documents.")
     tf_url = st.text_input("Product page URL (optional)", key="tf_url")
-    tf_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx"],
+    tf_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                                 accept_multiple_files=True, key="tf_files")
     tf_hint = st.text_input(
         "Instruction (optional)", key="tf_hint",
@@ -8861,7 +8861,7 @@ def render_transport_flow(client):
               "Praslin → La Digue), priced per occupancy bracket. Rate sheets are usually the same style as "
               "Transfer documents and often describe several routes at once - all get detected and queued below.")
     tp_url = st.text_input("Product page URL (optional)", key="tp_url")
-    tp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx"],
+    tp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                                 accept_multiple_files=True, key="tp_files")
     tp_hint = st.text_input(
         "Instruction (optional)", key="tp_hint",
@@ -9994,7 +9994,7 @@ def render_hotel_flow(client):
                   "combinations, meal plans, any offers/supplements, and the rate seasons with a price per "
                   "occupancy combination per room.")
         hp_url = st.text_input("Hotel page URL (optional)", key="hp_url")
-        hp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx"],
+        hp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                                      accept_multiple_files=True, key="hp_files")
         hp_hint = st.text_input("Extraction hint (optional)", key="hp_hint")
 
@@ -11858,7 +11858,7 @@ def _ur_gather_text_optional(key_prefix):
     the combined text to SUGGEST a match, not to run a full extraction yet. Returns the
     combined raw text, or "" if nothing was provided/fetchable."""
     url = st.text_input("Product page URL (optional)", key=f"{key_prefix}_url")
-    files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx"],
+    files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                              accept_multiple_files=True, key=f"{key_prefix}_files")
     combined_parts = []
     if url:
@@ -12102,7 +12102,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                              accept_multiple_files=True, key="pr_files")
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
@@ -12432,7 +12432,7 @@ def render_ticket_price_refresh_flow(client):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="tpr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                              accept_multiple_files=True, key="tpr_files")
     hint = st.text_input("Instruction (optional)", key="tpr_hint",
                          placeholder="e.g. only the Alexandria tours section")
@@ -12725,7 +12725,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-ticket-batch-update-flow"
+BUILD_VERSION = "2026-09-08-csv-support"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -13677,7 +13677,7 @@ st.caption("Provide a URL, a document, or both. If you give both, information fr
 url = st.text_input("Product page URL (optional)")
 uploaded_files = st.file_uploader(
     "Upload DMC document(s) (optional, multiple allowed)",
-    type=["pdf", "docx", "xlsx", "pptx"], accept_multiple_files=True
+    type=["pdf", "docx", "xlsx", "pptx", "csv"], accept_multiple_files=True
 )
 extraction_hint = st.text_input(
     "Extraction hint (optional)",

@@ -34,7 +34,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-08-ticket-batch-update-flow"
+MODULE_BUILD = "2026-09-08-csv-support"
 
 import os
 import re

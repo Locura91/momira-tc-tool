@@ -1,5 +1,6 @@
 """
-Extracts raw text content from PDF, Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files.
+Extracts raw text content from PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and CSV
+files.
 
 This is deliberately dumb/mechanical - it just gets everything readable
 out of the file as plain text. The actual understanding (what's the tour
@@ -31,7 +32,7 @@ import os
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-ticket-batch-update-flow"
+MODULE_BUILD = "2026-09-08-csv-support"
 
 _EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
@@ -359,6 +360,49 @@ def extract_text_from_xlsx(file_path: str) -> str:
     return "\n".join(parts)
 
 
+def extract_text_from_csv(file_path: str) -> str:
+    """A CSV is already exactly one grid - no sheets, no merged cells - so this is the simple
+    case of the same grid-rendering _render_grid gives xlsx/docx/pdf tables (COLUMNS ruler + a
+    BY COLUMN re-read), just without any of the sheet/merge bookkeeping those formats need.
+
+    CONFIRMED REQUEST (product owner, 2026-09-08): a supplier rate sheet delivered as a plain
+    .csv previously raised extract_raw_text's "Unsupported file type" error - the exact same
+    kind of table this app already reads fine as .xlsx, just saved with a different extension.
+
+    Delimiter and encoding are sniffed rather than assumed: a supplier's CSV export is just as
+    likely to be semicolon-delimited (common in European Excel locales) as comma-delimited, and
+    just as likely to be saved as Windows-1252/latin-1 as UTF-8 - guessing wrong on either would
+    silently misread every row instead of failing loudly."""
+    import csv as csv_module
+
+    raw_bytes = open(file_path, "rb").read()
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Not a failure worth surfacing to the human - a supplier's regional Excel export is
+        # routinely Windows-1252/latin-1, and latin-1 never raises (every byte is a valid
+        # codepoint), so this is a safe, silent fallback rather than a guess that can crash.
+        text = raw_bytes.decode("latin-1")
+
+    sample = text[:4096]
+    try:
+        dialect = csv_module.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv_module.Error:
+        dialect = csv_module.excel  # comma-delimited default - the Sniffer only fails on very short/degenerate samples
+
+    reader = csv_module.reader(text.splitlines(), dialect)
+    rows = []
+    for row_cells in reader:
+        if not any((cell or "").strip() for cell in row_cells):
+            continue  # a fully blank row carries no grid information - same as xlsx's row_has_content skip
+        rows.append([(cell.strip(), i, i) for i, cell in enumerate(row_cells)])
+
+    if not rows:
+        return ""
+    lines, _, _ = _render_grid(rows, "CSV")
+    return "\n".join(lines)
+
+
 _MIN_USEFUL_CHARS = 200
 
 
@@ -442,13 +486,15 @@ def extract_raw_text(file_path: str) -> str:
         return extract_text_from_xlsx(file_path)
     elif ext == ".pptx":
         return extract_text_from_pptx(file_path)
+    elif ext == ".csv":
+        return extract_text_from_csv(file_path)
     elif ext in (".doc", ".xls", ".ppt"):
         raise ValueError(
             f"Legacy '{ext}' format isn't supported directly. "
             f"Please re-save/export the file as '.docx', '.xlsx', or '.pptx' first."
         )
     else:
-        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx, .pptx")
+        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx, .pptx, .csv")
 
 
 import hashlib
