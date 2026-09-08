@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
+MODULE_BUILD = "2026-09-08-ticket-renewal-workflow"
 
 import math
 import datetime
@@ -2722,6 +2722,41 @@ def build_ticket_payloads(
                 ) if isinstance(row.get("price"), dict) else row.get("amount"), fallback=0.0)
         ],
     }
+
+
+def build_ticket_voucher_remarks_only_update(live_ticket: Dict[str, Any], price_valid_until_date: Any) -> Dict[str, Any]:
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "once we receive new prices for the
+    services... we must exchange the code with the correct date." The "Price only" ticket-update
+    path (see app.py's tk_is_option_only) is deliberately the FAST path - it re-extracts and
+    publishes only the Modality's pricing (client.update_ticket_option), never the main ticket's
+    own datasheet, so it has no name/description/etc. of its own to safely rebuild a full
+    update_ticket payload from (build_ticket_payloads does a lot more than that - geocoding,
+    holiday rules, meeting-point resolution - and would need real extracted content this path
+    never gathers).
+
+    This is the minimal alternative for that path: takes the ticket's OWN currently-live GET
+    response (already fetched into st.session_state.tk_fetched_ticket before this flow ever
+    reaches Step 5 - see "Check what's already online for this code" in app.py) UNCHANGED, and
+    rewrites ONLY datasheets['EN']['voucherRemarks'] via with_price_validity_code - every other
+    field (name, description, meeting points, cancellation terms, etc.) is republished exactly
+    as it already is live, so this can never accidentally corrupt content this path never showed
+    the human in the first place.
+
+    live_ticket: the raw dict from client.get_ticket() (ApiStaticContentTicketVO shape).
+    price_valid_until_date: whatever the human entered in the "Prices confirmed valid until"
+    field - a date, an ISO string, or blank (which strips any existing code instead of setting a
+    new one - see with_price_validity_code's own docstring for why that's correct, not a no-op)."""
+    import copy
+    payload = copy.deepcopy(live_ticket or {})
+    payload.pop("error", None)
+    datasheets = payload.get("datasheets") or {}
+    en = dict(datasheets.get("EN") or {})
+    en["voucherRemarks"] = with_price_validity_code(
+        en.get("voucherRemarks", ""), {"price_valid_until_date": price_valid_until_date})
+    datasheets = dict(datasheets)
+    datasheets["EN"] = en
+    payload["datasheets"] = datasheets
+    return payload
 
 
 # ==========================================

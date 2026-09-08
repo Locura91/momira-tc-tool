@@ -81,6 +81,7 @@ from builder import (transport_company_name as builder_transport_company_name,
                      transport_description as builder_transport_description,
                      start_date_or_today as builder_start_date_or_today)
 from builder import derive_arrival_from_duration, build_closed_tour_payloads, build_ticket_payloads, build_supplement_vos, build_transfer_payload
+from builder import build_ticket_voucher_remarks_only_update
 from builder import build_transport_payloads
 from builder import transport_type_is_confirmed_match
 from builder import _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES
@@ -101,6 +102,7 @@ from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data, extract_ticket_main_info, extract_ticket_modality_data, detect_ticket_modalities
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
+from ai_extractor import check_ticket_content_drift
 from ai_extractor import min_pax_guaranteed_departure_note, min_pax_forces_on_request
 import ai_extractor as ai_extractor_module
 # Shared Streamlit building blocks used by all five product-type flows (ClosedTour, Ticket,
@@ -5778,6 +5780,30 @@ def render_ticket_flow(client):
                 if tk_is_option_only:
                     data = extract_ticket_option_only_data(raw_text, human_hint=tk_hint or None)
                     floor_start_date_for_new_data(data)
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "once we receive new prices...
+                    # we must exchange the code with the correct date" AND "the AI must review the
+                    # current ticket information and check if that is matching with the new ticket
+                    # information... sometimes small changes are done for a new season". This is
+                    # the FAST/price-only path, which never re-extracts name/description/etc - so
+                    # neither of those can rely on data this call already gathered. Both instead
+                    # compare against the LIVE ticket (already fetched via "Check what's already
+                    # online" before this flow reaches Step 4) directly:
+                    _tk_live_for_pv = st.session_state.get("tk_fetched_ticket") or {}
+                    if isinstance(_tk_live_for_pv, dict) and "error" not in _tk_live_for_pv:
+                        _tk_live_datasheet = ((_tk_live_for_pv.get("datasheets") or {}).get("EN")) or {}
+                        _tk_live_valid_until = price_validity.extract_price_validity_date(
+                            _tk_live_datasheet.get("voucherRemarks"))
+                        if _tk_live_valid_until and not (data.get("price_valid_until_date") or "").strip():
+                            data["price_valid_until_date"] = _tk_live_valid_until.isoformat()
+                        try:
+                            st.session_state.tk_content_drift = check_ticket_content_drift(
+                                raw_text, _tk_live_datasheet, human_hint=tk_hint or None)
+                        except Exception as e:
+                            # Best-effort - a failed drift check must never block the (already
+                            # successful) price extraction above from being usable.
+                            st.session_state.tk_content_drift = {"error": friendly_error_message(e)}
+                    else:
+                        st.session_state.tk_content_drift = None
                     st.session_state.tk_extracted = data
                     bump_widget_generation("tk")
                     st.session_state.tk_raw_preview = raw_text
@@ -6000,6 +6026,24 @@ def render_ticket_flow(client):
                 st.subheader("Only pricing/schedule needed for this action")
                 st.caption("Ticket details (name, description, city, meeting points) are skipped - "
                           "they belong to the existing ticket and aren't touched here.")
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08) - see the matching comment at the
+                # Extract button above for the full rationale.
+                _tk_drift = st.session_state.get("tk_content_drift")
+                if isinstance(_tk_drift, dict):
+                    if _tk_drift.get("error"):
+                        st.caption(f"(Couldn't run the AI content check against the new document: "
+                                  f"{_tk_drift['error']})")
+                    elif _tk_drift.get("has_changes"):
+                        st.warning("⚠️ The new document may describe more than a price change - "
+                                  "double-check before publishing:")
+                        for _c in _tk_drift.get("changes") or []:
+                            st.markdown(f"- {_c}")
+                    else:
+                        st.caption("✅ AI check: the new document doesn't appear to describe any "
+                                  "content change beyond pricing.")
+                editable_field("Prices confirmed valid until (optional - the app adds the "
+                               "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
+                               "price_valid_until_date", widget="text_input")
             else:
                 st.subheader("Extracted Data (click ✏️ to edit)")
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
@@ -6798,6 +6842,33 @@ def render_ticket_flow(client):
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
+                                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "we must exchange
+                                # the code with the correct date" - this is the price-only path
+                                # (see build_ticket_voucher_remarks_only_update's own docstring for
+                                # why it can't reuse the "whole ticket" payload builder). Only
+                                # calls update_ticket at all when the encoded code actually
+                                # changes - a human who left the field alone (or it was already
+                                # correctly prefilled from the live ticket) shouldn't trigger a
+                                # second API call for nothing.
+                                _tk_live_for_voucher = st.session_state.get("tk_fetched_ticket") or {}
+                                if isinstance(_tk_live_for_voucher, dict) and "error" not in _tk_live_for_voucher:
+                                    _tk_live_voucher_text = (
+                                        ((_tk_live_for_voucher.get("datasheets") or {}).get("EN")) or {}
+                                    ).get("voucherRemarks", "")
+                                    _tk_old_pv_code = price_validity.encode_price_validity_code(
+                                        price_validity.extract_price_validity_date(_tk_live_voucher_text))
+                                    _tk_new_pv_code = price_validity.encode_price_validity_code(
+                                        data.get("price_valid_until_date"))
+                                    if _tk_new_pv_code != _tk_old_pv_code:
+                                        _tk_voucher_payload = build_ticket_voucher_remarks_only_update(
+                                            _tk_live_for_voucher, data.get("price_valid_until_date"))
+                                        _tk_voucher_result = client.update_ticket(supplier_id, _tk_voucher_payload)
+                                        if "error" in _tk_voucher_result:
+                                            st.warning(f"⚠️ Pricing was updated, but the price-validity "
+                                                      f"code in Voucher Remarks couldn't be saved: "
+                                                      f"{_tk_voucher_result.get('message', _tk_voucher_result)}")
+                                        else:
+                                            st.caption("✅ Price-validity code in Voucher Remarks updated too.")
                                 st.session_state.tk_just_published_code = target_ticket_code
                                 st.session_state.tk_just_published_supplier_id = supplier_id
                                 st.session_state.tk_just_published_is_inactive = False
@@ -11656,7 +11727,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-hotel-room-error-diagnostics"
+BUILD_VERSION = "2026-09-08-ticket-renewal-workflow"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

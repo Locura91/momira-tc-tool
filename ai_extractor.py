@@ -8,14 +8,14 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
+MODULE_BUILD = "2026-09-08-ticket-renewal-workflow"
 
 import os
 import re
 import json
 import math
 import datetime
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from dotenv import load_dotenv
 
@@ -3863,6 +3863,76 @@ def extract_ticket_option_only_data(raw_text: str, model: str = "claude-sonnet-5
         if key not in data or data[key] is None:
             data[key] = default
     return _finalize_ticket_price_type(data)
+
+
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "the AI must review the current ticket
+# information and check if that is matching with the new ticket information with the new price
+# list. Sometimes small changes are done for a new season and we must detect that." The "Price
+# only" update path (extract_ticket_option_only_data above) deliberately never re-reads name/
+# description/meeting-point/etc - it's the FAST path precisely because it skips that. But a
+# supplier's "new price list" document sometimes quietly carries a genuine content change
+# alongside the numbers (a changed meeting point, a dropped inclusion, a shortened itinerary for
+# the new season) that a human skimming only the price table would miss entirely. This is a
+# SEPARATE, cheap, single-purpose check - not a second full extraction - run automatically
+# alongside the price-only extraction whenever a live ticket is on hand to compare against.
+TICKET_CONTENT_DRIFT_SYSTEM_PROMPT = """You are comparing a NEW supplier document (typically an updated
+price list) against a Ticket's CURRENTLY LIVE content, to catch a genuine content change hiding alongside
+a price update - e.g. a changed meeting point, a dropped/added inclusion, a shortened program, a
+different departure time for the new season.
+
+You will be given the CURRENT LIVE CONTENT (name, description, meeting point, departure time, includes,
+excludes, duration) and the NEW DOCUMENT's raw text.
+
+ONLY flag a genuine, concrete content difference the new document actually states - something a human
+should re-check before publishing. Do NOT flag:
+- Pure price/number changes (a separate step already handles those)
+- Minor rewording that means the same thing (e.g. "meet at the main gate" vs "meet by the entrance gate")
+- A field simply not being mentioned in the new document at all - silence is NOT a change; the new
+  document is usually just a price list and most fields won't appear in it at all
+- Formatting/language differences that don't change the actual meaning
+
+Only flag something you can point to an actual sentence/phrase in the new document for. If the new
+document is purely a price table with no descriptive content at all, that is the normal case - return
+no changes.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
+{
+  "has_changes": true or false,
+  "changes": ["short human-readable description of one detected change", "..."]
+}
+"has_changes" must be true if and only if "changes" is non-empty."""
+
+
+def check_ticket_content_drift(raw_text: str, live_content: Dict[str, Any], model: str = HAIKU_MODEL,
+                               human_hint: str = None) -> Dict[str, Any]:
+    """Cheap, single-purpose check (see TICKET_CONTENT_DRIFT_SYSTEM_PROMPT's own docstring) - NOT a
+    second full extraction. Returns {"has_changes": bool, "changes": [str, ...]}. Never raises on a
+    genuine content mismatch - only on the same underlying call failures extract_* already surfaces
+    (caller should treat this the same as any other AI call and let friendly_error_message handle it)."""
+    live_summary = (
+        f"Name: {live_content.get('name', '') or '(none)'}\n"
+        f"Description: {live_content.get('description', '') or '(none)'}\n"
+        f"Meeting point: {live_content.get('meetingPoint', '') or '(none)'}\n"
+        f"Departure time: {live_content.get('departureTime', '') or '(none)'}\n"
+        f"Includes: {', '.join(live_content.get('includes') or []) or '(none)'}\n"
+        f"Excludes: {', '.join(live_content.get('excludes') or []) or '(none)'}\n"
+    )
+    user_content = (
+        f"--- CURRENT LIVE CONTENT ---\n{live_summary}\n--- NEW DOCUMENT ---\n{raw_text}"
+    )
+    if human_hint:
+        user_content = f"IMPORTANT - human guidance: {human_hint}\n\n{user_content}"
+
+    defaults = {"has_changes": False, "changes": []}
+    data = _call_claude(TICKET_CONTENT_DRIFT_SYSTEM_PROMPT, user_content, model, max_tokens=1024,
+                        input_schema=_required_keys_schema(defaults))
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+    # Defensive - keep the two fields consistent even if the model returns one without the other.
+    data["changes"] = [c for c in (data.get("changes") or []) if isinstance(c, str) and c.strip()]
+    data["has_changes"] = bool(data["changes"])
+    return data
 
 
 # ==========================================

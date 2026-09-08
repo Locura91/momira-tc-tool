@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
+MODULE_BUILD = "2026-09-08-ticket-renewal-workflow"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
