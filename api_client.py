@@ -16,7 +16,7 @@ load_dotenv()
 # consequential file to have out of sync (every publish call goes through it). Stamped now, and
 # the detector's module list is auto-discovered (see app.py) so any future module that adds a
 # MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
-MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
+MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
 
 
 class TravelCompositorAPI:
@@ -661,6 +661,44 @@ class TravelCompositorAPI:
             return []
         data = self._json(res)
         return data if isinstance(data, list) else []
+
+    def get_accommodations_page(self, first: int = 0, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Executes GET /accommodations — one page of Travel Compositor's global "Web Content
+        Accommodations" master hotel database (361,942 total records confirmed real, 2026-09-06
+        feasibility investigation). Each record is the LIGHTWEIGHT shape only: id, giataId, name,
+        geolocation, countryCode, lastUpdate - no images/description/facilities (those require a
+        separate datasheet call per hotel, see get_accommodation_datasheet below).
+
+        CONFIRMED (Swagger, 2026-09-06): this endpoint has NO name/text search parameter at all -
+        only first/limit pagination. There is no way to look up a hotel by name via a live call.
+        The only practical use is a full bulk sync: page through the whole list once (or
+        periodically) and build a local name/geo-matchable index - see masterdata_store.py.
+        """
+        url = f"{self.api_base_url}/accommodations"
+        res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return self._json(res)
+
+    def get_accommodation_datasheet(self, accommodation_id: str, lang: str = "EN") -> Dict[str, Any]:
+        """
+        Executes GET /accommodations/{accommodationId}/datasheet — full rich content (images,
+        description, facilities, geolocation, ratings, address, phone) for ONE master-data
+        accommodation record, identified by Travel Compositor's own internal 'id' (NOT the
+        human-assigned hotel providerCode used elsewhere in this app - a completely different
+        identifier namespace, confirmed 2026-09-06). Used once a human has picked a specific
+        master-data candidate (see masterdata_matcher.py) to pull its full content for prefilling.
+        """
+        url = f"{self.api_base_url}/accommodations/{accommodation_id}/datasheet"
+        res = self._request("GET", url, headers={"lang": lang} if lang else {})
+
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return self._json(res)
 
     def get_all_users(self) -> List[Dict[str, Any]]:
         """

@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
+MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
 
 import math
 import datetime
@@ -28,6 +28,7 @@ from date_format import to_iso_date
 # worse, a season silently shifted by a month.
 import transport_matcher
 import hotel_matcher
+from price_validity import with_price_validity_code
 
 DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                           "tour's starting city, in your hotel lobby.")
@@ -2383,9 +2384,16 @@ def build_ticket_payloads(
         # reads) and the display name below (see _ticket_name_with_entrance_fee_notice - never
         # mutates extracted_ticket_data itself, so the editable Name field never grows a second
         # suffix on a rebuild).
-        ticket_cancellation_voucher_text = _with_entrance_fee_notice(
-            _with_manual_notes(
-                _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
+        # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+        # docstring. Applied LAST, outside entrance-fee-notice (which PREPENDS rather than
+        # appends), so the "(YYYYMMDD)" code always ends up at the very end of the voucher text,
+        # never nested inside other formatting.
+        ticket_cancellation_voucher_text = with_price_validity_code(
+            _with_entrance_fee_notice(
+                _with_manual_notes(
+                    _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
+                    extracted_ticket_data,
+                ),
                 extracted_ticket_data,
             ),
             extracted_ticket_data,
@@ -2918,6 +2926,9 @@ def build_transfer_payload(
         # needs its own pass here too - otherwise stray markup in that one field would slip
         # through despite every other voucher-text ingredient being covered.
         voucher_text = strip_stray_html(voucher_text)
+        # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+        # docstring. Applied truly last, after every other voucher-text ingredient.
+        voucher_text = with_price_validity_code(voucher_text, extracted_transfer_data)
 
         datasheet_en = TransferDescriptorVO(
             name=transfer_name,
@@ -3745,16 +3756,11 @@ def build_transport_payloads(
             _cancellation_voucher_text(None, cancellation_tiers),
             extracted_transport_data),
         extracted_transport_data)
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): Transport now has its own Voucher Remarks box
-    # on the review screen. There is no voucherRemarks field on ContractTransportDataSheetVO to
-    # send it to (see the comment further down), so it rides the same route the cancellation text
-    # already takes - appended to the description - and goes FIRST, because it is the part the
-    # customer actually needs to read; the house cancellation standard follows it.
-    _transport_voucher_remarks = strip_stray_html(
-        (extracted_transport_data.get("voucher_remarks") or "").strip())
-    if _transport_voucher_remarks:
-        voucher_text = (f"{_transport_voucher_remarks}\n\n{voucher_text}".strip()
-                        if voucher_text else _transport_voucher_remarks)
+    # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own docstring.
+    # Transport has no dedicated voucherRemarks field (see this function's own comment on
+    # ContractTransportDataSheetVO below) - voucher_text is folded into `description` further
+    # down, so appending the code here still gets it onto the one field Transport actually has.
+    voucher_text = with_price_validity_code(voucher_text, extracted_transport_data)
 
     # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
     # owner rule, applies "for all services"), then apply the multi-vehicle synthesis rule.

@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
+MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
 
 _PHASE_KEY = "ti_phase"
 

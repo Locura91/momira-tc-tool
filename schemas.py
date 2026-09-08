@@ -2,11 +2,24 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-06-hotel-zero-new-rooms-inline"
+MODULE_BUILD = "2026-09-08-hotel-room-error-diagnostics"
 
 from typing import List, Optional, Dict
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 import re
+
+# CONFIRMED REAL PRODUCTION FAILURE (2026-09-08): retrying RAK-T1's option failed with
+# "code:Size must be between 1 and 50 (Day Trip from Marrakech to Atlas Mountains (Three
+# Valleys: Ait Mizan, Sidi Fares, Ourika))" - Travel Compositor's own Modality/Option 'code'
+# field is capped at 50 characters server-side, but nothing on this app's side enforced that
+# before sending it, so a Modality Code that was really the full descriptive title (89
+# characters here) sailed straight through every review step and only failed at the live API
+# call - by which point a human had to notice the raw technical error and manually shorten a
+# field they may not have realized was even wrong. Same "sanitize instead of hard-reject"
+# philosophy the product owner already confirmed for the slash-stripping case just below
+# (2026-09-03) - silently truncate rather than blocking the human with a validation error, since
+# the client-facing name (a separate field, never truncated) already carries the full text.
+MODALITY_CODE_MAX_LENGTH = 50
 
 # ==========================================
 # 1. HUMAN PRE-CONFIGURATION SCHEMA
@@ -48,6 +61,24 @@ class HumanPreConfig(BaseModel):
     min_child_age: int = 2
     max_child_age: int = 12
 
+    @root_validator(pre=True)
+    def default_modality_name_before_code_is_truncated(cls, values):
+        # CONFIRMED REAL PRODUCTION FAILURE (2026-09-08) - see MODALITY_CODE_MAX_LENGTH's
+        # module-level comment: modality_code now gets truncated to Travel Compositor's real
+        # 50-character server-side cap (modality_code_length_and_slashes validator below). Without
+        # this, a document with no separate short code (modality_name left blank, so it falls
+        # back to modality_code - see that field's own docstring) would have its CLIENT-FACING
+        # name silently truncated too, since the fallback in builder.py reads whichever value
+        # ends up on modality_code after validation. Runs pre=True (before field validators) so
+        # it captures the ORIGINAL, untruncated modality_code for the name fallback - the code
+        # field itself is still truncated separately, for Travel Compositor's sake only.
+        existing_name = values.get("modality_name")
+        name_is_blank = not (existing_name or "").strip() if isinstance(existing_name, str) else not existing_name
+        raw_code = values.get("modality_code")
+        if name_is_blank and raw_code:
+            values["modality_name"] = raw_code
+        return values
+
     @validator("provider_code")
     def validate_provider_code(cls, v):
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): a real Tour Code ("Rak-2") was blocked
@@ -70,6 +101,18 @@ class HumanPreConfig(BaseModel):
         if not v.strip():
             raise ValueError("Tour Code cannot be blank")
         return v
+
+    @validator("modality_code")
+    def modality_code_length_and_slashes(cls, v):
+        # CONFIRMED REAL PRODUCTION FAILURE (2026-09-08, Ticket sibling of this field - see
+        # MODALITY_CODE_MAX_LENGTH's module-level comment): Travel Compositor's Modality/Option
+        # 'code' is capped at 50 characters server-side. ClosedTour's modality_code never had its
+        # own slash-stripping validator either (unlike TicketHumanPreConfig.modality_code /
+        # provider_code above), so both guards are added together here rather than leaving this
+        # sibling field only half-protected. Truncated, not rejected - same reasoning as
+        # provider_code's validator just above.
+        v = (v or "").replace("/", "").replace("\\", "")
+        return v[:MODALITY_CODE_MAX_LENGTH]
 
     @validator("min_pax")
     def validate_min_pax(cls, v):
@@ -299,6 +342,19 @@ class TicketHumanPreConfig(BaseModel):
     min_passengers: int = Field(1)
     max_passengers: int = Field(9)
 
+    @root_validator(pre=True)
+    def default_modality_name_before_code_is_truncated(cls, values):
+        # Same reasoning/order as HumanPreConfig's sibling validator (see that docstring and
+        # MODALITY_CODE_MAX_LENGTH's module-level comment) - captures the ORIGINAL, untruncated
+        # modality_code for the client-facing name fallback before the field validator below
+        # truncates modality_code itself for Travel Compositor's sake.
+        existing_name = values.get("modality_name")
+        name_is_blank = not (existing_name or "").strip() if isinstance(existing_name, str) else not existing_name
+        raw_code = values.get("modality_code")
+        if name_is_blank and raw_code:
+            values["modality_name"] = raw_code
+        return values
+
     @validator("modality_code")
     def no_slash_in_modality_code(cls, v):
         # CONFIRMED PRODUCT-OWNER FIX (2026-09-03): this used to hard-reject with a pydantic
@@ -314,7 +370,15 @@ class TicketHumanPreConfig(BaseModel):
         # one unavoidable choke point: it silently strips ONLY those two characters instead of
         # rejecting the whole value, covering every current and future path that builds a
         # TicketHumanPreConfig, not just the ones the UI happens to pre-sanitize.
-        return (v or "").replace("/", "").replace("\\", "")
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (2026-09-08): retrying RAK-T1's option failed with
+        # "code:Size must be between 1 and 50 (Day Trip from Marrakech to Atlas Mountains (Three
+        # Valleys: Ait Mizan, Sidi Fares, Ourika))" - an 89-character descriptive title had ended
+        # up as the Modality Code itself (no separate short code existed for this document) and
+        # reached Travel Compositor's real 50-character server-side cap untouched. Same
+        # silently-sanitize approach as the slash-stripping above: truncated, not rejected - the
+        # client-facing modality_name (a separate field) keeps the full text regardless.
+        return (v or "").replace("/", "").replace("\\", "")[:MODALITY_CODE_MAX_LENGTH]
 
 
 class GeolocationVO(BaseModel):

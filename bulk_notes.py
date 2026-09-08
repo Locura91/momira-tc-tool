@@ -111,10 +111,15 @@ TARGETS: Dict[str, Dict[str, str]] = {
         "Cancellation update": "voucherRemarks",
     },
     "Transport": {
-        # Transport genuinely has nothing else - no voucher remarks field exists on it,
-        # which is why its cancellation text already goes into the description everywhere
-        # else in this platform.
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "Voucher remarks" must be selectable
+        # here too, for bulk uploads - Transport genuinely has no separate voucherRemarks
+        # field in Travel Compositor (only name + description), same reason "Cancellation
+        # update" already points at "description" here and the same reason price_validity.py's
+        # "(YYYYMMDD)" code goes into Transport's description rather than a remarks field - so
+        # this is the same target as "Description (bottom)" under a label a human looking for
+        # "Voucher remarks" (as every other product type calls it) will actually find.
         "Description (bottom)": "description",
+        "Voucher remarks": "description",
         "Cancellation update": "description",
     },
     "Hotel": {
@@ -128,8 +133,6 @@ TARGETS: Dict[str, Dict[str, str]] = {
 # them hunting for an option that was never there.
 UNAVAILABLE_REASON: Dict[str, Dict[str, str]] = {
     "Transport": {
-        "Voucher remarks": "Transport has no voucher remarks field in Travel Compositor — "
-                           "only a name and a description.",
         "Included (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
         "Excluded (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
         "Remark": "Transport has no separate remark field.",

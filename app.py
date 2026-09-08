@@ -127,6 +127,9 @@ from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from r2_client import stale_image_warning
 from geocoding_client import geocode_search, geocode, parse_google_maps_url, build_place_query
 import transfer_matcher
+import masterdata_store
+import masterdata_matcher
+import price_validity
 import transport_matcher
 import platform_store
 import service_notes
@@ -265,31 +268,6 @@ def _geo_search_default(client, place_name):
 # in, alphabetically. A dropdown (instead of free-text) prevents typos like
 # "EURO" or "Eur" that Travel Compositor's API would otherwise reject or
 # silently mishandle.
-# Sentinel for the Hotel publish retry ladder: "send the payload with no rooms key at all",
-# which is a different thing from "send rooms: []" as far as Bean Validation is concerned - an
-# @Size(min=1) rejects the empty list but passes the missing one. See the Hotel publish button.
-class _HpRoomsOmitted:
-    def __repr__(self):
-        return "<rooms key omitted>"
-
-
-_HP_ROOMS_OMITTED = _HpRoomsOmitted()
-
-
-def _hp_apply_rooms(payload, rooms):
-    """Return a copy of the hotel payload carrying this room shape.
-
-    Kept as a function because one of the shapes is the ABSENCE of the key, which a plain
-    assignment cannot express.
-    """
-    payload = dict(payload)
-    if rooms is _HP_ROOMS_OMITTED:
-        payload.pop("rooms", None)
-    else:
-        payload["rooms"] = rooms
-    return payload
-
-
 CURRENCY_OPTIONS = [
     "EUR", "USD", "GBP", "AUD", "CAD", "CHF", "CNY", "IDR", "INR", "JPY",
     "MXN", "NZD", "SEK", "SGD", "THB", "TRY", "VND", "ZAR",
@@ -4596,6 +4574,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             merge_what_to_bring_into_voucher_remarks(data)
             editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                            "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
+            # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+            # docstring. Blank by default; when set, the app appends "(YYYYMMDD)" to Voucher
+            # Remarks automatically at publish time (build_ticket_payloads -> with_price_validity_
+            # code) - no need to type the code by hand.
+            editable_field("Prices confirmed valid until (optional - the app adds the "
+                           "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
+                           "price_valid_until_date", widget="text_input", key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
             # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
             # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
@@ -6035,6 +6020,11 @@ def render_ticket_flow(client):
                 merge_what_to_bring_into_voucher_remarks(data)
                 editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                                "voucher_remarks", widget="text_area", height=100)
+                # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+                # docstring and this file's other call site for the fuller comment.
+                editable_field("Prices confirmed valid until (optional - the app adds the "
+                               "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
+                               "price_valid_until_date", widget="text_input")
                 # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): Manual Notes removed here too, same
                 # reasoning as the batch flow above - every field is directly editable now.
 
@@ -7587,6 +7577,12 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                        data, "location_notes", key_suffix=key_suffix)
         editable_field("Description", data, "description", key_suffix=key_suffix)
         editable_field("Pickup information", data, "pickup_information", key_suffix=key_suffix)
+        # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+        # docstring. Blank by default; when set, the app appends "(YYYYMMDD)" to Voucher Remarks
+        # automatically at publish time - no need to type the code by hand.
+        editable_field("Prices confirmed valid until (optional - the app adds the "
+                       "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
+                       "price_valid_until_date", key_suffix=key_suffix)
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
@@ -8295,6 +8291,13 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         editable_field("Additional notes (priced extras with no structured home)", data, "additional_notes",
                        widget="text_area", height=80, key_suffix=key_suffix)
         editable_field("Description", data, "description", widget="text_area", height=100, key_suffix=key_suffix)
+        # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
+        # docstring. Transport has no separate Voucher Remarks field, so this code ends up
+        # appended to Description instead (same place Transport's cancellation text already
+        # goes - see builder.py's own comment on ContractTransportDataSheetVO).
+        editable_field("Prices confirmed valid until (optional - the app adds the "
+                       "\"(YYYYMMDD)\" marker to Description automatically)", data,
+                       "price_valid_until_date", key_suffix=key_suffix)
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
@@ -8313,14 +8316,6 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         render_cancellation_policy_editor(data, f"xtp_cancel_{idx}")
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                        widget="text_area", height=80, key_suffix=key_suffix)
-        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): Transport was the only product whose
-        # review screen had no Voucher Remarks box, so anything a human wanted the customer to
-        # read had to be smuggled into the description. Travel Compositor's
-        # ContractTransportDataSheetVO genuinely has no voucherRemarks field (see
-        # build_transport_payloads), so what is typed here is appended to the description at
-        # publish time - the same route the cancellation text already takes.
-        editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks",
-                       widget="text_area", height=100, key_suffix=key_suffix)
 
         service_notes.render_notes_editor(supplier_id, "Transport", data, key_suffix=key_suffix)
 
@@ -8650,6 +8645,136 @@ def _hp_window_list(start, end):
     return [{"start": start, "end": end}] if start and end else []
 
 
+def _render_hotel_masterdata_step(client):
+    """
+    "Use Travel Compositor master data for this hotel?" - shown once per new hotel, right after
+    Step 2 is confirmed and before Step 3's Input Source (product owner request, 2026-09-06,
+    mirroring Travel Compositor's own manual "add hotel" screen). Only reachable for a genuinely
+    NEW hotel code (see render_hotel_flow's caller) - an existing hotel already has its own live
+    content in Travel Compositor.
+
+    Confirmed via feasibility investigation (2026-09-06, real Swagger + real API responses):
+    Travel Compositor's master hotel database (361,942 records) has NO live name-search endpoint
+    at all - only bulk pagination (GET /accommodations) and a curated "preferred hotels" list that
+    turned out too narrow to even cover the real hotel that prompted this investigation. So this
+    searches a LOCAL COPY (masterdata_store.py), synced from Travel Compositor on demand, using
+    name + optional country + optional geolocation matching (masterdata_matcher.py) - never an
+    exact/silent match: every candidate is shown to a human to confirm, per product owner decision
+    the same day, since fuzzy name matching alone can and will occasionally surface the wrong
+    property.
+
+    Sets st.session_state.hp_masterdata_decided=True and hp_masterdata_seed (a dict from
+    masterdata_matcher.datasheet_to_masterdata_seed(), or None if skipped) once the human is done
+    here - render_hotel_flow only calls this again if those get cleared (e.g. "Start over").
+    """
+    st.header("Hotel — Step 3: Use Travel Compositor master data?")
+    st.caption(
+        "Travel Compositor keeps its own master database of hotel content (images, description, "
+        "facilities) for hotels worldwide - the same one it offers when a human manually adds a "
+        "hotel in its own back office. If this property is in there, its images and description "
+        "can seed this contract instead of asking someone to go find photos."
+    )
+
+    meta = masterdata_store.index_meta()
+    if not masterdata_store.index_is_usable():
+        if meta and not meta.get("complete"):
+            st.warning("⚠️ A previous sync of Travel Compositor's master data didn't finish - the local copy isn't usable yet.")
+        else:
+            st.info("No local copy of Travel Compositor's master hotel data has been synced yet - this is a one-time setup step (then an occasional refresh).")
+        if st.button("🔄 Sync master data now (one-time, several minutes)", key="hp_md_sync_btn"):
+            progress_bar = st.progress(0.0)
+            status_line = st.empty()
+
+            def _hp_md_progress(done, total):
+                status_line.caption(f"Synced {done:,} / {total:,} accommodations so far...")
+                if total:
+                    progress_bar.progress(min(1.0, done / total))
+
+            with st.spinner("Syncing Travel Compositor's master hotel data - this can take several minutes..."):
+                sync_result = masterdata_store.sync_accommodation_index(client, progress_callback=_hp_md_progress)
+            if sync_result["ok"]:
+                st.success(f"✅ Synced {sync_result['total_records']:,} accommodations.")
+                st.session_state.pop("hp_md_index_cache", None)
+                st.rerun()
+            else:
+                st.error(f"❌ Sync failed: {sync_result['error']}")
+        if st.button("Skip for now — I'll provide photos manually", key="hp_md_skip_no_index"):
+            st.session_state.hp_masterdata_decided = True
+            st.session_state.hp_masterdata_seed = None
+            st.rerun()
+        return
+
+    synced_at = meta.get("synced_at")
+    synced_caption = f"{meta.get('total_records', 0):,} accommodations"
+    if synced_at:
+        synced_caption += f", synced {datetime.fromtimestamp(synced_at).strftime('%Y-%m-%d %H:%M')}"
+    st.caption(f"Local master-data copy: {synced_caption}.")
+    if st.button("🔄 Refresh master data", key="hp_md_resync_btn"):
+        st.session_state.hp_md_resync_requested = True
+    if st.session_state.get("hp_md_resync_requested"):
+        progress_bar = st.progress(0.0)
+        status_line = st.empty()
+
+        def _hp_md_progress(done, total):
+            status_line.caption(f"Synced {done:,} / {total:,} accommodations so far...")
+            if total:
+                progress_bar.progress(min(1.0, done / total))
+
+        with st.spinner("Re-syncing Travel Compositor's master hotel data..."):
+            sync_result = masterdata_store.sync_accommodation_index(client, progress_callback=_hp_md_progress)
+        st.session_state.hp_md_resync_requested = False
+        if sync_result["ok"]:
+            st.success(f"✅ Synced {sync_result['total_records']:,} accommodations.")
+            st.session_state.pop("hp_md_index_cache", None)
+        else:
+            st.error(f"❌ Sync failed: {sync_result['error']}")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        search_name = st.text_input("Hotel name to search for", value="", key="hp_md_search_name")
+    with col_b:
+        search_country = st.text_input("Country code (optional, e.g. EG)", value="", key="hp_md_search_country", max_chars=2)
+
+    if st.button("🔎 Search master data", key="hp_md_search_btn", disabled=not search_name.strip()):
+        if "hp_md_index_cache" not in st.session_state:
+            with st.spinner("Loading local master-data index..."):
+                st.session_state.hp_md_index_cache = masterdata_store.load_index()
+        st.session_state.hp_md_candidates = masterdata_matcher.find_candidates(
+            search_name, st.session_state.hp_md_index_cache, country_code=search_country or None)
+
+    candidates = st.session_state.get("hp_md_candidates")
+    if candidates is not None:
+        if not candidates:
+            st.warning("No close matches found in the local master data. Adjust the search above, "
+                       "refresh the sync if this hotel might be very new, or skip below.")
+        else:
+            st.write(f"Found {len(candidates)} possible match(es) — confirm one, or skip if none are right:")
+            for i, cand in enumerate(candidates):
+                with st.container(border=True):
+                    cols = st.columns([4, 1])
+                    with cols[0]:
+                        geo_note = f" · {cand['geo_km']} km from the location you provided" if cand.get("geo_km") is not None else ""
+                        st.markdown(f"**{cand.get('name') or '(unnamed)'}**  \n"
+                                    f"Country: {cand.get('countryCode') or '—'} · "
+                                    f"Match confidence: {cand['score']*100:.0f}%{geo_note}")
+                    with cols[1]:
+                        if st.button("Use this hotel", key=f"hp_md_pick_{i}"):
+                            with st.spinner("Fetching this hotel's content from Travel Compositor..."):
+                                datasheet = client.get_accommodation_datasheet(cand["id"])
+                            if isinstance(datasheet, dict) and "error" not in datasheet:
+                                st.session_state.hp_masterdata_seed = masterdata_matcher.datasheet_to_masterdata_seed(datasheet)
+                                st.session_state.hp_masterdata_decided = True
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Couldn't fetch this hotel's content: "
+                                          f"{datasheet.get('message') if isinstance(datasheet, dict) else datasheet}")
+
+    if st.button("None of these — I'll provide photos manually", key="hp_md_skip"):
+        st.session_state.hp_masterdata_decided = True
+        st.session_state.hp_masterdata_seed = None
+        st.rerun()
+
+
 def render_hotel_flow(client):
     """Hotel wizard entry point: Supplier + hotel code + currency + release window, then Input
     Source, then a single review screen, then the two-phase publish."""
@@ -8767,6 +8892,22 @@ def render_hotel_flow(client):
     service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
     cancellation_links.render_cancellation_link_editor(supplier_id, "Hotel", key_suffix="_setup")
 
+    # ---- Does this hotel code already exist? (decides create vs update) ----
+    # Hoisted up from Phase 2 (2026-09-06, master-data step): the "use Travel Compositor master
+    # data?" prompt below only makes sense for a genuinely NEW hotel - an existing hotel already
+    # has its own live images/description in Travel Compositor - so this needs to be known before
+    # Phase 1 renders, not just before Phase 2's review screen.
+    if not st.session_state.get("hp_existing_checked"):
+        with st.spinner(f"Checking whether hotel code {provider_code} already exists..."):
+            snapshot = client.get_hotel(supplier_id, provider_code)
+        if isinstance(snapshot, dict) and "error" in snapshot:
+            st.session_state.hp_existing_snapshot = None
+        else:
+            st.session_state.hp_existing_snapshot = snapshot
+        st.session_state.hp_existing_checked = True
+
+    existing_snapshot = st.session_state.get("hp_existing_snapshot")
+
     if "hp_phase" not in st.session_state:
         st.session_state.hp_phase = "gather"
 
@@ -8774,6 +8915,15 @@ def render_hotel_flow(client):
     # PHASE 1: gather source + extract
     # ------------------------------------------------------------------
     if st.session_state.hp_phase == "gather":
+        # ---- New-hotel-only: offer Travel Compositor's own master hotel data first ----
+        # Product owner request (2026-09-06), mirroring Travel Compositor's own manual "add
+        # hotel" screen, which offers exactly this choice before falling back to asking a human
+        # to hunt for photos. See masterdata_store.py/masterdata_matcher.py for why this has to
+        # be a locally-synced index rather than a live search (no such endpoint exists).
+        if not existing_snapshot and not st.session_state.get("hp_masterdata_decided"):
+            _render_hotel_masterdata_step(client)
+            return
+
         st.header("Hotel — Step 3: Input Source")
         st.caption("A hotel contract normally covers ONE property: its rooms and allowed occupancy "
                   "combinations, meal plans, any offers/supplements, and the rate seasons with a price per "
@@ -8806,6 +8956,13 @@ def render_hotel_flow(client):
                     doc_raw_images = []
                     doc_image_urls = []
                     seen_image_hashes = set()
+                    # Travel Compositor master-data images (2026-09-06) - already hosted on
+                    # Travel Compositor's own CDN, so they go straight into doc_image_urls
+                    # (no R2 upload needed, unlike document-extracted images) and surface in
+                    # the same image picker at Step 4 as any other found image.
+                    _hp_md_seed = st.session_state.get("hp_masterdata_seed")
+                    if _hp_md_seed:
+                        doc_image_urls.extend(_hp_md_seed.get("image_urls") or [])
                     if hp_url:
                         page_text, page_text_err = _fetch_url_text_safe(hp_url)
                         if page_text is not None:
@@ -8840,6 +8997,14 @@ def render_hotel_flow(client):
                     if not combined_parts:
                         st.error("Nothing to extract - the hotel page URL couldn't be fetched and no document(s) were provided.")
                         st.stop()
+
+                    # Master-data text (name/address/phone/chain/description/facilities) folds in
+                    # as just another source for the same extraction pass, rather than being
+                    # hand-mapped field by field - deliberately doesn't count toward the
+                    # "something to extract" check above, since it never substitutes for the
+                    # actual rate contract (master data has no rooms/rates/prices at all).
+                    if _hp_md_seed and _hp_md_seed.get("text_block"):
+                        combined_parts.append(_hp_md_seed["text_block"])
 
                     # Same page-URL image scrape every other flow already does (server-side
                     # download, not a raw hotlink - see _add_page_images_to_doc_pool's own
@@ -8885,6 +9050,12 @@ def render_hotel_flow(client):
 
     st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
+    _hp_md_seed_used = st.session_state.get("hp_masterdata_seed")
+    if _hp_md_seed_used:
+        st.info(f"📚 Seeded from Travel Compositor master data: **{_hp_md_seed_used.get('name') or '(unnamed)'}** "
+                f"— its images/description were folded into extraction below; double-check they're right for "
+                f"this property before publishing.")
+
     if st.button("🔙 Start over with a different document", key="hp_cancel"):
         for key in HP_STATE_KEYS:
             st.session_state.pop(key, None)
@@ -8898,15 +9069,9 @@ def render_hotel_flow(client):
         st.rerun()
 
     # ---- Does this hotel code already exist? (decides create vs update) ----
-    if not st.session_state.get("hp_existing_checked"):
-        with st.spinner(f"Checking whether hotel code {provider_code} already exists..."):
-            snapshot = client.get_hotel(supplier_id, provider_code)
-        if isinstance(snapshot, dict) and "error" in snapshot:
-            st.session_state.hp_existing_snapshot = None
-        else:
-            st.session_state.hp_existing_snapshot = snapshot
-        st.session_state.hp_existing_checked = True
-
+    # Check itself now runs earlier, at the top of Phase 1 (2026-09-06, master-data step) - this
+    # just reads the same result, kept here since `data`/the rest of Phase 2 already expects
+    # `existing_snapshot` as a local name.
     existing_snapshot = st.session_state.get("hp_existing_snapshot")
     if existing_snapshot:
         st.info(f"📌 Hotel code **{provider_code}** already exists in Travel Compositor "
@@ -9549,41 +9714,12 @@ def render_hotel_flow(client):
             all_rooms = contract_result["hotel_payload"].get("rooms") or []
             rooms_with_code = [r for r in all_rooms if r.get("providerCode")]
             new_rooms = [r for r in all_rooms if not r.get("providerCode")]
-            # CONFIRMED REAL BUG, part 3 (reported 2026-09-08, HRG-H1 again): the two shapes tried
-            # above are BOTH rejected for a 100%-brand-new hotel. The observed run escalated from
-            # shape 1 to shape 2 ("rejected the hotel with no new rooms attached yet"), then died
-            # on shape 2 with the very error shape 1 exists to avoid:
-            #     Errors: HotelContractRoom.providerCode:must not be null ( Id: null)
-            # So Travel Compositor wants a rooms list that is neither empty NOR carrying a
-            # null-providerCode room - a combination neither shape can produce. Two more shapes
-            # are tried in between, cheapest and least speculative first:
-            #   2. the rooms key OMITTED entirely rather than sent as []. A Bean Validation
-            #      @Size(min=1) rejects an empty list but passes a null one, so this is the most
-            #      likely fix and it invents nothing.
-            #   3. one new room inline carrying a providerCode WE generate ("<hotel code>-R1").
-            #      Room codes are normally system-generated ("AUTO_..."), so this is a guess -
-            #      but the hotel's own providerCode is human-assigned, and the constraint that
-            #      actually failed only demands the field not be null. If TC rejects the format
-            #      we simply fall through to the last shape.
-            # Shape 4 is the previous behaviour, kept last so nothing that used to work stops.
-            _hp_first_new_room_with_code = None
-            if new_rooms:
-                _hp_first_new_room_with_code = dict(new_rooms[0])
-                _hp_first_new_room_with_code["providerCode"] = f"{provider_code}-R1"
-
-            _hp_room_candidates = [rooms_with_code, _HP_ROOMS_OMITTED]
-            if new_rooms:
-                _hp_room_candidates.append(rooms_with_code + [_hp_first_new_room_with_code])
-                _hp_room_candidates.append(rooms_with_code + new_rooms[:1])
-            _hp_candidate_notes = [
-                "with no new rooms attached yet",
-                "without a rooms list at all",
-                "with one new room carrying a generated room code",
-                "with one new room and no room code",
-            ]
+            # Two room shapes to try, in order: no new rooms inline first (today's fix), then the
+            # old one-new-room-inline shape as a fallback if TC's server insists on a non-empty list.
+            _hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]
             _hp_room_candidate_idx = 0
-            phase1_payload = _hp_apply_rooms(contract_result["hotel_payload"],
-                                             _hp_room_candidates[_hp_room_candidate_idx])
+            phase1_payload = dict(contract_result["hotel_payload"])
+            phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
 
             # CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): the in-tool 500x400 size check
             # above (image_dimensions.py) doesn't catch every way Travel Compositor can reject a
@@ -9618,20 +9754,19 @@ def render_hotel_flow(client):
                     continue
 
                 if (_hp_room_candidate_idx < len(_hp_room_candidates) - 1
-                        and "room" in _hp_error_text.lower()):
-                    # Any rooms-shaped complaint escalates, INCLUDING the null-providerCode one.
-                    # It used to be excluded here on the reasoning that the default shape already
-                    # avoids it - but the 2026-09-08 failure was exactly that error arriving on a
-                    # later shape, where the exclusion turned a retryable rejection into a dead
-                    # end. The last shape in the list is the old behaviour, so escalating freely
-                    # can only ever try more things before giving up, never fewer.
-                    _hp_rejected_note = _hp_candidate_notes[_hp_room_candidate_idx]
+                        and "room" in _hp_error_text.lower()
+                        and "providerCode" not in _hp_error_text):
+                    # Only escalate on a rooms-shaped complaint that ISN'T the null-providerCode
+                    # error our new default already avoids - e.g. a "rooms must not be empty"
+                    # style rejection of the zero-new-rooms shape tried first.
                     _hp_room_candidate_idx += 1
-                    _hp_next_rooms = _hp_room_candidates[_hp_room_candidate_idx]
-                    phase1_payload = _hp_apply_rooms(phase1_payload, _hp_next_rooms)
-                    progress.warning(f"⚠️ Travel Compositor rejected the hotel {_hp_rejected_note}, "
-                                     f"so publishing is being retried "
-                                     f"{_hp_candidate_notes[_hp_room_candidate_idx]}.")
+                    phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
+                    progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
+                                     "attached yet, so publishing is being retried with one new "
+                                     "room included.")
+                    # 2026-09-08: surface the zero-rooms attempt's raw error (was discarded).
+                    with progress.expander("Technical details — empty-rooms attempt"):
+                        st.code(_hp_error_text or "(no detail)")
                     continue
 
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
@@ -9644,11 +9779,7 @@ def render_hotel_flow(client):
             # hotels that's now ALL of them, not just the second-and-beyond room. Each response is
             # merged into the same room list resolve_room_provider_codes reads below, so phase 2
             # (offers/supplements/rates) sees every room regardless of which call actually created it.
-            _hp_winning_rooms = _hp_room_candidates[_hp_room_candidate_idx]
-            _hp_inline_new_room_count = (
-                0 if _hp_winning_rooms is _HP_ROOMS_OMITTED
-                else len(_hp_winning_rooms) - len(rooms_with_code)
-            )
+            _hp_inline_new_room_count = len(_hp_room_candidates[_hp_room_candidate_idx]) - len(rooms_with_code)
             extra_new_rooms = new_rooms[_hp_inline_new_room_count:]
             all_room_responses = list(hotel_response.get("rooms") or [])
             if extra_new_rooms:
@@ -11525,7 +11656,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-06-hotel-zero-new-rooms-inline"
+BUILD_VERSION = "2026-09-08-hotel-room-error-diagnostics"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -11643,6 +11774,45 @@ if weekly_review.is_due():
             with _d2:
                 st.caption("“Not now” hides this for another week. Nothing here touches Travel "
                            "Compositor — it only edits what the AI is told next time.")
+
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): a "(YYYYMMDD)" code in a Ticket/Transfer/
+# Transport's Voucher Remarks (Transport: Description) states how long a supplier's prices are
+# confirmed valid for - see price_validity.py's own docstring. Once a week, scan every live
+# service for that code and flag anything expired or expiring within 60 days, both as an in-app
+# banner here and as an email (product owner confirmed both channels, 2026-09-08). Same "no real
+# background cron on Streamlit Cloud" solution as weekly_review.py just above - checked
+# opportunistically on page load rather than on an actual schedule.
+if price_validity.is_due():
+    with st.spinner("Checking price-validity dates on live services..."):
+        if st.session_state.suppliers_cache is None:
+            try:
+                st.session_state.suppliers_cache = client.get_all_suppliers()
+            except Exception:
+                st.session_state.suppliers_cache = []
+        _pv_suppliers = [
+            s for s in (st.session_state.suppliers_cache or [])
+            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
+        ]
+        _pv_flagged = price_validity.scan_expiring_services(client, _pv_suppliers)
+        _pv_email_result = price_validity.send_alert_email(_pv_flagged)
+        price_validity.mark_reviewed(flagged_count=len(_pv_flagged))
+
+    if _pv_flagged:
+        with st.container(border=True):
+            st.markdown("### ⏰ Weekly price-validity check")
+            st.caption("Each of these services has a \"(YYYYMMDD)\" price-validity code (in Voucher "
+                      "Remarks, or Description for Transport) that's already past or due within 60 "
+                      "days - go back to the supplier for confirmed pricing and update the service.")
+            for _f in _pv_flagged:
+                _status = (f"⚠️ expired {abs(_f['days_remaining'])} day(s) ago" if _f["days_remaining"] < 0
+                           else f"expires in {_f['days_remaining']} day(s)")
+                st.markdown(f"- **[{_f['product_type']}] {_f['supplier_name']} / {_f['code']}** "
+                           f"“{_f['label']}” — valid until {_f['valid_until'].strftime('%d/%m/%Y')} ({_status})")
+            if not _pv_email_result["ok"]:
+                st.caption(f"(Email digest to {price_validity.alert_recipient()} failed to send: "
+                          f"{_pv_email_result['error']} — the list above is still accurate.)")
+            else:
+                st.caption(f"Also emailed to {price_validity.alert_recipient()}.")
 
 # Say out loud when nothing is being remembered between runs. Without this the platform
 # looks identical either way: it silently re-translates content already paid for and
