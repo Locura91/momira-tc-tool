@@ -265,6 +265,31 @@ def _geo_search_default(client, place_name):
 # in, alphabetically. A dropdown (instead of free-text) prevents typos like
 # "EURO" or "Eur" that Travel Compositor's API would otherwise reject or
 # silently mishandle.
+# Sentinel for the Hotel publish retry ladder: "send the payload with no rooms key at all",
+# which is a different thing from "send rooms: []" as far as Bean Validation is concerned - an
+# @Size(min=1) rejects the empty list but passes the missing one. See the Hotel publish button.
+class _HpRoomsOmitted:
+    def __repr__(self):
+        return "<rooms key omitted>"
+
+
+_HP_ROOMS_OMITTED = _HpRoomsOmitted()
+
+
+def _hp_apply_rooms(payload, rooms):
+    """Return a copy of the hotel payload carrying this room shape.
+
+    Kept as a function because one of the shapes is the ABSENCE of the key, which a plain
+    assignment cannot express.
+    """
+    payload = dict(payload)
+    if rooms is _HP_ROOMS_OMITTED:
+        payload.pop("rooms", None)
+    else:
+        payload["rooms"] = rooms
+    return payload
+
+
 CURRENCY_OPTIONS = [
     "EUR", "USD", "GBP", "AUD", "CAD", "CHF", "CNY", "IDR", "INR", "JPY",
     "MXN", "NZD", "SEK", "SGD", "THB", "TRY", "VND", "ZAR",
@@ -8288,6 +8313,14 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         render_cancellation_policy_editor(data, f"xtp_cancel_{idx}")
         editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                        widget="text_area", height=80, key_suffix=key_suffix)
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): Transport was the only product whose
+        # review screen had no Voucher Remarks box, so anything a human wanted the customer to
+        # read had to be smuggled into the description. Travel Compositor's
+        # ContractTransportDataSheetVO genuinely has no voucherRemarks field (see
+        # build_transport_payloads), so what is typed here is appended to the description at
+        # publish time - the same route the cancellation text already takes.
+        editable_field("Voucher Remarks (shown to the customer)", data, "voucher_remarks",
+                       widget="text_area", height=100, key_suffix=key_suffix)
 
         service_notes.render_notes_editor(supplier_id, "Transport", data, key_suffix=key_suffix)
 
@@ -9516,12 +9549,41 @@ def render_hotel_flow(client):
             all_rooms = contract_result["hotel_payload"].get("rooms") or []
             rooms_with_code = [r for r in all_rooms if r.get("providerCode")]
             new_rooms = [r for r in all_rooms if not r.get("providerCode")]
-            # Two room shapes to try, in order: no new rooms inline first (today's fix), then the
-            # old one-new-room-inline shape as a fallback if TC's server insists on a non-empty list.
-            _hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]
+            # CONFIRMED REAL BUG, part 3 (reported 2026-09-08, HRG-H1 again): the two shapes tried
+            # above are BOTH rejected for a 100%-brand-new hotel. The observed run escalated from
+            # shape 1 to shape 2 ("rejected the hotel with no new rooms attached yet"), then died
+            # on shape 2 with the very error shape 1 exists to avoid:
+            #     Errors: HotelContractRoom.providerCode:must not be null ( Id: null)
+            # So Travel Compositor wants a rooms list that is neither empty NOR carrying a
+            # null-providerCode room - a combination neither shape can produce. Two more shapes
+            # are tried in between, cheapest and least speculative first:
+            #   2. the rooms key OMITTED entirely rather than sent as []. A Bean Validation
+            #      @Size(min=1) rejects an empty list but passes a null one, so this is the most
+            #      likely fix and it invents nothing.
+            #   3. one new room inline carrying a providerCode WE generate ("<hotel code>-R1").
+            #      Room codes are normally system-generated ("AUTO_..."), so this is a guess -
+            #      but the hotel's own providerCode is human-assigned, and the constraint that
+            #      actually failed only demands the field not be null. If TC rejects the format
+            #      we simply fall through to the last shape.
+            # Shape 4 is the previous behaviour, kept last so nothing that used to work stops.
+            _hp_first_new_room_with_code = None
+            if new_rooms:
+                _hp_first_new_room_with_code = dict(new_rooms[0])
+                _hp_first_new_room_with_code["providerCode"] = f"{provider_code}-R1"
+
+            _hp_room_candidates = [rooms_with_code, _HP_ROOMS_OMITTED]
+            if new_rooms:
+                _hp_room_candidates.append(rooms_with_code + [_hp_first_new_room_with_code])
+                _hp_room_candidates.append(rooms_with_code + new_rooms[:1])
+            _hp_candidate_notes = [
+                "with no new rooms attached yet",
+                "without a rooms list at all",
+                "with one new room carrying a generated room code",
+                "with one new room and no room code",
+            ]
             _hp_room_candidate_idx = 0
-            phase1_payload = dict(contract_result["hotel_payload"])
-            phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
+            phase1_payload = _hp_apply_rooms(contract_result["hotel_payload"],
+                                             _hp_room_candidates[_hp_room_candidate_idx])
 
             # CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): the in-tool 500x400 size check
             # above (image_dimensions.py) doesn't catch every way Travel Compositor can reject a
@@ -9556,16 +9618,20 @@ def render_hotel_flow(client):
                     continue
 
                 if (_hp_room_candidate_idx < len(_hp_room_candidates) - 1
-                        and "room" in _hp_error_text.lower()
-                        and "providerCode" not in _hp_error_text):
-                    # Only escalate on a rooms-shaped complaint that ISN'T the null-providerCode
-                    # error our new default already avoids - e.g. a "rooms must not be empty"
-                    # style rejection of the zero-new-rooms shape tried first.
+                        and "room" in _hp_error_text.lower()):
+                    # Any rooms-shaped complaint escalates, INCLUDING the null-providerCode one.
+                    # It used to be excluded here on the reasoning that the default shape already
+                    # avoids it - but the 2026-09-08 failure was exactly that error arriving on a
+                    # later shape, where the exclusion turned a retryable rejection into a dead
+                    # end. The last shape in the list is the old behaviour, so escalating freely
+                    # can only ever try more things before giving up, never fewer.
+                    _hp_rejected_note = _hp_candidate_notes[_hp_room_candidate_idx]
                     _hp_room_candidate_idx += 1
-                    phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
-                    progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
-                                     "attached yet, so publishing is being retried with one new "
-                                     "room included.")
+                    _hp_next_rooms = _hp_room_candidates[_hp_room_candidate_idx]
+                    phase1_payload = _hp_apply_rooms(phase1_payload, _hp_next_rooms)
+                    progress.warning(f"⚠️ Travel Compositor rejected the hotel {_hp_rejected_note}, "
+                                     f"so publishing is being retried "
+                                     f"{_hp_candidate_notes[_hp_room_candidate_idx]}.")
                     continue
 
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
@@ -9578,7 +9644,11 @@ def render_hotel_flow(client):
             # hotels that's now ALL of them, not just the second-and-beyond room. Each response is
             # merged into the same room list resolve_room_provider_codes reads below, so phase 2
             # (offers/supplements/rates) sees every room regardless of which call actually created it.
-            _hp_inline_new_room_count = len(_hp_room_candidates[_hp_room_candidate_idx]) - len(rooms_with_code)
+            _hp_winning_rooms = _hp_room_candidates[_hp_room_candidate_idx]
+            _hp_inline_new_room_count = (
+                0 if _hp_winning_rooms is _HP_ROOMS_OMITTED
+                else len(_hp_winning_rooms) - len(rooms_with_code)
+            )
             extra_new_rooms = new_rooms[_hp_inline_new_room_count:]
             all_room_responses = list(hotel_response.get("rooms") or [])
             if extra_new_rooms:

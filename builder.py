@@ -3745,6 +3745,16 @@ def build_transport_payloads(
             _cancellation_voucher_text(None, cancellation_tiers),
             extracted_transport_data),
         extracted_transport_data)
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): Transport now has its own Voucher Remarks box
+    # on the review screen. There is no voucherRemarks field on ContractTransportDataSheetVO to
+    # send it to (see the comment further down), so it rides the same route the cancellation text
+    # already takes - appended to the description - and goes FIRST, because it is the part the
+    # customer actually needs to read; the house cancellation standard follows it.
+    _transport_voucher_remarks = strip_stray_html(
+        (extracted_transport_data.get("voucher_remarks") or "").strip())
+    if _transport_voucher_remarks:
+        voucher_text = (f"{_transport_voucher_remarks}\n\n{voucher_text}".strip()
+                        if voucher_text else _transport_voucher_remarks)
 
     # Occupancy brackets: drop/clip anything beyond the 9-pax system cap (CONFIRMED product
     # owner rule, applies "for all services"), then apply the multi-vehicle synthesis rule.
