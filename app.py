@@ -316,7 +316,12 @@ TICKET_ACTION_FIELDS = {
     # min/max passengers - each matched ticket's OWN live currency/passenger limits win (same
     # "an UPDATE never asks for things the live record already has" rule as every other update
     # action here), fetched fresh per item rather than asked once for the whole batch.
-    "update_tickets_batch": ["release_days"],
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08 follow-up): "we do not need to ask the human
+    # again for release date, this is already set and wont change" - also does NOT include
+    # "release_days" for this same reason: render_multi_ticket_update_flow now reads each
+    # matched ticket's OWN live daysAvailableBeforeRelease instead of asking once for the whole
+    # batch (same "an UPDATE never asks for things the live record already has" rule as above).
+    "update_tickets_batch": [],
 }
 
 ACTION_LABELS = {
@@ -5443,6 +5448,41 @@ def _mtu_fetch_live_ticket(client, supplier_id, code):
     return result
 
 
+def _mtu_resolve_modality_name(client, supplier_id, ticket_code, modality_code, fallback_label):
+    """The Modality's real client-facing NAME for render_multi_ticket_update_flow - NOT the
+    same thing as its code.
+
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-08 follow-up): "If updating bulk ticket, the modality
+    is the same as the one existing or it is the same name as Excursion (max 40 signs)." Before
+    this, the batch-update flow never passed modality_name to TicketHumanPreConfig at all, which
+    (per that schema's own default_modality_name_before_code_is_truncated validator) silently
+    defaulted the published name to the MODALITY CODE - e.g. an existing Modality genuinely
+    named "Standard Private Tour" would get overwritten to just "Standard" on every batch
+    update, a real (if quiet) data loss. Fixed by resolving the ALREADY-LIVE Modality's own name
+    via GET first; only when that can't be read (e.g. a brand-new Modality Code, or the GET
+    fails) does it fall back to the excursion's own label, capped to 40 characters - the field's
+    real Travel Compositor length limit, same class of constraint as MODALITY_CODE_MAX_LENGTH.
+    Cached per (supplier_id, ticket_code, modality_code) so re-rendering the same item doesn't
+    re-fetch every rerun - same pattern as _mtu_fetch_live_ticket's own cache."""
+    cache = st.session_state.setdefault("mtu_modality_name_cache", {})
+    cache_key = (supplier_id, (ticket_code or "").strip().lower(), (modality_code or "").strip().lower())
+    if cache_key not in cache:
+        live_name = None
+        if ticket_code and modality_code:
+            try:
+                opt = client.get_ticket_option(supplier_id, ticket_code, modality_code)
+            except Exception:
+                opt = None
+            if isinstance(opt, dict) and "error" not in opt:
+                live_name = (opt.get("name") or "").strip() or None
+        cache[cache_key] = live_name
+    live_name = cache[cache_key]
+    if live_name:
+        return live_name
+    fallback = (fallback_label or modality_code or "").strip()
+    return fallback[:40] or (modality_code or "")
+
+
 def _mtu_clear_geo_confirmation(current, idx):
     """Twin of _mt_clear_geo_confirmation for this ("mtu_") flow's own separate geo-confirm
     state/checkbox - see that function's docstring for the full bug this pattern closes."""
@@ -5735,6 +5775,12 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             seen_codes.setdefault(code.lower(), []).append(label)
             new_queue.append({
                 "label": cand["label"], "target_ticket_code": code, "modality_code": mod_code,
+                # CONFIRMED PRODUCT-OWNER RULE (2026-09-08 follow-up): "the modality is the same
+                # as the one existing or it is the same name as Excursion (max 40 signs)" - see
+                # _mtu_resolve_modality_name's own docstring for why this can't just be left to
+                # TicketHumanPreConfig's default (which would silently rename the Modality to
+                # its CODE, not preserve its real name).
+                "modality_name": _mtu_resolve_modality_name(client, supplier_id, code, mod_code, cand["label"]),
                 "data": None, "live_ticket": None, "drift": None, "confirmed": False,
                 "is_genuine_variant": cand.get("is_genuine_variant", False),
             })
@@ -6227,19 +6273,29 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     def _park_update_failure(q=q):
                         st.session_state.mtu_update_failed_items.append({
                             "target_ticket_code": q["target_ticket_code"], "label": q["label"],
-                            "modality_code": q["modality_code"], "data": q["data"],
-                            "live_ticket": q.get("live_ticket"),
+                            "modality_code": q["modality_code"], "modality_name": q.get("modality_name"),
+                            "data": q["data"], "live_ticket": q.get("live_ticket"),
                         })
                     _ticket_was_updated = False
                     try:
                         item_currency = q.get("_currency") or (q.get("live_ticket") or {}).get("currency") or "EUR"
                         item_min_passengers = (q.get("live_ticket") or {}).get("minPassengers") or 1
                         item_max_passengers = q.get("_max_passengers") or (q.get("live_ticket") or {}).get("maxPassengers") or max_passengers
+                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-08 follow-up): "we do not need to
+                        # ask the human again for release date, this is already set and wont
+                        # change" - each ticket's OWN live daysAvailableBeforeRelease wins, same
+                        # "an UPDATE never asks for things the live record already has" rule as
+                        # currency/passenger limits just above. `release_days` (the Step 3
+                        # fallback, unused for this action - see TICKET_ACTION_FIELDS) only
+                        # covers a live ticket whose own value can't be read.
+                        item_release_days = (q.get("live_ticket") or {}).get("daysAvailableBeforeRelease")
+                        if item_release_days in (None, ""):
+                            item_release_days = release_days
                         pre_config = TicketHumanPreConfig(
                             supplier_id=supplier_id, ticket_code=q["target_ticket_code"], currency=item_currency,
-                            modality_code=q["modality_code"],
+                            modality_code=q["modality_code"], modality_name=q.get("modality_name"),
                             on_request=on_request or min_pax_forces_on_request(q["data"].get("min_pax_guaranteed_departure")),
-                            days_available_before_release=release_days,
+                            days_available_before_release=item_release_days,
                             min_passengers=item_min_passengers, max_passengers=item_max_passengers,
                         )
                         payloads = build_ticket_payloads(pre_config, q["data"], client)
@@ -6284,8 +6340,8 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                               f"'{q['modality_code']}'", option_result)
                             st.session_state.mtu_option_failed_items.append({
                                 "target_ticket_code": q["target_ticket_code"], "label": q["label"],
-                                "modality_code": q["modality_code"], "data": q["data"],
-                                "live_ticket": q.get("live_ticket"),
+                                "modality_code": q["modality_code"], "modality_name": q.get("modality_name"),
+                                "data": q["data"], "live_ticket": q.get("live_ticket"),
                             })
                             continue
                         st.success(f"✅ **{q['target_ticket_code']}**: Modality '{q['modality_code']}' pricing/schedule updated.")
@@ -6323,10 +6379,14 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     if st.button(f"🔄 Retry Modality for `{fi['target_ticket_code']}`", key=f"mtuf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['target_ticket_code']}'..."):
                             try:
+                                _fi_release_days = (fi.get("live_ticket") or {}).get("daysAvailableBeforeRelease")
+                                if _fi_release_days in (None, ""):
+                                    _fi_release_days = release_days
                                 retry_pre_config = TicketHumanPreConfig(
                                     supplier_id=supplier_id, ticket_code=fi["target_ticket_code"], currency=fi_currency,
-                                    modality_code=fi["modality_code"], on_request=on_request,
-                                    days_available_before_release=release_days,
+                                    modality_code=fi["modality_code"], modality_name=fi.get("modality_name"),
+                                    on_request=on_request,
+                                    days_available_before_release=_fi_release_days,
                                     min_passengers=(fi.get("live_ticket") or {}).get("minPassengers") or 1,
                                     max_passengers=fi_max_passengers,
                                 )
@@ -6377,11 +6437,14 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     if st.button(f"🔄 Retry updating `{pf['target_ticket_code']}`", key=f"mtup_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['target_ticket_code']}'..."):
                             try:
+                                _pf_release_days = (pf.get("live_ticket") or {}).get("daysAvailableBeforeRelease")
+                                if _pf_release_days in (None, ""):
+                                    _pf_release_days = release_days
                                 retry_pre_config = TicketHumanPreConfig(
                                     supplier_id=supplier_id, ticket_code=pf["target_ticket_code"], currency=pf_currency,
-                                    modality_code=pf["modality_code"],
+                                    modality_code=pf["modality_code"], modality_name=pf.get("modality_name"),
                                     on_request=on_request or min_pax_forces_on_request(pfdata.get("min_pax_guaranteed_departure")),
-                                    days_available_before_release=release_days,
+                                    days_available_before_release=_pf_release_days,
                                     min_passengers=(pf.get("live_ticket") or {}).get("minPassengers") or 1,
                                     max_passengers=pf_max_passengers,
                                 )
@@ -6411,8 +6474,8 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                             show_publish_error(f"update **{pf['target_ticket_code']}**'s Modality (updated as `{pf['target_ticket_code']}`)", retry_option_result)
                                             st.session_state.mtu_option_failed_items.append({
                                                 "target_ticket_code": pf["target_ticket_code"], "label": pf["label"],
-                                                "modality_code": pf["modality_code"], "data": pfdata,
-                                                "live_ticket": pf.get("live_ticket"),
+                                                "modality_code": pf["modality_code"], "modality_name": pf.get("modality_name"),
+                                                "data": pfdata, "live_ticket": pf.get("live_ticket"),
                                             })
                                         else:
                                             st.success(f"✅ **{pf['target_ticket_code']}**: Modality '{pf['modality_code']}' updated too.")
@@ -12774,7 +12837,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-ticket-batch-update-code-matching-fix"
+BUILD_VERSION = "2026-09-08-batch-release-days-modality-name-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

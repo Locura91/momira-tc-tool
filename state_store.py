@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-08-ticket-batch-update-code-matching-fix"
+MODULE_BUILD = "2026-09-08-batch-release-days-modality-name-fix"
 
 _NAMESPACE = "translation_state"
 

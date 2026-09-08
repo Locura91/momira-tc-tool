@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-ticket-batch-update-code-matching-fix"
+MODULE_BUILD = "2026-09-08-batch-release-days-modality-name-fix"
 
 import csv
 import io

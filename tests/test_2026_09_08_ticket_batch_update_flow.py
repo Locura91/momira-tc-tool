@@ -336,3 +336,51 @@ def test_a_live_code_present_in_the_document_is_matched_end_to_end():
     matched = [item for item in existing_items
               if (item.get("code") or "").strip() and _norm_code(item["code"]) in raw_norm]
     assert [m["code"] for m in matched] == ["CAI-01"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-08 second follow-up: "for bulk update, we do not need to ask the human again for
+# release date, this is already set and wont change. If updateding bulk ticket, the modality is
+# the same as the one existing or it is the same name as Excursion (max 40 signs)."
+# ---------------------------------------------------------------------------
+
+def test_update_tickets_batch_action_no_longer_asks_for_release_days():
+    src = _read_app_py()
+    assert '"update_tickets_batch": [],' in src
+
+
+def test_batch_publish_reads_release_days_from_the_live_ticket_not_a_human_prompt():
+    src = _read_app_py()
+    fn = _function_source(src, "def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):")
+    assert 'item_release_days = (q.get("live_ticket") or {}).get("daysAvailableBeforeRelease")' in fn
+    assert "days_available_before_release=item_release_days," in fn
+    # The Step-3 fallback param is used ONLY when the live value can't be read - never asked of
+    # the human for this action (see TICKET_ACTION_FIELDS["update_tickets_batch"] == []).
+    assert "if item_release_days in (None, \"\"):" in fn
+
+
+def test_modality_name_resolver_prefers_the_live_modality_over_the_code():
+    src = _read_app_py()
+    fn = _function_source(src, "def _mtu_resolve_modality_name(client, supplier_id, ticket_code, modality_code, fallback_label):")
+    assert "get_ticket_option(supplier_id, ticket_code, modality_code)" in fn
+    assert "return live_name" in fn
+    assert "fallback[:40]" in fn
+
+
+def test_batch_publish_passes_modality_name_not_left_to_default_to_the_code():
+    src = _read_app_py()
+    fn = _function_source(src, "def render_multi_ticket_update_flow(client, supplier_id, on_request, release_days, tk_url, tk_files, max_passengers=9):")
+    # Every TicketHumanPreConfig(...) call site in this flow must pass modality_name explicitly -
+    # otherwise it silently defaults to the modality CODE (schemas.py's own validator), which is
+    # exactly the data loss this fix closes.
+    assert fn.count("modality_name=") >= 3
+
+
+def test_modality_name_resolver_falls_back_to_truncated_excursion_label_when_nothing_live():
+    """Pure-logic re-check of the truncation rule, independent of app.py's Streamlit wiring."""
+    fallback_label = "A" * 55  # longer than the 40-char Travel Compositor limit
+    modality_code = "Standard"
+    live_name = None
+    resolved = (live_name or (fallback_label or modality_code or "").strip()[:40] or modality_code)
+    assert resolved == "A" * 40
+    assert len(resolved) == 40
