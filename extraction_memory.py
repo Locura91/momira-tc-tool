@@ -43,7 +43,7 @@ value is wrong — not bad data reaching Travel Compositor.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-08-batch-modality-widget-staleness-fix"
+MODULE_BUILD = "2026-09-09-bulk-dated-price-supplement"
 
 import re
 from datetime import datetime, timedelta, timezone

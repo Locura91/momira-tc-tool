@@ -34,7 +34,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-08-batch-modality-widget-staleness-fix"
+MODULE_BUILD = "2026-09-09-bulk-dated-price-supplement"
 
 import os
 import re

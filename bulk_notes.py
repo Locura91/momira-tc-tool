@@ -175,14 +175,29 @@ MODE_REPLACE = "replace"
 # build_transfer_supplement_vos / build_transfer_additional_service_vos), so a bulk-added
 # entry is never a hand-rolled approximation that could drift from the real shape.
 #
-# Transport and Hotel are deliberately absent here: Transport has no supplements or
-# additionalServices field in Travel Compositor at all (see ContractTransportVO), and a
-# Hotel supplement already has its own dedicated, more carefully gated bulk-safe path
-# (there is no such thing as "add this supplement to every hotel of a supplier" as a
-# product-owner-confirmed request yet) - this only covers what was actually asked for.
+# Hotel is deliberately absent here: a Hotel supplement already has its own dedicated, more
+# carefully gated bulk-safe path (there is no such thing as "add this supplement to every
+# hotel of a supplier" as a product-owner-confirmed request yet) - this only covers what was
+# actually asked for.
+#
+# TRANSPORT (product owner, 2026-09-09): "Is the App able to [add a dated price supplement,
+# e.g. Christmas/NYE/Easter, to every Transport of a supplier, computed as (price + already
+# existing supplement) * x% or a flat x]?" ContractTransportVO itself has NO supplements
+# field (see build_transport_payloads' own confirmed note) - but each Option sub-resource
+# (one per occupancy bracket) carries a `prices` list of DATED, ADDITIVE surcharge entries
+# (ContractTransportOptionPriceVO: startDate/endDate + adultPriceSupplement etc, additive on
+# top of the parent's baseAdultPrice - confirmed real semantics). "transport_supplement"
+# is a NEW ADDED entry in that list per bracket, same append-only philosophy as every other
+# structured target here - never edits or replaces an existing price entry. It is planned and
+# applied by _plan_transport_supplement/_apply_transport_supplement below instead of the
+# generic single-field-append path, because it operates at Option (not Transport) level and
+# Travel Compositor has no native PERCENT type for Transport pricing (unlike Transfer) - the
+# percent-of-(price+existing supplement) math has to be done by the app itself, per bracket,
+# before writing.
 STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
     "ClosedTour": {"Supplement (applies to all Modalities)": "closedtour_supplement"},
     "Transfer": {"Supplement": "transfer_supplement", "Additional Service": "transfer_additional_service"},
+    "Transport": {"Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement"},
 }
 
 # Which list field on the live record each structured kind writes into.
@@ -195,6 +210,46 @@ STRUCTURED_FIELD: Dict[str, str] = {
 
 def available_structured_targets(product_type: str) -> List[str]:
     return list(STRUCTURED_TARGETS.get(product_type, {}).keys())
+
+
+def _safe_float(value, fallback=0.0):
+    try:
+        if value is None or value == "":
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _today_iso():
+    import datetime
+    return datetime.date.today().isoformat()
+
+
+def _existing_transfer_supplement_total(record: Dict[str, Any], today: Optional[str] = None) -> float:
+    """The € value of whatever mandatory surcharge is ALREADY in effect today on this transfer -
+    the "already existing Price supplement" half of the product owner's formula. An ABSOLUTE
+    supplement counts at its own amount; a PERCENT one is converted using the transfer's own
+    basePrice (the same base Travel Compositor itself would apply it to). Only supplements whose
+    own date window covers today (or carry no dates at all) count - an expired or not-yet-started
+    surcharge should not silently inflate a brand-new one."""
+    today = today or _today_iso()
+    base = _safe_float(record.get("basePrice"))
+    total = 0.0
+    for s in (record.get("supplements") or []):
+        if not isinstance(s, dict) or not s.get("active", True):
+            continue
+        start, end = s.get("startDate") or "", s.get("endDate") or "2049-12-31"
+        if start and start > today:
+            continue
+        if end and end < today:
+            continue
+        amount = _safe_float(s.get("amount"))
+        if str(s.get("type") or "").strip().upper() == "PERCENT":
+            total += base * (amount / 100.0)
+        else:
+            total += amount
+    return round(total, 2)
 
 
 def _structured_entry_name(entry: Dict[str, Any], kind: str) -> str:
@@ -217,6 +272,22 @@ def _build_structured_entry(kind: str, item_data: Dict[str, Any],
         if kind == "closedtour_supplement":
             vos = builder.build_supplement_vos([item_data])
         elif kind == "transfer_supplement":
+            item_data = dict(item_data)
+            # CONFIRMED PRODUCT-OWNER FORMULA (2026-09-09): "(Transport/Transfer Price +
+            # Already existing Price supplement) * x% OR a flat x number", computed by the
+            # app rather than left to Travel Compositor's own PERCENT semantics (which only
+            # ever applies a percent to the BASE price, never to price+existing-supplement
+            # together - see TransferSupplementVO's own docstring). When compute_from_
+            # current_price is set, "amount"/"is_percent" are the human's raw inputs; the
+            # ACTUAL value written is always ABSOLUTE, computed per-transfer here since each
+            # transfer's own basePrice/existing supplements differ.
+            if item_data.get("compute_from_current_price"):
+                base = _safe_float(record.get("basePrice"))
+                existing = _existing_transfer_supplement_total(record)
+                pct = _safe_float(item_data.get("amount"))
+                item_data["amount"] = (round((base + existing) * (pct / 100.0), 2)
+                                       if item_data.get("is_percent") else round(pct, 2))
+                item_data["type"] = "ABSOLUTE"
             vos = builder.build_transfer_supplement_vos(
                 [item_data],
                 transfer_start_date=record.get("startDate") or "",
@@ -233,6 +304,153 @@ def _build_structured_entry(kind: str, item_data: Dict[str, Any],
     return vos[0].dict()
 
 
+def _active_transport_price_entry(option: Dict[str, Any], today: Optional[str] = None) -> Dict[str, Any]:
+    """Which of an option's dated `prices` entries is in effect today - the "already existing
+    Price supplement" for THIS bracket. Falls back to the entry with the latest endDate (the
+    one most likely to represent the standing/year-round rate) when none covers today, and to
+    an all-zero entry when the bracket has no price entries at all (a bracket costing exactly
+    the base rate, per ContractTransportOptionPriceVO's own confirmed semantics)."""
+    entries = [e for e in (option.get("prices") or []) if isinstance(e, dict)]
+    if not entries:
+        return {}
+    today = today or _today_iso()
+    for e in entries:
+        start, end = e.get("startDate") or "", e.get("endDate") or "2049-12-31"
+        if (not start or start <= today) and (not end or end >= today):
+            return e
+    return sorted(entries, key=lambda e: e.get("endDate") or "")[-1]
+
+
+def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: str, end_date: str,
+                               is_percent: bool, amount: float,
+                               progress: Optional[Callable[[int, int, str], None]] = None
+                               ) -> Dict[str, Any]:
+    """Transport's own plan(), kept separate from plan_structured's generic single-field-append
+    path because a Transport's price lives per OPTION (occupancy bracket), not on the Transport
+    record itself - see STRUCTURED_TARGETS' own comment for the full "why Transport is
+    different" explanation. One item per (transport, option) bracket; each item's `record` is
+    the OPTION payload apply() will PUT back (via update_transport_option, not update_transport),
+    and `transport_id` carries the parent id that call needs alongside it."""
+    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
+                              "failed": 0, "product_type": "Transport", "target": "transport_supplement",
+                              "structured": True, "kind": "transport_supplement"}
+    name = (name or "").strip()
+    if not name:
+        result["error"] = "Give the supplement a name."
+        return result
+    if not start_date or not end_date:
+        result["error"] = "Give the supplement a start and end date."
+        return result
+    try:
+        listing = getattr(client, "get_transports")(supplier_id)
+    except Exception as e:
+        result["error"] = f"Could not list transports: {type(e).__name__}: {e}"
+        return result
+    transports = listing.get("transport") if isinstance(listing, dict) else listing
+    transports = transports or []
+    total = len(transports)
+    for i, t_summary in enumerate(transports):
+        t_id = t_summary.get("id") if isinstance(t_summary, dict) else None
+        t_name = (t_summary or {}).get("name") or t_id or "?"
+        if progress:
+            progress(i + 1, total, t_name)
+        if not t_id:
+            continue
+        try:
+            t = client.get_transport(supplier_id, t_id)
+        except Exception as e:
+            result["failed"] += 1
+            result["items"].append({"id": t_id, "name": t_name, "status": "failed",
+                                    "detail": f"couldn't fetch transport: {e}", "changes": {}})
+            continue
+        base = {
+            "adult": _safe_float(t.get("baseAdultPrice")),
+            "children": _safe_float(t.get("baseChildrenPrice")),
+            "infant": _safe_float(t.get("baseInfantPrice")),
+        }
+        for code in (t.get("optionCodes") or []):
+            item_id = f"{t_id}:{code}"
+            try:
+                opt = client.get_transport_option(supplier_id, t_id, code)
+            except Exception as e:
+                result["failed"] += 1
+                result["items"].append({
+                    "id": item_id, "name": f"{t_name} — {code}", "status": "failed",
+                    "detail": f"couldn't fetch option: {e}", "changes": {},
+                })
+                continue
+            existing_names = {_norm(e.get("name")) for e in (opt.get("prices") or [])
+                              if isinstance(e, dict)
+                              and e.get("startDate") == start_date and e.get("endDate") == end_date}
+            bracket_label = f"{t_name} — {code} ({opt.get('minPassengers', '?')}-{opt.get('maxPassengers', '?')} pax)"
+            if _norm(name) in existing_names:
+                result["unchanged"] += 1
+                result["items"].append({
+                    "id": item_id, "name": bracket_label, "status": "unchanged", "changes": {},
+                    "reason": "this bracket already has a supplement with this name for these exact dates",
+                })
+                continue
+
+            active = _active_transport_price_entry(opt)
+            new_entry_fields = {}
+            summary_lines = []
+            for field in ("adult", "children", "infant"):
+                existing_supp = _safe_float(active.get(f"{field}PriceSupplement"))
+                if is_percent:
+                    new_supp = round((base[field] + existing_supp) * (amount / 100.0), 2)
+                else:
+                    new_supp = round(_safe_float(amount), 2)
+                new_entry_fields[f"{field}PriceSupplement"] = new_supp
+                if base[field] or existing_supp or new_supp:
+                    summary_lines.append(
+                        f"{field}: base {base[field]:.2f} + existing supplement {existing_supp:.2f} "
+                        f"-> new supplement {new_supp:.2f} (total {base[field] + existing_supp + new_supp:.2f})")
+
+            updated_opt = copy.deepcopy(opt)
+            updated_opt["prices"] = (list(opt.get("prices") or [])) + [{
+                "name": name, "startDate": start_date, "endDate": end_date,
+                "adultPriceSupplement": new_entry_fields["adultPriceSupplement"],
+                "childrenPriceSupplement": new_entry_fields["childrenPriceSupplement"],
+                "infantPriceSupplement": new_entry_fields["infantPriceSupplement"],
+                "adultRTPriceSupplement": 0.0, "childrenRTPriceSupplement": 0.0,
+                "infantRTPriceSupplement": 0.0,
+            }]
+            result["will_change"] += 1
+            result["items"].append({
+                "id": item_id, "name": bracket_label, "status": "will_change",
+                "changes": {"EN": ("", "\n".join(summary_lines) or f"+{amount} for {start_date}..{end_date}")},
+                "record": updated_opt, "transport_id": t_id,
+            })
+    return result
+
+
+def _apply_transport_supplement(client, supplier_id: str, planned: Dict[str, Any],
+                                progress: Optional[Callable[[int, int, str], None]] = None
+                                ) -> Dict[str, Any]:
+    """Transport's own apply(): each pending item PUTs back one whole OPTION via
+    update_transport_option(supplier_id, transport_id, payload) - the generic apply() below
+    can't be reused as-is because it only knows update_fn(supplier_id, payload), with no way to
+    pass the parent transport_id an option update also needs."""
+    out = {"updated": [], "failed": [], "skipped": 0}
+    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
+    out["skipped"] = len(planned.get("items", [])) - len(pending)
+    for n, item in enumerate(pending):
+        if progress:
+            progress(n + 1, len(pending), item.get("name", ""))
+        try:
+            res = client.update_transport_option(supplier_id, item["transport_id"], item["record"])
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+            else:
+                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
+                                       "languages": sorted(item.get("changes", {}).keys())})
+        except Exception as e:
+            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                  "detail": f"{type(e).__name__}: {e}"})
+    return out
+
+
 def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                     item_data: Dict[str, Any], codes: Optional[List[str]] = None,
                     progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
@@ -240,6 +458,16 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
     field: work out exactly what would change, WITHOUT writing anything. A service that
     already has an entry with this same name is left alone (status "unchanged"), so pressing
     Send twice can't add the same supplement twice."""
+    if kind == "transport_supplement":
+        # Transport's structure (per-option pricing, no supplements field on the Transport
+        # itself) doesn't fit the generic record/field-append path below - see
+        # _plan_transport_supplement's own docstring.
+        return _plan_transport_supplement(
+            client, supplier_id, (item_data or {}).get("name", ""),
+            (item_data or {}).get("start_date", ""), (item_data or {}).get("end_date", ""),
+            bool((item_data or {}).get("is_percent")), _safe_float((item_data or {}).get("amount")),
+            progress=progress)
+
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": product_type, "target": kind,
                               "structured": True}
@@ -639,6 +867,11 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
     Each service is PUT back whole, exactly as fetched with one field changed. Failures are
     collected rather than raised: with forty services in flight, one rejection must not
     hide the thirty-nine that succeeded or leave a person unsure which is which."""
+    if planned.get("kind") == "transport_supplement":
+        # Each item is one OPTION, not one Transport - needs transport_id alongside the
+        # payload, which the generic update_fn(supplier_id, payload) call below has no way
+        # to pass. See _apply_transport_supplement's own docstring.
+        return _apply_transport_supplement(client, supplier_id, planned, progress=progress)
     product_type = planned.get("product_type")
     cfg = PRODUCTS.get(product_type) or {}
     update_fn = getattr(client, cfg.get("update_fn", ""), None)

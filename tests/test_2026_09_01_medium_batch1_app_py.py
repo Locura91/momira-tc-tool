@@ -58,7 +58,7 @@ MODULE_BUILD are tested via direct import since those modules import cleanly sta
 """
 import os
 
-MODULE_BUILD = "2026-09-08-batch-modality-widget-staleness-fix"
+MODULE_BUILD = "2026-09-09-bulk-dated-price-supplement"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)

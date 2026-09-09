@@ -11226,19 +11226,69 @@ def render_manual_information_flow(client):
         elif structured_kind == "transfer_supplement":
             st.caption("Mandatory, automatically-applied surcharges only - an optional extra "
                       "belongs under Additional Service instead.")
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-09): a seasonal surcharge (Christmas/
+            # NYE/Easter) computed as (Transport/Transfer Price + already existing Price
+            # supplement) * x% OR a flat x number, for a defined period - see
+            # bulk_notes._existing_transfer_supplement_total's own docstring for why this is
+            # NOT the same as just sending PERCENT straight to Travel Compositor (which only
+            # ever applies a percent to the base price, ignoring whatever else is already
+            # charged on top).
+            item_data["compute_from_current_price"] = st.checkbox(
+                "Compute from each transfer's current price + already-active supplement",
+                value=True, key="mi_s_compute_from_price",
+                help="ON (recommended for a seasonal surcharge): the app reads each transfer's "
+                     "own live base price plus whatever mandatory surcharge is already active "
+                     "today, and writes a single € amount = (price + existing supplement) * "
+                     "your % - or your flat amount, unchanged. OFF: your amount/type is sent "
+                     "to Travel Compositor exactly as entered (its own PERCENT semantics apply "
+                     "only to the base price, same as before this option existed).")
             c1, c2 = st.columns(2)
             with c1:
                 item_data["amount"] = st.number_input("Amount", min_value=0.0, step=1.0, key="mi_s_amount")
-                item_data["type"] = st.radio("Type", ["ABSOLUTE", "PERCENT"], key="mi_s_type",
-                                             horizontal=True,
-                                             help="PERCENT is applied to the base price itself by "
-                                                  "Travel Compositor - never pre-calculate it.")
+                if item_data["compute_from_current_price"]:
+                    item_data["is_percent"] = st.radio(
+                        "Type", ["Fixed amount", "Percent of price + existing supplement"],
+                        key="mi_s_pct_type", horizontal=True) == "Percent of price + existing supplement"
+                else:
+                    item_data["type"] = st.radio("Type", ["ABSOLUTE", "PERCENT"], key="mi_s_type",
+                                                 horizontal=True,
+                                                 help="PERCENT is applied to the base price itself by "
+                                                      "Travel Compositor - never pre-calculate it.")
             with c2:
                 item_data["start_time"] = st.text_input("Start time (optional, HH:MM)", key="mi_s_start_time",
                                                          placeholder="22:00")
                 item_data["end_time"] = st.text_input("End time (optional, HH:MM)", key="mi_s_end_time",
                                                        placeholder="08:00")
-            st.caption("Dates left blank inherit each transfer's own validity window.")
+            c3, c4 = st.columns(2)
+            with c3:
+                item_data["start_date"] = st.text_input(
+                    "Period start date (YYYY-MM-DD, e.g. Christmas/NYE/Easter)",
+                    key="mi_s_period_start", placeholder="2026-12-20")
+            with c4:
+                item_data["end_date"] = st.text_input(
+                    "Period end date (YYYY-MM-DD)", key="mi_s_period_end", placeholder="2027-01-05")
+            st.caption("Dates left blank inherit each transfer's own validity window (i.e. "
+                      "applies all year, not just the period).")
+        elif structured_kind == "transport_supplement":
+            st.caption("Adds a dated price supplement to EVERY occupancy bracket of EVERY "
+                      "Transport of this supplier - e.g. a Christmas/New Year's Eve/Easter "
+                      "surcharge. Travel Compositor has no percent-type surcharge for Transport "
+                      "(unlike Transfer), so the app always computes and writes a plain € amount.")
+            c1, c2 = st.columns(2)
+            with c1:
+                item_data["amount"] = st.number_input("Amount", min_value=0.0, step=1.0, key="mi_ts_amount")
+                item_data["is_percent"] = st.radio(
+                    "Type", ["Fixed amount per bracket", "Percent of price + existing supplement"],
+                    key="mi_ts_pct_type", horizontal=True) == "Percent of price + existing supplement"
+            with c2:
+                item_data["start_date"] = st.text_input(
+                    "Period start date (YYYY-MM-DD)", key="mi_ts_period_start", placeholder="2026-12-20")
+                item_data["end_date"] = st.text_input(
+                    "Period end date (YYYY-MM-DD)", key="mi_ts_period_end", placeholder="2027-01-05")
+            st.caption("Percent is computed per bracket as (that bracket's base price + whatever "
+                      "surcharge is currently active on it today) * your % - never pre-calculated "
+                      "from one bracket and reused for the others, since brackets do not scale "
+                      "together (confirmed: real examples show non-monotonic per-bracket amounts).")
         elif structured_kind == "transfer_additional_service":
             st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
             c1, c2 = st.columns(2)
@@ -12860,7 +12910,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-08-batch-modality-widget-staleness-fix"
+BUILD_VERSION = "2026-09-09-bulk-dated-price-supplement"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
