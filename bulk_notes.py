@@ -753,11 +753,31 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
             result["items"].append({"id": t_id, "name": t_name, "status": "failed",
                                     "detail": f"couldn't fetch transport: {e}", "changes": {}})
             continue
-        base = {
-            "adult": _safe_float(t.get("baseAdultPrice")),
-            "children": _safe_float(t.get("baseChildrenPrice")),
-            "infant": _safe_float(t.get("baseInfantPrice")),
-        }
+        # CONFIRMED REAL BUG (product owner, 2026-09-10, real TRANSPORT-415965 test: every row
+        # in Travel Compositor's own Supplement column came back 0,00 EUR): a per-vehicle
+        # transport (pricePerPax=False, "Price Per Pax" unchecked in the app's own Prices tab)
+        # has ALL of baseAdultPrice/baseChildrenPrice/baseInfantPrice at 0 - its real base price
+        # lives in vehiclePrice instead (confirmed ContractTransportVO field, same one
+        # build_transport_payload writes to when pricePerPax is False). Computing against
+        # baseAdultPrice=0 made a percent supplement compound onto nothing and come out 0 every
+        # time, regardless of the percentage entered. ContractTransportOptionPriceVO has no
+        # vehicle-specific supplement field of its own (confirmed: only adult/children/infant
+        # *PriceSupplement) - build_transport_payload's own confirmed create flow (see its
+        # per-bracket adult_delta/children_delta/infant_delta) writes a per-vehicle bracket's
+        # whole delta into ONLY adultPriceSupplement and leaves children/infant at 0 - there is
+        # nothing to key a per-headcount surcharge off when the whole vehicle is one lump price
+        # - mirrored here so a bulk supplement lands the same way a fresh publish would.
+        per_pax = bool(t.get("pricePerPax", True))
+        if per_pax:
+            base = {
+                "adult": _safe_float(t.get("baseAdultPrice")),
+                "children": _safe_float(t.get("baseChildrenPrice")),
+                "infant": _safe_float(t.get("baseInfantPrice")),
+            }
+            supplement_fields = ("adult", "children", "infant")
+        else:
+            base = {"adult": _safe_float(t.get("vehiclePrice")), "children": 0.0, "infant": 0.0}
+            supplement_fields = ("adult",)
         for code in (t.get("optionCodes") or []):
             item_id = f"{t_id}:{code}"
             try:
@@ -789,7 +809,7 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
             active = _active_transport_price_entry(opt, today=start_date)
             new_entry_fields = {}
             summary_lines = []
-            for field in ("adult", "children", "infant"):
+            for field in supplement_fields:
                 existing_supp = _safe_float(active.get(f"{field}PriceSupplement"))
                 if is_percent:
                     new_supp = round((base[field] + existing_supp) * (amount / 100.0), 2)
