@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-bulk-price-validity-code"
+MODULE_BUILD = "2026-09-10-transport-airlinecode-put-fix"
 
 _PHASE_KEY = "pkr_phase"
 

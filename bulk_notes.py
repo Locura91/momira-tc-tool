@@ -538,6 +538,7 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             continue
 
         updated = copy.deepcopy(record)
+        _normalize_for_put(updated, product_type)
         current = updated.get(field)
         updated[field] = (list(current) if isinstance(current, list) else []) + [new_entry]
         result["will_change"] += 1
@@ -657,6 +658,35 @@ def combine(existing: Any, text: str, mode: str):
     return f"{str(existing).rstrip()}\n\n{text}"
 
 
+# CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-10): a real bulk Voucher-remarks run
+# against every Transport of a supplier failed ALL 168 services with "updateTransport.transport.
+# airlineCode: must not be null". Root cause: this module PUTs each record back exactly as
+# fetched (with one field changed) - it never goes through schemas.ContractTransportVO the way
+# the single-service create/update flow does, so it never gets that model's own
+# `airlineCode: str = ""` default. airlineCode is REQUIRED by Travel Compositor's PUT validation
+# even though it's routinely ABSENT (or null) from a real GET response for a non-flight
+# transport (see schemas.py's own confirmed note on ContractTransportVO.airlineCode) - so a
+# record fetched via get_transports() and PUT back untouched, valid as a GET response, can still
+# be rejected as a PUT. Every OTHER bulk-write path (structured Supplement entries, the
+# transport_supplement per-option writer) is unaffected: this only bites a whole-record PUT
+# (update_transport/update_transfer/etc), which is exactly what write_field's callers do.
+_REQUIRED_STRING_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "Transport": {"airlineCode": ""},
+}
+
+
+def _normalize_for_put(record: Dict[str, Any], product_type: str) -> None:
+    """Fills in, IN PLACE, any field Travel Compositor's PUT requires non-null but its own GET
+    can legitimately omit or send as null - see _REQUIRED_STRING_DEFAULTS's own comment. Only
+    touches a field that is genuinely missing or None; never overwrites a real (even empty-
+    string) value already on the record."""
+    if not isinstance(record, dict):
+        return
+    for field, default in _REQUIRED_STRING_DEFAULTS.get(product_type, {}).items():
+        if record.get(field) is None:
+            record[field] = default
+
+
 def write_field(record: Dict[str, Any], product_type: str, target: str,
                 text: str, mode: str) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, str]]]:
     """Returns (new record, {language: (before, after)}) without touching the original.
@@ -668,6 +698,7 @@ def write_field(record: Dict[str, Any], product_type: str, target: str,
     re-translate the rest."""
     field = TARGETS.get(product_type, {}).get(target)
     updated = copy.deepcopy(record)
+    _normalize_for_put(updated, product_type)
     changes: Dict[str, Tuple[str, str]] = {}
     if not field:
         return updated, changes

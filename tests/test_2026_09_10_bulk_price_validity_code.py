@@ -164,3 +164,49 @@ def test_app_py_price_code_branch_wires_the_new_mode_and_fixed_target():
     assert 'target = "Voucher remarks"' in branch
     assert "mode = bulk_notes.MODE_PRICE_CODE" in branch
     assert 'pv_date.isoformat()' in branch
+
+
+# ---------------------------------------------------------------------------
+# Real production bug (product owner, 2026-09-10): a real run against every Transport of
+# supplier MOMIRA_EG_FT failed ALL 168 services with "updateTransport.transport.airlineCode:
+# must not be null" - Travel Compositor's PUT requires airlineCode even though a real GET
+# routinely omits/nulls it for a non-flight transport (confirmed in schemas.py's own note on
+# ContractTransportVO.airlineCode). write_field PUTs the record back exactly as fetched, so a
+# record whose GET never carried this field failed validation on the way back in. Because ALL
+# 168 failed with BAD_REQUEST before any write happened, nothing was actually changed on any of
+# them - this is purely a "the retry will now succeed" fix, not a data-repair one.
+# ---------------------------------------------------------------------------
+
+def test_write_field_fills_in_a_missing_airline_code_for_transport():
+    record = {"id": "TRANSPORT-1", "name": "Luxor - Hurghada",
+             "datasheets": {"EN": {"description": "Private transfer."}}}
+    assert "airlineCode" not in record
+    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+                                        bulk_notes.MODE_PRICE_CODE)
+    assert updated["airlineCode"] == ""
+
+
+def test_write_field_fills_in_a_null_airline_code_for_transport():
+    record = {"id": "TRANSPORT-1", "name": "Cairo - Alexandria", "airlineCode": None,
+             "datasheets": {"EN": {"description": "Private transfer."}}}
+    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+                                        bulk_notes.MODE_PRICE_CODE)
+    assert updated["airlineCode"] == ""
+
+
+def test_write_field_never_overwrites_a_real_airline_code_already_present():
+    record = {"id": "TRANSPORT-1", "name": "Cairo - Hurghada", "airlineCode": "MS",
+             "datasheets": {"EN": {"description": "Private transfer."}}}
+    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+                                        bulk_notes.MODE_PRICE_CODE)
+    assert updated["airlineCode"] == "MS"
+
+
+def test_write_field_does_not_touch_airline_code_for_other_product_types():
+    # The fix is scoped to Transport (the only product type confirmed to hit this) - a Transfer
+    # record must not gain a field it never had.
+    record = {"id": "TRANSFER-1", "name": "Hurghada Airport Transfer",
+             "datasheets": {"EN": {"voucherRemarks": "Please be ready 15 minutes before pickup."}}}
+    updated, _ = bulk_notes.write_field(record, "Transfer", "Voucher remarks", "2027-04-30",
+                                        bulk_notes.MODE_PRICE_CODE)
+    assert "airlineCode" not in updated
