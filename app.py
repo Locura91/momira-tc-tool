@@ -290,6 +290,17 @@ TICKET_ACTION_LABELS = {
     # instead of creating a new one.
     "update_tickets_batch": "5: Update multiple existing Tickets from one document",
 }
+# CONFIRMED PRODUCT-OWNER REDESIGN (2026-09-10): "in Step 1, When creating a new product the
+# app shall only allow 'Create new SERVICE + 1 Modality' and 'Add new Modality to existing
+# SERVICE'. Nr. 3 and 4 and 5 must be removed from this points, as this is more Updating
+# existing product. We must define between create new service and Update existing Service."
+# render_ticket_flow is ONLY reachable via "📦 Create a new product -> Ticket" - its own Step 2
+# radio must offer just these two create-only actions; the update actions (3/4/5) stay defined
+# in TICKET_ACTION_LABELS above (still needed for the summary label after a pre-set action, and
+# by "Update existing Service", which reaches update_ticket/update_option/update_tickets_batch
+# through its own entry points instead - see _render_update_refresh_coded_service and
+# render_update_refresh_flow's Ticket branch).
+TICKET_CREATE_ACTION_KEYS = ("create", "add_option")
 TICKET_ACTION_FIELDS = {
     # NOTE: "create" deliberately does NOT include "modality_code" - Step 4's
     # queue-based flow (render_multi_ticket_flow) collects the Modality Code
@@ -330,6 +341,11 @@ ACTION_LABELS = {
     "update_tour": "3: Update an existing ClosedTour",
     "update_option": "4: Update existing ClosedTour Modality",
 }
+# Same create/update split as TICKET_CREATE_ACTION_KEYS above, same product-owner request -
+# the generic Step 2 radio below (reached ONLY via "Create a new product -> ClosedTour") must
+# offer just these two; update_tour/update_option stay reachable via "Update existing Service"
+# (_render_update_refresh_coded_service already excludes "create" from ACTION_LABELS there).
+CLOSEDTOUR_CREATE_ACTION_KEYS = ("create", "add_option")
 ACTION_FIELDS = {
     # NOTE: "create" deliberately does NOT include "modality_code" - Step 4's
     # queue-based flow (render_multi_tour_flow / the "Set up this tour" screen)
@@ -6556,8 +6572,11 @@ def render_ticket_flow(client):
             st.session_state.pop("tk_cfg_currency", None)
             st.rerun()
     else:
+        # Create-only here (product owner, 2026-09-10) - this screen is ONLY reached via
+        # "Create a new product -> Ticket". Updating an existing Ticket (single or batch) now
+        # lives exclusively under "Update existing Service" - see TICKET_CREATE_ACTION_KEYS.
         action_key = st.radio(
-            "Choose one:", list(TICKET_ACTION_LABELS.keys()),
+            "Choose one:", list(TICKET_CREATE_ACTION_KEYS),
             format_func=lambda k: TICKET_ACTION_LABELS[k], key="tk_action_radio"
         )
         if st.session_state.suppliers_cache is None:
@@ -11625,12 +11644,43 @@ def render_update_refresh_flow(client):
         # Tickets and closedtours... Easiest part would be starting with Ticket" - a bulk price
         # refresh across many Tickets at once, same shape as the Transfer/Transport flow above,
         # ADDED alongside (not replacing) the existing pick-one-Ticket flow below.
+        #
+        # CONFIRMED PRODUCT-OWNER REDESIGN (2026-09-10): "Update multiple existing Tickets from
+        # one document" (content, not just price - titles/included/excluded) used to be reachable
+        # ONLY via "Create a new product -> Ticket"'s own action 5, despite being an update, not a
+        # create - that's the exact confusion this redesign removes. It's a THIRD mode here now,
+        # alongside the other two, since (like bulk price refresh) it operates across many Tickets
+        # at once and doesn't fit "you already picked ticket X" the way
+        # _render_update_refresh_coded_service's per-code flow does.
         ticket_mode = st.radio(
             "What kind of Ticket update is this?",
-            ["Bulk price refresh from a rate sheet", "Update one Ticket by hand"],
+            ["Bulk price refresh from a rate sheet",
+             "Bulk update multiple Tickets' content from one document (titles/included/excluded/prices)",
+             "Update one Ticket by hand"],
             horizontal=True, key="ur_ticket_mode")
         if ticket_mode == "Bulk price refresh from a rate sheet":
             render_ticket_price_refresh_flow(client)
+            return
+        if ticket_mode.startswith("Bulk update multiple Tickets"):
+            st.caption("Detects which excursions this document describes, matches each to an "
+                      "EXISTING live Ticket code, and lets you review before publishing - "
+                      "nothing is created, only existing Tickets are updated.")
+            supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
+            if not supplier_id:
+                return
+            if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
+                # Hands off into render_ticket_flow's own already-proven Step 3/4 for this
+                # action - TICKET_ACTION_FIELDS["update_tickets_batch"] == [] so Step 3 asks
+                # nothing extra, and Step 4 routes straight into render_multi_ticket_update_flow
+                # (see its own "if action == 'update_tickets_batch':" branch). Same mechanism
+                # _render_update_refresh_coded_service already uses for update_ticket/
+                # update_option, just without a per-code pick this action doesn't need.
+                st.session_state.tk_cfg_action = "update_tickets_batch"
+                st.session_state.tk_cfg_supplier_id = supplier_id
+                st.session_state.tk_step1_confirmed = True
+                st.session_state.tk_step2_confirmed = False
+                st.session_state.product_type = "Ticket"
+                st.rerun()
             return
         _render_update_refresh_coded_service(client, service)
         return
@@ -12146,7 +12196,10 @@ def _render_update_refresh_coded_service(client, service):
         # "update_tickets_batch" excluded too - this screen is for picking ONE already-chosen
         # existing Ticket and updating it; the batch flow does its own excursion detection and
         # existing-ticket matching across possibly many tickets, which doesn't fit "you already
-        # picked ticket X" here. Reach it via the normal Ticket action menu (Step 2) instead.
+        # picked ticket X" here. It's its own THIRD mode one level up instead - see
+        # render_update_refresh_flow's Ticket branch (product owner, 2026-09-10: it used to be
+        # reachable only via the Ticket wizard's own Create-only Step 2, which is exactly the
+        # create/update mix-up that redesign removed).
         kind_key, action_labels = "ticket", {k: v for k, v in TICKET_ACTION_LABELS.items() if k not in ("create", "update_tickets_batch")}
     elif service == "ClosedTour":
         existing_items, list_error = get_existing_tour_names(client, supplier_id)
@@ -12354,7 +12407,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.error(f"Couldn't read this supplier's {kind.lower()}s: {err}")
             elif not routes:
                 st.warning(f"This supplier has no {kind.lower()}s yet. Create them with "
-                           f"**Upload & Update Products → {kind}** first; this flow only updates "
+                           f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
                 with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
@@ -12683,7 +12736,7 @@ def render_ticket_price_refresh_flow(client):
                 st.error(f"Couldn't read this supplier's Tickets: {err}")
             elif not routes:
                 st.warning("This supplier has no Tickets yet. Create them with "
-                           "**Upload & Update Products → Ticket** first; this flow only updates "
+                           "**Create & Update Products → Ticket** first; this flow only updates "
                            "what already exists.")
             else:
                 with st.spinner(f"Looking up prices for {len(routes)} Modality(ies) in the document…"):
@@ -12940,7 +12993,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-transport-airlinecode-put-fix"
+BUILD_VERSION = "2026-09-10-create-vs-update-split"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -13214,7 +13267,7 @@ with st.expander("💾 What the platform remembers", expanded=False):
 # inside Travel Compositor from products we upload), which is why that
 # entity appears on one side only.
 # ======================================================================
-TOOL_UPLOAD = "📤 Upload & Update Products"
+TOOL_UPLOAD = "📤 Create & Update Products"
 TOOL_TRANSLATE = "🌐 Translate Products"
 TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
@@ -13507,11 +13560,16 @@ if st.session_state.step1_confirmed:
         st.session_state.pop("cfg_currency", None)
         st.rerun()
 else:
+    # Create-only here (product owner, 2026-09-10) - this screen is ONLY reached via
+    # "Create a new product -> ClosedTour" (every other product_type value st.stop()s before
+    # this point). Updating an existing ClosedTour now lives exclusively under "Update existing
+    # Service" - see CLOSEDTOUR_CREATE_ACTION_KEYS.
     action_key = st.radio(
         "Choose one:",
-        list(ACTION_LABELS.keys()),
+        list(CLOSEDTOUR_CREATE_ACTION_KEYS),
         format_func=lambda k: ACTION_LABELS[k],
-        help="Creating makes something brand-new; Updating changes something that already exists."
+        help="Creating makes something brand-new; adding a Modality extends one that already "
+             "exists. To update anything else, use \"Update existing Service\" instead.",
     )
 
     if st.session_state.suppliers_cache is None:

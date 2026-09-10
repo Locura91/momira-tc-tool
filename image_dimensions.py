@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-10-transport-airlinecode-put-fix"
+MODULE_BUILD = "2026-09-10-create-vs-update-split"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
