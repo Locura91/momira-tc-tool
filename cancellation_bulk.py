@@ -76,7 +76,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
+MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple

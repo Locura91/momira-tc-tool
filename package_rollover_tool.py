@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
+MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
 
 _PHASE_KEY = "pkr_phase"
 

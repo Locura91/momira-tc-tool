@@ -58,7 +58,7 @@ MODULE_BUILD are tested via direct import since those modules import cleanly sta
 """
 import os
 
-MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
+MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)

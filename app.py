@@ -11563,12 +11563,21 @@ def render_manual_information_flow(client):
                     for it in planned["items"]:
                         if it["status"] == "will_change":
                             it["_include"] = True
+                            # CONFIRMED BUG FIX (product owner, 2026-09-10): "the select all or
+                            # select none button do not work." Streamlit ignores a checkbox's
+                            # `value=` argument once its own widget key already has an entry in
+                            # session_state (see widget_state.py's own docstring on this exact
+                            # bug class) - updating it["_include"] alone left every already-
+                            # rendered checkbox showing its old state. Writing the checkbox's own
+                            # key directly is what actually moves it.
+                            st.session_state[f"mi_include_{it.get('id')}"] = True
                     st.rerun()
             with scol2:
                 if st.button("Select none", key="mi_select_none", use_container_width=True):
                     for it in planned["items"]:
                         if it["status"] == "will_change":
                             it["_include"] = False
+                            st.session_state[f"mi_include_{it.get('id')}"] = False
                     st.rerun()
 
         for it in planned["items"]:
@@ -11938,10 +11947,18 @@ def render_supplier_migration_flow(client):
     with bcol1:
         if st.button("Select all", key="sm_select_all"):
             st.session_state.sm_selected = {i: True for i in range(len(records))}
+            # CONFIRMED BUG FIX (product owner, 2026-09-10): a checkbox ignores `value=` once
+            # its own widget key already has a session_state entry (widget_state.py's own
+            # docstring names this bug class) - the tracking dict alone doesn't move an
+            # already-rendered checkbox, only writing its own key does.
+            for i in range(len(records)):
+                st.session_state[f"sm_pick_{i}"] = True
             st.rerun()
     with bcol2:
         if st.button("Select none", key="sm_select_none"):
             st.session_state.sm_selected = {i: False for i in range(len(records))}
+            for i in range(len(records)):
+                st.session_state[f"sm_pick_{i}"] = False
             st.rerun()
 
     for i, record in enumerate(records):
@@ -12161,10 +12178,16 @@ def render_transport_cancellation_bulk_flow(client):
     with bcol1:
         if st.button("Select all", key="ctb_select_all"):
             st.session_state.ctb_selected = {p["id"]: True for p in proposals}
+            # CONFIRMED BUG FIX (product owner, 2026-09-10): same widget-key-ignores-value=
+            # issue as everywhere else this pattern is used - see widget_state.py's docstring.
+            for p in proposals:
+                st.session_state[f"ctb_pick_{p['id']}"] = True
             st.rerun()
     with bcol2:
         if st.button("Select none", key="ctb_select_none"):
             st.session_state.ctb_selected = {p["id"]: False for p in proposals}
+            for p in proposals:
+                st.session_state[f"ctb_pick_{p['id']}"] = False
             st.rerun()
 
     for p in proposals:
@@ -12381,10 +12404,16 @@ def render_generic_cancellation_bulk_flow(client, product_type):
     with bcol1:
         if st.button("Select all", key="cb_select_all"):
             st.session_state.cb_selected = {p["id"]: True for p in proposals}
+            # CONFIRMED BUG FIX (product owner, 2026-09-10): same widget-key-ignores-value=
+            # issue as everywhere else this pattern is used - see widget_state.py's docstring.
+            for p in proposals:
+                st.session_state[f"cb_pick_{p['id']}"] = True
             st.rerun()
     with bcol2:
         if st.button("Select none", key="cb_select_none"):
             st.session_state.cb_selected = {p["id"]: False for p in proposals}
+            for p in proposals:
+                st.session_state[f"cb_pick_{p['id']}"] = False
             st.rerun()
 
     for p in proposals:
@@ -13314,7 +13343,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
+BUILD_VERSION = "2026-09-10-select-all-none-checkbox-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

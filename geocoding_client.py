@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
+MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
