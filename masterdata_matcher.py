@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-09-bulk-dated-price-supplement"
+MODULE_BUILD = "2026-09-10-bulk-price-validity-code"
 
 import math
 import re

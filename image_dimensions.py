@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-09-bulk-dated-price-supplement"
+MODULE_BUILD = "2026-09-10-bulk-price-validity-code"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

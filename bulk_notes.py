@@ -41,6 +41,7 @@ import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import builder
+import price_validity
 
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}
@@ -159,6 +160,14 @@ UNAVAILABLE_REASON: Dict[str, Dict[str, str]] = {
 
 MODE_APPEND = "append"
 MODE_REPLACE = "replace"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "add to all Transport from supplier
+# MOMIRA_EG_FT in the Voucher the code (20270430) - if there is already a code, the update has
+# to change ONLY this code." Neither append (would pile up a second "(YYYYMMDD)" alongside the
+# old one) nor replace (would wipe the rest of the field's text) does this - this mode instead
+# calls price_validity.with_price_validity_code, which strips any existing "(YYYYMMDD)" code
+# and appends the new one, leaving everything else in the field untouched. `text` for this mode
+# is the ISO date the code should encode ("2027-04-30"), not literal text to add.
+MODE_PRICE_CODE = "price_code"
 
 
 # ----------------------------------------------------------------------
@@ -620,7 +629,15 @@ def combine(existing: Any, text: str, mode: str):
     Append puts the new text at the bottom - a new block for a text field, a new entry for
     a list field - which is what "Description (bottom)" means and keeps the supplier's own
     wording first. Replace returns only the new text. Either way a note already present is
-    left alone, so pressing Send twice cannot print it twice."""
+    left alone, so pressing Send twice cannot print it twice.
+
+    MODE_PRICE_CODE is a third, surgical mode: `text` is an ISO date, and the result strips
+    whatever "(YYYYMMDD)" code is already in `existing` (if any) and appends the new one -
+    every other word in the field is carried through unchanged. Never applies to a list field
+    (the price-validity code only ever lives in a plain text field - see price_validity.py)."""
+    if mode == MODE_PRICE_CODE:
+        return price_validity.with_price_validity_code(
+            str(existing or ""), {"price_valid_until_date": text})
     text = (text or "").strip()
     if isinstance(existing, list):
         if not text:
@@ -855,6 +872,8 @@ def _unchanged_reason(record, product_type, target, text, mode) -> str:
     current = read_field(record, product_type, target)
     if not current:
         return "this service has no datasheet to write into"
+    if mode == MODE_PRICE_CODE:
+        return "this service's price-validity code already encodes this exact date"
     if any(_contains(v, text) for v in current.values()):
         return "the same text is already there"
     return "nothing to change"

@@ -11188,16 +11188,28 @@ def render_manual_information_flow(client):
     # structured records, not a block of text, so they get their own small form below
     # rather than the text box - see bulk_notes.STRUCTURED_TARGETS.
     structured_labels = bulk_notes.available_structured_targets(product_type)
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "add to all Transport from supplier
+    # MOMIRA_EG_FT in the Voucher the code (20270430) - if there is already a code, the update
+    # has to change ONLY this code." price_validity.PRODUCT_TYPES (Ticket/Transfer/Transport)
+    # is the same scope that module's own single-service and weekly-scan logic already uses.
+    price_code_available = product_type in price_validity.PRODUCT_TYPES
     add_structured = False
+    add_price_code = False
     structured_kind = None
     item_data = {}
+    add_mode_options = ["Text into an existing field"]
     if structured_labels:
+        add_mode_options.append("A new Supplement / Additional Service")
+    if price_code_available:
+        add_mode_options.append("A price-validity code (YYYYMMDD)")
+    if len(add_mode_options) > 1:
         st.markdown("### 1. What are you adding?")
         add_mode = st.radio(
-            "What are you adding?", ["Text into an existing field", "A new Supplement / Additional Service"],
+            "What are you adding?", add_mode_options,
             key="mi_add_mode", label_visibility="collapsed", horizontal=True,
         )
         add_structured = add_mode.startswith("A new")
+        add_price_code = add_mode.startswith("A price-validity")
 
     if add_structured:
         kind_label = st.selectbox("Which one?", structured_labels, key="mi_structured_kind_label")
@@ -11308,6 +11320,24 @@ def render_manual_information_flow(client):
             raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
                                      placeholder="ASW-CT1\nCAI-CT2")
             codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+        also_future = False
+    elif add_price_code:
+        st.markdown("### 2. Set the price-validity date")
+        field_name = "description" if product_type == "Transport" else "voucherRemarks"
+        st.caption(
+            f"Writes a \"(YYYYMMDD)\" code into every {product_type} service's "
+            + ("Voucher remarks" if field_name == "voucherRemarks" else
+               "description (Transport has no separate Voucher remarks field, so the code "
+               "lives there instead - see price_validity.py)")
+            + ". The code means: prices are confirmed until this date. If a service ALREADY has "
+              "a code, only the code itself is replaced - every other word already in the field "
+              "is left exactly as it is."
+        )
+        pv_date = st.date_input("Prices confirmed until", key="mi_pv_date")
+        target = "Voucher remarks"
+        text = pv_date.isoformat() if pv_date else ""
+        mode = bulk_notes.MODE_PRICE_CODE
+        codes = None
         also_future = False
     else:
         # ---- 1b. Where does the text go? -------------------------------
@@ -12910,7 +12940,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-09-bulk-dated-price-supplement"
+BUILD_VERSION = "2026-09-10-bulk-price-validity-code"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
