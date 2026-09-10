@@ -13,10 +13,14 @@ WHY VOUCHER REMARKS AT ALL, NOT SOME INTERNAL-ONLY FIELD: none of ContractTicket
 TransferDescriptorVO / TransportDataSheetVO carry an internal-only notes field the way Travel
 Compositor's own MASTER hotel data does (IdeaHotelDataVO.internalRemark - a completely different,
 master-data-only object, unrelated to any of these three - see masterdata_matcher.py). Voucher
-remarks (Transport: folded into `description` instead - it has no separate voucherRemarks field
-at all, see builder.py's ContractTransportDataSheetVO comment) is genuinely the only place a
-persistent per-service note can live in Travel Compositor at all, so embedding a parseable code
-in text that's already there is the only option, not a workaround.
+remarks is genuinely the only place a persistent per-service note can live in Travel Compositor
+at all, so embedding a parseable code in text that's already there is the only option, not a
+workaround. CORRECTED (2026-09-10): Transport DOES have its own genuine voucherRemarks field,
+same as Ticket/Transfer (see schemas.py's TransportDataSheetVO.voucherRemarks) - an earlier
+"no separate field, folded into description" claim here was wrong, confirmed via a real
+screenshot of Travel Compositor's own Transport edit screen. A one-off repair tool in
+bulk_notes.py moves the code on any Transport whose code landed in description during the brief
+window this was wrong.
 
 THE CODE ITSELF: encode_price_validity_code()/extract_price_validity_date()/
 strip_price_validity_code() are the parse/round-trip primitives. with_price_validity_code() is
@@ -34,7 +38,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
+MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
 
 import os
 import re
@@ -166,23 +170,35 @@ def with_price_validity_code(voucher_text: Optional[str], extracted_data: Dict[s
 
 def _voucher_text_of(service: Dict[str, Any], product_type: str) -> str:
     """Real live-record shapes (confirmed via api_client.py's get_tickets/get_transfers/
-    get_transports and their per-item GETs): Ticket/Transfer carry their datasheet under
-    ['datasheet'][lang]['voucherRemarks'] (falls back to a bare top-level 'voucherRemarks' for
-    a leaner/different response shape some list endpoints return); Transport has no
-    voucherRemarks field at all (see this module's own docstring) - its code lives in
-    'description' instead."""
+    get_transports and their per-item GETs): Ticket/Transfer/Transport all carry their datasheet
+    under ['datasheet'][lang]['voucherRemarks'] (falls back to a bare top-level 'voucherRemarks'
+    for a leaner/different response shape some list endpoints return).
+
+    CORRECTED (2026-09-10): Transport DOES have a real voucherRemarks field after all (see
+    schemas.py's TransportDataSheetVO.voucherRemarks) - the earlier "no voucherRemarks, code
+    lives in description instead" claim was wrong. voucherRemarks is checked FIRST for every
+    product type now; Transport additionally falls back to description if voucherRemarks is
+    empty, purely so this scan still finds a code on any Transport that hasn't been through
+    bulk_notes.py's one-off repair yet (the 2026-09-10 bulk mis-write that landed codes in
+    description before this fix) - once every Transport is repaired that fallback is dead code,
+    but leaving it costs nothing and prevents a silently-missed expiry warning in the meantime."""
     if not isinstance(service, dict):
         return ""
     datasheet = service.get("datasheet")
     if isinstance(datasheet, dict):
         en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
         if isinstance(en, dict):
-            field = "description" if product_type == "Transport" else "voucherRemarks"
-            text = en.get(field)
+            text = en.get("voucherRemarks")
             if text:
                 return text
-    field = "description" if product_type == "Transport" else "voucherRemarks"
-    return service.get(field) or ""
+            if product_type == "Transport" and en.get("description"):
+                return en["description"]
+    text = service.get("voucherRemarks")
+    if text:
+        return text
+    if product_type == "Transport":
+        return service.get("description") or ""
+    return ""
 
 
 def _service_label(service: Dict[str, Any]) -> str:

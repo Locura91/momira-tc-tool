@@ -17,16 +17,22 @@ existing_transport_snapshot present):
      line from a PREVIOUS publish that this run's price-list document doesn't happen to restate
      would silently vanish from the republished Voucher Remarks.
 
-  2. Transport (worse): the ENTIRE description (which is where Transport's price-validity code
-     actually lives - it has no separate voucherRemarks field) was locked WHOLE to the existing
-     live value on every update (the established "do not change name/description" rule) - which
-     meant the price-validity code could never actually change via a normal update AT ALL, since
-     the freshly-composed text (new code included) was thrown away in favor of the old live text
-     (old code included) every single time.
+  2. Transport (worse): the ENTIRE description was locked WHOLE to the existing live value on
+     every update (the established "do not change name/description" rule) - which meant the
+     price-validity code (which used to live inside description, on the wrong belief that
+     Transport had no separate voucherRemarks field) could never actually change via a normal
+     update AT ALL, since the freshly-composed text (new code included) was thrown away in favor
+     of the old live text (old code included) every single time.
 
 Both are now fixed the same way: on an update, the EXISTING LIVE text (its own old code stripped)
 is the base; genuinely NEW what-to-bring/manual-notes content still lands (idempotent - already-
 present text is never duplicated); the new code is applied last, unconditionally.
+
+CORRECTED (2026-09-10): Transport's price-validity code now lives in a genuine voucherRemarks
+field (schemas.py's TransportDataSheetVO.voucherRemarks), same as Transfer - a real screenshot
+of Travel Compositor's own Transport edit screen proved the "no separate field" belief above was
+wrong. description is still locked/composed exactly as this docstring describes; only the code's
+destination field changed - see the updated assertions below.
 """
 from schemas import TransferHumanPreConfig, TransportHumanPreConfig
 from builder import build_transfer_payload, build_transport_payloads, _append_if_new
@@ -178,9 +184,10 @@ def _transport_snapshot(description, name="Aswan - Luxor"):
 
 
 def test_transport_update_swaps_only_the_price_validity_code(fake_api_client):
-    # CONFIRMED REAL BUG this closes: before this fix, the code could never actually change on
-    # a Transport update at all - the whole description (code included) was locked to the OLD
-    # live value regardless of what this run computed.
+    # CORRECTED (2026-09-10): the code now lands in the real voucherRemarks field, not
+    # description - see this file's own header update. Any OLD code still sitting in a legacy
+    # description (as this snapshot simulates) is still stripped out on every publish; it just
+    # no longer gets a new one put back into description in its place.
     existing_description = "<p>Private Transport from Aswan to Luxor.</p><p>(20250101)</p>"
     snapshot = _transport_snapshot(existing_description)
     result = build_transport_payloads(
@@ -189,9 +196,11 @@ def test_transport_update_swaps_only_the_price_validity_code(fake_api_client):
         fake_api_client, existing_transport_id="123", existing_transport_snapshot=snapshot,
     )
     description = result["transport_payload"]["datasheets"]["EN"]["description"]
-    assert "(20271031)" in description
+    voucher_remarks = result["transport_payload"]["datasheets"]["EN"]["voucherRemarks"]
+    assert "(20271031)" not in description
     assert "(20250101)" not in description
     assert "Private Transport from Aswan to Luxor." in description
+    assert voucher_remarks == "(20271031)"
 
 
 def test_transport_update_preserves_the_locked_description_text_untouched(fake_api_client):
@@ -230,5 +239,7 @@ def test_transport_create_with_no_existing_snapshot_is_unaffected(fake_api_clien
         fake_api_client,
     )
     description = result["transport_payload"]["datasheets"]["EN"]["description"]
-    assert "(20271031)" in description
+    voucher_remarks = result["transport_payload"]["datasheets"]["EN"]["voucherRemarks"]
+    assert "(20271031)" not in description
     assert "Private Transport" in description or "Aswan" in description
+    assert voucher_remarks == "(20271031)"

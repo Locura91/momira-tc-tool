@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
+MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator, root_validator
@@ -745,6 +745,14 @@ class TransportDataSheetVO(BaseModel):
     specifically to support that case without sending a meaningless empty string."""
     name: str
     description: Optional[str] = None
+    # CORRECTED (2026-09-10, real production evidence): the earlier "Transport has no separate
+    # voucherRemarks field" claim here was wrong - a real screenshot of Travel Compositor's own
+    # Transport edit screen shows a genuine, separate "Voucher remarks" input alongside
+    # Description. Added as Optional/None-default (not required, no empty-string default) so a
+    # payload that never sets it behaves exactly as before this field existed - no None-vs-""
+    # write on services that were never touched. See price_validity.py and bulk_notes.py's
+    # TARGETS for the fix to where the "(YYYYMMDD)" code actually gets written now.
+    voucherRemarks: Optional[str] = None
 
 
 class ContractTransportCancellationRangeVO(BaseModel):

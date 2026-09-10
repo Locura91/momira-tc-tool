@@ -11345,6 +11345,18 @@ def render_manual_information_flow(client):
                          "supplement are left unchanged.")
             if not item_data["increase_base"] and not item_data["increase_supplement"]:
                 st.warning("Choose at least one: base price, active supplement, or both.")
+        elif structured_kind == "transport_voucher_code_repair":
+            st.warning("One-off repair, not a normal upload. Use this ONLY if a bulk "
+                      "price-validity-code run landed the code in Description instead of "
+                      "Voucher remarks (the bug fixed 2026-09-10).")
+            st.caption("Scans every Transport of this supplier's own Description for a "
+                      "\"(YYYYMMDD)\" price-validity code. Wherever one is found, it is moved: "
+                      "removed from Description (every other word left exactly as it is) and "
+                      "written into Voucher remarks instead (added onto whatever text is "
+                      "already there). A Transport with no code in Description is left "
+                      "completely untouched - safe to run more than once, it only ever finds "
+                      "what's actually still misplaced.")
+            item_data["name"] = "transport_voucher_code_repair"  # no human input needed - enables Preview below
         elif structured_kind == "transfer_additional_service":
             st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
             c1, c2 = st.columns(2)
@@ -11367,15 +11379,16 @@ def render_manual_information_flow(client):
         also_future = False
     elif add_price_code:
         st.markdown("### 2. Set the price-validity date")
-        field_name = "description" if product_type == "Transport" else "voucherRemarks"
+        # CORRECTED (2026-09-10): Transport has its own real Voucher remarks field, same as
+        # every other product type here - the special-cased "goes into description instead"
+        # wording (and the bug it described) is gone. See bulk_notes.TARGETS["Transport"] and
+        # _plan_transport_voucher_code_repair for the one-off fix for services this bug already
+        # wrote to the wrong field before it was caught.
         st.caption(
-            f"Writes a \"(YYYYMMDD)\" code into every {product_type} service's "
-            + ("Voucher remarks" if field_name == "voucherRemarks" else
-               "description (Transport has no separate Voucher remarks field, so the code "
-               "lives there instead - see price_validity.py)")
-            + ". The code means: prices are confirmed until this date. If a service ALREADY has "
-              "a code, only the code itself is replaced - every other word already in the field "
-              "is left exactly as it is."
+            f"Writes a \"(YYYYMMDD)\" code into every {product_type} service's Voucher remarks. "
+            "The code means: prices are confirmed until this date. If a service ALREADY has "
+            "a code, only the code itself is replaced - every other word already in the field "
+            "is left exactly as it is."
         )
         pv_date = st.date_input("Prices confirmed until", key="mi_pv_date")
         target = "Voucher remarks"
@@ -13018,7 +13031,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-supplement-dates-house-format"
+BUILD_VERSION = "2026-09-10-transport-voucher-remarks-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

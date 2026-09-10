@@ -112,15 +112,20 @@ TARGETS: Dict[str, Dict[str, str]] = {
         "Cancellation update": "voucherRemarks",
     },
     "Transport": {
-        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "Voucher remarks" must be selectable
-        # here too, for bulk uploads - Transport genuinely has no separate voucherRemarks
-        # field in Travel Compositor (only name + description), same reason "Cancellation
-        # update" already points at "description" here and the same reason price_validity.py's
-        # "(YYYYMMDD)" code goes into Transport's description rather than a remarks field - so
-        # this is the same target as "Description (bottom)" under a label a human looking for
-        # "Voucher remarks" (as every other product type calls it) will actually find.
+        # CORRECTED (2026-09-10, real production evidence): "Voucher remarks" used to be
+        # aliased to "description" here, on the belief that Transport had no separate
+        # voucherRemarks field in Travel Compositor. A real screenshot of Travel Compositor's
+        # own Transport edit screen proved that wrong - it has a genuine, separate Voucher
+        # remarks input, same as every other product type (see schemas.py's
+        # TransportDataSheetVO.voucherRemarks). This bug sent a real bulk price-validity-code
+        # write into the WRONG field for all 168 Transports of one supplier before it was
+        # caught - see bulk_notes._plan_transport_voucher_code_repair for the one-off fix that
+        # moves an already-mis-written code back to the right field.
+        # "Cancellation update" is left pointing at "description" deliberately - that is a
+        # separate, unrelated rule (see builder.py's own comment: Transport's cancellation/
+        # conditions text is locked whole to description on every update, code or no code).
         "Description (bottom)": "description",
-        "Voucher remarks": "description",
+        "Voucher remarks": "voucherRemarks",
         "Cancellation update": "description",
     },
     "Hotel": {
@@ -209,6 +214,10 @@ STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
     "Transport": {
         "Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement",
         "Permanent price increase (%)": "transport_price_increase",
+        # One-off repair (2026-09-10) for the 168 Transports the earlier wrong TARGETS mapping
+        # bulk-wrote a price-validity code into description instead of voucherRemarks - see
+        # _plan_transport_voucher_code_repair's own docstring.
+        "Repair: move a price-validity code from Description to Voucher remarks": "transport_voucher_code_repair",
     },
 }
 
@@ -519,6 +528,101 @@ def _apply_transport_price_increase(client, supplier_id: str, planned: Dict[str,
     return out
 
 
+def _plan_transport_voucher_code_repair(
+        client, supplier_id: str,
+        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """One-off data repair (product owner, 2026-09-10): "Code upload in Bulk for Transport
+    worked, but it was uploaded in the Description field - the goal was to upload it within
+    the Voucher remarks of the base information. Now I have full 168 Transports with the code
+    in the wrong field." Root cause: TARGETS used to (wrongly) alias Transport's "Voucher
+    remarks" bulk target to `description` - see this module's own corrected comment on
+    TARGETS["Transport"]. Transport genuinely has its own voucherRemarks field (schemas.py's
+    TransportDataSheetVO.voucherRemarks), confirmed via a real screenshot of Travel
+    Compositor's own Transport edit screen.
+
+    For every Transport of this supplier whose EN description carries a plausible
+    "(YYYYMMDD)" price-validity code, this MOVES it in one write: strips the code out of
+    description (collapsing any blank line the removal leaves - same rule
+    strip_price_validity_code always applies - every other word is untouched) and writes it
+    into voucherRemarks instead, composed onto whatever voucher-remarks text is already there
+    (preserved verbatim). A Transport whose description has no code is left completely
+    untouched - never a needless write, and never confused with one that has a code in the
+    CORRECT field already (voucherRemarks is not re-checked - the whole point is "was this
+    caught by the bug", not "does it currently have a code at all")."""
+    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
+                              "failed": 0, "product_type": "Transport",
+                              "target": "transport_voucher_code_repair", "structured": True,
+                              "kind": "transport_voucher_code_repair"}
+    records, err = list_services(client, supplier_id, "Transport")
+    if err and not records:
+        result["error"] = err
+        return result
+    result["error"] = err
+    total = len(records)
+    for i, record in enumerate(records):
+        name = label_for(record, "Transport")
+        if progress:
+            progress(i + 1, total, name)
+        rec_id = record.get("id")
+        item_id = str(rec_id or name)
+        sheets = record.get("datasheets") or {}
+        en = sheets.get("EN") if isinstance(sheets, dict) else None
+        description = (en or {}).get("description") or "" if isinstance(en, dict) else ""
+        code_date = price_validity.extract_price_validity_date(description)
+        if not code_date:
+            result["unchanged"] += 1
+            result["items"].append({
+                "id": item_id, "name": name, "status": "unchanged", "changes": {},
+                "reason": "no price-validity code found in this Transport's description",
+            })
+            continue
+        new_description = price_validity.strip_price_validity_code(description)
+        existing_voucher_remarks = (en or {}).get("voucherRemarks") or ""
+        new_voucher_remarks = price_validity.with_price_validity_code(
+            existing_voucher_remarks, {"price_valid_until_date": code_date.isoformat()})
+        updated = copy.deepcopy(record)
+        _normalize_for_put(updated, "Transport")
+        updated.setdefault("datasheets", {}).setdefault("EN", {})
+        updated["datasheets"]["EN"]["description"] = new_description
+        updated["datasheets"]["EN"]["voucherRemarks"] = new_voucher_remarks
+        result["will_change"] += 1
+        result["items"].append({
+            "id": item_id, "name": name, "status": "will_change",
+            "changes": {"EN": (
+                f"description had: (...{code_date.strftime('%Y%m%d')})",
+                f"moved to voucherRemarks; description code removed")},
+            "record": updated, "write_kind": "transport",
+        })
+    return result
+
+
+def _apply_transport_voucher_code_repair(
+        client, supplier_id: str, planned: Dict[str, Any],
+        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Pushes the moves a human has already previewed via _plan_transport_voucher_code_repair.
+    Every item is a whole-Transport-record write (write_kind "transport"), same shape as the
+    generic apply() path - kept as its own function only so it can be dispatched to before the
+    generic path runs (see apply()'s own dispatch), mirroring _apply_transport_price_increase."""
+    out = {"updated": [], "failed": [], "skipped": 0}
+    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
+    out["skipped"] = len(planned.get("items", [])) - len(pending)
+    for n, item in enumerate(pending):
+        if progress:
+            progress(n + 1, len(pending), item.get("name", ""))
+        try:
+            res = client.update_transport(supplier_id, item["record"])
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+            else:
+                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
+                                       "languages": sorted(item.get("changes", {}).keys())})
+        except Exception as e:
+            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                  "detail": f"{type(e).__name__}: {e}"})
+    return out
+
+
 def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: str, end_date: str,
                                is_percent: bool, amount: float,
                                progress: Optional[Callable[[int, int, str], None]] = None
@@ -676,6 +780,9 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             bool((item_data or {}).get("increase_base")),
             bool((item_data or {}).get("increase_supplement")),
             progress=progress)
+
+    if kind == "transport_voucher_code_repair":
+        return _plan_transport_voucher_code_repair(client, supplier_id, progress=progress)
 
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": product_type, "target": kind,
@@ -1127,6 +1234,8 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
         # "transport_option" (active supplement entry) - see
         # _apply_transport_price_increase's own docstring.
         return _apply_transport_price_increase(client, supplier_id, planned, progress=progress)
+    if planned.get("kind") == "transport_voucher_code_repair":
+        return _apply_transport_voucher_code_repair(client, supplier_id, planned, progress=progress)
     product_type = planned.get("product_type")
     cfg = PRODUCTS.get(product_type) or {}
     update_fn = getattr(client, cfg.get("update_fn", ""), None)

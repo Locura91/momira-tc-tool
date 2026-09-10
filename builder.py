@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
+MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
 
 import math
 import datetime
@@ -3895,10 +3895,13 @@ def build_transport_payloads(
         existing_transport_snapshot, "name", generated_transport_name)
     transport_name = strip_stray_html(transport_name)
 
-    # CONFIRMED (via real Swagger): ContractTransportDataSheetVO only has name/description - no
-    # dedicated voucherRemarks-style field the way ClosedTour/Ticket/Transfer have. The
-    # cancellation text still needs to reach customer-facing text somewhere (same universal rule
-    # - see _cancellation_voucher_text's docstring), so it's appended to description instead.
+    # CORRECTED (2026-09-10): Transport DOES have a genuine voucherRemarks field (see
+    # schemas.py's TransportDataSheetVO.voucherRemarks) - the "no separate field" claim
+    # previously here was wrong. The cancellation/conditions text below still goes into
+    # `description`, unchanged, per the deliberate product-owner rule two comments down
+    # ("do not change the name and the description of transfer and transport" locks the whole
+    # conditions block, cancellation text included, to description specifically) - only the
+    # price-validity CODE has moved to the real voucherRemarks field (see further below).
     # The house one-sentence description, unless a human has edited it on the review screen.
     # `description_is_custom` is set there; without it, re-rendering would silently overwrite
     # an edit with the template again.
@@ -3916,16 +3919,13 @@ def build_transport_payloads(
     #
     # CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "the old Code, and only the old code, must be
     # deleted and the new Code must be added. All other informations in the Voucher remarks
-    # must stay, as long as the conditions itself has not changed." Transport has no separate
-    # voucherRemarks field - the code lives inside this same `description` field (see this
-    # function's own comment above) - so the whole-field lock above used to mean the code could
-    # NEVER actually change on an update either: the freshly-composed text (code included) got
-    # discarded wholesale in favor of the OLD live description (OLD code included). Fixed the
-    # same way as Transfer's own voucher-text composition: on an update, BASE is the EXISTING
-    # live description with its own old code stripped (still the locked "conditions", verbatim);
-    # a genuinely NEW what-to-bring/manual-notes addition this run still lands (idempotent - see
-    # _append_if_new, never duplicated if it's already there); the code is (re-)applied last, on
-    # every single publish, update or not.
+    # must stay, as long as the conditions itself has not changed." Before the 2026-09-10 fix,
+    # this comment block used to explain why the code briefly lived inside `description` (the
+    # field was believed to be the only option). Now the code is composed onto the real
+    # voucherRemarks field instead (see below, right after datasheet_en is built) - this
+    # description-locking logic is kept exactly as it was for the conditions text itself
+    # (house description + cancellation text), which is unrelated to the code and still
+    # deliberately locked to description on every update, code or no code.
     existing_transport_datasheet_en = ((existing_transport_snapshot or {}).get("datasheets") or {}).get("EN") or {}
     existing_full_description = existing_transport_datasheet_en.get("description") or ""
     if existing_full_description:
@@ -3949,11 +3949,24 @@ def build_transport_payloads(
     if full_description and "<" not in full_description:
         full_description = "".join(f"<p>{para.strip()}</p>"
                                    for para in full_description.split("\n\n") if para.strip())
-    # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own docstring.
-    # Applied truly last, on every publish (update or create) - see the comment block above for
-    # why this can no longer sit any earlier in this function.
-    full_description = with_price_validity_code(full_description, extracted_transport_data)
-    datasheet_en = TransportDataSheetVO(name=transport_name, description=full_description)
+    # CORRECTED (2026-09-10, real production evidence - see schemas.py's own note on
+    # TransportDataSheetVO.voucherRemarks): the price-validity code used to be embedded in
+    # `description` here because Transport was believed to have no separate voucherRemarks
+    # field. A real screenshot of Travel Compositor's own Transport edit screen proved that
+    # wrong - it has a genuine, separate Voucher remarks input, same as every other product
+    # type. The code now goes THERE instead, composed on top of whatever voucher remarks text
+    # already exists on the live record (preserved verbatim, same "strip old code, keep
+    # everything else" rule as price_validity.with_price_validity_code always applied). Any
+    # leftover code still sitting in an OLDER description (from before this fix, or from the
+    # 2026-09-10 bulk mis-write) is left for bulk_notes.py's one-off repair tool to move - this
+    # function does not retroactively edit description text beyond what the lock rule above
+    # already does.
+    existing_transport_voucher_remarks = existing_transport_datasheet_en.get("voucherRemarks") or ""
+    transport_voucher_remarks = with_price_validity_code(
+        existing_transport_voucher_remarks, extracted_transport_data)
+    datasheet_en = TransportDataSheetVO(
+        name=transport_name, description=full_description,
+        voucherRemarks=transport_voucher_remarks or None)
 
     # Arrival is DERIVED from departure + duration whenever a duration is known, rather than
     # taken from whatever is sitting in arrival_time. Both used to default to 09:00, which
