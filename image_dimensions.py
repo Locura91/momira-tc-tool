@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
+MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
+MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
 
 import math
 import re

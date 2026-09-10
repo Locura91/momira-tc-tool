@@ -93,6 +93,40 @@ from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
 from date_format import to_iso_date as _iso, to_display_date as _disp, DISPLAY_HINT as _DATE_HINT
+
+
+def _dmy_date_field(label, key, value_iso="", placeholder=None):
+    """A date field with BOTH ways in at once: a typeable text input (DD/MM/YYYY or
+    DD.MM.YYYY, house format) and a small calendar picker next to it. CONFIRMED REAL NEED
+    (product owner, 2026-09-10): "when adding a date to the App, it would be nice if we can
+    include a calendar for the human, so he could either click on the calendar or he can type
+    it in." Picking a date in the calendar fills the text field (so it stays the single source
+    of truth and every existing _iso()/_disp() call site around a date keeps working
+    unchanged); typing directly still works exactly as before. Returns the ISO date string (or
+    "" if the field is empty/unparseable) - a drop-in replacement for the previous bare
+    `_iso(st.text_input(...))` pattern.
+    """
+    tcol, ccol = st.columns([5, 1])
+    with tcol:
+        typed = st.text_input(label, value=_disp(value_iso), key=key, placeholder=placeholder)
+    iso_value = _iso(typed)
+    with ccol:
+        st.write("")  # spacer so the button lines up with the input box, not the label above it
+        with st.popover("📅", use_container_width=True):
+            picked_default = None
+            if iso_value:
+                try:
+                    picked_default = datetime.strptime(iso_value, "%Y-%m-%d").date()
+                except ValueError:
+                    picked_default = None
+            picked = st.date_input("Pick a date", value=picked_default, key=f"{key}_cal",
+                                   format="DD/MM/YYYY")
+            if picked and picked.strftime("%d/%m/%Y") != typed:
+                st.session_state[key] = picked.strftime("%d/%m/%Y")
+                st.rerun()
+    return iso_value
+
+
 # Widget-key generations - the defence against a widget showing a PREVIOUSLY-reviewed item's
 # value. See widget_state.py's module docstring for the bug class and why it replaces sweeping.
 import widget_state
@@ -4930,9 +4964,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=f"mt_start_date_{idx}"))
+            data["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mt_start_date_{idx}", value_iso=data.get("start_date", ""))
         with dcol2:
-            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=f"mt_end_date_{idx}"))
+            data["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mt_end_date_{idx}", value_iso=data.get("end_date", ""))
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
@@ -5275,9 +5309,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     editable_table("Start Time(s)", ftt_df, f"mtf_tt_{fi_idx}", on_save=_save_mtf_tt)
                     fdcol1, fdcol2 = st.columns(2)
                     with fdcol1:
-                        fdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(fdata.get("start_date", "")), key=f"mtf_start_{fi_idx}"))
+                        fdata["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mtf_start_{fi_idx}", value_iso=fdata.get("start_date", ""))
                     with fdcol2:
-                        fdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(fdata.get("end_date", "")), key=f"mtf_end_{fi_idx}"))
+                        fdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtf_end_{fi_idx}", value_iso=fdata.get("end_date", ""))
 
                     if st.button(f"🔄 Retry Modality for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['ticket_code']}'..."):
@@ -5352,9 +5386,9 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     editable_table("Start Time(s)", pf_tt_df, f"mtp_tt_{pf_idx}", on_save=_save_mtp_tt)
                     pf_dcol1, pf_dcol2 = st.columns(2)
                     with pf_dcol1:
-                        pfdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(pfdata.get("start_date", "")), key=f"mtp_start_{pf_idx}"))
+                        pfdata["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mtp_start_{pf_idx}", value_iso=pfdata.get("start_date", ""))
                     with pf_dcol2:
-                        pfdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(pfdata.get("end_date", "")), key=f"mtp_end_{pf_idx}"))
+                        pfdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtp_end_{pf_idx}", value_iso=pfdata.get("end_date", ""))
 
                     if st.button(f"🔄 Retry creating `{pf['ticket_code']}`", key=f"mtp_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['ticket_code']}'..."):
@@ -6208,9 +6242,9 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=f"mtu_start_date_{idx}"))
+            data["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mtu_start_date_{idx}", value_iso=data.get("start_date", ""))
         with dcol2:
-            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=f"mtu_end_date_{idx}"))
+            data["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtu_end_date_{idx}", value_iso=data.get("end_date", ""))
         if data.get("pricing_notes"):
             st.warning(f"⚠️ {data['pricing_notes']}")
 
@@ -6411,9 +6445,9 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     editable_table("Start Time(s)", ftt_df, f"mtuf_tt_{fi_idx}", on_save=_save_mtuf_tt)
                     fdcol1, fdcol2 = st.columns(2)
                     with fdcol1:
-                        fdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(fdata.get("start_date", "")), key=f"mtuf_start_{fi_idx}"))
+                        fdata["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mtuf_start_{fi_idx}", value_iso=fdata.get("start_date", ""))
                     with fdcol2:
-                        fdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(fdata.get("end_date", "")), key=f"mtuf_end_{fi_idx}"))
+                        fdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtuf_end_{fi_idx}", value_iso=fdata.get("end_date", ""))
 
                     if st.button(f"🔄 Retry Modality for `{fi['target_ticket_code']}`", key=f"mtuf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['target_ticket_code']}'..."):
@@ -6469,9 +6503,9 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     editable_table("Start Time(s)", pf_tt_df, f"mtup_tt_{pf_idx}", on_save=_save_mtup_tt)
                     pf_dcol1, pf_dcol2 = st.columns(2)
                     with pf_dcol1:
-                        pfdata["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(pfdata.get("start_date", "")), key=f"mtup_start_{pf_idx}"))
+                        pfdata["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", f"mtup_start_{pf_idx}", value_iso=pfdata.get("start_date", ""))
                     with pf_dcol2:
-                        pfdata["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(pfdata.get("end_date", "")), key=f"mtup_end_{pf_idx}"))
+                        pfdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtup_end_{pf_idx}", value_iso=pfdata.get("end_date", ""))
 
                     if st.button(f"🔄 Retry updating `{pf['target_ticket_code']}`", key=f"mtup_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['target_ticket_code']}'..."):
@@ -7419,9 +7453,9 @@ def render_ticket_flow(client):
         # Supplements editors, so both always see this render's real Valid From/Valid Until.
         dcol1, dcol2 = st.columns(2)
         with dcol1:
-            data["start_date"] = _iso(st.text_input("Valid From (DD/MM/YYYY)", value=_disp(data.get("start_date", "")), key=flow_widget_key("tk", "start_date")))
+            data["start_date"] = _dmy_date_field("Valid From (DD/MM/YYYY)", flow_widget_key("tk", "start_date", value_iso=data.get("start_date", "")))
         with dcol2:
-            data["end_date"] = _iso(st.text_input("Valid Until (DD/MM/YYYY)", value=_disp(data.get("end_date", "")), key=flow_widget_key("tk", "end_date")))
+            data["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", flow_widget_key("tk", "end_date", value_iso=data.get("end_date", "")))
 
         # Same fix and reasoning as the multi-Ticket batch flow's Stop Sales editor (see the
         # "CONFIRMED REAL BUG" comment there): the raw JSON text_area went stale under "Tell AI
@@ -11292,12 +11326,12 @@ def render_manual_information_flow(client):
                                                        placeholder="08:00")
             c3, c4 = st.columns(2)
             with c3:
-                item_data["start_date"] = _iso(st.text_input(
+                item_data["start_date"] = _dmy_date_field(
                     f"Period start date {_DATE_HINT}, e.g. Christmas/NYE/Easter",
-                    key="mi_s_period_start", placeholder="20/12/2026"))
+                    "mi_s_period_start", placeholder="20/12/2026")
             with c4:
-                item_data["end_date"] = _iso(st.text_input(
-                    f"Period end date {_DATE_HINT}", key="mi_s_period_end", placeholder="05/01/2027"))
+                item_data["end_date"] = _dmy_date_field(
+                    f"Period end date {_DATE_HINT}", "mi_s_period_end", placeholder="05/01/2027")
             st.caption("Dates left blank inherit each transfer's own validity window (i.e. "
                       "applies all year, not just the period).")
         elif structured_kind == "transport_supplement":
@@ -11314,10 +11348,10 @@ def render_manual_information_flow(client):
                     "Type", ["Fixed amount per bracket", "Percent of price + existing supplement"],
                     key="mi_ts_pct_type", horizontal=True) == "Percent of price + existing supplement"
             with c2:
-                item_data["start_date"] = _iso(st.text_input(
-                    f"Period start date {_DATE_HINT}", key="mi_ts_period_start", placeholder="20/12/2026"))
-                item_data["end_date"] = _iso(st.text_input(
-                    f"Period end date {_DATE_HINT}", key="mi_ts_period_end", placeholder="05/01/2027"))
+                item_data["start_date"] = _dmy_date_field(
+                    f"Period start date {_DATE_HINT}", "mi_ts_period_start", placeholder="20/12/2026")
+                item_data["end_date"] = _dmy_date_field(
+                    f"Period end date {_DATE_HINT}", "mi_ts_period_end", placeholder="05/01/2027")
             st.caption("Percent is computed per bracket as (that bracket's base price + whatever "
                       "surcharge is in effect as of the period's start date) * your % - never "
                       "pre-calculated from one bracket and reused for the others, since brackets "
@@ -11514,6 +11548,29 @@ def render_manual_information_flow(client):
         st.markdown(f"**{planned['will_change']} service(s) would change**, "
                     f"{planned['unchanged']} {'already have this entry' if add_structured else noun}, "
                     f"{planned['failed']} couldn't be read.")
+        # CONFIRMED REAL NEED (product owner, 2026-09-10, testing the Transport high-season
+        # supplement tool for the first time): "i miss a button which would exclude ALL found
+        # transports and the human can select only the once that is applying" - every item
+        # defaults to included, which is right for a plain text write (everyone gets the same
+        # note) but wrong for a first cautious run of something like a dated supplement, where
+        # the human wants to start from nothing selected and hand-pick just the few modalities
+        # a peak-season change actually applies to, rather than unchecking every other one.
+        will_change_ids = [it.get("id") for it in planned["items"] if it["status"] == "will_change"]
+        if will_change_ids:
+            scol1, scol2 = st.columns(2)
+            with scol1:
+                if st.button("Select all", key="mi_select_all", use_container_width=True):
+                    for it in planned["items"]:
+                        if it["status"] == "will_change":
+                            it["_include"] = True
+                    st.rerun()
+            with scol2:
+                if st.button("Select none", key="mi_select_none", use_container_width=True):
+                    for it in planned["items"]:
+                        if it["status"] == "will_change":
+                            it["_include"] = False
+                    st.rerun()
+
         for it in planned["items"]:
             icon = {"will_change": "✏️", "unchanged": "➖", "failed": "❌"}[it["status"]]
             with st.expander(f"{icon} {it['name']}"
@@ -12161,6 +12218,222 @@ def render_transport_cancellation_bulk_flow(client):
         with st.spinner("Updating..."):
             results = cancellation_bulk_transport.apply_proposals(client, supplier_id, to_apply)
         st.session_state.ctb_results = results
+        st.rerun()
+
+
+def render_cancellation_bulk_flow(client):
+    """Bulk-update Cancellation Policy — top-level dispatcher across all 5 product types.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "bulk update cancellation policy --> this
+    must be usable for all Services: Hotel; Transfer, Transport, Ticket and ClosedTour - so
+    far it looks like only Transport can do it." Transport already had a proven, in-production
+    tool (cancellation_bulk_transport.py / render_transport_cancellation_bulk_flow) built
+    2026-08-28 - that flow is reused UNCHANGED here, not touched or duplicated. The other 4
+    product types are new, backed by cancellation_bulk.py (see its own module docstring for
+    the structured-field/shape differences between ClosedTour, Ticket, Transfer and Hotel).
+    """
+    st.header("Bulk-update Cancellation Policy")
+    st.caption("Applies one cancellation policy to every (or a chosen subset of) one "
+              "supplier's live services of one type at once - both the structured field "
+              "Travel Compositor enforces (where one exists) AND the matching sentence in "
+              "each service's customer-facing text.")
+
+    product_type = st.radio(
+        "Which product type?", ["Transport", "ClosedTour", "Ticket", "Transfer", "Hotel"],
+        key="cb_product_type", horizontal=True)
+
+    if st.session_state.get("cb_active_product_type") != product_type:
+        # Product type changed - drop everything loaded for the previous one.
+        for key in list(st.session_state.keys()):
+            if key.startswith("cb_") and key not in ("cb_product_type", "cb_active_product_type"):
+                del st.session_state[key]
+        st.session_state.cb_active_product_type = product_type
+
+    st.markdown("---")
+
+    if product_type == "Transport":
+        render_transport_cancellation_bulk_flow(client)
+        return
+
+    render_generic_cancellation_bulk_flow(client, product_type)
+
+
+def render_generic_cancellation_bulk_flow(client, product_type):
+    """The ClosedTour / Ticket / Transfer / Hotel half of render_cancellation_bulk_flow, backed
+    by cancellation_bulk.py. Same 4-step shape as render_transport_cancellation_bulk_flow
+    (load -> set new policy -> review/select -> apply), with two differences: ClosedTour has
+    no list endpoint, so codes must be typed in first; and Transfer/Hotel have no structured
+    cancellationRanges field at all, so only the text side is shown/changed for those two.
+    """
+    import cancellation_bulk
+
+    supplier_id = _ur_pick_momira_supplier(client, "cb")
+    if not supplier_id:
+        st.info("Choose a supplier to continue.")
+        return
+
+    if st.session_state.get("cb_supplier_id") != supplier_id:
+        for key in ("cb_rows", "cb_new_tiers", "cb_default_scope", "cb_selected", "cb_results"):
+            st.session_state.pop(key, None)
+        st.session_state.cb_supplier_id = supplier_id
+
+    if st.session_state.get("cb_results"):
+        st.markdown("---")
+        st.subheader("Result")
+        results = st.session_state.cb_results
+        ok = [r for r in results if r["ok"]]
+        failed = [r for r in results if not r["ok"]]
+        st.caption(f"{len(ok)} updated · {len(failed)} failed.")
+        for r in ok:
+            st.success(f"✅ **{r['name']}** updated.")
+        for r in failed:
+            st.error(f"🚫 **{r['name']}** — {r['detail']}")
+        if st.button("↩️ Run again / start over", key="cb_reset"):
+            for key in ("cb_rows", "cb_new_tiers", "cb_default_scope", "cb_selected", "cb_results"):
+                st.session_state.pop(key, None)
+            st.rerun()
+        return
+
+    codes = None
+    if product_type == "ClosedTour":
+        st.caption("ClosedTour has no list-all endpoint in Travel Compositor - paste the codes "
+                  "to check, one per line.")
+        codes_text = st.text_area("ClosedTour codes", key="cb_ct_codes", height=100)
+        codes = [c.strip() for c in codes_text.splitlines() if c.strip()]
+
+    load_disabled = product_type == "ClosedTour" and not codes
+    if st.button(f"📥 Load this supplier's live {product_type}(s)", key="cb_load", disabled=load_disabled):
+        with st.spinner("Loading..."):
+            rows, err = cancellation_bulk.load_supplier_services_for_cancellation(
+                client, supplier_id, product_type, codes=codes)
+            if err and not rows:
+                st.error(f"❌ Couldn't load {product_type}(s): {err}")
+            else:
+                if err:
+                    st.warning(f"⚠️ Some couldn't be loaded: {err}")
+                st.session_state.cb_rows = rows
+                st.session_state.cb_selected = {r["id"]: True for r in rows}
+                st.rerun()
+
+    rows = st.session_state.get("cb_rows")
+    if rows is None:
+        return
+    if not rows:
+        st.info(f"This supplier has no live {product_type}(s).")
+        return
+
+    has_structured = product_type in ("ClosedTour", "Ticket")
+    st.subheader(f"2 — New cancellation policy (will apply to up to {len(rows)} {product_type}(s))")
+    if not has_structured:
+        st.caption(f"{product_type} has no separate structured cancellation field in Travel "
+                  f"Compositor - only the customer-facing Voucher remarks text is rewritten.")
+
+    if "cb_new_tiers" not in st.session_state:
+        default_tiers, scope_label = cancellation_bulk.default_new_tiers(supplier_id, product_type)
+        st.session_state.cb_new_tiers = default_tiers
+        st.session_state.cb_default_scope = scope_label
+    st.caption(f"Pre-filled from {st.session_state.get('cb_default_scope', 'the house default')} — "
+              f"edit below if this run needs something different. This does NOT change the "
+              f"saved Cancellation Link itself, only what gets applied this run.")
+
+    import pandas as pd
+    from ui_components import editable_table, _safe_int, _safe_float
+
+    def _cb_tier_table(tiers):
+        table_rows = [{"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+                     for t in (tiers or []) if isinstance(t, dict)]
+        return pd.DataFrame(table_rows) if table_rows else pd.DataFrame(
+            columns=["Days before arrival (or more)", "Cancellation Fee %"])
+
+    def _cb_df_to_tiers(edited_df):
+        new_tiers = []
+        for _, row in edited_df.iterrows():
+            days_val = row.get("Days before arrival (or more)")
+            if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
+                continue
+            new_tiers.append({
+                "days": _safe_int(days_val, fallback=0),
+                "fee_percentage": max(0.0, min(100.0, _safe_float(row.get("Cancellation Fee %"), fallback=0.0))),
+            })
+        return new_tiers
+
+    def _cb_save_new_tiers(edited_df):
+        st.session_state.cb_new_tiers = _cb_df_to_tiers(edited_df)
+
+    cb_col_config = {
+        "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
+        "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+    }
+    editable_table("New policy", _cb_tier_table(st.session_state.cb_new_tiers), "cb_new_policy",
+                   on_save=_cb_save_new_tiers, column_config=cb_col_config)
+
+    def _cb_fmt_tiers(tiers):
+        if not tiers:
+            return "(system default — 30 days, 0% fee)"
+        return "; ".join(f"{t['days']}+ days: {t['fee_percentage']:.0f}% fee"
+                         for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
+
+    proposals = cancellation_bulk.build_proposals(rows, st.session_state.cb_new_tiers, product_type)
+    proposals_by_id = {p["id"]: p for p in proposals}
+
+    st.subheader("3 — Review and choose which to update")
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
+        if st.button("Select all", key="cb_select_all"):
+            st.session_state.cb_selected = {p["id"]: True for p in proposals}
+            st.rerun()
+    with bcol2:
+        if st.button("Select none", key="cb_select_none"):
+            st.session_state.cb_selected = {p["id"]: False for p in proposals}
+            st.rerun()
+
+    for p in proposals:
+        label = f"**{p['name']}**  ·  id `{p['id']}`"
+        if p["unchanged"]:
+            st.session_state.cb_selected[p["id"]] = False
+            st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
+                       key=f"cb_pick_{p['id']}")
+        else:
+            st.session_state.cb_selected[p["id"]] = st.checkbox(
+                label, value=st.session_state.cb_selected.get(p["id"], True), key=f"cb_pick_{p['id']}")
+        with st.expander("Details", expanded=False):
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                st.caption("**Current**")
+                if has_structured:
+                    st.text(_cb_fmt_tiers(p["current_fee_tiers"]))
+                st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found)*")
+            with dcol2:
+                st.caption("**New**")
+                if has_structured:
+                    st.text(_cb_fmt_tiers(p["new_fee_tiers"]))
+                st.caption(p["new_cancellation_text"])
+            if not p["existing_paragraph_found"]:
+                st.warning("⚠️ No existing cancellation sentence was found in this service's text — "
+                          "a new one will be INSERTED rather than replacing one. Double-check the "
+                          "result afterward inside Travel Compositor.")
+
+    selected_ids = [pid for pid, v in st.session_state.cb_selected.items() if v]
+    st.caption(f"{len(selected_ids)} of {len(proposals)} selected.")
+    if not selected_ids:
+        return
+
+    st.subheader("4 — Apply")
+    field_note = ("both the structured cancellation field and the matching sentence in each "
+                  "one's Voucher remarks" if has_structured else "the matching sentence in "
+                  "each one's Voucher remarks")
+    st.warning(f"⚠️ This will PUT (update) {len(selected_ids)} {product_type}(s) — {field_note}. "
+              f"Everything else on each record is left exactly as it is.")
+    cb_table_being_edited = bool(st.session_state.get("_editing_table_cb_new_policy"))
+    if cb_table_being_edited:
+        st.error("🚫 The New Policy table above has unsaved edits — click its own Save button "
+                 "first, or this button would apply the OLD numbers while the screen shows new ones.")
+    if st.button(f"🚀 Update {len(selected_ids)} {product_type}(s)", key="cb_confirm", type="primary",
+                 disabled=cb_table_being_edited):
+        to_apply = [proposals_by_id[pid] for pid in selected_ids]
+        with st.spinner("Updating..."):
+            results = cancellation_bulk.apply_proposals(client, supplier_id, product_type, to_apply)
+        st.session_state.cb_results = results
         st.rerun()
 
 
@@ -13041,7 +13314,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-transport-supplement-no-overlap"
+BUILD_VERSION = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -13348,11 +13621,13 @@ UPDATE_REFRESH_CHOICE = "Update existing Service"
 # inside Update/Refresh, since it acts on a whole supplier's worth of transfers at once, not
 # one already-identified record - see render_supplier_migration_flow's docstring.
 MIGRATE_SUPPLIER_CHOICE = "Move Transfers to another Supplier"
-# CONFIRMED REAL NEED (product owner, 2026-08-28): "can i also include/change the cancellation
-# for a bulk or at least per supplier for transports?" A Step 1 destination rather than living
-# inside Update/Refresh, since it acts on a whole supplier's worth of Transports at once, not
-# one already-identified record - see render_transport_cancellation_bulk_flow's docstring.
-TRANSPORT_CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy (Transport)"
+# CONFIRMED REAL NEED (product owner, 2026-08-28; extended to all 5 product types 2026-09-10):
+# "can i also include/change the cancellation for a bulk or at least per supplier for
+# transports?" ... "bulk update cancellation policy --> this must be usable for all Services:
+# Hotel; Transfer, Transport, Ticket and ClosedTour." A Step 1 destination rather than living
+# inside Update/Refresh, since it acts on a whole supplier's worth of one product type at once,
+# not one already-identified record - see render_cancellation_bulk_flow's docstring.
+CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -13549,21 +13824,21 @@ if st.session_state.product_type is None:
         st.caption("Recreates a supplier's Transfers under a different supplier and switches the "
                   "originals off - for when a supplier relationship itself changes, not a single "
                   "product's details.")
-        if st.button(TRANSPORT_CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
-            st.session_state.product_type = TRANSPORT_CANCELLATION_BULK_CHOICE
+        if st.button(CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
+            st.session_state.product_type = CANCELLATION_BULK_CHOICE
             st.rerun()
         st.caption("Applies one cancellation policy to every (or a chosen subset of) one "
-                  "supplier's live Transports at once - for when the supplier's terms "
-                  "themselves changed, not a single product's details. Transport only - "
-                  "Transfer has no equivalent structured field to safely bulk-overwrite.")
+                  "supplier's live services of one type at once - for when the supplier's "
+                  "terms themselves changed, not a single product's details. "
+                  "ClosedTour · Ticket · Transfer · Transport · Hotel.")
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
     render_update_refresh_flow(client)
     st.stop()
 
-if st.session_state.product_type == TRANSPORT_CANCELLATION_BULK_CHOICE:
-    render_transport_cancellation_bulk_flow(client)
+if st.session_state.product_type == CANCELLATION_BULK_CHOICE:
+    render_cancellation_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:

@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
+MODULE_BUILD = "2026-09-10-cancellation-bulk-all-types-and-calendar-picker"
 
 _NAMESPACE = "cancellation_links"
 
