@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-10-create-vs-update-split"
+MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
 
 _NAMESPACE = "translation_state"
 

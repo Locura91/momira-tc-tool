@@ -34,7 +34,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-create-vs-update-split"
+MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
 
 import os
 import re

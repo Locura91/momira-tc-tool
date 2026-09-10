@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-create-vs-update-split"
+MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
 
 _PHASE_KEY = "pkr_phase"
 

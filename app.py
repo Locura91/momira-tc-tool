@@ -11292,12 +11292,12 @@ def render_manual_information_flow(client):
                                                        placeholder="08:00")
             c3, c4 = st.columns(2)
             with c3:
-                item_data["start_date"] = st.text_input(
-                    "Period start date (YYYY-MM-DD, e.g. Christmas/NYE/Easter)",
-                    key="mi_s_period_start", placeholder="2026-12-20")
+                item_data["start_date"] = _iso(st.text_input(
+                    f"Period start date {_DATE_HINT}, e.g. Christmas/NYE/Easter",
+                    key="mi_s_period_start", placeholder="20/12/2026"))
             with c4:
-                item_data["end_date"] = st.text_input(
-                    "Period end date (YYYY-MM-DD)", key="mi_s_period_end", placeholder="2027-01-05")
+                item_data["end_date"] = _iso(st.text_input(
+                    f"Period end date {_DATE_HINT}", key="mi_s_period_end", placeholder="05/01/2027"))
             st.caption("Dates left blank inherit each transfer's own validity window (i.e. "
                       "applies all year, not just the period).")
         elif structured_kind == "transport_supplement":
@@ -11312,14 +11312,39 @@ def render_manual_information_flow(client):
                     "Type", ["Fixed amount per bracket", "Percent of price + existing supplement"],
                     key="mi_ts_pct_type", horizontal=True) == "Percent of price + existing supplement"
             with c2:
-                item_data["start_date"] = st.text_input(
-                    "Period start date (YYYY-MM-DD)", key="mi_ts_period_start", placeholder="2026-12-20")
-                item_data["end_date"] = st.text_input(
-                    "Period end date (YYYY-MM-DD)", key="mi_ts_period_end", placeholder="2027-01-05")
+                item_data["start_date"] = _iso(st.text_input(
+                    f"Period start date {_DATE_HINT}", key="mi_ts_period_start", placeholder="20/12/2026"))
+                item_data["end_date"] = _iso(st.text_input(
+                    f"Period end date {_DATE_HINT}", key="mi_ts_period_end", placeholder="05/01/2027"))
             st.caption("Percent is computed per bracket as (that bracket's base price + whatever "
                       "surcharge is currently active on it today) * your % - never pre-calculated "
                       "from one bracket and reused for the others, since brackets do not scale "
                       "together (confirmed: real examples show non-monotonic per-bracket amounts).")
+        elif structured_kind == "transport_price_increase":
+            st.caption("Permanently raises EVERY Transport of this supplier's own price by a "
+                      "percentage - e.g. current price 60 USD, +10% -> 66 USD written back to "
+                      "Travel Compositor. Unlike the dated supplement above, this mutates the "
+                      "existing price fields in place - it does not add a new dated entry.")
+            item_data["percent"] = st.number_input(
+                "Increase by (%)", min_value=0.0, step=1.0, key="mi_tpi_percent",
+                help="Applied to every base price field and/or the currently-active supplement "
+                     "amount, per your choice below.")
+            st.caption("Choose what to increase - any combination (base price only, active "
+                      "supplement only, or both):")
+            c1, c2 = st.columns(2)
+            with c1:
+                item_data["increase_base"] = st.checkbox(
+                    "Increase the base price", value=True, key="mi_tpi_base",
+                    help="Raises every baseAdultPrice/baseChildrenPrice/baseInfantPrice (and "
+                         "round-trip equivalents) on the Transport record itself.")
+            with c2:
+                item_data["increase_supplement"] = st.checkbox(
+                    "Increase the currently active supplement", value=False, key="mi_tpi_supp",
+                    help="Raises the amount of whichever dated price-supplement entry is in "
+                         "effect today, per occupancy bracket. Brackets with no active "
+                         "supplement are left unchanged.")
+            if not item_data["increase_base"] and not item_data["increase_supplement"]:
+                st.warning("Choose at least one: base price, active supplement, or both.")
         elif structured_kind == "transfer_additional_service":
             st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
             c1, c2 = st.columns(2)
@@ -12993,7 +13018,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-create-vs-update-split"
+BUILD_VERSION = "2026-09-10-supplement-dates-house-format"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

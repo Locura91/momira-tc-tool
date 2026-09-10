@@ -206,7 +206,10 @@ MODE_PRICE_CODE = "price_code"
 STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
     "ClosedTour": {"Supplement (applies to all Modalities)": "closedtour_supplement"},
     "Transfer": {"Supplement": "transfer_supplement", "Additional Service": "transfer_additional_service"},
-    "Transport": {"Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement"},
+    "Transport": {
+        "Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement",
+        "Permanent price increase (%)": "transport_price_increase",
+    },
 }
 
 # Which list field on the live record each structured kind writes into.
@@ -328,6 +331,192 @@ def _active_transport_price_entry(option: Dict[str, Any], today: Optional[str] =
         if (not start or start <= today) and (not end or end >= today):
             return e
     return sorted(entries, key=lambda e: e.get("endDate") or "")[-1]
+
+
+_TRANSPORT_BASE_PRICE_FIELDS = (
+    "baseAdultPrice", "baseChildrenPrice", "baseInfantPrice",
+    "baseAdultRTPrice", "baseChildrenRTPrice", "baseInfantRTPrice",
+)
+_TRANSPORT_SUPPLEMENT_PRICE_FIELDS = (
+    "adultPriceSupplement", "childrenPriceSupplement", "infantPriceSupplement",
+    "adultRTPriceSupplement", "childrenRTPriceSupplement", "infantRTPriceSupplement",
+)
+
+
+def _plan_transport_price_increase(client, supplier_id: str, percent: float, increase_base: bool,
+                                   increase_supplement: bool,
+                                   progress: Optional[Callable[[int, int, str], None]] = None
+                                   ) -> Dict[str, Any]:
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "Update existing price by percentage...
+    current price is 60 USD and we want to just add 10%... all the prices for the transport
+    must be automatically calculated and the new price must be added to travel compositor." A
+    PERMANENT price rise, unlike _plan_transport_supplement's dated, additive surcharge - and,
+    per the product owner's own follow-up, the human decides EACH RUN whether the % applies to
+    the base price, to whatever supplement is currently active, or to both together (never
+    assumed): "Just one of each or both. Human must decide."
+
+    Two independent kinds of write can result from one run, so each item carries its own
+    `write_kind` for apply() to dispatch on, rather than the whole plan being one kind the way
+    _plan_transport_supplement's is:
+      - "transport": the base*Price fields on the Transport's OWN record (parent level) -
+        one item per Transport, only when increase_base is set.
+      - "transport_option": the CURRENTLY ACTIVE price entry's supplement fields, mutated IN
+        PLACE (never appended - this raises what's already there, it does not add a new dated
+        entry the way _plan_transport_supplement does) - one item per bracket, only when
+        increase_supplement is set and that bracket actually has an active entry with a
+        nonzero supplement to raise.
+    A field already at 0 is left at 0 (0 * any percent is still 0, and skipping it keeps the
+    per-item "before -> after" preview free of no-op lines)."""
+    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
+                              "failed": 0, "product_type": "Transport",
+                              "target": "transport_price_increase", "structured": True,
+                              "kind": "transport_price_increase"}
+    if not increase_base and not increase_supplement:
+        result["error"] = "Choose at least one: increase the base price, the active supplement, or both."
+        return result
+    if not percent:
+        result["error"] = "Give a percentage greater than 0."
+        return result
+    try:
+        listing = getattr(client, "get_transports")(supplier_id)
+    except Exception as e:
+        result["error"] = f"Could not list transports: {type(e).__name__}: {e}"
+        return result
+    transports = listing.get("transport") if isinstance(listing, dict) else listing
+    transports = transports or []
+    total = len(transports)
+    factor = 1.0 + (percent / 100.0)
+    for i, t_summary in enumerate(transports):
+        t_id = t_summary.get("id") if isinstance(t_summary, dict) else None
+        t_name = (t_summary or {}).get("name") or t_id or "?"
+        if progress:
+            progress(i + 1, total, t_name)
+        if not t_id:
+            continue
+        try:
+            t = client.get_transport(supplier_id, t_id)
+        except Exception as e:
+            result["failed"] += 1
+            result["items"].append({"id": f"{t_id}:base", "name": t_name, "status": "failed",
+                                    "detail": f"couldn't fetch transport: {e}", "changes": {}})
+            continue
+
+        if increase_base:
+            updated_t = copy.deepcopy(t)
+            _normalize_for_put(updated_t, "Transport")
+            lines = []
+            for field in _TRANSPORT_BASE_PRICE_FIELDS:
+                old = _safe_float(t.get(field))
+                if old <= 0:
+                    continue
+                new = round(old * factor, 2)
+                if new != old:
+                    updated_t[field] = new
+                    lines.append(f"{field}: {old:.2f} -> {new:.2f}")
+            item_id = f"{t_id}:base"
+            if lines:
+                result["will_change"] += 1
+                result["items"].append({
+                    "id": item_id, "name": f"{t_name} — base price", "status": "will_change",
+                    "changes": {"EN": ("", "\n".join(lines))}, "record": updated_t,
+                    "write_kind": "transport",
+                })
+            else:
+                result["unchanged"] += 1
+                result["items"].append({
+                    "id": item_id, "name": f"{t_name} — base price", "status": "unchanged",
+                    "changes": {}, "reason": "no base price set on this Transport",
+                })
+
+        if increase_supplement:
+            for code in (t.get("optionCodes") or []):
+                item_id = f"{t_id}:{code}:supplement"
+                bracket_label = f"{t_name} — {code} — active supplement"
+                try:
+                    opt = client.get_transport_option(supplier_id, t_id, code)
+                except Exception as e:
+                    result["failed"] += 1
+                    result["items"].append({
+                        "id": item_id, "name": bracket_label, "status": "failed",
+                        "detail": f"couldn't fetch option: {e}", "changes": {},
+                    })
+                    continue
+                bracket_label = (f"{t_name} — {code} ({opt.get('minPassengers', '?')}-"
+                                f"{opt.get('maxPassengers', '?')} pax) — active supplement")
+                active = _active_transport_price_entry(opt)
+                if not active:
+                    result["unchanged"] += 1
+                    result["items"].append({
+                        "id": item_id, "name": bracket_label, "status": "unchanged", "changes": {},
+                        "reason": "this bracket has no active price entry to increase",
+                    })
+                    continue
+                updated_opt = copy.deepcopy(opt)
+                # `active` came from the just-fetched `opt`; find the SAME entry inside the
+                # deepcopy (identity breaks across deepcopy, so match by full equality instead -
+                # reliable here since a duplicate byte-identical entry would be a data anomaly
+                # in its own right, not something this code should silently pick between).
+                target_entry = next((e for e in (updated_opt.get("prices") or []) if e == active), None)
+                if target_entry is None:
+                    result["unchanged"] += 1
+                    result["items"].append({
+                        "id": item_id, "name": bracket_label, "status": "unchanged", "changes": {},
+                        "reason": "this bracket has no active price entry to increase",
+                    })
+                    continue
+                lines = []
+                for field in _TRANSPORT_SUPPLEMENT_PRICE_FIELDS:
+                    old = _safe_float(active.get(field))
+                    if old <= 0:
+                        continue
+                    new = round(old * factor, 2)
+                    if new != old:
+                        target_entry[field] = new
+                        lines.append(f"{field}: {old:.2f} -> {new:.2f}")
+                if lines:
+                    result["will_change"] += 1
+                    result["items"].append({
+                        "id": item_id, "name": bracket_label, "status": "will_change",
+                        "changes": {"EN": ("", "\n".join(lines))}, "record": updated_opt,
+                        "transport_id": t_id, "write_kind": "transport_option",
+                    })
+                else:
+                    result["unchanged"] += 1
+                    result["items"].append({
+                        "id": item_id, "name": bracket_label, "status": "unchanged", "changes": {},
+                        "reason": "the active entry has no supplement amount to increase",
+                    })
+    return result
+
+
+def _apply_transport_price_increase(client, supplier_id: str, planned: Dict[str, Any],
+                                    progress: Optional[Callable[[int, int, str], None]] = None
+                                    ) -> Dict[str, Any]:
+    """Each item is tagged with its own write_kind ("transport" or "transport_option"), since
+    one run of _plan_transport_price_increase can produce BOTH kinds together (base price AND
+    active-supplement items for the same Transport) - unlike _apply_transport_supplement, which
+    only ever writes options."""
+    out = {"updated": [], "failed": [], "skipped": 0}
+    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
+    out["skipped"] = len(planned.get("items", [])) - len(pending)
+    for n, item in enumerate(pending):
+        if progress:
+            progress(n + 1, len(pending), item.get("name", ""))
+        try:
+            if item.get("write_kind") == "transport":
+                res = client.update_transport(supplier_id, item["record"])
+            else:
+                res = client.update_transport_option(supplier_id, item["transport_id"], item["record"])
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+            else:
+                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
+                                       "languages": sorted(item.get("changes", {}).keys())})
+        except Exception as e:
+            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                  "detail": f"{type(e).__name__}: {e}"})
+    return out
 
 
 def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: str, end_date: str,
@@ -475,6 +664,17 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             client, supplier_id, (item_data or {}).get("name", ""),
             (item_data or {}).get("start_date", ""), (item_data or {}).get("end_date", ""),
             bool((item_data or {}).get("is_percent")), _safe_float((item_data or {}).get("amount")),
+            progress=progress)
+
+    if kind == "transport_price_increase":
+        # A PERMANENT price change (base fields and/or the currently-active dated supplement
+        # entry, mutated in place) - the opposite philosophy from transport_supplement above,
+        # which only ever appends a new dated entry. See _plan_transport_price_increase's own
+        # docstring.
+        return _plan_transport_price_increase(
+            client, supplier_id, _safe_float((item_data or {}).get("percent")),
+            bool((item_data or {}).get("increase_base")),
+            bool((item_data or {}).get("increase_supplement")),
             progress=progress)
 
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
@@ -922,6 +1122,11 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
         # payload, which the generic update_fn(supplier_id, payload) call below has no way
         # to pass. See _apply_transport_supplement's own docstring.
         return _apply_transport_supplement(client, supplier_id, planned, progress=progress)
+    if planned.get("kind") == "transport_price_increase":
+        # Items are a mix of write_kind "transport" (base price, whole record) and
+        # "transport_option" (active supplement entry) - see
+        # _apply_transport_price_increase's own docstring.
+        return _apply_transport_price_increase(client, supplier_id, planned, progress=progress)
     product_type = planned.get("product_type")
     cfg = PRODUCTS.get(product_type) or {}
     update_fn = getattr(client, cfg.get("update_fn", ""), None)

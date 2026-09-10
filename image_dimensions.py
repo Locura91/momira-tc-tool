@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-10-create-vs-update-split"
+MODULE_BUILD = "2026-09-10-supplement-dates-house-format"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
