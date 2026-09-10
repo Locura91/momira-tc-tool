@@ -200,10 +200,18 @@ MODE_PRICE_CODE = "price_code"
 # field (see build_transport_payloads' own confirmed note) - but each Option sub-resource
 # (one per occupancy bracket) carries a `prices` list of DATED, ADDITIVE surcharge entries
 # (ContractTransportOptionPriceVO: startDate/endDate + adultPriceSupplement etc, additive on
-# top of the parent's baseAdultPrice - confirmed real semantics). "transport_supplement"
-# is a NEW ADDED entry in that list per bracket, same append-only philosophy as every other
-# structured target here - never edits or replaces an existing price entry. It is planned and
-# applied by _plan_transport_supplement/_apply_transport_supplement below instead of the
+# top of the parent's baseAdultPrice - confirmed real semantics). "transport_supplement" adds
+# a NEW entry per bracket for the peak period - but, CORRECTED (2026-09-10, product owner):
+# unlike every other structured target here, this is NOT a simple append. Each bracket
+# (modality) can have several occupancy options (e.g. Sedan 1-3pax, Hiace 1-8pax), each with
+# its own independent price and its own independent standing (always-on) supplement entry, and
+# a bracket's price entries must never overlap in date the way Travel Compositor's own UI never
+# lets them. So adding a peak-season markup on top of an existing standing rate means: truncate
+# the standing entry to end the day before the peak starts, insert the new peak entry, and
+# insert a fresh "resume normal" entry the day after the peak ends (carrying the standing
+# entry's own original supplement, unchanged) - see
+# _carve_transport_option_price_window's own docstring for the full carve logic. It is planned
+# and applied by _plan_transport_supplement/_apply_transport_supplement below instead of the
 # generic single-field-append path, because it operates at Option (not Transport) level and
 # Travel Compositor has no native PERCENT type for Transport pricing (unlike Transfer) - the
 # percent-of-(price+existing supplement) math has to be done by the app itself, per bracket,
@@ -623,6 +631,86 @@ def _apply_transport_voucher_code_repair(
     return out
 
 
+def _day_offset(date_str: str, days: int) -> str:
+    """`date_str` (ISO 'YYYY-MM-DD') shifted by `days`. Used only for the adjacent-day boundary
+    math a peak-season carve needs (the day before a period starts, the day after it ends) -
+    never for anything a human typed directly, which always goes through date_format.py."""
+    from datetime import date as _date, timedelta as _timedelta
+    y, m, d = (int(p) for p in date_str.split("-"))
+    return (_date(y, m, d) + _timedelta(days=days)).isoformat()
+
+
+_TRANSPORT_OPTION_PRICE_SUPP_FIELDS = (
+    "adultPriceSupplement", "childrenPriceSupplement", "infantPriceSupplement",
+    "adultRTPriceSupplement", "childrenRTPriceSupplement", "infantRTPriceSupplement",
+)
+
+
+def _carve_transport_option_price_window(entries: List[Dict[str, Any]], start_date: str,
+                                          end_date: str, new_fields: Dict[str, float],
+                                          name: str) -> List[Dict[str, Any]]:
+    """Returns a NEW, non-overlapping `prices` list for one Option/bracket, with a peak-season
+    entry carved into it.
+
+    CONFIRMED REAL BUG this replaces (product owner, 2026-09-10): each Option's price entries
+    must never overlap in date - Travel Compositor's own Transport UI never produces two
+    entries covering the same day for the same bracket. The original version of this function
+    (2026-09-09) blindly APPENDED the new peak entry on top of whatever was already there, so a
+    bracket with a standing always-on entry (its normal, everyday rate) ended up with TWO
+    entries covering the peak dates at once - the standing one AND the new peak one - which
+    Travel Compositor has no defined way to resolve (and, per the product owner, isn't how its
+    own UI ever represents this).
+
+    CONFIRMED PROCESS instead (product owner, same conversation), for adding a peak-season
+    markup on top of a modality's (bracket's) existing standing rate: "change the end date of
+    the existing modality to the last day before the peak season start, add a new modality
+    [entry] with the additional percentage or absolute number, add another modality for [the
+    same bracket] for the day after the peak the defined day and add the regular supplement
+    until end of 2049 (on default)." So every existing entry that overlaps [start_date,
+    end_date] is split into up to two remainder pieces - the part before the peak (end date
+    moved back to the day before it starts) and the part after (start date moved forward to the
+    day after it ends) - each keeping its ORIGINAL supplement amounts completely unchanged (this
+    is what re-establishes "the regular supplement" afterward, all the way out to that entry's
+    own end date - already confirmed to be 2049-12-31 for every real Transport). An entry that
+    sits ENTIRELY inside [start_date, end_date] is dropped rather than split - it is being
+    superseded outright by the new peak entry for that exact window (makes re-running this tool
+    for the same period idempotent instead of piling up duplicates). An entry with no overlap at
+    all is carried through completely untouched.
+
+    Per-bracket, because each modality (Sedan, Hiace, ...) prices and is supplemented
+    completely independently - see STRUCTURED_TARGETS' own "why Transport is different"
+    comment; the caller (`_plan_transport_supplement`) already loops per bracket and calls this
+    once per bracket, using THAT bracket's own existing entries and its own newly-computed
+    peak-markup fields."""
+    kept: List[Dict[str, Any]] = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        e_start = e.get("startDate") or ""
+        e_end = e.get("endDate") or "2049-12-31"
+        if e_end < start_date or e_start > end_date:
+            # No overlap with the peak window at all - untouched.
+            kept.append(e)
+            continue
+        if e_start < start_date:
+            before = dict(e)
+            before["endDate"] = _day_offset(start_date, -1)
+            kept.append(before)
+        if e_end > end_date:
+            after = dict(e)
+            after["startDate"] = _day_offset(end_date, 1)
+            kept.append(after)
+        # An entry entirely inside [start_date, end_date] contributes neither piece - dropped,
+        # superseded by the new peak entry below.
+    kept.append({
+        "name": name, "startDate": start_date, "endDate": end_date,
+        **{field: round(_safe_float(new_fields.get(field, 0.0)), 2)
+           for field in _TRANSPORT_OPTION_PRICE_SUPP_FIELDS},
+    })
+    kept.sort(key=lambda e: e.get("startDate") or "")
+    return kept
+
+
 def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: str, end_date: str,
                                is_percent: bool, amount: float,
                                progress: Optional[Callable[[int, int, str], None]] = None
@@ -693,7 +781,12 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
                 })
                 continue
 
-            active = _active_transport_price_entry(opt)
+            # Anchored to start_date, not "today": the "existing supplement" a peak markup
+            # compounds onto is whichever rate is in effect AS OF the day the peak period
+            # begins - not whatever happens to be active on the day this tool is run (a future
+            # Christmas surcharge planned in September must still compound onto December's own
+            # rate, not September's).
+            active = _active_transport_price_entry(opt, today=start_date)
             new_entry_fields = {}
             summary_lines = []
             for field in ("adult", "children", "infant"):
@@ -709,14 +802,8 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
                         f"-> new supplement {new_supp:.2f} (total {base[field] + existing_supp + new_supp:.2f})")
 
             updated_opt = copy.deepcopy(opt)
-            updated_opt["prices"] = (list(opt.get("prices") or [])) + [{
-                "name": name, "startDate": start_date, "endDate": end_date,
-                "adultPriceSupplement": new_entry_fields["adultPriceSupplement"],
-                "childrenPriceSupplement": new_entry_fields["childrenPriceSupplement"],
-                "infantPriceSupplement": new_entry_fields["infantPriceSupplement"],
-                "adultRTPriceSupplement": 0.0, "childrenRTPriceSupplement": 0.0,
-                "infantRTPriceSupplement": 0.0,
-            }]
+            updated_opt["prices"] = _carve_transport_option_price_window(
+                list(opt.get("prices") or []), start_date, end_date, new_entry_fields, name)
             result["will_change"] += 1
             result["items"].append({
                 "id": item_id, "name": bracket_label, "status": "will_change",

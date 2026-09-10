@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
+MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
+MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
 
 _PHASE_KEY = "ti_phase"
 

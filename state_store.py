@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-10-transport-voucher-remarks-fix"
+MODULE_BUILD = "2026-09-10-transport-supplement-no-overlap"
 
 _NAMESPACE = "translation_state"
 

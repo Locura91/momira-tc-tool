@@ -11301,10 +11301,12 @@ def render_manual_information_flow(client):
             st.caption("Dates left blank inherit each transfer's own validity window (i.e. "
                       "applies all year, not just the period).")
         elif structured_kind == "transport_supplement":
-            st.caption("Adds a dated price supplement to EVERY occupancy bracket of EVERY "
-                      "Transport of this supplier - e.g. a Christmas/New Year's Eve/Easter "
-                      "surcharge. Travel Compositor has no percent-type surcharge for Transport "
-                      "(unlike Transfer), so the app always computes and writes a plain € amount.")
+            st.caption("Adds a dated price supplement to EVERY occupancy bracket (modality - "
+                      "Sedan, Hiace, ...) of EVERY Transport of this supplier - e.g. a Christmas/"
+                      "New Year's Eve/Easter surcharge. Travel Compositor has no percent-type "
+                      "surcharge for Transport (unlike Transfer), so the app always computes and "
+                      "writes a plain € amount, worked out separately per bracket (each modality "
+                      "has its own base price and its own existing supplement).")
             c1, c2 = st.columns(2)
             with c1:
                 item_data["amount"] = st.number_input("Amount", min_value=0.0, step=1.0, key="mi_ts_amount")
@@ -11317,9 +11319,17 @@ def render_manual_information_flow(client):
                 item_data["end_date"] = _iso(st.text_input(
                     f"Period end date {_DATE_HINT}", key="mi_ts_period_end", placeholder="05/01/2027"))
             st.caption("Percent is computed per bracket as (that bracket's base price + whatever "
-                      "surcharge is currently active on it today) * your % - never pre-calculated "
-                      "from one bracket and reused for the others, since brackets do not scale "
-                      "together (confirmed: real examples show non-monotonic per-bracket amounts).")
+                      "surcharge is in effect as of the period's start date) * your % - never "
+                      "pre-calculated from one bracket and reused for the others, since brackets "
+                      "do not scale together (confirmed: real examples show non-monotonic "
+                      "per-bracket amounts).")
+            st.caption("CORRECTED (2026-09-10): each bracket's existing standing (always-on) "
+                      "supplement is automatically split around the peak period rather than "
+                      "left overlapping it - the standing entry is truncated to end the day "
+                      "before the period starts, the new peak entry is inserted, and a fresh "
+                      "entry resuming the standing rate is added for the day after the period "
+                      "ends through 2049-12-31. No two entries for the same bracket ever cover "
+                      "the same day.")
         elif structured_kind == "transport_price_increase":
             st.caption("Permanently raises EVERY Transport of this supplier's own price by a "
                       "percentage - e.g. current price 60 USD, +10% -> 66 USD written back to "
@@ -13031,7 +13041,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-transport-voucher-remarks-fix"
+BUILD_VERSION = "2026-09-10-transport-supplement-no-overlap"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

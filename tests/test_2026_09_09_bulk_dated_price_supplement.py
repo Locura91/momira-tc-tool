@@ -103,6 +103,10 @@ def test_transport_fixed_amount_applies_the_same_number_to_every_price_field():
     assert new_entry["name"] == "Christmas Surcharge"
 
 
+def _entry_named(prices, name):
+    return next(e for e in prices if e.get("name") == name)
+
+
 def test_transport_percent_compounds_base_price_with_the_currently_active_supplement():
     # A bracket with base 100 and an already-active +20 supplement, 10% surcharge ->
     # (100 + 20) * 0.10 = 12, NOT 100 * 0.10 = 10 (which would ignore the existing supplement -
@@ -115,7 +119,7 @@ def test_transport_percent_compounds_base_price_with_the_currently_active_supple
     client = _FakeClient(transports=[t], transport_options={("TRANSPORT-1", "OPT1"): opt})
     result = bulk_notes._plan_transport_supplement(
         client, "SUP1", "NYE Surcharge", "2026-12-31", "2027-01-01", True, 10.0)
-    new_entry = result["items"][0]["record"]["prices"][-1]
+    new_entry = _entry_named(result["items"][0]["record"]["prices"], "NYE Surcharge")
     assert new_entry["adultPriceSupplement"] == 12.0
 
 
@@ -137,7 +141,13 @@ def test_transport_percent_is_computed_per_bracket_not_shared_across_brackets():
         assert new_entry["adultPriceSupplement"] == 15.0  # both brackets share base=100 here
 
 
-def test_transport_supplement_is_additive_never_replaces_existing_price_entries():
+def test_transport_supplement_splits_the_standing_entry_around_the_peak_period():
+    # CORRECTED (2026-09-10, real product-owner report): the original 2026-09-09 version of
+    # this feature blindly APPENDED the peak entry on top of the standing one, so both covered
+    # the peak dates at once - an overlap Travel Compositor's own UI never produces. The
+    # confirmed correct process: truncate the standing entry to end the day before the peak
+    # starts, insert the peak entry, and insert a fresh "resume" entry (same supplement as the
+    # standing one) for the day after the peak ends through the standing entry's own end date.
     t = _transport()
     existing_entry = {"name": "Standing rate", "startDate": "2026-01-01", "endDate": "2049-12-31",
                       "adultPriceSupplement": 20.0, "childrenPriceSupplement": 0.0,
@@ -147,8 +157,21 @@ def test_transport_supplement_is_additive_never_replaces_existing_price_entries(
     result = bulk_notes._plan_transport_supplement(
         client, "SUP1", "Christmas Surcharge", "2026-12-20", "2027-01-05", False, 30.0)
     new_prices = result["items"][0]["record"]["prices"]
-    assert len(new_prices) == 2
-    assert existing_entry in new_prices
+    # Three non-overlapping entries now: before, peak, resume-after.
+    assert len(new_prices) == 3
+    by_start = sorted(new_prices, key=lambda e: e["startDate"])
+    before, peak, after = by_start
+    assert before["startDate"] == "2026-01-01" and before["endDate"] == "2026-12-19"
+    assert before["adultPriceSupplement"] == 20.0  # standing rate, unchanged
+    assert peak["startDate"] == "2026-12-20" and peak["endDate"] == "2027-01-05"
+    assert peak["adultPriceSupplement"] == 30.0
+    assert peak["name"] == "Christmas Surcharge"
+    assert after["startDate"] == "2027-01-06" and after["endDate"] == "2049-12-31"
+    assert after["adultPriceSupplement"] == 20.0  # back to the standing rate, unchanged
+    # No two entries cover the same day.
+    spans = sorted((e["startDate"], e["endDate"]) for e in new_prices)
+    for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
+        assert e1 < s2
 
 
 def test_sending_the_same_named_supplement_for_the_same_dates_twice_is_a_no_op():
@@ -162,6 +185,118 @@ def test_sending_the_same_named_supplement_for_the_same_dates_twice_is_a_no_op()
         client, "SUP1", "Christmas Surcharge", "2026-12-20", "2027-01-05", False, 30.0)
     assert result["will_change"] == 0
     assert result["unchanged"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Transport: _carve_transport_option_price_window - the split/carve logic directly
+# ---------------------------------------------------------------------------
+
+_NEW_FIELDS = {"adultPriceSupplement": 30.0, "childrenPriceSupplement": 15.0,
+              "infantPriceSupplement": 0.0}
+
+
+def test_carve_with_no_existing_entries_just_inserts_the_peak_entry():
+    # A bracket priced exactly at base (no supplement at all, per
+    # ContractTransportOptionPriceVO's own confirmed convention of "no entries = base rate")
+    # needs no before/after entries - absence of an entry already means "no supplement".
+    result = bulk_notes._carve_transport_option_price_window(
+        [], "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert len(result) == 1
+    assert result[0]["startDate"] == "2026-12-20" and result[0]["endDate"] == "2027-01-05"
+    assert result[0]["adultPriceSupplement"] == 30.0
+
+
+def test_carve_entry_entirely_before_the_peak_is_untouched():
+    entries = [{"name": "Old", "startDate": "2020-01-01", "endDate": "2026-01-01",
+               "adultPriceSupplement": 5.0}]
+    result = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert entries[0] in result  # byte-for-byte unchanged
+    assert len(result) == 2
+
+
+def test_carve_entry_entirely_after_the_peak_is_untouched():
+    entries = [{"name": "Later", "startDate": "2027-06-01", "endDate": "2049-12-31",
+               "adultPriceSupplement": 5.0}]
+    result = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert entries[0] in result
+    assert len(result) == 2
+
+
+def test_carve_entry_entirely_inside_the_peak_window_is_superseded_not_kept():
+    # A leftover from an earlier, narrower run for the same season - fully replaced by the new
+    # peak entry rather than left dangling as a redundant/overlapping third entry.
+    entries = [{"name": "Old smaller peak", "startDate": "2026-12-24", "endDate": "2026-12-26",
+               "adultPriceSupplement": 999.0}]
+    result = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert len(result) == 1
+    assert result[0]["adultPriceSupplement"] == 30.0
+    assert "999.0" not in str(result)
+
+
+def test_carve_is_idempotent_rerunning_for_the_exact_same_window_replaces_not_duplicates():
+    entries = [{"name": "Standing rate", "startDate": "2026-01-01", "endDate": "2049-12-31",
+               "adultPriceSupplement": 20.0}]
+    first = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    second = bulk_notes._carve_transport_option_price_window(
+        first, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert len(second) == 3  # still before/peak/after, not a growing pile
+    assert len([e for e in second if e["name"] == "Christmas Surcharge"]) == 1
+
+
+def test_carve_handles_a_peak_window_starting_exactly_on_the_standing_entrys_start_date():
+    # e_start == start_date: no "before" remainder should be created (it would be degenerate -
+    # ending before it begins).
+    entries = [{"name": "Standing rate", "startDate": "2026-12-20", "endDate": "2049-12-31",
+               "adultPriceSupplement": 20.0}]
+    result = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    assert len(result) == 2  # peak + after only, no degenerate before-piece
+    assert all(e["startDate"] != "" for e in result)
+
+
+def test_carve_handles_two_peak_windows_across_different_years_without_interference():
+    # Christmas this year, Easter next year - two independent carves against the same
+    # progressively-updated entries list, exactly how a human would run this tool twice.
+    entries = [{"name": "Standing rate", "startDate": "2026-01-01", "endDate": "2049-12-31",
+               "adultPriceSupplement": 20.0}]
+    after_christmas = bulk_notes._carve_transport_option_price_window(
+        entries, "2026-12-20", "2027-01-05", _NEW_FIELDS, "Christmas Surcharge")
+    after_easter = bulk_notes._carve_transport_option_price_window(
+        after_christmas, "2027-04-01", "2027-04-10", _NEW_FIELDS, "Easter Surcharge")
+    names = sorted(e["name"] for e in after_easter)
+    # The Christmas carve leaves a "Standing rate" tail (Jan 6 - Dec 31); the Easter carve then
+    # splits THAT tail around itself too, so "Standing rate" appears three times in total: the
+    # original pre-Christmas piece, plus the two pieces the Easter carve makes from the tail.
+    assert names == ["Christmas Surcharge", "Easter Surcharge",
+                     "Standing rate", "Standing rate", "Standing rate"]
+    # No two entries overlap anywhere in the final list.
+    spans = sorted((e["startDate"], e["endDate"]) for e in after_easter)
+    for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
+        assert e1 < s2
+
+
+def test_transport_supplement_anchors_the_existing_rate_to_the_periods_start_date_not_today():
+    # A future surcharge planned well ahead of time must compound onto the rate that will
+    # actually be in effect when the peak period BEGINS, not whatever happens to be active
+    # today (the date this tool is run).
+    t = _transport(base_adult=100.0, base_children=0.0, base_infant=0.0)
+    opt = _option(prices=[
+        {"name": "Off-season rate", "startDate": "2020-01-01", "endDate": "2026-11-30",
+         "adultPriceSupplement": 0.0, "childrenPriceSupplement": 0.0, "infantPriceSupplement": 0.0},
+        {"name": "High season rate", "startDate": "2026-12-01", "endDate": "2049-12-31",
+         "adultPriceSupplement": 20.0, "childrenPriceSupplement": 0.0, "infantPriceSupplement": 0.0},
+    ])
+    client = _FakeClient(transports=[t], transport_options={("TRANSPORT-1", "OPT1"): opt})
+    # "Today" (whatever it actually is when the test runs) is irrelevant here - what matters is
+    # that 2026-12-20 (the peak start) falls inside the High season rate, not Off-season.
+    result = bulk_notes._plan_transport_supplement(
+        client, "SUP1", "NYE Surcharge", "2026-12-20", "2027-01-05", True, 10.0)
+    peak = _entry_named(result["items"][0]["record"]["prices"], "NYE Surcharge")
+    assert peak["adultPriceSupplement"] == 12.0  # (100 + 20) * 10%, not (100 + 0) * 10%
 
 
 # ---------------------------------------------------------------------------
