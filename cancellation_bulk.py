@@ -76,7 +76,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-transport-supplement-per-vehicle-pricing-fix"
+MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple

@@ -215,6 +215,82 @@ def test_apply_base_write_goes_through_update_transport_not_update_transport_opt
     assert len(client.updated_options) == 0
 
 
+def test_per_vehicle_transport_raises_vehicle_price_not_the_zeroed_base_fields():
+    """Regression for a real 2026-09-10 product-owner report: "when i bulk update transport
+    price, does the app understand the logic between Sedan and Hiace?" Tracing this base-price
+    path found it only ever looked at baseAdultPrice/baseChildrenPrice/baseInfantPrice - all 0
+    for a pricePerPax=False (per-vehicle) transport, whose real base price lives in
+    vehiclePrice instead (same root cause as _plan_transport_supplement's per-vehicle fix
+    earlier the same day). Before this fix, a per-vehicle transport silently produced
+    "unchanged - no base price set" no matter what percentage was entered."""
+    t = {
+        "id": "TRANSPORT-1", "name": "Cairo - Alexandria", "optionCodes": ["Sedan", "Hiace"],
+        "pricePerPax": False, "vehiclePrice": 100.0,
+        "baseAdultPrice": 0.0, "baseChildrenPrice": 0.0, "baseInfantPrice": 0.0,
+    }
+    sedan = {"code": "Sedan", "minPassengers": 1, "maxPassengers": 3, "prices": []}
+    hiace = {"code": "Hiace", "minPassengers": 1, "maxPassengers": 8, "prices": []}
+    client = _FakeClient(transports=[t], transport_options={
+        ("TRANSPORT-1", "Sedan"): sedan, ("TRANSPORT-1", "Hiace"): hiace,
+    })
+    plan = bulk_notes._plan_transport_price_increase(client, "SUP1", 10.0, True, False)
+    base_item = next(it for it in plan["items"] if it["id"] == "TRANSPORT-1:base")
+    assert base_item["status"] == "will_change"
+    assert base_item["record"]["vehiclePrice"] == 110.0
+    # The base fields that stay genuinely 0 for a per-vehicle transport must not be touched.
+    assert base_item["record"]["baseAdultPrice"] == 0.0
+
+
+def test_per_pax_transport_is_unaffected_by_the_per_vehicle_branch():
+    t = _transport(base_adult=100.0, base_children=50.0, base_infant=0.0)
+    client = _FakeClient(transports=[t])
+    plan = bulk_notes._plan_transport_price_increase(client, "SUP1", 10.0, True, False)
+    base_item = next(it for it in plan["items"] if it["id"] == "TRANSPORT-1:base")
+    assert base_item["status"] == "will_change"
+    assert base_item["record"]["baseAdultPrice"] == 110.0
+    assert base_item["record"]["baseChildrenPrice"] == 55.0
+    assert "vehiclePrice" not in base_item["changes"]["EN"][1]
+
+
+def test_absolute_amount_adds_a_flat_number_to_the_base_price():
+    """CONFIRMED REAL NEED (product owner, 2026-09-10, follow-up on the same feature): "adds
+    manually amount of percentage or absolute number and this will be added to the already
+    existing base price" - is_percent=False must ADD the raw amount, not multiply."""
+    t = _transport(base_adult=100.0, base_children=50.0, base_infant=0.0)
+    client = _FakeClient(transports=[t])
+    plan = bulk_notes._plan_transport_price_increase(
+        client, "SUP1", 5.0, True, False, is_percent=False)
+    base_item = next(it for it in plan["items"] if it["id"] == "TRANSPORT-1:base")
+    assert base_item["status"] == "will_change"
+    assert base_item["record"]["baseAdultPrice"] == 105.0
+    assert base_item["record"]["baseChildrenPrice"] == 55.0
+    # A field genuinely at 0 stays at 0 in absolute mode too - it means "not priced".
+    assert base_item["record"]["baseInfantPrice"] == 0.0
+
+
+def test_absolute_amount_on_a_per_vehicle_transport_adds_to_vehicle_price():
+    t = {
+        "id": "TRANSPORT-1", "name": "Cairo - Alexandria", "optionCodes": [],
+        "pricePerPax": False, "vehiclePrice": 65.0,
+        "baseAdultPrice": 0.0, "baseChildrenPrice": 0.0, "baseInfantPrice": 0.0,
+    }
+    client = _FakeClient(transports=[t])
+    plan = bulk_notes._plan_transport_price_increase(
+        client, "SUP1", 10.0, True, False, is_percent=False)
+    base_item = next(it for it in plan["items"] if it["id"] == "TRANSPORT-1:base")
+    assert base_item["record"]["vehiclePrice"] == 75.0
+
+
+def test_no_amount_given_reports_the_right_error_for_each_mode():
+    t = _transport()
+    client = _FakeClient(transports=[t])
+    percent_plan = bulk_notes._plan_transport_price_increase(client, "SUP1", 0, True, False)
+    assert "percentage" in percent_plan["error"]
+    absolute_plan = bulk_notes._plan_transport_price_increase(
+        client, "SUP1", 0, True, False, is_percent=False)
+    assert "amount" in absolute_plan["error"]
+
+
 def test_structured_targets_lists_the_new_transport_option():
     assert bulk_notes.STRUCTURED_TARGETS["Transport"]["Permanent price increase (%)"] == \
         "transport_price_increase"
@@ -238,6 +314,7 @@ def test_app_py_has_the_price_increase_ui_branch():
     src = _read_app_py()
     assert 'structured_kind == "transport_price_increase"' in src
     branch = src.split('structured_kind == "transport_price_increase":')[1].split("\n        elif")[0]
-    assert 'item_data["percent"]' in branch
+    assert 'item_data["amount"]' in branch
+    assert 'item_data["is_percent"]' in branch
     assert 'item_data["increase_base"]' in branch
     assert 'item_data["increase_supplement"]' in branch

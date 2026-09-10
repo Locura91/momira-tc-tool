@@ -11373,14 +11373,34 @@ def render_manual_information_flow(client):
                       "ends through 2049-12-31. No two entries for the same bracket ever cover "
                       "the same day.")
         elif structured_kind == "transport_price_increase":
-            st.caption("Permanently raises EVERY Transport of this supplier's own price by a "
-                      "percentage - e.g. current price 60 USD, +10% -> 66 USD written back to "
-                      "Travel Compositor. Unlike the dated supplement above, this mutates the "
-                      "existing price fields in place - it does not add a new dated entry.")
-            item_data["percent"] = st.number_input(
-                "Increase by (%)", min_value=0.0, step=1.0, key="mi_tpi_percent",
-                help="Applied to every base price field and/or the currently-active supplement "
-                     "amount, per your choice below.")
+            st.caption("Permanently raises EVERY Transport of this supplier's own price - e.g. "
+                      "current price 60 USD, +10% -> 66 USD (or +5 -> 65 USD flat) written back "
+                      "to Travel Compositor. Unlike the dated supplement above, this mutates the "
+                      "existing price fields in place - it does not add a new dated entry. Works "
+                      "for both pricing models: a per-passenger Transport (adult/children/"
+                      "infant base prices) and a per-vehicle one (a single Vehicle price, "
+                      "\"Price Per Pax\" unchecked) - the app reads whichever field is really "
+                      "the base price for that specific Transport.")
+            # CONFIRMED REAL NEED (product owner, 2026-09-10): "adds manually amount of "
+            # percentage or absolute number and this will be added to the already existing base
+            # price" - same Absolute/Percent choice already offered on the dated supplement
+            # target above, kept symmetrical rather than percent-only.
+            item_data["is_percent"] = st.radio(
+                "Type", ["Percent (%)", "Absolute number"],
+                key="mi_tpi_type", horizontal=True) == "Percent (%)"
+            if item_data["is_percent"]:
+                item_data["amount"] = st.number_input(
+                    "Increase by (%)", min_value=0.0, step=1.0, key="mi_tpi_amount",
+                    help="Applied to every base price field and/or the currently-active "
+                         "supplement amount, per your choice below.")
+            else:
+                item_data["amount"] = st.number_input(
+                    "Increase by (flat amount, in that Transport's own currency)",
+                    min_value=0, step=1, key="mi_tpi_amount_abs",
+                    help="Added directly to every base price field and/or the currently-active "
+                         "supplement amount, per your choice below. A field already at 0 is "
+                         "always left at 0 in this mode too - it means \"not priced\", not "
+                         "\"priced at zero\".")
             st.caption("Choose what to increase - any combination (base price only, active "
                       "supplement only, or both):")
             c1, c2 = st.columns(2)
@@ -13345,7 +13365,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-transport-supplement-per-vehicle-pricing-fix"
+BUILD_VERSION = "2026-09-10-transport-price-increase-absolute-mode"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

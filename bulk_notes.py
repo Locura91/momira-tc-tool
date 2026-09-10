@@ -360,8 +360,8 @@ _TRANSPORT_SUPPLEMENT_PRICE_FIELDS = (
 )
 
 
-def _plan_transport_price_increase(client, supplier_id: str, percent: float, increase_base: bool,
-                                   increase_supplement: bool,
+def _plan_transport_price_increase(client, supplier_id: str, amount: float, increase_base: bool,
+                                   increase_supplement: bool, is_percent: bool = True,
                                    progress: Optional[Callable[[int, int, str], None]] = None
                                    ) -> Dict[str, Any]:
     """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "Update existing price by percentage...
@@ -372,18 +372,31 @@ def _plan_transport_price_increase(client, supplier_id: str, percent: float, inc
     the base price, to whatever supplement is currently active, or to both together (never
     assumed): "Just one of each or both. Human must decide."
 
+    EXTENDED, same day (product owner): "I want that the app can do that. Human shall select
+    bulk price transport update, select supplier, adds manually amount of percentage or
+    absolute number and this will be added to the already existing base price." `is_percent`
+    picks between the two: True multiplies by (1 + amount/100) (the original behavior, still the
+    default), False simply adds `amount` to whatever the field already holds - same ABSOLUTE-vs-
+    PERCENT choice already offered on the dated transport_supplement target, kept symmetrical.
+
     Two independent kinds of write can result from one run, so each item carries its own
     `write_kind` for apply() to dispatch on, rather than the whole plan being one kind the way
     _plan_transport_supplement's is:
-      - "transport": the base*Price fields on the Transport's OWN record (parent level) -
-        one item per Transport, only when increase_base is set.
+      - "transport": the base*Price fields on the Transport's OWN record (parent level) - or,
+        for a per-vehicle transport (pricePerPax=False), its `vehiclePrice` field instead (see
+        the per_pax branch below - same fix as _plan_transport_supplement's own per-vehicle
+        handling, confirmed needed the same day: "priceperpax must also work, therefore both
+        options must work") - one item per Transport, only when increase_base is set.
       - "transport_option": the CURRENTLY ACTIVE price entry's supplement fields, mutated IN
         PLACE (never appended - this raises what's already there, it does not add a new dated
         entry the way _plan_transport_supplement does) - one item per bracket, only when
         increase_supplement is set and that bracket actually has an active entry with a
         nonzero supplement to raise.
-    A field already at 0 is left at 0 (0 * any percent is still 0, and skipping it keeps the
-    per-item "before -> after" preview free of no-op lines)."""
+    A field already at 0 is left at 0 in BOTH modes - for percent this is naturally a no-op
+    (0 * anything is still 0); for absolute it's a deliberate choice (a base field genuinely at
+    0 means "not priced/not offered", e.g. a route with no infant price - adding a flat amount
+    to it would silently start charging for something that was intentionally free/absent,
+    which is not what "raise what's already there" means)."""
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": "Transport",
                               "target": "transport_price_increase", "structured": True,
@@ -391,8 +404,9 @@ def _plan_transport_price_increase(client, supplier_id: str, percent: float, inc
     if not increase_base and not increase_supplement:
         result["error"] = "Choose at least one: increase the base price, the active supplement, or both."
         return result
-    if not percent:
-        result["error"] = "Give a percentage greater than 0."
+    if not amount:
+        result["error"] = ("Give a percentage greater than 0." if is_percent
+                           else "Give an amount greater than 0.")
         return result
     try:
         listing = getattr(client, "get_transports")(supplier_id)
@@ -402,7 +416,9 @@ def _plan_transport_price_increase(client, supplier_id: str, percent: float, inc
     transports = listing.get("transport") if isinstance(listing, dict) else listing
     transports = transports or []
     total = len(transports)
-    factor = 1.0 + (percent / 100.0)
+
+    def _raise(old: float) -> float:
+        return round(old * (1.0 + amount / 100.0), 2) if is_percent else round(old + amount, 2)
     for i, t_summary in enumerate(transports):
         t_id = t_summary.get("id") if isinstance(t_summary, dict) else None
         t_name = (t_summary or {}).get("name") or t_id or "?"
@@ -422,11 +438,22 @@ def _plan_transport_price_increase(client, supplier_id: str, percent: float, inc
             updated_t = copy.deepcopy(t)
             _normalize_for_put(updated_t, "Transport")
             lines = []
-            for field in _TRANSPORT_BASE_PRICE_FIELDS:
+            # CONFIRMED REAL BUG (product owner, 2026-09-10, same root cause as
+            # _plan_transport_supplement's per-vehicle fix earlier today - "priceperpax must
+            # also work, therefore both options must work"): a per-vehicle transport
+            # (pricePerPax=False) has all of baseAdultPrice/baseChildrenPrice/baseInfantPrice
+            # at 0 - its real base price lives in vehiclePrice instead (confirmed
+            # ContractTransportVO field). This path only ever looked at the three base*Price
+            # fields, so a percent base-price increase silently did nothing for a per-vehicle
+            # transport ("no base price set on this Transport") even though vehiclePrice was
+            # clearly nonzero. Mirrors the same per_pax branch already used above.
+            per_pax = bool(t.get("pricePerPax", True))
+            base_fields = _TRANSPORT_BASE_PRICE_FIELDS if per_pax else ("vehiclePrice",)
+            for field in base_fields:
                 old = _safe_float(t.get(field))
                 if old <= 0:
                     continue
-                new = round(old * factor, 2)
+                new = _raise(old)
                 if new != old:
                     updated_t[field] = new
                     lines.append(f"{field}: {old:.2f} -> {new:.2f}")
@@ -486,7 +513,7 @@ def _plan_transport_price_increase(client, supplier_id: str, percent: float, inc
                     old = _safe_float(active.get(field))
                     if old <= 0:
                         continue
-                    new = round(old * factor, 2)
+                    new = _raise(old)
                     if new != old:
                         target_entry[field] = new
                         lines.append(f"{field}: {old:.2f} -> {new:.2f}")
@@ -882,10 +909,15 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
         # entry, mutated in place) - the opposite philosophy from transport_supplement above,
         # which only ever appends a new dated entry. See _plan_transport_price_increase's own
         # docstring.
+        # "amount" is the current field name (percent-or-absolute, per is_percent below);
+        # "percent" is kept as a fallback so a caller built against the pre-2026-09-10 signature
+        # (percent-only) still works unchanged.
+        _amount = (item_data or {}).get("amount", (item_data or {}).get("percent"))
         return _plan_transport_price_increase(
-            client, supplier_id, _safe_float((item_data or {}).get("percent")),
+            client, supplier_id, _safe_float(_amount),
             bool((item_data or {}).get("increase_base")),
             bool((item_data or {}).get("increase_supplement")),
+            is_percent=bool((item_data or {}).get("is_percent", True)),
             progress=progress)
 
     if kind == "transport_voucher_code_repair":

@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-10-transport-supplement-per-vehicle-pricing-fix"
+MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
 
 _PHASE_KEY = "ti_phase"
 
