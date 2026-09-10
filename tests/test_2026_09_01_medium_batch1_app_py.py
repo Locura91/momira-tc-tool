@@ -58,7 +58,7 @@ MODULE_BUILD are tested via direct import since those modules import cleanly sta
 """
 import os
 
-MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
+MODULE_BUILD = "2026-09-10-supplier-migration-all-types-and-verified-transport-supplement"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)
@@ -401,7 +401,11 @@ def test_ctb_apply_button_is_disabled_while_the_policy_table_is_being_edited():
 # 17. Supplier migration deactivating the original even without a new id
 # ======================================================================
 def test_transfer_migration_does_not_deactivate_the_original_when_create_returns_no_id():
-    src = _read_app_py()
+    # CONFIRMED (2026-09-10): this logic moved from app.py's inline Transfer-only migration
+    # code into supplier_migration.py's migrate_transfer, when the "Move to another Supplier"
+    # tool was generalized to all 5 product types (product owner: "this is not only for the
+    # transfer section, it must work for all services").
+    src = _read("supplier_migration.py")
     idx = src.index('new_id = create_res.get("id") if isinstance(create_res, dict) else None')
     window = src[idx:idx + 1200]
     assert "if not new_id:" in window

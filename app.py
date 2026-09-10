@@ -163,6 +163,7 @@ from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from r2_client import stale_image_warning
 from geocoding_client import geocode_search, geocode, parse_google_maps_url, build_place_query
 import transfer_matcher
+import supplier_migration
 import masterdata_store
 import masterdata_matcher
 import price_validity
@@ -11343,15 +11344,22 @@ def render_manual_information_flow(client):
                       "has its own base price and its own existing supplement).")
             c1, c2 = st.columns(2)
             with c1:
-                item_data["amount"] = st.number_input("Amount", min_value=0.0, step=1.0, key="mi_ts_amount")
+                # CONFIRMED REAL NEED (product owner, 2026-09-10): "The Amount is only available
+                # in full number, no need for 0.00." min_value/step as plain ints (not 0.0/1.0)
+                # is what makes Streamlit treat this as a whole-number input with no decimals.
+                item_data["amount"] = st.number_input("Amount", min_value=0, step=1, key="mi_ts_amount")
                 item_data["is_percent"] = st.radio(
-                    "Type", ["Fixed amount per bracket", "Percent of price + existing supplement"],
+                    "Type", ["Absolute number", "Percent of price + existing supplement"],
                     key="mi_ts_pct_type", horizontal=True) == "Percent of price + existing supplement"
             with c2:
-                item_data["start_date"] = _dmy_date_field(
-                    f"Period start date {_DATE_HINT}", "mi_ts_period_start", placeholder="20/12/2026")
-                item_data["end_date"] = _dmy_date_field(
-                    f"Period end date {_DATE_HINT}", "mi_ts_period_end", placeholder="05/01/2027")
+                # CONFIRMED BUG (product owner, 2026-09-10): "remove the calendar function within
+                # adding manual information in transport, as it does not work." Reverted to a
+                # plain typeable field here - the calendar popover (_dmy_date_field) stays in use
+                # everywhere else it wasn't reported broken.
+                item_data["start_date"] = _iso(st.text_input(
+                    f"Period start date {_DATE_HINT}", key="mi_ts_period_start", placeholder="20/12/2026"))
+                item_data["end_date"] = _iso(st.text_input(
+                    f"Period end date {_DATE_HINT}", key="mi_ts_period_end", placeholder="05/01/2027"))
             st.caption("Percent is computed per bracket as (that bracket's base price + whatever "
                       "surcharge is in effect as of the period's start date) * your % - never "
                       "pre-calculated from one bracket and reused for the others, since brackets "
@@ -11842,37 +11850,53 @@ def _ur_pick_momira_supplier(client, key_prefix):
 
 
 def render_supplier_migration_flow(client):
-    """Move ALL (or a chosen subset) of a supplier's Transfers to a different supplier.
+    """Move ALL (or a chosen subset) of a supplier's services of one type to a different
+    supplier.
 
-    CONFIRMED REAL NEED (product owner, 2026-08-24): "If I want mass change the supplier A,
-    like all Transfers from supplier must now be changed to supplier B." Travel Compositor
-    has no operation that does this directly - supplierId is part of every Transfer
-    endpoint's URL (GET/POST/PUT /transfer/{supplierId}), never a field on the payload itself
-    (see ContractTransferVO's own docstring in schemas.py), so a Transfer's supplier is fixed
-    for its whole life once created. The only way to "move" one is: fetch it whole from
-    supplier A, POST an identical copy under supplier B (Travel Compositor assigns the copy a
-    brand-new id - the old id can never be reused or transferred), then set the ORIGINAL under
-    A to active=False so the same route can't be booked twice under two suppliers at once.
-    Nothing under A is ever deleted - the Transfer API has no delete endpoint at all, only
-    create/update - so the source records stay in place, just switched off.
+    CONFIRMED REAL NEED (product owner, 2026-08-24, Transfer only): "If I want mass change the
+    supplier A, like all Transfers from supplier must now be changed to supplier B." EXTENDED
+    (product owner, 2026-09-10): "this is not only for the transfer section, it must work for
+    all services." Travel Compositor has no operation that moves anything directly - supplierId
+    is part of every product endpoint's URL, never a field on the payload itself, so a
+    product's supplier is fixed for its whole life once created. The only way to "move" one is:
+    fetch it whole from supplier A, recreate an identical copy under supplier B (Travel
+    Compositor assigns the copy a brand-new identity - the old one can never be reused or
+    transferred), then retire the ORIGINAL under A so the same thing can't be booked/sold
+    under two suppliers at once. Nothing under A is ever deleted - none of these APIs have a
+    delete endpoint at all - so the source records stay in place, just retired.
 
-    CONFIRMED SCOPE DECISIONS (product owner, 2026-08-24): recreate-then-auto-deactivate (not
-    a dry-run / manual-deactivate-later mode), built as a standing screen for reuse on future
-    supplier moves rather than a one-off script. Transfer only for now, matching what was
-    asked - Transport shares the same "supplier is part of the URL, not the payload" shape
-    (see ContractTransportVO) so the same approach would extend to it if that's ever needed.
+    All the actual per-type logic - the exact create sequence, and what "retire the original"
+    means for each type (a real active=False for four of the five; a stop-sale close-out for
+    Hotel, which has neither an active flag nor a delete endpoint) - lives in
+    supplier_migration.py, not here. See that module's own docstring for the full reasoning,
+    including the confirmed production failures its sequencing is built to avoid repeating.
 
-    KNOWN LIMITATION, surfaced to the operator rather than silently copied: a transfer using
-    ZONE-based routing (departureLocationId/arrivalLocationId, from
-    client.get_transfer_zones) carries a zone id that is looked up PER SUPPLIER - the same id
-    under supplier B may not exist, or may point at a completely different place. Any such
-    transfer is flagged before moving so a human checks the destination supplier's zones
-    rather than trusting a silently-copied id that could be silently wrong.
+    KNOWN LIMITATION, surfaced to the operator rather than silently copied: a Transfer using
+    ZONE-based routing (departureLocationId/arrivalLocationId, from client.get_transfer_zones)
+    carries a zone id that is looked up PER SUPPLIER - the same id under the destination may not
+    exist, or may point at a completely different place. Any such Transfer is flagged before
+    moving so a human checks the destination supplier's zones rather than trusting a silently-
+    copied id that could be silently wrong.
     """
-    st.header("Move Transfers to another Supplier")
-    st.caption("Recreates every selected Transfer under a different supplier, then switches the "
-              "original off. Nothing is deleted - Travel Compositor has no delete endpoint for "
-              "Transfers, so the originals stay in place, just inactive.")
+    st.header("Move a Supplier's Services to another Supplier")
+    st.caption("Recreates every selected service under a different supplier, then retires the "
+              "original there - what 'retires' means depends on the product type you pick "
+              "below (Hotel in particular works differently - see the warning once you get to "
+              "step 3).")
+
+    product_type = st.radio(
+        "Which product type?", ["Transfer", "Transport", "Ticket", "ClosedTour", "Hotel"],
+        key="sm_product_type", horizontal=True)
+
+    if st.session_state.get("sm_active_product_type") != product_type:
+        # Product type changed - drop everything loaded for the previous one so nothing from a
+        # different type's review screen can leak into this one.
+        for key in list(st.session_state.keys()):
+            if key.startswith("sm_") and key not in ("sm_product_type", "sm_active_product_type"):
+                del st.session_state[key]
+        st.session_state.sm_active_product_type = product_type
+
+    st.markdown("---")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -11889,14 +11913,13 @@ def render_supplier_migration_flow(client):
         ok = [r for r in results if r["ok"] is True]
         partial = [r for r in results if r["ok"] == "partial"]
         failed = [r for r in results if r["ok"] is False]
-        st.caption(f"{len(ok)} moved cleanly · {len(partial)} created but NOT deactivated (needs a "
+        st.caption(f"{len(ok)} moved cleanly · {len(partial)} partially done (needs a "
                   f"look) · {len(failed)} failed outright.")
         for r in ok:
-            st.success(f"✅ **{r['name']}** — now `{r['new_id']}` under the new supplier; original "
-                      f"deactivated.")
+            st.success(f"✅ **{r['name']}** — now `{r.get('new_id')}` under the new supplier; "
+                      f"original retired.")
         for r in partial:
-            st.warning(f"⚠️ **{r['name']}** — {r['detail']}. The route now exists under BOTH "
-                      f"suppliers until you deactivate the original by hand.")
+            st.warning(f"⚠️ **{r['name']}** — {r['detail']}")
         for r in failed:
             st.error(f"🚫 **{r['name']}** — failed at the {r['stage']} step: {r['detail']}")
         if st.button("↩️ Move more / start over", key="sm_reset"):
@@ -11912,20 +11935,25 @@ def render_supplier_migration_flow(client):
         st.error("🚫 Source and destination are the same supplier - nothing to move.")
         return
 
-    if st.button("📥 Load Transfers from the source supplier", key="sm_load"):
-        with st.spinner("Loading transfers..."):
-            try:
-                data = client.get_transfers(source_id)
-            except Exception as e:
-                st.error(f"❌ Couldn't load transfers: {friendly_error_message(e)}")
-                data = None
-            if isinstance(data, dict) and "error" in data:
-                st.error(f"❌ Couldn't load transfers: {data.get('message') or data.get('error')}")
-                data = None
-            if data is not None:
-                records = data.get("transfer", []) if isinstance(data, dict) else (data or [])
-                st.session_state.sm_records = [r for r in records if isinstance(r, dict)]
-                st.session_state.sm_selected = {i: True for i in range(len(st.session_state.sm_records))}
+    codes = None
+    if product_type == "ClosedTour":
+        st.caption("ClosedTour has no list-all endpoint in Travel Compositor - paste the codes "
+                  "to check, one per line.")
+        codes_text = st.text_area("ClosedTour codes", key="sm_ct_codes", height=100)
+        codes = [c.strip() for c in codes_text.splitlines() if c.strip()]
+
+    load_disabled = product_type == "ClosedTour" and not codes
+    if st.button(f"📥 Load {product_type}(s) from the source supplier", key="sm_load",
+                disabled=load_disabled):
+        with st.spinner(f"Loading {product_type}(s)..."):
+            records, err = bulk_notes.list_services(client, source_id, product_type, codes=codes)
+            if err and not records:
+                st.error(f"❌ Couldn't load {product_type}(s): {err}")
+            else:
+                if err:
+                    st.warning(f"⚠️ Some couldn't be loaded: {err}")
+                st.session_state.sm_records = records
+                st.session_state.sm_selected = {i: True for i in range(len(records))}
                 st.session_state.sm_source_id = source_id
                 st.session_state.sm_dest_id = dest_id
                 st.rerun()
@@ -11934,14 +11962,15 @@ def render_supplier_migration_flow(client):
     if records is None:
         return
     if st.session_state.get("sm_source_id") != source_id or st.session_state.get("sm_dest_id") != dest_id:
-        st.warning("⚠️ The supplier selection changed since these were loaded - click 'Load "
-                  "Transfers' again to refresh the list before moving anything.")
+        st.warning(f"⚠️ The supplier selection changed since these were loaded - click 'Load "
+                  f"{product_type}(s)' again to refresh the list before moving anything.")
         return
     if not records:
-        st.info("This supplier has no transfers to move.")
+        st.info(f"This supplier has no {product_type}(s) to move.")
         return
 
-    st.subheader(f"2 — Choose which of {len(records)} transfer(s) to move")
+    id_field = bulk_notes.PRODUCTS[product_type]["id_field"]
+    st.subheader(f"2 — Choose which of {len(records)} {product_type}(s) to move")
 
     bcol1, bcol2 = st.columns(2)
     with bcol1:
@@ -11962,18 +11991,18 @@ def render_supplier_migration_flow(client):
             st.rerun()
 
     for i, record in enumerate(records):
-        dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
-        arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
-        name = record.get("name") or f"{dep} - {arr}".strip(" -") or record.get("id") or f"Transfer #{i + 1}"
-        is_zoned = bool(record.get("departureLocationId") or record.get("arrivalLocationId"))
-        label = f"**{name}**  ·  {record.get('currency', '')} {record.get('basePrice', '')}  ·  id `{record.get('id')}`"
+        name = bulk_notes.label_for(record, product_type)
+        ident = record.get(id_field)
+        label = f"**{name}**  ·  id `{ident}`"
         st.session_state.sm_selected[i] = st.checkbox(
             label, value=st.session_state.sm_selected.get(i, True), key=f"sm_pick_{i}")
-        if is_zoned:
-            st.caption("⚠️ Zone-based routing (departureLocationId/arrivalLocationId) - this zone id "
-                      "is specific to the SOURCE supplier and may not exist, or may mean something "
-                      "different, under the destination. Check the destination supplier's zones in "
-                      "Travel Compositor after moving this one, before trusting it live.")
+        if product_type == "Transfer":
+            is_zoned = bool(record.get("departureLocationId") or record.get("arrivalLocationId"))
+            if is_zoned:
+                st.caption("⚠️ Zone-based routing (departureLocationId/arrivalLocationId) - this zone id "
+                          "is specific to the SOURCE supplier and may not exist, or may mean something "
+                          "different, under the destination. Check the destination supplier's zones in "
+                          "Travel Compositor after moving this one, before trusting it live.")
 
     selected_indices = [i for i, v in st.session_state.sm_selected.items() if v]
     st.caption(f"{len(selected_indices)} of {len(records)} selected.")
@@ -11981,79 +12010,52 @@ def render_supplier_migration_flow(client):
         return
 
     st.subheader("3 — Move")
-    st.warning(f"⚠️ This creates {len(selected_indices)} new transfer(s) under the destination "
-              f"supplier, and switches the same number OFF (active = False) under the source "
-              f"supplier. The new records get brand-new Travel Compositor ids - the old ones "
-              f"cannot be reused.")
+    _SM_RETIRE_NOTE = {
+        "Transfer": "switches the same number OFF (active = False) under the source supplier",
+        "Transport": "switches the same number OFF (active = False) under the source supplier",
+        "Ticket": "switches the same number OFF (active = False) under the source supplier",
+        "ClosedTour": "switches the same number OFF (active = False) under the source supplier",
+        "Hotel": "blocks every future date on the original instead - Travel Compositor has no "
+                 "active flag or delete endpoint for Hotel at all, so this is the only way to "
+                 "stop it being booked (see supplier_migration.py's migrate_hotel docstring)",
+    }
+    st.warning(f"⚠️ This creates {len(selected_indices)} new {product_type}(s) under the "
+              f"destination supplier, and {_SM_RETIRE_NOTE[product_type]}. The new records get "
+              f"brand-new Travel Compositor identities - the old ones cannot be reused.")
+    if product_type == "Hotel":
+        st.caption("Hotel migration also recreates every room, meal plan, offer, supplement and "
+                  "rate one at a time (Travel Compositor assigns each a brand-new code - rates "
+                  "are remapped to the new codes automatically) - this can be a lot of API calls "
+                  "for a hotel with many rate seasons, so it may take a while.")
 
-    if st.button(f"🚀 Move {len(selected_indices)} transfer(s)", key="sm_confirm", type="primary"):
+    if st.button(f"🚀 Move {len(selected_indices)} {product_type.lower()}(s)", key="sm_confirm",
+                type="primary"):
         results = []
         progress_bar = st.progress(0.0)
+        today_iso = datetime.now().date().isoformat()
         for n, i in enumerate(selected_indices):
             record = records[i]
-            dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
-            arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
-            name = record.get("name") or f"{dep} - {arr}".strip(" -") or record.get("id")
+            name = bulk_notes.label_for(record, product_type)
             progress_bar.progress((n + 1) / len(selected_indices), text=f"Moving {name}...")
-
-            create_payload = dict(record)
-            create_payload["id"] = None
-            create_payload["active"] = True
-            try:
-                create_res = client.create_transfer(dest_id, create_payload)
-            except Exception as e:
-                results.append({"name": name, "ok": False, "stage": "create",
-                               "detail": friendly_error_message(e)})
-                continue
-            if isinstance(create_res, dict) and "error" in create_res:
-                results.append({"name": name, "ok": False, "stage": "create",
-                               "detail": str(create_res.get("message") or create_res.get("error"))})
-                continue
-            new_id = create_res.get("id") if isinstance(create_res, dict) else None
-            # CONFIRMED BUG FIX (full-app audit LOW (plausible), 2026-09-01): the "error" in
-            # create_res check above only catches a response Travel Compositor itself flagged as
-            # an error - it doesn't guarantee `new_id` actually came back set. Deactivating the
-            # ORIGINAL Transfer here was previously unconditional on the create having "worked"
-            # (no "error" key), not on it having genuinely returned a usable id - so a create
-            # response that was some other kind of malformed/empty dict would still deactivate
-            # the original, potentially destroying the only working copy with no replacement.
-            if not new_id:
-                results.append({"name": name, "ok": False, "stage": "create",
-                               "detail": "the create call didn't return an id for the new record - "
-                                         "the original was NOT deactivated, nothing was lost."})
-                continue
-
-            deactivate_payload = dict(record)
-            deactivate_payload["active"] = False
-            try:
-                deact_res = client.update_transfer(source_id, deactivate_payload)
-            except Exception as e:
-                results.append({"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                               "detail": f"created as `{new_id}`, but couldn't deactivate the "
-                                         f"original: {friendly_error_message(e)}"})
-                continue
-            if isinstance(deact_res, dict) and "error" in deact_res:
-                results.append({"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                               "detail": f"created as `{new_id}`, but couldn't deactivate the "
-                                         f"original: {deact_res.get('message') or deact_res.get('error')}"})
-                continue
-
-            # Keep the app's own route-matching memory in sync, so a future price refresh on
-            # this route finds the NEW id under the NEW supplier instead of the now-inactive one.
-            try:
-                if dep and arr:
-                    transfer_matcher.forget_transfer_id(source_id, dep, arr)
-                    if new_id:
-                        transfer_matcher.remember_transfer_id(dest_id, dep, arr, new_id)
-            except Exception:
-                pass
-
-            results.append({"name": name, "ok": True, "stage": "done", "new_id": new_id})
+            if product_type == "Transfer":
+                result = supplier_migration.migrate_transfer(
+                    client, source_id, dest_id, record, transfer_matcher=transfer_matcher)
+            elif product_type == "Transport":
+                result = supplier_migration.migrate_transport(client, source_id, dest_id, record)
+            elif product_type == "Ticket":
+                result = supplier_migration.migrate_ticket(client, source_id, dest_id, record)
+            elif product_type == "ClosedTour":
+                result = supplier_migration.migrate_closed_tour(client, source_id, dest_id, record)
+            else:
+                result = supplier_migration.migrate_hotel(client, source_id, dest_id, record,
+                                                           today_iso=today_iso)
+            results.append(result)
 
         st.session_state.sm_results = results
         st.session_state.sm_records = None
         st.session_state.sm_selected = None
         st.rerun()
+
 
 
 def render_transport_cancellation_bulk_flow(client):
@@ -13343,7 +13345,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-10-select-all-none-checkbox-fix"
+BUILD_VERSION = "2026-09-10-supplier-migration-all-types-and-verified-transport-supplement"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -13645,11 +13647,13 @@ PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): the ONE place every kind of update/refresh
 # happens now, for all five product types - see render_update_refresh_flow's docstring.
 UPDATE_REFRESH_CHOICE = "Update existing Service"
-# CONFIRMED REAL NEED (product owner, 2026-08-24): "mass change the supplier - all Transfers
-# from supplier A must now be changed to supplier B." A Step 1 destination rather than living
-# inside Update/Refresh, since it acts on a whole supplier's worth of transfers at once, not
-# one already-identified record - see render_supplier_migration_flow's docstring.
-MIGRATE_SUPPLIER_CHOICE = "Move Transfers to another Supplier"
+# CONFIRMED REAL NEED (product owner, 2026-08-24, Transfer only; extended to all 5 product
+# types 2026-09-10): "mass change the supplier - all Transfers from supplier A must now be
+# changed to supplier B." ... "this is not only for the transfer section, it must work for all
+# services." A Step 1 destination rather than living inside Update/Refresh, since it acts on a
+# whole supplier's worth of one product type at once, not one already-identified record - see
+# render_supplier_migration_flow's docstring.
+MIGRATE_SUPPLIER_CHOICE = "Move a Supplier's Services to another Supplier"
 # CONFIRMED REAL NEED (product owner, 2026-08-28; extended to all 5 product types 2026-09-10):
 # "can i also include/change the cancellation for a bulk or at least per supplier for
 # transports?" ... "bulk update cancellation policy --> this must be usable for all Services:
@@ -13850,9 +13854,9 @@ if st.session_state.product_type is None:
         if st.button(MIGRATE_SUPPLIER_CHOICE, key="pt_choice_migratesupplier", use_container_width=True):
             st.session_state.product_type = MIGRATE_SUPPLIER_CHOICE
             st.rerun()
-        st.caption("Recreates a supplier's Transfers under a different supplier and switches the "
-                  "originals off - for when a supplier relationship itself changes, not a single "
-                  "product's details.")
+        st.caption("Recreates a supplier's services under a different supplier and retires the "
+                  "originals - for when a supplier relationship itself changes, not a single "
+                  "product's details. ClosedTour · Ticket · Transfer · Transport · Hotel.")
         if st.button(CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
             st.session_state.product_type = CANCELLATION_BULK_CHOICE
             st.rerun()

@@ -51,7 +51,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-select-all-none-checkbox-fix"
+MODULE_BUILD = "2026-09-10-supplier-migration-all-types-and-verified-transport-supplement"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
