@@ -1,0 +1,1746 @@
+"""
+price_refresh.py — update the prices of transports that already exist.
+
+WHY THIS EXISTS, AND WHY IT IS THE EASIER SHAPE: the upload flow reads a document and
+constructs a product from it. That means the AI has to decide what products the document
+describes, resolve each end of the route to a Travel Compositor location, name it, describe
+it, estimate a duration, and build the modalities - and every one of those is a judgement
+that can come back wrong or empty. Most of a rate sheet's life is not that. It is the same
+routes as last year with new numbers.
+
+So this flow inverts the source of truth. The list of products comes from Travel Compositor,
+which is a FACT, not from the AI reading a document, which is a judgement. Everything except
+the numbers is already correct in the live record and is never touched: the route, the
+locations, the times, the names, the modality structure. The AI's whole job shrinks to "what
+does this document say the price is for THIS route I am telling you about" - a lookup with a
+known answer shape rather than an open reading.
+
+WHAT THAT BUYS: no detection step, so no empty result. No location resolution, no duration
+estimate, no house-style naming, no create-versus-update decision, and no way to produce a
+duplicate. The worst case is a wrong number on an existing product, which is exactly what the
+human's yes/no is there to catch.
+
+WHAT IT CANNOT DO, stated plainly: it cannot create a transport that does not exist yet -
+that stays with the upload flow. A route in the document matching nothing live is REPORTED,
+never silently dropped, and a human can point it at the right transport by hand.
+
+WHERE A TRANSPORT'S PRICE ACTUALLY LIVES (two places, and they must stay consistent):
+  * the parent record's baseAdultPrice / baseChildrenPrice / baseInfantPrice - OR, for a
+    per-vehicle transport (pricePerPax=False, confirmed real example: every FTS-created
+    Transport), vehiclePrice instead, with baseAdultPrice/baseChildrenPrice/baseInfantPrice
+    genuinely 0 (see load_supplier_transports and rebuild_prices for the confirmed 2026-09-11
+    fix - this module used to read/write baseAdultPrice unconditionally, the same bug already
+    found once in bulk_notes.py's dated-supplement flow, see
+    claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md);
+  * each option's prices[].adultPriceSupplement, which is added to the base.
+So a modality's real price is base + its own supplement. Changing prices means recomputing
+both together, which is why this module owns that arithmetic rather than leaving it to a
+caller - see rebuild_prices().
+"""
+
+# Stamped on every delivery. app.py compares this against its own build string and says
+# so on screen when they differ - a partial push (one file committed, another not) used to
+# surface only as a traceback whose line numbers pointed at unrelated code.
+MODULE_BUILD = "2026-09-11-modality-scope-and-price-basis"
+
+import json
+from datetime import date
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import ai_extractor
+import fts_transfer_matrix
+import transfer_matcher
+import transport_matcher
+from bulk_notes import normalize_for_put
+
+# The product types this flow can refresh. Transport/Transfer are priced per occupancy and both
+# arrive on the same kind of rate sheet, but they store the numbers very differently - see
+# load_supplier_products() and rebuild_prices(). Ticket (added 2026-08-25, Phase 1 of the
+# product-owner's request: "the next developement must be done, when we are talking about
+# updating Tickets or ClosedTours for the new Seasons with new prices... Could we plan this the
+# same for Tickets and closedtours") is deliberately its OWN pipeline (load_supplier_tickets /
+# lookup_ticket_prices / build_ticket_proposals / rebuild_ticket_prices / apply_ticket_proposals)
+# rather than another branch bolted onto the Transport/Transfer functions above - see the
+# Ticket section further down for why: matching is by exact CODE instead of fuzzy place-name
+# matching, a "route" is a (ticket, modality) pair rather than a single record, and the PUT
+# shape (one Modality, whole) is different again from either Transport or Transfer. It still
+# reuses bracket_price_for() and the same finding/proposal SHAPE as the functions above, so a
+# human reviewing either screen sees the same "old -> new, accept or reject" pattern.
+KIND_TRANSPORT = "Transport"
+KIND_TRANSFER = "Transfer"
+KIND_TICKET = "Ticket"
+
+PRICE_LOOKUP_SYSTEM_PROMPT = """You are reading a supplier's rate sheet to find the NEW PRICE for routes that
+already exist in a booking system. You are NOT deciding which products exist - that list is given to you and
+it is correct. Your only job is to find each one's price in the document.
+
+You will be given a numbered list of ROUTES, each with the passenger brackets it is sold in, and then the
+document. For each route, report the price the document states for each bracket.
+
+You may also be given an OPERATOR INSTRUCTION - a human typed this in their own words to point you at part
+of the document (e.g. "focus only on Sharm El Sheikh"). Match it BY MEANING, never as exact text: ignore
+capitalization and wording differences entirely - "sharm el sheikh", "Sharm El Sheikh" and "SHARM EL SHEIKH"
+all mean the identical place and must be treated identically. The instruction only narrows which routes you
+report as found; it is never a reason to report a route "found": false that the document genuinely prices.
+
+MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
+- The route names PLACES; the document often names AIRPORTS. "RMF Airport" is Marsa Alam, "HRG Airport" is
+  Hurghada, "SSH Airport" is Sharm El Sheikh, "CAI Airport" is Cairo, and in general "<city> Airport" is
+  that city. So the route "Marsa Alam to Hurghada" matches the row "RMF Airport | Hurghada".
+- A section heading tells you where a block of rows departs from: rows under "Transfer Fees Marsa Allam"
+  are Marsa Alam departures even where the cell shows only an airport code.
+- A route may be the REVERSE of the row. Rate sheets are usually priced "per way" and list one direction
+  only; the return leg has the same price unless the document says otherwise. Use the same row.
+- Match the SERVICE CLASS too. A document with a "Shuttle" column and a "Private" column prices two
+  different products for the same row - take the column that matches the route's own class.
+- BUNDLED ROUTES: a route name joining several places with "/" or "or" (e.g. "Hurghada / El Gouna or Soma
+  Bay") is ONE product combining what the document prices as separate rows. Find each place's row and use
+  the HIGHEST of their prices - report "confidence": "high" for this, and briefly say in "note" which
+  places you combined.
+
+PRICES:
+- Report the number exactly as the document states it. Never convert a currency, never apply a discount,
+  never interpolate a bracket the document does not price.
+- "per person, minimum 2 pax" means the 2+ bracket takes the stated number. Report that bracket and set
+  "minimum_pax" to the stated minimum - don't also add a separate min_pax=1 entry, the application
+  computes the 1-pax price itself from minimum_pax.
+- If the document does not price a route at all, say so with "found": false. That is a useful, correct
+  answer - a route the supplier dropped this season should not be guessed at.
+- If you are unsure which row a route matches, set "confidence": "low" and say why in "note". A human
+  confirms every price before anything is written, so an honest doubt is far more useful than a guess
+  presented as fact.
+- Before you answer, check yourself: if the document plainly prices a section (e.g. its own heading names
+  the place) but you are about to report every route under it as not found, re-read that section - you are
+  very likely missing the row, not looking at a document that truly has no prices for it.
+
+Output ONLY valid JSON, no markdown fences:
+{
+  "routes": [
+    {"index": 0,
+     "found": true,
+     "matched_row": "the document's own wording for the row you used, quoted",
+     "currency": "the currency code if the document states one, else empty",
+     "minimum_pax": 2,
+     "brackets": [{"min_pax": 2, "max_pax": 9, "price": 42.0, "child_price": null, "infant_price": null}],
+     "confidence": "high",
+     "note": ""}
+  ]
+}
+Report every route you were given, in the same order, including the ones you did not find."""
+
+# CONFIRMED REAL BUG (product owner, 2026-08-14): "before it was working fine... now the AI did
+# not detect any transfer" - EVERY route came back "not found", not just the hard ones. Root
+# cause was almost certainly the fully permissive tool schema (see ai_extractor._call_claude's
+# default): the same pattern was already confirmed once before, on apply_clarification, where a
+# permissive schema let Claude drop a required field on every single call once nothing but prose
+# was enforcing the shape. Here the at-risk fields are "found" and "brackets" - lookup_prices
+# treats a missing/empty "brackets" as not-found (see the `bool(brackets)` check below), so if
+# Claude drops that key for one route it silently drops it for all of them, and a mid-round
+# prompt-wording change is exactly the kind of thing that can trigger it. A real schema that
+# REQUIRES "found" and "brackets" on every route item closes this off structurally, the same way
+# CLARIFY_TOOL_SCHEMA closes it off for apply_clarification - rather than depending on prose to
+# keep the model reporting every field, every time.
+PRICE_LOOKUP_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "routes": {
+            "type": "array",
+            "description": "One entry per route you were given, in the same order, including the "
+                            "ones you did not find.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "found": {"type": "boolean"},
+                    "matched_row": {"type": "string"},
+                    "currency": {"type": "string"},
+                    "minimum_pax": {"type": "integer"},
+                    "brackets": {
+                        "type": "array",
+                        "description": "Empty array if found is false or the document doesn't "
+                                        "price any bracket for this route.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "min_pax": {"type": "integer"},
+                                "max_pax": {"type": "integer"},
+                                "price": {"type": "number"},
+                                "child_price": {"type": ["number", "null"]},
+                                "infant_price": {"type": ["number", "null"]},
+                            },
+                            "required": ["min_pax", "max_pax", "price"],
+                        },
+                    },
+                    "confidence": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["index", "found", "brackets"],
+            },
+        },
+    },
+    "required": ["routes"],
+}
+
+
+# ----------------------------------------------------------------------
+# Reading what is already live
+# ----------------------------------------------------------------------
+def _parse_date_safe(value: Any) -> Optional[date]:
+    """An ISO (or DD/MM/YYYY-ish) date, or None - never raises. Reuses date_format's own
+    tolerant parsing so a human-typed date and a wire ISO date both work the same way here."""
+    if not value:
+        return None
+    try:
+        import date_format
+        iso = date_format.to_iso_date(value)
+        return date.fromisoformat(iso[:10]) if iso else None
+    except (ValueError, TypeError, ImportError):
+        return None
+
+
+def _entry_covers(entry: Dict[str, Any], on_date: date) -> bool:
+    """Whether this ONE price entry's own [startDate, endDate] window covers on_date. A missing
+    startDate reads as "always started" and a missing endDate as "never ends" - permissive on
+    purpose, since a real single-period entry very often carries no dates at all, and that must
+    keep reading as "currently active" exactly as it always has."""
+    start = _parse_date_safe(entry.get("startDate"))
+    end = _parse_date_safe(entry.get("endDate"))
+    if start and on_date < start:
+        return False
+    if end and on_date > end:
+        return False
+    return True
+
+
+def _select_price_entry(prices: List[Dict[str, Any]], on_date: Optional[date] = None
+                        ) -> Optional[Dict[str, Any]]:
+    """Which of a modality's price entries is ACTIVE right now (or as of on_date).
+
+    CONFIRMED REAL GAP (product owner, 2026-09-11): "it can have a price supplement for
+    different modalities and it can have different period of times but the time can not
+    overlap within the same modality" - a modality's `prices` list can genuinely hold more than
+    one entry, each its own non-overlapping date range (a standard rate now and an already-
+    scheduled future/peak-season rate, confirmed as already live on real transports). This used
+    to be read with NO date awareness at all - just whichever entry happened to be LAST in the
+    list. Now prefers whichever entry's own window covers on_date (today by default). Falls
+    back to the LAST entry when none does, or when no entry carries dates at all (the common
+    single-period case) - identical to the old behavior, so a single-period transport is
+    completely unaffected by this change."""
+    dated = [p for p in (prices or []) if isinstance(p, dict)]
+    if not dated:
+        return None
+    on_date = on_date or date.today()
+    covering = [p for p in dated if _entry_covers(p, on_date)]
+    if len(covering) == 1:
+        return covering[0]
+    if len(covering) > 1:
+        # Two entries covering the SAME date is the "must not overlap" rule already being
+        # violated in the live data - a display/reference choice only (never a write): the most
+        # recently scheduled one (latest startDate) is the more likely intended "current" rate.
+        return max(covering, key=lambda p: _parse_date_safe(p.get("startDate")) or date.min)
+    return dated[-1]
+
+
+def option_unit_price(option: Dict[str, Any], base_adult: float) -> float:
+    """What one passenger in this bracket actually costs RIGHT NOW: base plus whichever of this
+    option's price entries is active today (see _select_price_entry)."""
+    current = _select_price_entry(option.get("prices") or [])
+    supplement = _num((current or {}).get("adultPriceSupplement"))
+    return round(base_adult + supplement, 2)
+
+
+def _num(value: Any, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def load_supplier_transports(client, supplier_id: str,
+                             progress: Optional[Callable[[int, int, str], None]] = None
+                             ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Every transport this supplier has, with its modalities and their current prices.
+
+    The options are fetched per transport because the list endpoint returns only their codes.
+    That is one request per transport, so this is the slow part of the flow and the only one -
+    everything after it is local."""
+    try:
+        data = client.get_transports(supplier_id)
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    records = data.get("transport", []) if isinstance(data, dict) else (data or [])
+    records = [r for r in records if isinstance(r, dict)]
+
+    out = []
+    for i, summary in enumerate(records):
+        t_id = summary.get("id")
+        name = summary.get("name") or ""
+        if progress:
+            progress(i + 1, len(records), name)
+        # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): a real bulk price-refresh
+        # run against 13 selected FTS-matched transports failed ALL 13 with "updateTransport.
+        # transport.airlineCode: must not be null" - the identical failure, and identical root
+        # cause, already diagnosed and fixed once this same day in
+        # cancellation_bulk_transport.load_supplier_transports_for_cancellation (see
+        # claude/incident-2026-09-11-bulk-cancellation-transport-airlinecode.md): this function
+        # used to build `raw` (what rebuild_prices/apply_proposals later PUT back whole)
+        # directly from the LIST endpoint's own entry, which can genuinely lack a field (or
+        # send it null) that the transport's own individual GET record actually has populated.
+        # Fixed the same way: re-fetch each transport's full individual record before reading
+        # anything off it. A row whose individual re-fetch fails falls back to the list entry
+        # (so one bad row can't block the rest) but is flagged `full_fetch_failed` so the
+        # review screen can warn a human before it gets PUT back on a possibly-incomplete
+        # record - apply_proposals also re-checks with bulk_notes.normalize_for_put as a
+        # last-resort belt-and-suspenders default, never as the primary fix (defaulting a
+        # missing field to "" would silently erase a real value the individual record has -
+        # the exact mistake the product owner caught and corrected in the sibling incident).
+        record = summary
+        full_fetch_failed = False
+        if t_id:
+            try:
+                full = client.get_transport(supplier_id, t_id)
+            except Exception:
+                full = None
+            if isinstance(full, dict) and "error" not in full:
+                record = full
+            else:
+                full_fetch_failed = True
+        else:
+            full_fetch_failed = True
+        # CONFIRMED REAL BUG (found 2026-09-11, tracing the FTS matrix per-vehicle transports
+        # this flow's new lookup_prices_from_fts_matrix path is meant to refresh): a per-vehicle
+        # transport (pricePerPax=False - every FTS-created Transport is one, see
+        # fts_transfer_matrix.fts_route_to_extracted_transport_data's charge_unit="per_service")
+        # has baseAdultPrice/baseChildrenPrice/baseInfantPrice all genuinely 0 - the real base
+        # price lives in vehiclePrice instead (confirmed ContractTransportVO field; see
+        # builder.build_transport_payloads: `vehiclePrice=0.0 if price_per_pax else base_price,
+        # baseAdultPrice=base_price if price_per_pax else 0.0`). This module used to read
+        # baseAdultPrice unconditionally, so every per-vehicle transport's "current price" here
+        # came back 0 regardless of what it actually sells for - the SAME root cause already
+        # found and fixed once in bulk_notes.py's dated-supplement flow
+        # (claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md); mirrored here
+        # exactly (see also rebuild_prices' matching write-side fix below). Defaulting the
+        # missing-key case to per-pax (True) matches bulk_notes.py's own confirmed default -
+        # "a transport missing the pricePerPax field entirely still defaults to the old per-pax
+        # behavior (the confirmed common case)" - the previous `bool(record.get("pricePerPax"))`
+        # here silently defaulted a MISSING key to False (per-vehicle) instead, the opposite of
+        # the confirmed rule.
+        per_pax = bool(record.get("pricePerPax", True))
+        base_for_options = _num(record.get("baseAdultPrice")) if per_pax else _num(record.get("vehiclePrice"))
+        options = []
+        for code in (record.get("optionCodes") or []):
+            try:
+                opt = client.get_transport_option(supplier_id, record.get("id"), code)
+            except Exception as e:
+                opt = {"error": type(e).__name__, "message": str(e)}
+            if not isinstance(opt, dict) or "error" in opt:
+                options.append({"code": code, "fetch_failed": True})
+                continue
+            options.append({
+                "code": code,
+                "min_pax": int(opt.get("minPassengers") or 1),
+                "max_pax": int(opt.get("maxPassengers") or 1),
+                "unit_price": option_unit_price(opt, base_for_options),
+                "name": ((opt.get("translations") or {}).get("EN") or {}).get("name", ""),
+                "raw": opt,
+            })
+        segment = (record.get("segments") or [{}])[0]
+        out.append({
+            "id": record.get("id"),
+            "name": name,
+            "departure_code": segment.get("departureLocationCode"),
+            "arrival_code": segment.get("arrivalLocationCode"),
+            "currency": record.get("currency"),
+            "price_per_pax": per_pax,
+            "base_adult": base_for_options,
+            "base_child": _num(record.get("baseChildrenPrice")) if per_pax else 0.0,
+            "base_infant": _num(record.get("baseInfantPrice")) if per_pax else 0.0,
+            "options": sorted(options, key=lambda o: o.get("min_pax", 0)),
+            "full_fetch_failed": full_fetch_failed,
+            "raw": record,
+        })
+    return out, None
+
+
+DEFAULT_BRACKET_CODE = "__default__"
+
+
+def _transfer_brackets(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A transfer's prices, expressed as brackets so both product types look the same upstream.
+
+    CONFIRMED SEMANTICS (schemas.TransferOccupancyPriceVO): basePrice is the DEFAULT rate for
+    any occupancy, and pricesByOccupancy holds an entry ONLY for an occupancy whose rate
+    genuinely differs - a solo surcharge, typically. So the default is modelled as one bracket
+    spanning min to max occupancy, and each explicit entry as a bracket of exactly one."""
+    base = _num(record.get("basePrice"))
+    min_occ = int(_num(record.get("minOccupancy"), 1)) or 1
+    max_occ = int(_num(record.get("maxOccupancy"), 1)) or 1
+    brackets = [{"code": DEFAULT_BRACKET_CODE, "min_pax": min_occ, "max_pax": max_occ,
+                 "unit_price": round(base, 2), "name": "default rate", "raw": None}]
+    for entry in (record.get("pricesByOccupancy") or []):
+        if not isinstance(entry, dict):
+            continue
+        occ = int(_num(entry.get("occupancy"), 0))
+        if occ <= 0:
+            continue
+        amount = entry.get("basePrice")
+        amount = _num(amount.get("amount")) if isinstance(amount, dict) else _num(amount)
+        brackets.append({"code": f"occ{occ}", "min_pax": occ, "max_pax": occ,
+                         "unit_price": round(amount, 2), "name": f"{occ} pax", "raw": dict(entry)})
+    return sorted(brackets, key=lambda b: (b["min_pax"], b["max_pax"]))
+
+
+def load_supplier_transfers(client, supplier_id: str,
+                            progress: Optional[Callable[[int, int, str], None]] = None
+                            ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Every transfer this supplier has. One request, unlike Transport - a transfer's prices
+    all live on the record itself, with no option sub-resources to fetch."""
+    try:
+        data = client.get_transfers(supplier_id)
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    records = data.get("transfer", []) if isinstance(data, dict) else (data or [])
+    records = [r for r in records if isinstance(r, dict)]
+
+    out = []
+    for i, record in enumerate(records):
+        dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
+        arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
+        name = record.get("name") or ((record.get("datasheets") or {}).get("EN") or {}).get("name", "") \
+            or f"{dep} - {arr}".strip(" -")
+        if progress:
+            progress(i + 1, len(records), name)
+        out.append({
+            "kind": KIND_TRANSFER,
+            "id": record.get("id"),
+            "name": name,
+            "departure_name": dep,
+            "arrival_name": arr,
+            "currency": record.get("currency"),
+            "price_per_pax": bool(record.get("priceByPax", True)),
+            "base_adult": _num(record.get("basePrice")),
+            "base_child": 0.0,
+            "base_infant": 0.0,
+            "options": _transfer_brackets(record),
+            "raw": record,
+        })
+    return out, None
+
+
+def load_supplier_products(client, supplier_id: str, kind: str,
+                           progress: Optional[Callable[[int, int, str], None]] = None
+                           ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    if kind == KIND_TRANSFER:
+        return load_supplier_transfers(client, supplier_id, progress=progress)
+    return load_supplier_transports(client, supplier_id, progress=progress)
+
+
+# ----------------------------------------------------------------------
+# Ticket (Phase 1, 2026-08-25): reading what is already live
+# ----------------------------------------------------------------------
+# CONFIRMED SCOPE (product owner, AskUserQuestion 2026-08-25): Ticket only for now (ClosedTour
+# is a separate later follow-up); a Peak Season supplement is ALWAYS ADDED and never replaces
+# an existing one (Phase 2, not built here); percentage surcharges compute as 15% of the base
+# adult/child price (Phase 2, not built here); existing language-choice supplement prices CAN
+# also be refreshed (Phase 3, not built here). THIS pass covers base/occupancy price only:
+# load an existing Ticket Modality's live occupancyPrices from Travel Compositor, match it to
+# the document by its own CODE, diff, let a human accept/reject/edit, and apply.
+TICKET_SUPPORTED_PRICE_TYPE = "OCCUPANCY"
+
+
+def _ticket_price_type_supported(price_type: Optional[str]) -> bool:
+    """OCCUPANCY is the only Modality pricing mode this phase understands - its per-headcount
+    occupancyPrices table maps directly onto the rate sheet's per-group-size brackets. A
+    DISTRIBUTION (flat per-adult/child regardless of group size) or SERVICE (one flat total)
+    Modality is NOT guessed at - it is listed and named as unsupported, consistent with this
+    codebase's established "block rather than guess" rule (see build_proposals' blocked_
+    unreadable handling above)."""
+    return (price_type or TICKET_SUPPORTED_PRICE_TYPE) == TICKET_SUPPORTED_PRICE_TYPE
+
+
+def _ticket_occupancy_options(modality: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """A live Modality's occupancyPrices, split into adult and child option lists.
+
+    CONFIRMED REAL WIRE SHAPE (captured GET response): occupancyPrices is a FLAT list mixing
+    adult and child rows - an adult row is {"occupancy": n, "amount": <price>}, a child row at
+    the SAME occupancy carries an extra "ageRange": {"min": ..., "max": ...} key, which is the
+    only thing that distinguishes it. There is no separate child array.
+
+    Each row is expressed as an EXACT-headcount bracket (min_pax == max_pax == occupancy) so
+    the existing bracket_price_for() - built for Transport/Transfer's brackets - can be reused
+    unchanged for Ticket prices too; an exact-headcount bracket is just a zero-width range."""
+    adult, child = [], []
+    for row in (modality.get("occupancyPrices") or []):
+        if not isinstance(row, dict):
+            continue
+        occ = int(_num(row.get("occupancy"), 0))
+        if occ <= 0:
+            continue
+        entry = {"code": f"occ{occ}", "min_pax": occ, "max_pax": occ,
+                 "unit_price": round(_num(row.get("amount")), 2), "name": f"{occ} pax",
+                 "raw": dict(row)}
+        (child if isinstance(row.get("ageRange"), dict) else adult).append(entry)
+    return (sorted(adult, key=lambda o: o["min_pax"]), sorted(child, key=lambda o: o["min_pax"]))
+
+
+def load_supplier_tickets(client, supplier_id: str,
+                          progress: Optional[Callable[[int, int, str], None]] = None
+                          ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Every (Ticket, Modality) pair this supplier has, with its current occupancy prices.
+
+    One "route" per live Modality - like Transport, the list endpoint gives only each Ticket's
+    modalityCodes, so each Modality needs its own GET (see sync_ticket.fetch_all_tickets /
+    fetch_all_tickets's own paging pattern, reused here for the same reason: a supplier can
+    have more tickets than one page)."""
+    try:
+        data = client.get_tickets(supplier_id, first=0, limit=200)
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    tickets = data.get("tickets", []) if isinstance(data, dict) else (data or [])
+    tickets = [t for t in tickets if isinstance(t, dict)]
+
+    pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+    total_tickets = pagination.get("totalResults", len(tickets))
+    first = 200
+    while len(tickets) < total_tickets:
+        try:
+            more = client.get_tickets(supplier_id, first=first, limit=200)
+        except Exception:
+            break
+        more_list = more.get("tickets", []) if isinstance(more, dict) else []
+        if not more_list:
+            break
+        tickets.extend(t for t in more_list if isinstance(t, dict))
+        first += 200
+
+    total_modalities = sum(len(t.get("modalityCodes") or []) for t in tickets) or 1
+    out = []
+    done = 0
+    for ticket in tickets:
+        ticket_code = ticket.get("code")
+        ticket_name = ticket.get("name") or ((ticket.get("datasheets") or {}).get("EN") or {}).get("name", "") \
+            or ticket_code
+        currency = ticket.get("currency") or "EUR"
+        for modality_code in (ticket.get("modalityCodes") or []):
+            done += 1
+            if progress:
+                progress(done, total_modalities, f"{ticket_name} — {modality_code}")
+            try:
+                opt = client.get_ticket_option(supplier_id, ticket_code, modality_code)
+            except Exception as e:
+                opt = {"error": type(e).__name__, "message": str(e)}
+            if not isinstance(opt, dict) or "error" in opt:
+                out.append({"kind": KIND_TICKET, "id": f"{ticket_code}/{modality_code}",
+                           "ticket_code": ticket_code, "modality_code": modality_code,
+                           "name": f"{ticket_name} — {modality_code}", "currency": currency,
+                           "price_type": None, "fetch_failed": True,
+                           "options": [], "child_options": [], "raw": None})
+                continue
+            price_type = opt.get("priceType") or TICKET_SUPPORTED_PRICE_TYPE
+            adult_options, child_options = _ticket_occupancy_options(opt)
+            out.append({
+                "kind": KIND_TICKET,
+                "id": f"{ticket_code}/{modality_code}",
+                "ticket_code": ticket_code,
+                "modality_code": modality_code,
+                "name": f"{ticket_name} — {modality_code}",
+                "currency": currency,
+                "price_type": price_type,
+                "fetch_failed": False,
+                "options": adult_options,
+                "child_options": child_options,
+                "raw": opt,
+            })
+    return out, None
+
+
+def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
+    """Departure and arrival as readable place names.
+
+    A transport's name is the house "DEPARTURE - ARRIVAL" pattern, which is the only place a
+    readable place name appears - the segment carries codes like "meet_LXR". Falls back to the
+    codes when the name is not in that shape, so a badly-named record still matches on
+    something rather than on nothing."""
+    # A transfer carries real place names on the record; a transport only carries codes, so
+    # its name is the only readable source.
+    if route.get("departure_name") and route.get("arrival_name"):
+        return str(route["departure_name"]).strip(), str(route["arrival_name"]).strip()
+    name = str(route.get("name") or "")
+    for separator in (" - ", " – ", " to ", " > ", "->"):
+        if separator in name:
+            left, _, right = name.partition(separator)
+            if left.strip() and right.strip():
+                return left.strip(), right.strip()
+    dep = str(route.get("departure_code") or "").replace("meet_", "")
+    arr = str(route.get("arrival_code") or "").replace("meet_", "")
+    return dep, arr
+
+
+# ----------------------------------------------------------------------
+# Asking the document for each route's price
+# ----------------------------------------------------------------------
+def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
+                  model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
+    """Find each known route's price in the document. Returns {route index: finding}."""
+    if not routes or not (raw_text or "").strip():
+        return {}
+    described = []
+    for i, route in enumerate(routes):
+        dep, arr = route_places(route)
+        brackets = ", ".join(f"{o.get('min_pax')}-{o.get('max_pax')} pax" for o in route["options"]) \
+            or "no brackets recorded"
+        described.append(
+            f"{i}. {dep} to {arr} | class: {route.get('name') or '(unnamed)'} | "
+            f"brackets: {brackets} | currency now: {route.get('currency') or '?'} | "
+            f"{'per person' if route.get('price_per_pax') else 'per vehicle'}")
+    instruction = f"OPERATOR INSTRUCTION: {human_hint.strip()}\n\n" if (human_hint or "").strip() else ""
+    user_content = (f"{instruction}ROUTES TO PRICE:\n" + "\n".join(described) +
+                    f"\n\n--- DOCUMENT ---\n{raw_text}")
+    data = ai_extractor._call_claude(PRICE_LOOKUP_SYSTEM_PROMPT, user_content, model,
+                                     max_tokens=8192, input_schema=PRICE_LOOKUP_TOOL_SCHEMA) or {}
+    findings = {}
+    for item in (data.get("routes") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= index < len(routes)):
+            continue
+        brackets = []
+        for b in (item.get("brackets") or []):
+            if not isinstance(b, dict):
+                continue
+            price = _num(b.get("price"), fallback=-1.0)
+            if price < 0:
+                continue
+            brackets.append({
+                "min_pax": int(_num(b.get("min_pax"), 1)),
+                "max_pax": int(_num(b.get("max_pax"), 1)),
+                "price": round(price, 2),
+                "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
+                "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+            })
+        findings[index] = {
+            "found": bool(item.get("found")) and bool(brackets),
+            "matched_row": str(item.get("matched_row") or "").strip(),
+            "currency": str(item.get("currency") or "").strip().upper(),
+            "minimum_pax": int(_num(item.get("minimum_pax"), 1)) or 1,
+            "brackets": sorted(brackets, key=lambda b: b["min_pax"]),
+            "confidence": str(item.get("confidence") or "low").lower(),
+            "note": str(item.get("note") or "").strip(),
+        }
+    return findings
+
+
+# ----------------------------------------------------------------------
+# FTS matrix CSV: a deterministic sibling of lookup_prices() for exactly one document shape
+# ----------------------------------------------------------------------
+# CONFIRMED REAL BUG (product owner, 2026-09-11): "again error for bulk price update... Couldn't
+# read the document: The AI's answer was too long and got cut off before it finished... This is
+# crucial and we must make it possible, that the document is fully read." The document is the
+# same FTS Sedan/Hiace matrix CSV pair (271 routes) that already overflowed the bulk-IMPORT flow
+# and was fixed there by reading the grid directly instead of through the AI (see
+# fts_transfer_matrix.py's module docstring) - lookup_prices() above has the identical failure
+# mode for the same reason (one AI call, max_tokens=8192, describing every route plus the whole
+# document), just in this separate refresh-existing-prices flow. Rather than raising the token
+# limit (which only moves the ceiling, and this flow has no cap on how many routes a supplier can
+# have), this bypasses the AI entirely for this one confirmed document shape, the same fix already
+# applied to the import side.
+# SUPERSEDED 2026-09-11 (see fts_transfer_matrix.FTS_CITY_MATCH_MIN_SCORE's own comment for the
+# measured failure this replaced): this flow no longer fuzzy-scores a whole live route name
+# against every priced cell's concatenated "origin - arrival" name. Each endpoint is resolved to
+# exactly one matrix city on its own, and the price comes from that one exact cell. Kept only
+# because it is part of this module's public surface; nothing reads it any more.
+FTS_MATCH_MIN_SCORE = 0.5
+
+
+def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: Optional[str] = None,
+                                  hiace_csv_path: Optional[str] = None
+                                  ) -> Tuple[Dict[int, Dict[str, Any]], Optional[str]]:
+    """Finds each known route's price directly in FTS's own rate-matrix CSV export - no AI call,
+    so it cannot overflow no matter how many routes the sheet prices (271, in the real document
+    that triggered this). See the module-level comment above for why this exists.
+
+    Either file may be omitted (added 2026-09-11, product owner: "If I have two modalities...
+    could The app understand that Sedan is for base modality and Hiace is for Price supplement
+    calculated? So I would price update in two parts: One round for Sedan and one round for
+    Hiace - would that work?"). Given only one file, this reports a finding with just THAT
+    vehicle's bracket - build_proposals then proposes a change for only that option, leaving the
+    other one's price untouched (reported as "missing" for that option, same as any document
+    that doesn't price every bracket) - exactly a one-vehicle-at-a-time round. Given both, both
+    brackets are reported together in one round, same as before this option existed. Raises
+    nothing and never guesses which file is which - the caller (app.py) is responsible for
+    passing each path under the right keyword, having already classified it with
+    fts_transfer_matrix.classify_fts_matrix_file.
+
+    MATCHING (rewritten 2026-09-11 after a confirmed real failure - see
+    fts_transfer_matrix.FTS_CITY_MATCH_MIN_SCORE's own comment for the measured numbers): each
+    LIVE route (from Travel Compositor, named via route_places()) has its departure and arrival
+    resolved SEPARATELY to one of the matrix's own 21 city names
+    (fts_transfer_matrix.match_place_to_city), and the price is then read from that one exact
+    (origin, destination) cell. The matrix is a structured grid, so there is never a reason to
+    guess at a nearby cell: a route whose endpoints don't both resolve is left unpriced, a route
+    whose endpoints resolve to a cell the sheet doesn't price (an em dash, or a train-only pair)
+    is reported as exactly that, and an endpoint that resolves ambiguously (the grid holds both
+    "Marsa Alam" and "Marsa Matruh") is reported rather than picked. Nothing here ever reads a
+    price from a different city pair than the one the route actually names.
+
+    PRICES are reported as FTS's own confirmed bracket ranges - Sedan 1-3 pax, Hiace 1-8 pax
+    (fts_transfer_matrix.FTS_SEDAN_BRACKET/FTS_HIACE_BRACKET) - regardless of what the LIVE
+    option's own min/max_pax actually are. That is intentional, not an approximation:
+    bracket_price_for() (used by build_proposals for every document, not just this one) already
+    matches a document's bracket to a live option by OVERLAP, not exact equality, specifically so
+    a rate sheet with different bracket boundaries than what's live still prices correctly - the
+    same tolerance every other supplier's document already relies on applies here unchanged.
+
+    Returns (findings, format_error). format_error is set (findings then {}) when neither path is
+    given, or when a given file doesn't parse as an FTS matrix at all - mirrors
+    fts_transfer_matrix.combine_fts_transfer_matrix's own contract, so a caller can fall back to
+    the normal AI-based lookup_prices() rather than silently doing nothing."""
+    if not sedan_csv_path and not hiace_csv_path:
+        return {}, "No FTS rate-matrix file given."
+
+    sedan = fts_transfer_matrix.parse_fts_matrix_csv(sedan_csv_path) if sedan_csv_path else None
+    hiace = fts_transfer_matrix.parse_fts_matrix_csv(hiace_csv_path) if hiace_csv_path else None
+    for parsed in (sedan, hiace):
+        if parsed and parsed["format_error"]:
+            return {}, parsed["format_error"]
+    if sedan and hiace and sedan["cities"] != hiace["cities"]:
+        return {}, ("The Sedan and Hiace files list different cities (or a different order) - "
+                    "they must be exported from the same workbook/season so every cell lines up "
+                    f"1:1. Sedan: {sedan['cities']}. Hiace: {hiace['cities']}.")
+    grid = sedan or hiace
+    cities = grid["cities"]
+    if not any(c["kind"] == "price" for c in grid["cells"].values()):
+        return {}, "The rate sheet parsed, but has no priced routes to read."
+
+    def _cell_price(parsed, origin, dest):
+        """The ONE exact cell for this city pair, or (None, why-not). Never a neighbouring cell,
+        never the reverse direction - see fts_transfer_matrix's own FTS_CITY_MATCH_MIN_SCORE
+        comment for the measured damage the old nearest-match behaviour did."""
+        if parsed is None:
+            return None, None
+        cell = parsed["cells"].get((origin, dest))
+        if cell is None:
+            return None, "not in the grid"
+        if cell["kind"] == "price":
+            return cell["price"], None
+        return None, {"train": "sold as a train journey, not a road transfer",
+                      "unavailable": "marked as no transfer available (—)",
+                      "blank": "left blank",
+                      "unrecognized": f"an unrecognized entry ({cell['raw']!r})"}.get(
+                          cell["kind"], cell["kind"])
+
+    findings: Dict[int, Dict[str, Any]] = {}
+    for i, route in enumerate(routes):
+        dep, arr = route_places(route)
+        dep_match = fts_transfer_matrix.match_place_to_city(dep, cities)
+        arr_match = fts_transfer_matrix.match_place_to_city(arr, cities)
+        if not dep_match["city"] or not arr_match["city"]:
+            # An endpoint the sheet simply doesn't list is the ordinary case for a supplier's
+            # non-FTS routes - it is left out silently, exactly as "the document doesn't price
+            # this" already means everywhere else. An AMBIGUOUS one is different and is reported:
+            # the app could see a plausible city but genuinely cannot tell which, and a human
+            # needs to know that rather than have it look identical to "not covered".
+            ambiguous = [(dep, dep_match), (arr, arr_match)]
+            ambiguous = [(name, m) for name, m in ambiguous if m["ambiguous"]]
+            if ambiguous:
+                bits = "; ".join(f"“{name}” could be {' or '.join(m['ambiguous'])}"
+                                 for name, m in ambiguous)
+                findings[i] = {
+                    "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                    "currency": "", "matched_row": "ambiguous place name",
+                    "note": (f"Not repriced because a place name on this route is ambiguous in the "
+                             f"FTS matrix: {bits}. Rename the transport (or tell me which city it "
+                             f"is) rather than risk pricing the wrong one."),
+                }
+            continue
+        origin_city, dest_city = dep_match["city"], arr_match["city"]
+        sedan_price, sedan_why = _cell_price(sedan, origin_city, dest_city)
+        hiace_price, hiace_why = _cell_price(hiace, origin_city, dest_city)
+        if sedan_price is None and hiace_price is None:
+            # Both endpoints resolved, so this route IS one the sheet covers - it just has no
+            # usable price in this cell. That is worth saying out loud (train-only pairs and "—"
+            # pairs are deliberate supplier decisions, not app failures), and is precisely the
+            # case the old nearest-match behaviour used to paper over with another cell's price.
+            why = "; ".join(f"{label}: {reason}" for label, reason in
+                            (("Sedan", sedan_why), ("Hiace", hiace_why)) if reason)
+            findings[i] = {
+                "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                "currency": "", "matched_row": f"{origin_city} -> {dest_city} (FTS matrix)",
+                "note": (f"Matched {origin_city} → {dest_city} in the FTS matrix, but that "
+                         f"cell carries no price ({why}) - left exactly as it is."),
+            }
+            continue
+        m = {"departure_name": origin_city, "arrival_name": dest_city,
+             "sedan_price": sedan_price, "hiace_price": hiace_price}
+        best = {"score": round(min(dep_match["score"], arr_match["score"]), 3)}
+        brackets = []
+        only_option_code = None
+        priced = [(label, price, bracket) for label, price, bracket in (
+            ("Sedan", sedan_price, fts_transfer_matrix.FTS_SEDAN_BRACKET),
+            ("Hiace", hiace_price, fts_transfer_matrix.FTS_HIACE_BRACKET),
+        ) if price is not None]
+        if len(priced) > 1:
+            # Both vehicles priced this round - bracket_price_for's EXACT match (checked before
+            # its overlap fallback) resolves each live option to the right one of these two
+            # brackets unambiguously, same as it already does for every other two-bracket
+            # document. This is the shape that expresses the product owner's own confirmed rule
+            # end to end: base (vehiclePrice) = Sedan, and Hiace's supplement = Hiace - Sedan,
+            # both computed from the document in one round.
+            for _label, price, bracket in priced:
+                brackets.append({"min_pax": bracket[0], "max_pax": bracket[1],
+                                 "price": round(price, 2),
+                                 "child_price": None, "infant_price": None})
+        else:
+            # CONFIRMED HAZARD (found while building this): a SINGLE bracket cannot safely rely
+            # on bracket_price_for's overlap fallback the way a two-bracket finding can - Sedan
+            # (1-3) and Hiace (1-8) both start at 1 pax, so they always overlap EACH OTHER too,
+            # and with only one bracket in the finding there is no second, more-specific bracket
+            # to win the exact-match check first. Left as overlap, a Sedan-only round would also
+            # match (and reprice) the live Hiace option, and vice versa - silently pricing a
+            # vehicle this round said nothing about. So a one-vehicle round only trusts an EXACT
+            # boundary match against this route's own live option (never a guess at which one is
+            # "close enough") - if this route's live brackets don't exactly line up with FTS's
+            # own 1-3/1-8 convention (e.g. a human edited them since), it is left out of this
+            # round rather than risked.
+            #
+            # This also covers a pair that is priced in only ONE of two uploaded files (the
+            # "one_sided" case in combine_fts_transfer_matrix's own terms) - previously such a
+            # pair was dropped from a both-files round entirely; it now prices the vehicle that
+            # genuinely has a price, under this same single-bracket safety rule.
+            vehicle_label, price, target_bracket = priced[0]
+            live_match = next((o for o in route["options"]
+                               if (o.get("min_pax"), o.get("max_pax")) == target_bracket), None)
+            if live_match is not None:
+                brackets.append({"min_pax": live_match["min_pax"], "max_pax": live_match["max_pax"],
+                                 "price": round(price, 2), "child_price": None, "infant_price": None})
+                # See build_proposals' matching "only_option_code" comment - restricts this
+                # finding to the one option it actually has a price for, so a lone bracket can
+                # never overlap-match the OTHER live option this round says nothing about.
+                only_option_code = live_match.get("code")
+            else:
+                # CONFIRMED REAL BUG (product owner, 2026-09-11): "the App... misses out on the
+                # price errors. Example Transport from Marsa Matruh to Siwa and the price was not
+                # detected by the App" - the document WAS matched to this route (best/score below)
+                # and DID have a price, but this route's live option brackets don't exactly equal
+                # FTS's 1-3/1-8 convention (see the comment above for why this path refuses to
+                # guess via overlap), so the route used to just fall through to `continue` and
+                # land in the generic "not found in the document" bucket with zero trace of why -
+                # indistinguishable from a route the sheet genuinely never priced at all. Record a
+                # diagnostic non-finding instead so app.py's "not found" list can show exactly what
+                # happened and the live brackets that didn't line up, rather than the operator
+                # having to guess whether it's a real supplier gap or an app bug.
+                live_brackets = ", ".join(f"{o.get('min_pax')}-{o.get('max_pax')}"
+                                          for o in route["options"] if not o.get("fetch_failed")) \
+                    or "no brackets recorded"
+                findings[i] = {
+                    "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                    "currency": "",
+                    "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
+                                   f"match score {best.get('score')})",
+                    "note": (f"Found ${round(price, 2)} for {vehicle_label} in the FTS matrix, "
+                             f"but this transport's live option brackets ({live_brackets}) don't "
+                             f"exactly match FTS's {target_bracket[0]}-{target_bracket[1]} pax "
+                             f"convention, so it was left unpriced rather than guessed at - fix "
+                             f"the option's passenger range in Travel Compositor, or upload both "
+                             f"the Sedan and Hiace files together this round."),
+                }
+                continue
+        if not brackets:
+            continue
+        finding = {
+            "found": True,
+            "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
+                           f"match score {best.get('score')})",
+            "currency": "USD",
+            "minimum_pax": 1,
+            "brackets": brackets,
+            "confidence": "high",
+            "note": "Matched deterministically from the FTS rate matrix (no AI) - see matched_row.",
+        }
+        if only_option_code is not None:
+            finding["only_option_code"] = only_option_code
+        findings[i] = finding
+    return findings, None
+
+
+# ----------------------------------------------------------------------
+# Ticket (Phase 1): asking the document for each ticket's price, by CODE
+# ----------------------------------------------------------------------
+# Unlike Transport/Transfer, a Ticket route does not need place-name/airport-code matching at
+# all - the rate sheet states the same code the live product already has (e.g. "ALX-01"), so
+# matching is exact-string, not fuzzy. The AI's job shrinks further than it already was: find
+# the row for a KNOWN code, report its price per bracket.
+TICKET_PRICE_LOOKUP_SYSTEM_PROMPT = """You are reading a supplier's rate sheet to find the NEW PRICE for tickets/
+excursions that already exist in a booking system. You are NOT deciding which tickets exist - that list is given
+to you, by its own CODE, and it is correct. Your only job is to find each code's price in the document.
+
+You will be given a numbered list of TICKETS, each with its own CODE, name, and the passenger-count brackets it
+is sold in, then the document. For each ticket, find the row whose code MATCHES (the document usually states the
+code directly, e.g. "ALX-01", "SHM-04" - match it exactly, ignoring case/whitespace differences only) and report
+the price for each bracket.
+
+You may also be given an OPERATOR INSTRUCTION - a human typed this in their own words to point you at part of
+the document. Match it by meaning; it only narrows which tickets you report as found, never a reason to report
+one "found": false that the document genuinely prices.
+
+PRICES:
+- Report the number exactly as the document states it for each pax-count column/bracket (e.g. "1 pax", "2-3
+  pax", "4-6 pax"). Never convert a currency, never apply a discount, never interpolate a bracket the document
+  does not price.
+- "child_price": ONLY set this when the document gives a genuinely SEPARATE child/infant price for that
+  bracket (a distinct column or a stated child rate). If the document prices only one figure per bracket with
+  no visible child/infant split, leave "child_price" null - never guess or assume a child discount.
+- If the document does not price a code at all, say so with "found": false. A ticket the supplier dropped this
+  season should not be guessed at.
+- If you are unsure which row a code matches, set "confidence": "low" and say why in "note".
+
+Output ONLY valid JSON, no markdown fences:
+{
+  "routes": [
+    {"index": 0,
+     "found": true,
+     "matched_row": "the document's own wording for the row you used, quoted",
+     "currency": "the currency code if the document states one, else empty",
+     "minimum_pax": 1,
+     "brackets": [{"min_pax": 1, "max_pax": 1, "price": 45.0, "child_price": null, "infant_price": null}],
+     "confidence": "high",
+     "note": ""}
+  ]
+}
+Report every ticket you were given, in the same order, including the ones you did not find."""
+
+
+def lookup_ticket_prices(routes: List[Dict[str, Any]], raw_text: str,
+                         model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
+    """Find each known Ticket's price-per-bracket in the document. Returns {route index: finding}.
+
+    DEDUPES by ticket_code before calling the AI: several live Modalities can share one Ticket
+    code (adult/child variants, different languages, different group-size structures), and the
+    document prices that code ONCE - asking once per unique code and fanning the same finding
+    back out to every route sharing it avoids N identical (and potentially disagreeing) AI
+    calls for what is really one lookup."""
+    if not routes or not (raw_text or "").strip():
+        return {}
+    code_to_indices: Dict[str, List[int]] = {}
+    codes_seen: List[str] = []
+    for i, route in enumerate(routes):
+        code = route.get("ticket_code") or ""
+        if not code:
+            continue
+        code_to_indices.setdefault(code, []).append(i)
+        if code not in codes_seen:
+            codes_seen.append(code)
+    if not codes_seen:
+        return {}
+
+    described = []
+    for ci, code in enumerate(codes_seen):
+        first_route = routes[code_to_indices[code][0]]
+        all_brackets = sorted({(o["min_pax"], o["max_pax"])
+                               for idx in code_to_indices[code] for o in routes[idx]["options"]})
+        brackets_desc = ", ".join(f"{mn}-{mx} pax" for mn, mx in all_brackets) or "no brackets recorded"
+        described.append(
+            f"{ci}. code: {code} | name: {first_route.get('name') or '(unnamed)'} | "
+            f"brackets: {brackets_desc} | currency now: {first_route.get('currency') or '?'}")
+    instruction = f"OPERATOR INSTRUCTION: {human_hint.strip()}\n\n" if (human_hint or "").strip() else ""
+    user_content = (f"{instruction}TICKETS TO PRICE:\n" + "\n".join(described) +
+                    f"\n\n--- DOCUMENT ---\n{raw_text}")
+    data = ai_extractor._call_claude(TICKET_PRICE_LOOKUP_SYSTEM_PROMPT, user_content, model,
+                                     max_tokens=8192, input_schema=PRICE_LOOKUP_TOOL_SCHEMA) or {}
+    by_code_index = {}
+    for item in (data.get("routes") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ci = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= ci < len(codes_seen)):
+            continue
+        brackets = []
+        for b in (item.get("brackets") or []):
+            if not isinstance(b, dict):
+                continue
+            price = _num(b.get("price"), fallback=-1.0)
+            if price < 0:
+                continue
+            brackets.append({
+                "min_pax": int(_num(b.get("min_pax"), 1)),
+                "max_pax": int(_num(b.get("max_pax"), 1)),
+                "price": round(price, 2),
+                "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
+                "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+            })
+        by_code_index[ci] = {
+            "found": bool(item.get("found")) and bool(brackets),
+            "matched_row": str(item.get("matched_row") or "").strip(),
+            "currency": str(item.get("currency") or "").strip().upper(),
+            "minimum_pax": int(_num(item.get("minimum_pax"), 1)) or 1,
+            "brackets": sorted(brackets, key=lambda b: b["min_pax"]),
+            "confidence": str(item.get("confidence") or "low").lower(),
+            "note": str(item.get("note") or "").strip(),
+        }
+    findings = {}
+    for ci, code in enumerate(codes_seen):
+        finding = by_code_index.get(ci) or {"found": False, "brackets": [], "confidence": "low",
+                                            "note": "", "matched_row": "", "minimum_pax": 1,
+                                            "currency": ""}
+        for idx in code_to_indices[code]:
+            findings[idx] = finding
+    return findings
+
+
+# ----------------------------------------------------------------------
+# Turning a finding into a proposal
+# ----------------------------------------------------------------------
+def options_are_alternatives(options: List[Dict[str, Any]]) -> bool:
+    """True when this route's live modalities OVERLAP each other in passenger range.
+
+    CONFIRMED REAL BUG (product owner, 2026-09-11, reviewing bulk Transport update): live Sedan
+    (1-3 pax) and Hiace (1-8 pax) both start at 1 pax, so they overlap. That overlap means they
+    are ALTERNATIVE products - two vehicle classes a customer chooses between - not sequential
+    party-size tiers of one product. bracket_price_for's overlap fallback ("a document that
+    prices 2-9 still tells you what a live 2-6 bracket costs") is right for tiers and badly wrong
+    for alternatives: against the real TRANSPORT-418748 (Sedan 175, Hiace 200), a rate sheet
+    pricing only the 1-3 Sedan line proposed Sedan 175 -> 95 AND Hiace 200 -> 95, wiping the whole
+    Hiace supplement off a modality the document never mentioned.
+
+    Disjoint brackets (a live 2-6 alongside a live 7-9) are tiers of one product and keep the
+    overlap fallback - that is what lets a rate sheet whose tier boundaries differ from the live
+    ones still price correctly, which every other supplier's document already relies on."""
+    usable = [o for o in (options or []) if not o.get("fetch_failed")]
+    for i, a in enumerate(usable):
+        for b in usable[i + 1:]:
+            if a.get("min_pax", 0) <= b.get("max_pax", 0) and b.get("min_pax", 0) <= a.get("max_pax", 0):
+                return True
+    return False
+
+
+def bracket_price_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
+                      minimum_pax: int, price_per_pax: bool = True,
+                      allow_overlap: bool = True) -> Optional[float]:
+    """The new unit price for one EXISTING bracket, from what the document said.
+
+    The solo bracket is checked FIRST, ahead of any exact match. Failing that: exact bracket
+    match, then an overlapping one - a document that prices "2-9" still tells you what a live
+    "2-6" bracket costs. `allow_overlap=False` turns that last step off, for a route whose
+    modalities are alternatives rather than tiers (see options_are_alternatives).
+
+    CONFIRMED REAL BUG (product owner, 2026-09-11: "the App must understand the difference
+    between BasePrice (per vehicle or per Pax)"): the minimum-party multiplication below is a
+    PER-PERSON rule - "$32 p.p., minimum 2 pax" means a lone traveller pays 2 x 32. A PER-VEHICLE
+    price means nothing of the sort: the vehicle costs what it costs no matter how many people
+    ride in it, and a minimum party size is a capacity/booking rule, not a multiplier. Running
+    the multiplication on a per-vehicle transport turned a real $45 vehicle rate into $90.
+    price_per_pax defaults True (the confirmed common case, and what every existing caller of
+    this function means) so only a genuinely per-vehicle Transport takes the new branch.
+
+    CONFIRMED REAL BUG (product owner, real document: "HRG Airport to El Quseir", "Private
+    Transfer p.p. valid for (Min.2 pax)" priced at 32 - the live 1-pax bracket should become 64
+    (32*2), but was proposed at 32 unchanged). Root cause: the solo-bracket multiplication used
+    to run only when NO exact match existed for the requested 1-pax bracket. The prompt asks
+    the AI not to compute the 1-pax price itself, but doesn't stop it from still emitting a
+    min_pax=1 entry carrying the raw (un-multiplied) per-person number "as stated" - and that
+    entry then satisfied the exact-match check below, short-circuiting the multiplication
+    entirely before it ever ran. Checking the minimum-party rule FIRST makes this correct
+    regardless of whether the AI included a spurious 1-pax entry or, per the prompt, correctly
+    omitted one - an AI-reported min_pax=1 price is never trusted directly once a real minimum
+    party size is known, since a genuine minimum-party rate means the document never actually
+    prices 1 pax on its own."""
+    if not finding.get("found"):
+        return None
+    brackets = finding.get("brackets") or []
+    if max_pax == 1 and minimum_pax > 1 and price_per_pax:
+        base = next((b["price"] for b in brackets if b["min_pax"] == minimum_pax), None)
+        if base is None:
+            base = next((b["price"] for b in brackets if b["min_pax"] > 1), None)
+        if base is None and brackets:
+            base = brackets[0]["price"]
+        return round(base * minimum_pax, 2) if base is not None else None
+    for b in brackets:
+        if b["min_pax"] == min_pax and b["max_pax"] == max_pax:
+            return b["price"]
+    if not allow_overlap:
+        return None
+    for b in brackets:
+        if b["min_pax"] <= max_pax and b["max_pax"] >= min_pax:
+            return b["price"]
+    return None
+
+
+def modality_groups(routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The distinct modalities across a supplier's whole product list, for the review screen's
+    "which modality does this rate sheet price?" chooser.
+
+    CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate human
+    confirmation for the bulk transport price update. So the app detects all modalities first,
+    and before the AI reads the document, the app asks the human which modality it is and which
+    price it shall touch."
+
+    Grouped by PASSENGER RANGE rather than by option code, because real option codes are not
+    consistent across a supplier - confirmed real examples include "ASWHRG", "PraslinLaDigue12",
+    and codes literally equal to the transport's own name (see transport_matcher's docstring).
+    The bracket is the one thing that means the same on every transport, and it is what an
+    operator recognises ("the 1 to 3 pax Sedan line"). A representative modality name is carried
+    along purely for display.
+
+    Each group: {"min_pax", "max_pax", "label", "codes" (every live option code in it),
+    "route_count"}. Sorted widest-first so the common bracket leads."""
+    groups: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for route in routes:
+        for option in route.get("options") or []:
+            if option.get("fetch_failed"):
+                continue
+            key = (option.get("min_pax"), option.get("max_pax"))
+            group = groups.setdefault(key, {"min_pax": key[0], "max_pax": key[1],
+                                            "names": [], "codes": set(), "route_count": 0})
+            group["route_count"] += 1
+            group["codes"].add(option.get("code"))
+            name = (option.get("name") or "").strip()
+            if name and name not in group["names"]:
+                group["names"].append(name)
+    out = []
+    for key in sorted(groups, key=lambda k: (-(k[1] - k[0]), k[0])):
+        group = groups[key]
+        sample = group["names"][0] if group["names"] else ", ".join(sorted(c for c in group["codes"] if c))
+        out.append({"min_pax": group["min_pax"], "max_pax": group["max_pax"],
+                    "codes": sorted(c for c in group["codes"] if c),
+                    "route_count": group["route_count"],
+                    "label": f"{group['min_pax']}-{group['max_pax']} pax — {sample}"
+                             if sample else f"{group['min_pax']}-{group['max_pax']} pax"})
+    return out
+
+
+def build_proposals(routes: List[Dict[str, Any]],
+                    findings: Dict[int, Dict[str, Any]],
+                    scoped_brackets: Optional[List[Tuple[int, int]]] = None
+                    ) -> List[Dict[str, Any]]:
+    """One proposal per live route: what each modality costs now, and what it would become.
+
+    scoped_brackets, when given, is the human's explicit answer to "which modality does this rate
+    sheet price?" (see modality_groups) as a list of (min_pax, max_pax) pairs. Every option
+    outside it is left entirely alone - not repriced, not counted as missing. None means every
+    modality is in scope, which is the default and what every caller before 2026-09-11 meant."""
+    proposals = []
+    scope = set(scoped_brackets) if scoped_brackets else None
+    for i, route in enumerate(routes):
+        finding = findings.get(i) or {"found": False, "brackets": [], "confidence": "low",
+                                      "note": "", "matched_row": "", "minimum_pax": 1,
+                                      "currency": ""}
+        # CONFIRMED HAZARD (2026-09-11, building the FTS one-vehicle-round price refresh - see
+        # lookup_prices_from_fts_matrix): a finding naming only ONE bracket cannot safely rely on
+        # bracket_price_for's overlap fallback across every option on the route the way a finding
+        # naming a bracket per option can - two live brackets that both start at 1 pax (Sedan
+        # 1-3, Hiace 1-8) always overlap EACH OTHER too, so a single Sedan-only bracket would
+        # also overlap-match (and reprice) the live Hiace option it says nothing about. A finding
+        # may set "only_option_code" to restrict itself to exactly one option by its own live
+        # code - every other option on the route is then left alone entirely (not counted as
+        # missing or unchanged, simply not part of this round), rather than risk bracket_price_for
+        # guessing which live option a lone bracket was meant for. No caller besides the FTS
+        # single-vehicle path sets this key, so every other document's behavior is unchanged.
+        only_option_code = finding.get("only_option_code")
+        # CONFIRMED REAL BUG, same day, one layer wider than only_option_code: the guard above
+        # only ever protected the FTS path, because nothing else sets that key. Every OTHER
+        # supplier's document - the AI path, which is what the remaining 200+ suppliers use - was
+        # still exposed. Reproduced against the real TRANSPORT-418748 shape: a rate sheet pricing
+        # only the 1-3 Sedan line proposed "Sedan 175 -> 95" AND "Hiace 200 -> 95". The fix is
+        # not another special case but the general rule: when a route's modalities are
+        # ALTERNATIVES (they overlap each other - see options_are_alternatives), a document
+        # bracket may only claim the modality it matches EXACTLY. Tiered brackets are untouched
+        # and keep the overlap fallback they have always relied on.
+        per_pax = bool(route.get("price_per_pax", True))
+        allow_overlap = not options_are_alternatives(route.get("options") or [])
+        changes, unchanged, missing = [], 0, 0
+        for option in route["options"]:
+            if option.get("fetch_failed"):
+                continue
+            if only_option_code is not None and option.get("code") != only_option_code:
+                continue
+            if scope is not None and (option.get("min_pax"), option.get("max_pax")) not in scope:
+                continue
+            new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
+                                          finding.get("minimum_pax", 1),
+                                          price_per_pax=per_pax,
+                                          # An explicitly scoped round is the human saying which
+                                          # modality this sheet is for, which is a better answer
+                                          # than any bracket heuristic - so the exact-match-only
+                                          # rule relaxes back to overlap inside that scope.
+                                          allow_overlap=allow_overlap or scope is not None)
+            if new_price is None:
+                missing += 1
+                continue
+            if abs(new_price - option["unit_price"]) < 0.005:
+                unchanged += 1
+                continue
+            changes.append({"code": option["code"], "min_pax": option["min_pax"],
+                            "max_pax": option["max_pax"], "old": option["unit_price"],
+                            "new": new_price, "name": option.get("name", "")})
+        currency_changed = bool(finding.get("currency")) and \
+            finding["currency"] != str(route.get("currency") or "").upper()
+        if changes:
+            status = "changed"
+        elif not finding.get("found"):
+            status = "not_in_document"
+        elif missing and not unchanged:
+            status = "not_in_document"
+        else:
+            status = "unchanged"
+        # CONFIRMED REAL BUG (audit, 2026-08-24): an option whose live price could not be READ
+        # must block this whole route, not be quietly skipped.
+        #
+        # WHY THE WHOLE ROUTE: rebuild_prices derives ONE base price for the transport from the
+        # WIDEST bracket and then expresses every other option as a supplement relative to it. It
+        # used to compute that base from the SURVIVING options only, so a single transient GET
+        # failure (and GETs are deliberately never retried - see api_client._request) had two
+        # silent effects: the unread option kept its old supplement against a NEW base, becoming a
+        # price nobody chose, and if the failed option happened to BE the widest bracket, the base
+        # was taken from a narrower one - often the 1-pax solo rate - repricing every modality on
+        # the transport. baseChildrenPrice/baseInfantPrice are then scaled by base/old_base, so the
+        # error compounds into the child prices too.
+        #
+        # Nothing surfaced any of this: every UI site filters fetch_failed out without a word, and
+        # apply_proposals reported success. stop_sales_tool.py (~500) already handles the identical
+        # "couldn't read it" case correctly - naming it and excluding it from Apply - and this is
+        # that same treatment.
+        unreadable = [o.get("code") for o in route["options"] if o.get("fetch_failed")]
+        if unreadable:
+            status = "blocked_unreadable"
+        proposals.append({
+            "index": i, "route": route, "finding": finding, "changes": changes,
+            "unchanged": unchanged, "missing": missing, "status": status,
+            "currency_changed": currency_changed,
+            "unreadable_options": unreadable,
+            # Only genuine changes are pre-ticked. An accept-all button must not sweep up a
+            # route the document never mentioned - nor one we couldn't fully read.
+            "accepted": status == "changed",
+        })
+    return proposals
+
+
+def build_ticket_proposals(routes: List[Dict[str, Any]],
+                           findings: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One proposal per live (Ticket, Modality): what it costs now, and what it would become.
+
+    Modelled on build_proposals() above (same statuses, same accept-by-default-only-when-
+    changed rule) with two Ticket-specific additions: a route whose Modality could not be read
+    is reported as blocked_unreadable (like build_proposals' own unreadable-option rule, just
+    for the whole route since there is only one "option" here - the Modality itself), and a
+    route whose priceType this phase doesn't understand (DISTRIBUTION/SERVICE) is reported as
+    unsupported_price_type rather than silently skipped or guessed at.
+
+    Each change also carries "child_old"/"child_new": a child/infant price at the SAME bracket
+    moves alongside the adult price (see rebuild_ticket_prices) exactly like Transport already
+    scales baseChildrenPrice/baseInfantPrice with the adult base - it is reported here so the
+    review screen can show it, but is never a separate accept/reject choice of its own."""
+    proposals = []
+    for i, route in enumerate(routes):
+        finding = findings.get(i) or {"found": False, "brackets": [], "confidence": "low",
+                                      "note": "", "matched_row": "", "minimum_pax": 1,
+                                      "currency": ""}
+        if route.get("fetch_failed"):
+            proposals.append({
+                "index": i, "route": route, "finding": finding, "changes": [],
+                "unchanged": 0, "missing": 0, "status": "blocked_unreadable",
+                "currency_changed": False,
+                "unreadable_options": [route.get("modality_code")], "accepted": False,
+            })
+            continue
+        if not _ticket_price_type_supported(route.get("price_type")):
+            proposals.append({
+                "index": i, "route": route, "finding": finding, "changes": [],
+                "unchanged": 0, "missing": 0, "status": "unsupported_price_type",
+                "currency_changed": False, "unreadable_options": [], "accepted": False,
+            })
+            continue
+
+        child_by_code = {c["code"]: c for c in (route.get("child_options") or [])}
+        changes, unchanged, missing = [], 0, 0
+        for option in route["options"]:
+            new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
+                                          finding.get("minimum_pax", 1))
+            child_price_from_doc = None
+            for b in (finding.get("brackets") or []):
+                if b["min_pax"] <= option["max_pax"] and b["max_pax"] >= option["min_pax"] \
+                        and b.get("child_price") is not None:
+                    child_price_from_doc = b["child_price"]
+                    break
+            if new_price is None:
+                if child_price_from_doc is None:
+                    missing += 1
+                    continue
+                new_price = option["unit_price"]  # only the child moves; adult stays as-is
+            adult_changed = abs(new_price - option["unit_price"]) >= 0.005
+            if not adult_changed and child_price_from_doc is None:
+                unchanged += 1
+                continue
+            child_row = child_by_code.get(option["code"])
+            changes.append({
+                "code": option["code"], "min_pax": option["min_pax"], "max_pax": option["max_pax"],
+                "old": option["unit_price"], "new": new_price, "name": option.get("name", ""),
+                "child_old": child_row["unit_price"] if child_row else None,
+                "child_new": child_price_from_doc,
+            })
+        currency_changed = bool(finding.get("currency")) and \
+            finding["currency"] != str(route.get("currency") or "").upper()
+        if changes:
+            status = "changed"
+        elif not finding.get("found"):
+            status = "not_in_document"
+        elif missing and not unchanged:
+            status = "not_in_document"
+        else:
+            status = "unchanged"
+        proposals.append({
+            "index": i, "route": route, "finding": finding, "changes": changes,
+            "unchanged": unchanged, "missing": missing, "status": status,
+            "currency_changed": currency_changed, "unreadable_options": [],
+            "accepted": status == "changed",
+        })
+    return proposals
+
+
+def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """New prices onto a Ticket Modality, keeping everything else - structure, dates, languages,
+    supplements - exactly as it is. Same rule as Transfer/Transport (CONFIRMED PRODUCT-OWNER
+    RULE): only the numbers move; startDate/endDate are never touched here.
+
+    baseAdultPrice is deliberately left UNTOUCHED for an OCCUPANCY Modality: builder.py already
+    treats it as a required-but-inert placeholder outside DISTRIBUTION mode (a harmless 1.0 when
+    creating one) - the real per-headcount prices live entirely in occupancyPrices, which is
+    what this function actually rewrites."""
+    payload = json.loads(json.dumps(route["raw"]))
+    resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
+    resolved_child = {c["code"]: round(float(c["child_new"]), 2)
+                      for c in changes if c.get("child_new") is not None}
+    adult_by_code = {o["code"]: o for o in route["options"]}
+
+    new_rows = []
+    for row in (payload.get("occupancyPrices") or []):
+        if not isinstance(row, dict):
+            new_rows.append(row)
+            continue
+        code = f"occ{int(_num(row.get('occupancy'), 0))}"
+        row = dict(row)
+        if isinstance(row.get("ageRange"), dict):
+            if code in resolved_child:
+                row["amount"] = resolved_child[code]
+            elif code in resolved_adult and adult_by_code.get(code, {}).get("unit_price", 0) > 0:
+                # No explicit child price in the document for this bracket - move the child
+                # price with the adult price, same ratio-scaling rule Transport already uses
+                # for baseChildrenPrice/baseInfantPrice, rather than leaving it stale.
+                ratio = resolved_adult[code] / adult_by_code[code]["unit_price"]
+                row["amount"] = round(_num(row.get("amount")) * ratio, 2)
+        elif code in resolved_adult:
+            row["amount"] = resolved_adult[code]
+        new_rows.append(row)
+    payload["occupancyPrices"] = new_rows
+    return payload
+
+
+def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
+                           progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Push the accepted Ticket price proposals. Each Modality is PUT back whole, with only its
+    occupancyPrices changed - same belt-and-braces shape as apply_proposals() above."""
+    accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
+    for n, proposal in enumerate(accepted):
+        route = proposal["route"]
+        if progress:
+            progress(n + 1, len(accepted), route.get("name", ""))
+        payload = rebuild_ticket_prices(route, proposal["changes"])
+        payload["code"] = route.get("modality_code")
+        try:
+            res = client.update_ticket_option(supplier_id, route.get("ticket_code"), payload)
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": route.get("name"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+                continue
+            out["updated"].append({"name": route.get("name"), "changes": proposal["changes"]})
+        except Exception as e:
+            out["failed"].append({"name": route.get("name"),
+                                  "detail": ai_extractor.friendly_error_message(e)})
+    return out
+
+
+def _rebuild_transfer_prices(route: Dict[str, Any],
+                             new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
+    """New prices onto a transfer record, keeping its structure and its DATES.
+
+    CONFIRMED REAL RULE (product owner): "if the price will be refreshed, the date of Transfer
+    and the date of Transports will most likely be until 2049 or even 2099, but the price must
+    still be updated." So startDate and endDate are never touched here - the document's own
+    season is irrelevant to a product deliberately left open-ended, and overwriting a 2099 end
+    date with a rate sheet's July 2027 would silently retire the product next summer."""
+    payload = json.loads(json.dumps(route["raw"]))
+    brackets = route["options"]
+    resolved = {b["code"]: round(float(new_unit_prices.get(b["code"], b["unit_price"])), 2)
+                for b in brackets}
+    default = next((b for b in brackets if b["code"] == DEFAULT_BRACKET_CODE), None)
+    base = resolved.get(DEFAULT_BRACKET_CODE, _num(payload.get("basePrice")))
+    payload["basePrice"] = base
+
+    currency = payload.get("currency") or "EUR"
+    entries = []
+    for bracket in brackets:
+        if bracket["code"] == DEFAULT_BRACKET_CODE:
+            continue
+        price = resolved[bracket["code"]]
+        if abs(price - base) < 0.005:
+            # An entry equal to the default is redundant - schemas.TransferOccupancyPriceVO
+            # exists only for occupancies that genuinely differ.
+            continue
+        entry = dict(bracket.get("raw") or {"occupancy": bracket["min_pax"]})
+        existing = entry.get("basePrice")
+        entry["basePrice"] = {"amount": price,
+                              "currency": (existing or {}).get("currency", currency)
+                              if isinstance(existing, dict) else currency}
+        entries.append(entry)
+    payload["pricesByOccupancy"] = entries
+    if default is None:
+        payload["basePrice"] = base
+    return {"transport": payload, "options": []}
+
+
+def _option_supplement(option: Dict[str, Any]) -> float:
+    """This option's CURRENT live adultPriceSupplement (0.0 if it has no price entry at all -
+    the confirmed real shape for a bracket that costs exactly the base rate, see
+    schemas.ContractTransportOptionPriceVO's own docstring)."""
+    for price in ((option.get("raw") or {}).get("prices") or []):
+        if isinstance(price, dict):
+            return _num(price.get("adultPriceSupplement"))
+    return 0.0
+
+
+def _current_base_option(options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Which option IS the transport's base modality right now - not a guess from bracket
+    width, but whichever option already carries no supplement live.
+
+    CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): this used to always pick the
+    WIDEST bracket as base and express every OTHER option as a supplement against it - correct
+    for a transport that was built that way, but WRONG for FTS's Sedan/Hiace structure, where
+    Sedan (the NARROWER 1-3 pax bracket) was deliberately made the base at creation time (see
+    fts_transfer_matrix.py's own module docstring: "Sedan is base price as one modality...
+    Hiace is second modality and is used as price supplement with Sedan" -
+    builder.build_transport_payloads is even called with
+    force_base_occupancy=FTS_SEDAN_BRACKET specifically to override the default widest-wins
+    heuristic at creation time). Recomputing "widest wins" from scratch on every price refresh
+    silently FLIPPED which option carries the supplement on every run - Sedan (previously
+    supplement-free) suddenly needed a brand-new price entry it had never had before, and
+    Hiace's real existing supplement was thrown away - even on an Apply that only meant to
+    touch Hiace's own price (a one-vehicle round, see only_option_code above). Real symptom: a
+    real bulk Apply against 13 FTS-matched Transports failed all 13 with "TransportContractPrice.
+    startDate/endDate: must not be null" - Sedan's option had never carried a price entry
+    before, so building one from scratch (see rebuild_prices below) had no dates to carry
+    forward, the SAME class of bug already found and fixed once for the parent record's own
+    airlineCode (see load_supplier_transports' docstring above), just one level down on the
+    option sub-resource instead.
+
+    Fix: keep whichever option is ALREADY the live base (a "no supplement" option) rather than
+    re-deriving it from bracket width - this reflects how the transport is ACTUALLY structured
+    today, so a refresh can never restructure a transport that was deliberately built with a
+    non-widest base. Only when the live data is ambiguous (no option is currently
+    zero-supplement, or more than one is) does this fall back to the original widest-bracket
+    heuristic, which is exactly correct for a transport that has never had this choice made
+    explicitly - and is also why every pre-existing single/two-option test fixture in this
+    codebase (none of which set up a genuinely ambiguous case) still passes unchanged."""
+    zero_supplement = [o for o in options if abs(_option_supplement(o)) < 0.005]
+    if len(zero_supplement) == 1:
+        return zero_supplement[0]
+    return max(options, key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]))
+
+
+def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
+    """The payloads that put these prices live, keeping base and supplements consistent.
+
+    A modality's price is base + its own supplement, so a new set of prices has to be split
+    across the parent record and every option. The base is taken from whichever option is
+    ALREADY the live base (see _current_base_option) - the common bracket carries no
+    supplement and only genuine outliers (the solo surcharge) do. Sending an option's
+    supplement without updating the base, or the reverse, would silently reprice every OTHER
+    modality on the transport."""
+    if route.get("kind") == KIND_TRANSFER:
+        return _rebuild_transfer_prices(route, new_unit_prices)
+    # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
+    # Refusing here as well as at the proposal stage is deliberate belt-and-braces: this function
+    # is what actually computes the shared base price, so it is the place where repricing every
+    # other modality around an unread option would happen. A partial read can never produce a safe
+    # rebuild, so it produces nothing at all.
+    if any(o.get("fetch_failed") for o in route["options"]):
+        return {"transport": None, "options": [],
+                "blocked": "Some of this route's live option prices could not be read."}
+    options = [o for o in route["options"] if not o.get("fetch_failed")]
+    if not options:
+        return {"transport": None, "options": []}
+    resolved = {o["code"]: round(float(new_unit_prices.get(o["code"], o["unit_price"])), 2)
+                for o in options}
+    base_option = _current_base_option(options)
+    base = resolved[base_option["code"]]
+
+    parent = json.loads(json.dumps(route["raw"]))
+    # BELT AND SUSPENDERS (2026-09-11, "airlineCode: must not be null" incident - see
+    # load_supplier_transports' own docstring above for the real fix, which is fetching each
+    # transport's full individual record so this field is populated in the first place). This
+    # call is only the last-resort fallback for the rare case where even the individual record
+    # is missing the field (same defensive pattern cancellation_bulk_transport.apply_proposals
+    # already uses) - it never overwrites a real value that's actually present, only fills a
+    # field that is genuinely still None.
+    normalize_for_put(parent, "Transport")
+    # CONFIRMED REAL BUG (found 2026-09-11, same root cause as load_supplier_transports' own
+    # fix above and bulk_notes.py's confirmed 2026-09-10 fix - see
+    # claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md): a per-vehicle transport
+    # (pricePerPax=False - every FTS-created Transport is one) stores its base price in
+    # vehiclePrice, not baseAdultPrice, which is genuinely 0 for these and must stay 0 (that's
+    # what builder.build_transport_payloads itself writes at creation:
+    # `baseAdultPrice=base_price if price_per_pax else 0.0`). Writing the new base into
+    # baseAdultPrice unconditionally used to leave the real vehiclePrice field stale forever -
+    # the price a per-vehicle transport's OWN option supplements are computed against (this
+    # function's own resolved-price arithmetic is unaffected either way, since base+supplement
+    # always nets out to the same live per-option price regardless of which field it's stored
+    # in - it's specifically the raw vehiclePrice field itself, and anything reading it
+    # directly, that would have gone stale).
+    per_pax = bool(route.get("price_per_pax", True))
+    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+    old_base = _num(parent.get(base_field))
+    parent[base_field] = base
+    # Child and infant prices move with the adult price rather than being left at last season's
+    # number, which would silently change the child discount. Per-vehicle transports have no
+    # separate child/infant base at all (mirrors bulk_notes.py's own per-vehicle handling,
+    # supplement_fields=("adult",) only) - there is nothing here to scale.
+    if per_pax and old_base > 0:
+        ratio = base / old_base
+        for key in ("baseChildrenPrice", "baseInfantPrice"):
+            if _num(parent.get(key)) > 0:
+                parent[key] = round(_num(parent.get(key)) * ratio, 2)
+
+    option_payloads = []
+    for option in options:
+        payload = json.loads(json.dumps(option["raw"]))
+        # DEFENSIVE FIX (2026-09-11, investigating a real report of one option's price update
+        # apparently landing on a DIFFERENT modality - "changed the Modality to Sedan" - after a
+        # Hiace-only round): api_client.update_transport_option's own docstring confirms there is
+        # NO option code in the PUT url - Travel Compositor decides which option gets overwritten
+        # purely from the 'code' field INSIDE the payload body. This used to trust whatever code
+        # came back on option["raw"] (the individual GET response) as-is; if that field were ever
+        # missing, blank, or - worse - identical across two options in a single GET response, one
+        # option's price update could silently overwrite the WRONG modality with no validation
+        # error to catch it (unlike the airlineCode/date bugs above, this would not raise - it
+        # would just quietly corrupt the other option). Pinning it explicitly to the SAME code
+        # this function already trusts (option["code"] - the one load_supplier_transports used to
+        # fetch this exact option) removes that dependency on the GET response's own body
+        # entirely, regardless of whether it was the actual cause of the report above.
+        payload["code"] = option["code"]
+        supplement = round(resolved[option["code"]] - base, 2)
+        # CONFIRMED REAL GAP (product owner, 2026-09-11): "it can have a price supplement for
+        # different modalities and it can have different period of times but the time can not
+        # overlap within the same modality" - a modality's `prices` list can hold more than one
+        # entry, each its own non-overlapping date range (confirmed already live: a standard
+        # rate now plus an already-scheduled future/peak-season rate). This used to REPLACE the
+        # entire `prices` list with a single new-or-updated entry on every write - which silently
+        # DELETED every other period the moment any price on this modality changed. Fixed: only
+        # the ONE entry that is active TODAY (see _select_price_entry) is touched; every other
+        # period is carried through byte-for-byte, untouched.
+        #
+        # NOTE - SCOPE OF THIS FIX: matching is against TODAY's date only, not yet against a
+        # validity window the SOURCE DOCUMENT itself states (the rate-sheet reading pipeline
+        # doesn't extract per-bracket dates yet - see price_refresh.PRICE_LOOKUP_TOOL_SCHEMA).
+        # That is real, separate follow-up work (AI schema + prompt changes) rather than
+        # something to guess at here; this fix's job is narrower and unconditional: whatever
+        # period a refresh touches, every OTHER period on that modality must survive it.
+        existing_entries = [p for p in (payload.get("prices") or []) if isinstance(p, dict)]
+        current_entry = _select_price_entry(existing_entries)
+        other_entries = [p for p in existing_entries if p is not current_entry]
+        if abs(supplement) < 0.005:
+            # A period whose supplement lands on exactly the base rate carries no entry at all -
+            # the confirmed real shape (see schemas.ContractTransportOptionPriceVO's own
+            # docstring) - but only THIS period's entry is dropped; every sibling period stays.
+            new_entries = other_entries
+        else:
+            updated = dict(current_entry or {})
+            updated["adultPriceSupplement"] = supplement
+            # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, same real bulk Apply
+            # failure described in _current_base_option's docstring above): a NEW price entry
+            # (current_entry is None - this option never carried a supplement before) had no
+            # startDate/endDate at all, and Travel Compositor's TransportContractPrice requires
+            # both non-null on write ("must not be null" on both fields). The parent's OWN
+            # startDate/endDate - never touched by this whole flow, see rebuild_prices' and the
+            # Apply screen's own promise that "validity dates stay as they are" - are the
+            # correct values to carry forward here too, exactly matching how
+            # builder.build_transport_payloads seeds a brand-new price entry at create time
+            # (startDate=the transport's own effective_start_date). schemas.
+            # ContractTransportOptionPriceVO.endDate even defaults to "2049-12-31" when not
+            # given, which is the last-resort fallback here too, for the rare case where the
+            # parent itself has no endDate either - an empty string would still satisfy "must
+            # not be null" (same reasoning as normalize_for_put's airlineCode default above),
+            # but a real date is what the parent actually has, so that's used first. An EXISTING
+            # entry's own dates (current_entry was found) are never touched here at all.
+            if not updated.get("startDate"):
+                updated["startDate"] = parent.get("startDate") or ""
+            if not updated.get("endDate"):
+                updated["endDate"] = parent.get("endDate") or "2049-12-31"
+            new_entries = other_entries + [updated]
+        payload["prices"] = new_entries
+        option_payloads.append({"code": option["code"], "payload": payload,
+                                "unit_price": resolved[option["code"]]})
+    return {"transport": parent, "options": option_payloads}
+
+
+def preview_untouched_modality_effects(route: Dict[str, Any],
+                                       changes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """What this round does to the modalities it is NOT repricing.
+
+    CONFIRMED REAL GAP (product owner, 2026-09-11, reviewing bulk Transport update against the
+    real TRANSPORT-418748: "One Modality for Sedan, 1 to 3 Pax. A second modality for Hiace, 1 to
+    8 Pax. PriceVehicle = price Sedan. Price Hiace = Price Hiace from file - price from Sedan"):
+    every modality on a transport shares ONE base price, so moving the base necessarily rewrites
+    every other modality's stored supplement to hold its own final price steady. That is correct
+    and non-destructive - the other modality still sells for exactly what it sold for - but it was
+    completely invisible. On a Sedan-only round against that real record (Vehicle 175, Hiace
+    supplement 25, so Hiace = 200), accepting "Sedan 175 → 95" also rewrites Hiace's supplement
+    from 25 to 105 behind the scenes. Travel Compositor then shows a supplement the operator never
+    typed, which reads as corruption even though Hiace's price never moved.
+
+    UPDATED 2026-09-11 (real TRANSPORT-423015, and see apply_proposals' own comment): an untouched
+    modality's stored price entries are no longer rewritten at all, because Travel Compositor's
+    API under-reports supplements and recomputing one from that read destroys it. So the effect to
+    report is no longer "its supplement is rewritten to hold its price steady" but the opposite:
+    its supplement is left exactly as it is, and its final price therefore moves with the shared
+    base by the same amount the base moves.
+
+    Returns one entry per modality that is not being repriced but whose final price still shifts:
+    {"code", "name", "price", "base_delta", "new_price"}. Empty when the base doesn't move.
+
+    Uses rebuild_prices itself for the base arithmetic rather than re-deriving it, so the numbers
+    shown to a human before Publish are the same ones the Apply step computes."""
+    if route.get("kind") == KIND_TRANSFER or not changes:
+        return []
+    new_prices = {c["code"]: c["new"] for c in changes}
+    payloads = rebuild_prices(route, new_prices)
+    if not payloads.get("transport"):
+        return []
+    per_pax = bool(route.get("price_per_pax", True))
+    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+    base_delta = round(_num(payloads["transport"].get(base_field))
+                       - _num((route.get("raw") or {}).get(base_field)), 2)
+    if abs(base_delta) < 0.005:
+        return []
+    out = []
+    for option in route["options"]:
+        code = option.get("code")
+        if option.get("fetch_failed") or code in new_prices:
+            continue
+        price = _num(option.get("unit_price"))
+        out.append({"code": code, "name": option.get("name") or code,
+                    "price": round(price, 2), "base_delta": base_delta,
+                    "new_price": round(price + base_delta, 2)})
+    return out
+
+
+def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
+                    progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Push the accepted proposals. Each record is PUT back whole, with only prices changed."""
+    accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
+    for n, proposal in enumerate(accepted):
+        route = proposal["route"]
+        if progress:
+            progress(n + 1, len(accepted), route.get("name", ""))
+        new_prices = {c["code"]: c["new"] for c in proposal["changes"]}
+        payloads = rebuild_prices(route, new_prices)
+        if not payloads["transport"]:
+            out["failed"].append({
+                "name": route.get("name"),
+                # rebuild_prices names WHY when it refused on purpose (some option prices were
+                # unreadable), rather than reporting the same "no readable modalities" for both
+                # "this route has nothing" and "this route could not be safely repriced".
+                "detail": payloads.get("blocked") or "no readable modalities",
+            })
+            continue
+        updater = (client.update_transfer if route.get("kind") == KIND_TRANSFER
+                   else client.update_transport)
+        try:
+            res = updater(supplier_id, payloads["transport"])
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": route.get("name"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+                continue
+            option_errors = []
+            for opt in payloads["options"]:
+                # CONFIRMED REAL DATA-LOSS PATH (product owner, 2026-09-11, real TRANSPORT-423015:
+                # "modality Hiace, price displayed on the app is 195, but the actual price would
+                # be 195+50"). Travel Compositor's own admin Prices tab shows that Hiace
+                # supplement as US$50.00 while its public API returns adultPriceSupplement 0.0 for
+                # the same entry - a mismatch inside their platform, proven on 2026-09-10 with a
+                # control test using THEIR form and no code of ours (see
+                # claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.md), and there
+                # is no other supplement field in the schema to read instead.
+                #
+                # The consequence, which that earlier doc did not draw out: rebuild_prices
+                # expresses every option as (its price - the shared base), and an untouched
+                # option's "price" here can only come from that same under-reporting read. So
+                # PUTting EVERY option on every accepted route - which is what this loop used to
+                # do - overwrites a real supplement the API never disclosed with one derived from
+                # a phantom number, silently destroying it. That is the most likely mechanism
+                # behind the Hiace supplement that vanished in the 2026-09-11 bulk run.
+                #
+                # An option this round is not repricing is therefore left completely alone: not
+                # read back, not recomputed, not written. Its stored supplement survives intact,
+                # whatever it really is. The trade-off is honest and is stated on the review
+                # screen: because modalities share one base price, an untouched modality's final
+                # price moves with the base rather than being held steady.
+                if opt["code"] not in new_prices:
+                    continue
+                res = client.update_transport_option(supplier_id, route.get("id"), opt["payload"])
+                if isinstance(res, dict) and "error" in res:
+                    option_errors.append(f"{opt['code']}: {res.get('message') or res.get('error')}")
+            if option_errors:
+                # The parent went through, so the base price has already moved. Saying so
+                # matters: leaving it at "failed" would suggest nothing had changed.
+                out["failed"].append({
+                    "name": route.get("name"),
+                    "detail": "the transport updated but " + "; ".join(option_errors)
+                              + " — re-run to finish it"})
+            else:
+                out["updated"].append({"name": route.get("name"),
+                                       "changes": proposal["changes"]})
+        except Exception as e:
+            out["failed"].append({"name": route.get("name"),
+                                  "detail": ai_extractor.friendly_error_message(e)})
+    return out
+
+
+def suggest_route_for_row(row_text: str, routes: List[Dict[str, Any]], limit: int = 5
+                          ) -> List[Dict[str, Any]]:
+    """Best guesses for which live transport a document row belongs to, for manual matching.
+
+    CONFIRMED REAL RULE (product owner): a row that matched nothing must be something the
+    "human shall manually be able to match... and add the price to it". Reuses the same
+    similarity scoring the upload flow already uses to recognise an existing transport."""
+    parts = [p.strip() for p in str(row_text or "").replace("→", "|").replace("->", "|").split("|")
+             if p.strip()]
+    dep = parts[0] if parts else str(row_text or "")
+    arr = parts[1] if len(parts) > 1 else ""
+    if routes and routes[0].get("kind") == KIND_TRANSFER:
+        scored = transfer_matcher.suggest_existing_transfer_matches(
+            dep, arr, [r["raw"] for r in routes], top_n=limit)
+    else:
+        scored = transport_matcher.suggest_existing_transport_matches(
+            dep, arr, [r["raw"] for r in routes], top_n=limit)
+    # The matcher reports the id under "transport_id", not "id".
+    by_id = {r["id"]: r for r in routes}
+    out = []
+    for candidate in scored:
+        route = by_id.get(candidate.get("transport_id") or candidate.get("transfer_id")
+                          or candidate.get("id"))
+        if route:
+            out.append({"route": route, "score": candidate.get("score", 0)})
+    return out
