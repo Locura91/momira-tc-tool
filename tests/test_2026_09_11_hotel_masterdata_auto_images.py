@@ -15,11 +15,13 @@ had already confirmed the exact hotel one step earlier, in Step 3's own candidat
 list. Skipping that second pick was exactly what produced the "No image has been added yet"
 publish-blocking warning the product owner ran into.
 
-Fix: right after extraction, if a master-data seed is active and has images, they're folded
-straight into hp_data["images"] (the field that already drives the publish payload and the
-editable "Image URLs" table) - not just left as candidates. They still ALSO appear in the "Images
-found" picker (harmless - a human can still add page/document images the same way), but no longer
-NEED a second manual step to actually be included.
+FOLLOW-UP FIX (same day): the first version folded master-data images into hp_data["images"]
+directly, but ALSO left them sitting in hp_hosted_image_candidates - so the "Images found"
+picker still showed all of them as unchecked checkboxes (a screenshot confirmed this), reading
+as "these aren't selected" even though they already were. Now master-data images are excluded
+from that generic candidate list entirely (they don't need a manual pick - they're already in
+hp_data["images"] and visible in the editable "Image URLs" table), and the Step 4 info banner
+says explicitly how many were already added.
 
 app.py can't be imported in a test process (no Streamlit runtime) - same established
 source-shape-check pattern as test_2026_09_10_bulk_price_validity_code.py's own app.py wiring
@@ -35,18 +37,31 @@ def _read_app_py():
         return f.read()
 
 
+def _extraction_block():
+    src = _read_app_py()
+    return src.split(
+        'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)'
+    )[1].split('st.session_state.hp_phase = "reviewing"')[0]
+
+
 def test_masterdata_seed_images_are_folded_into_hp_data_images_after_extraction():
     src = _read_app_py()
     assert 'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)' in src
     # The auto-fold must happen AFTER hp_data is assigned (so it starts from whatever
     # extract_hotel_data actually returned) and must extend rather than overwrite, in case
     # extraction itself ever populates "images".
-    after_extraction = src.split(
-        'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)'
-    )[1].split("st.session_state.hp_phase = \"reviewing\"")[0]
-    assert 'if _hp_md_seed and _hp_md_seed.get("image_urls"):' in after_extraction
+    after_extraction = _extraction_block()
+    assert 'if _hp_md_image_urls_list:' in after_extraction
     assert 'st.session_state.hp_data["images"] = list(dict.fromkeys(' in after_extraction
-    assert '(st.session_state.hp_data.get("images") or []) + _hp_md_seed["image_urls"]' in after_extraction
+    assert '(st.session_state.hp_data.get("images") or []) + _hp_md_image_urls_list' in after_extraction
+
+
+def test_masterdata_images_are_excluded_from_the_generic_found_images_picker():
+    # The literal follow-up ask: master-data images must not sit unchecked in "Images found"
+    # (they'd read as "not selected" even though they're already in hp_data["images"]).
+    after_extraction = _extraction_block()
+    assert 'st.session_state.hp_hosted_image_candidates = [' in after_extraction
+    assert 'if u not in _hp_md_image_urls' in after_extraction
 
 
 def test_masterdata_seed_is_read_before_the_auto_fold_uses_it():
@@ -55,5 +70,11 @@ def test_masterdata_seed_is_read_before_the_auto_fold_uses_it():
     # only surface the first time someone actually created a hotel from master data.
     src = _read_app_py()
     seed_read_pos = src.index('_hp_md_seed = st.session_state.get("hp_masterdata_seed")')
-    auto_fold_pos = src.index('if _hp_md_seed and _hp_md_seed.get("image_urls"):')
+    auto_fold_pos = src.index('if _hp_md_image_urls_list:')
     assert seed_read_pos < auto_fold_pos
+
+
+def test_step4_banner_reports_how_many_masterdata_images_were_already_added():
+    src = _read_app_py()
+    assert '_hp_md_img_count = len(_hp_md_seed_used.get("image_urls") or [])' in src
+    assert 'already added' in src

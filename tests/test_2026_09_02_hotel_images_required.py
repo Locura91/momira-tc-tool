@@ -71,9 +71,14 @@ def test_step3_scrapes_images_from_the_page_url():
 
 
 def test_step3_stores_candidates_into_session_state_for_step4_pickers():
+    # 2026-09-11 follow-up: master-data images are now excluded from this generic pool (they're
+    # auto-added to hp_data["images"] directly - see test_2026_09_11_hotel_masterdata_auto_images.py)
+    # so this only asserts the assignment exists and is still keyed off doc_image_urls, not the
+    # exact old one-liner (which unconditionally included every URL with no filtering).
     block = _hotel_step3_block(_read_app_py())
     assert "st.session_state.hp_doc_raw_images = doc_raw_images" in block
-    assert "st.session_state.hp_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))" in block
+    assert "st.session_state.hp_hosted_image_candidates = [" in block
+    assert "dict.fromkeys(doc_image_urls)" in block
 
 
 def test_step3_image_scrape_happens_before_extraction_is_stored():

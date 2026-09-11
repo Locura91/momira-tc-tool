@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-hotel-masterdata-auto-images"
+MODULE_BUILD = "2026-09-11-hotel-publish-room-debug-capture"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

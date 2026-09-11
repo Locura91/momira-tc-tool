@@ -54,7 +54,9 @@ def test_default_room_candidate_has_zero_new_rooms_inline():
 def test_escalates_to_one_new_room_inline_only_on_a_non_providercode_rooms_error():
     window = _phase1_block()
     idx = window.index("_hp_room_candidate_idx < len(_hp_room_candidates) - 1")
-    tail = window[idx:idx + 1200]
+    # 2026-09-11: widened from 1200 - the escalation warning grew to explain the fallback shape
+    # is itself a known dead end (see test_2026_09_11_hotel_publish_room_debug_capture.py).
+    tail = window[idx:idx + 1600]
     assert '"room" in _hp_error_text.lower()' in tail
     assert '"providerCode" not in _hp_error_text' in tail
     assert "_hp_room_candidate_idx += 1" in tail

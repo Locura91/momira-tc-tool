@@ -10542,7 +10542,22 @@ def render_hotel_flow(client):
                     st.session_state.hp_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                         st.session_state.hp_data, supplier_id, "Hotel")
                     st.session_state.hp_doc_raw_images = doc_raw_images
-                    st.session_state.hp_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
+                    # CONFIRMED REAL REQUEST (product owner, 2026-09-11, follow-up after seeing
+                    # the first fix in a screenshot): "make sure that all those images are
+                    # selected by default if they are coming from masterdata." The first version
+                    # of this fix folded master-data images into hp_data["images"] directly, but
+                    # LEFT THEM ALSO sitting in hp_hosted_image_candidates - so the "Images
+                    # found" picker still showed all of them as unchecked checkboxes, which
+                    # (reasonably) read as "these aren't selected" even though they already were.
+                    # Fix: master-data images are excluded from the generic "Images found"
+                    # candidate list entirely, since they don't need a manual pick at all - they
+                    # already live in hp_data["images"] (see below) and show up in the editable
+                    # "Image URLs" table above this picker. Only genuinely still-needs-a-decision
+                    # images (from the page/uploaded document) remain in this candidate list.
+                    _hp_md_image_urls_list = (_hp_md_seed or {}).get("image_urls") or []
+                    _hp_md_image_urls = set(_hp_md_image_urls_list)
+                    st.session_state.hp_hosted_image_candidates = [
+                        u for u in dict.fromkeys(doc_image_urls) if u not in _hp_md_image_urls]
                     # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "We need to use the
                     # provided images from the masterdata automatically. Please make sure that
                     # all images are automatically selected when creating a hotel from
@@ -10556,9 +10571,9 @@ def render_hotel_flow(client):
                     # warning added no safety, only friction. Extend rather than replace, in the
                     # unlikely case extract_hotel_data itself ever populates "images" from the
                     # document text.
-                    if _hp_md_seed and _hp_md_seed.get("image_urls"):
+                    if _hp_md_image_urls_list:
                         st.session_state.hp_data["images"] = list(dict.fromkeys(
-                            (st.session_state.hp_data.get("images") or []) + _hp_md_seed["image_urls"]))
+                            (st.session_state.hp_data.get("images") or []) + _hp_md_image_urls_list))
                     st.session_state.hp_phase = "reviewing"
                     st.rerun()
                 except Exception as e:
@@ -10576,9 +10591,11 @@ def render_hotel_flow(client):
 
     _hp_md_seed_used = st.session_state.get("hp_masterdata_seed")
     if _hp_md_seed_used:
+        _hp_md_img_count = len(_hp_md_seed_used.get("image_urls") or [])
         st.info(f"📚 Seeded from Travel Compositor master data: **{_hp_md_seed_used.get('name') or '(unnamed)'}** "
-                f"— its images/description were folded into extraction below; double-check they're right for "
-                f"this property before publishing.")
+                f"— its description was folded into extraction below, and its "
+                f"**{_hp_md_img_count} image(s) were already added** to Image URLs below (no manual "
+                f"selection needed) — double-check they're right for this property before publishing.")
 
     if st.button("🔙 Start over with a different document", key="hp_cancel"):
         for key in HP_STATE_KEYS:
@@ -11245,6 +11262,14 @@ def render_hotel_flow(client):
             phase1_payload = dict(contract_result["hotel_payload"])
             phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
 
+            # DEBUG CAPTURE (added 2026-09-11, HRG-H1 real publish failure): every phase-1 attempt
+            # (empty-rooms, then the one-new-room-inline fallback if that's tried) is recorded here
+            # - which rooms[] shape was actually sent and the exact raw response - so a real
+            # failure can be diagnosed from the true, UNMERGED text of each attempt instead of
+            # guessing from whichever error happened to reach show_publish_error last. Same pattern
+            # as price_refresh.py's per-route request/response debug capture (2026-09-11).
+            _hp_phase1_attempts = []
+
             # CONFIRMED REAL BUG (reported 2026-09-06, HRG-H1): the in-tool 500x400 size check
             # above (image_dimensions.py) doesn't catch every way Travel Compositor can reject a
             # picked image - a later attempt was rejected outright with "Not valid image" for an
@@ -11259,6 +11284,13 @@ def render_hotel_flow(client):
                         hotel_response = client.update_hotel(supplier_id, phase1_payload)
                     else:
                         hotel_response = client.create_hotel(supplier_id, phase1_payload)
+
+                _hp_phase1_attempts.append({
+                    "candidate_idx": _hp_room_candidate_idx,
+                    "rooms_sent": [{"name": r.get("name"), "providerCode": r.get("providerCode")}
+                                   for r in phase1_payload.get("rooms") or []],
+                    "response": hotel_response,
+                })
 
                 if not (isinstance(hotel_response, dict) and "error" in hotel_response):
                     break
@@ -11287,16 +11319,29 @@ def render_hotel_flow(client):
                     phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
                     progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
                                      "attached yet, so publishing is being retried with one new "
-                                     "room included.")
+                                     "room included. Note: that fallback room still has no "
+                                     "providerCode either (Travel Compositor only assigns one "
+                                     "after a room is created), so if it fails too, that's a "
+                                     "known dead end this app cannot currently work around alone - "
+                                     "see the debug expander below.")
                     # 2026-09-08: surface the zero-rooms attempt's raw error (was discarded).
                     with progress.expander("Technical details — empty-rooms attempt"):
                         st.code(_hp_error_text or "(no detail)")
                     continue
 
+                with progress.expander("🔍 Raw request/response per attempt (debug)"):
+                    for _i, _att in enumerate(_hp_phase1_attempts, start=1):
+                        st.markdown(f"**Attempt {_i}** — rooms sent: `{_att['rooms_sent']}`")
+                        st.code(str(_att["response"]))
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
                 return
 
             progress.success("✅ Phase 1 — hotel contract, rooms and meal plans published.")
+            if len(_hp_phase1_attempts) > 1:
+                with progress.expander("🔍 Raw request/response per attempt (debug)"):
+                    for _i, _att in enumerate(_hp_phase1_attempts, start=1):
+                        st.markdown(f"**Attempt {_i}** — rooms sent: `{_att['rooms_sent']}`")
+                        st.code(str(_att["response"]))
 
             # Every brand-new room NOT included inline in whichever shape actually succeeded above
             # is added here afterward, one at a time (see the comment above) - for most brand-new
@@ -14275,7 +14320,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-hotel-masterdata-auto-images"
+BUILD_VERSION = "2026-09-11-hotel-publish-room-debug-capture"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
