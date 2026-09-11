@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
+MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
 
 import math
 import re

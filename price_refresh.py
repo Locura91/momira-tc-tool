@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
+MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
 
 import json
 from datetime import date
@@ -1262,6 +1262,11 @@ def build_proposals(routes: List[Dict[str, Any]],
             # is proposing changes to it or not, since the concern is about the CURRENT read, not
             # this document.
             "flat_price_codes": flat_price_modalities(route),
+            # CONFIRMED REAL REQUEST (product owner, 2026-09-11) - see
+            # supplement_calculation_examples' own docstring. Computed from the SAME changes list
+            # shown on screen, so the example always matches what's actually about to be applied,
+            # even after a hand-edit to a "new price" field re-runs this.
+            "supplement_examples": supplement_calculation_examples(route, changes),
             # Only genuine changes are pre-ticked. An accept-all button must not sweep up a
             # route the document never mentioned - nor one we couldn't fully read.
             "accepted": status == "changed",
@@ -1463,9 +1468,26 @@ def _option_supplement(option: Dict[str, Any]) -> float:
     return 0.0
 
 
-def _current_base_option(options: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _current_base_option(options: List[Dict[str, Any]],
+                         forced_bracket: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
     """Which option IS the transport's base modality right now - not a guess from bracket
     width, but whichever option already carries no supplement live.
+
+    forced_bracket, when given, is the human's own explicit answer to "which modality is the
+    base price this round?" (product owner, 2026-09-11, reviewing the confirmed real
+    TRANSPORT-423134/423015 read: "if the selected modality we want to update in this exact
+    update process, if this will be the base price or if it has to be calculated to the base
+    price on top? Sedan Modality would be base price and if I would update the Hiace the price
+    difference must be calculated"). The "zero supplement live" heuristic below is exactly the
+    thing that can be WRONG when Travel Compositor's API under-reports a real supplement as 0.0
+    (see apply_proposals' own comment and claude/transport-supplement-admin-ui-vs-api-mismatch-
+    2026-09-10.md) - in that failure mode, the corrupted-looking option and the genuine base both
+    read as "no supplement", so the heuristic can pick either one. A human who knows the
+    supplier's real structure (Sedan is always base) is a better answer than that read, so it
+    always wins when it names exactly one live option on this route; if it names zero or more
+    than one (the bracket isn't actually present on this route, or the data is otherwise
+    unexpected), this falls through to the live-read heuristic exactly as if nothing were
+    forced - a route that doesn't match the human's assumption is never left without a base.
 
     CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): this used to always pick the
     WIDEST bracket as base and express every OTHER option as a supplement against it - correct
@@ -1495,6 +1517,10 @@ def _current_base_option(options: List[Dict[str, Any]]) -> Dict[str, Any]:
     heuristic, which is exactly correct for a transport that has never had this choice made
     explicitly - and is also why every pre-existing single/two-option test fixture in this
     codebase (none of which set up a genuinely ambiguous case) still passes unchanged."""
+    if forced_bracket is not None:
+        forced = [o for o in options if (o["min_pax"], o["max_pax"]) == forced_bracket]
+        if len(forced) == 1:
+            return forced[0]
     zero_supplement = [o for o in options if abs(_option_supplement(o)) < 0.005]
     if len(zero_supplement) == 1:
         return zero_supplement[0]
@@ -1525,7 +1551,14 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
         return {"transport": None, "options": []}
     resolved = {o["code"]: round(float(new_unit_prices.get(o["code"], o["unit_price"])), 2)
                 for o in options}
-    base_option = _current_base_option(options)
+    # CONFIRMED REAL REQUEST (product owner, 2026-09-11): the human's own answer to "which
+    # modality is the base price this round?" (see the modality-confirmation step in app.py,
+    # asked alongside the scope question, before the document is even read) - stashed on the
+    # route dict itself rather than threaded through every caller's signature, since every
+    # caller of this function already receives the SAME route object build_proposals was given.
+    # None (the default, unchanged behaviour) means "auto-detect from the live read", exactly as
+    # before this override existed.
+    base_option = _current_base_option(options, forced_bracket=route.get("base_bracket_override"))
     base = resolved[base_option["code"]]
 
     parent = json.loads(json.dumps(route["raw"]))
@@ -1684,6 +1717,49 @@ def preview_untouched_modality_effects(route: Dict[str, Any],
         out.append({"code": code, "name": option.get("name") or code,
                     "price": round(price, 2), "base_delta": base_delta,
                     "new_price": round(price + base_delta, 2)})
+    return out
+
+
+def supplement_calculation_examples(route: Dict[str, Any],
+                                    changes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One worked example per changed modality that will be written as a price SUPPLEMENT rather
+    than becoming this transport's own base price - the exact arithmetic the Apply step is about
+    to do, shown before Publish rather than only discoverable afterwards in Travel Compositor.
+
+    CONFIRMED REAL REQUEST (product owner, 2026-09-11, right after the base-modality
+    confirmation question above shipped): "if a price is matching to a modality which will be
+    added to the price supplement, the app shall give one example and show the human what the
+    app would calculate and add to the product." Their own worked example from earlier the same
+    day is exactly what this reproduces: "Sedan Modality would be base price and if I would
+    update the Hiace the price difference must be calculated and the price must then be added to
+    the price supplement" - i.e. new Hiace price 90 = base (Sedan) 40 + supplement 50.
+
+    Uses _current_base_option (the SAME function rebuild_prices calls, honouring
+    route["base_bracket_override"] exactly the way it does) to find which changed option is the
+    base and which are supplements, so this can never disagree with what Apply actually writes.
+    The changed option that IS the base itself is skipped - it's written directly, no supplement
+    arithmetic involved. Empty for Transfers (which have no modality/supplement concept at all)
+    and when nothing is changing."""
+    if route.get("kind") == KIND_TRANSFER or not changes:
+        return []
+    options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+    if len(options) < 2:
+        return []  # a single modality is never expressed as a supplement against itself
+    base_option = _current_base_option(options, forced_bracket=route.get("base_bracket_override"))
+    new_by_code = {c["code"]: c["new"] for c in changes}
+    base_new_price = round(_num(new_by_code.get(base_option["code"], base_option["unit_price"])), 2)
+    out = []
+    for c in changes:
+        if c["code"] == base_option["code"]:
+            continue
+        supplement = round(_num(c["new"]) - base_new_price, 2)
+        out.append({
+            "code": c["code"], "name": c.get("name") or c["code"],
+            "base_code": base_option["code"],
+            "base_name": base_option.get("name") or base_option["code"],
+            "base_price": base_new_price, "new_price": round(_num(c["new"]), 2),
+            "supplement": supplement,
+        })
     return out
 
 

@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
+MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
 
 _NAMESPACE = "cancellation_links"
 

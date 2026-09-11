@@ -13050,14 +13050,31 @@ def render_price_refresh_flow(client, preselected_kind=None):
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
 
-    def _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, scope):
+    def _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, scope, base_bracket=None):
         """Read the document for these already-loaded routes and put the proposals on screen.
 
         Factored out 2026-09-11 so the modality confirmation step below can run BETWEEN loading
         the supplier's products and reading the document, without loading anything twice - see
         that step's own comment for the product owner's request it implements. `scope` is the
         human's answer as a list of (min_pax, max_pax) brackets, or None for "every modality",
-        which is exactly the behaviour this flow had before the step existed."""
+        which is exactly the behaviour this flow had before the step existed.
+
+        base_bracket is the human's own answer to a second, separate question (product owner,
+        2026-09-11, after the scope step above already shipped: "if the selected modality we
+        want to update in this exact update process, if this will be the base price or if it has
+        to be calculated to the base price on top? Sedan Modality would be base price and if I
+        would update the Hiace the price difference must be calculated and the price must then
+        be added to the price supplement") - a (min_pax, max_pax) pair naming which modality IS
+        the base (vehiclePrice/baseAdultPrice), or None for "auto-detect from the live read"
+        (price_refresh._current_base_option's original behaviour, unchanged when this is None).
+        Stashed onto every route dict as base_bracket_override so rebuild_prices - called later,
+        well after this function returns, from apply_proposals and the review screen's own
+        preview - picks it up without any further threading; see rebuild_prices' own comment."""
+        for route in routes:
+            if base_bracket is not None:
+                route["base_bracket_override"] = base_bracket
+            else:
+                route.pop("base_bracket_override", None)
         findings = None
         if fts_csv_tmp_paths:
             # Either one file (a one-vehicle round - "One round for Sedan and one round for
@@ -13095,6 +13112,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 price_refresh.build_proposals(routes, findings, scoped_brackets=scope))
             st.session_state.pr_raw_text = raw_text
             st.session_state.pr_scope = scope
+            st.session_state.pr_base_override = base_bracket
             st.session_state.pop("pr_result", None)
             return True
         return False
@@ -13183,6 +13201,45 @@ def render_price_refresh_flow(client, preselected_kind=None):
             "Modalities this document prices", _labels, default=_labels, key="pr_scope_pick",
             help="Grouped by passenger range, because that is the one thing that means the same "
                  "on every transport — modality codes differ from supplier to supplier.")
+
+        # CONFIRMED REAL REQUEST (product owner, 2026-09-11, after the scope question above
+        # already shipped): "if the selected modality we want to update in this exact update
+        # process, if this will be the base price or if it has to be calculated to the base
+        # price on top? Sedan Modality would be base price and if I would update the Hiace the
+        # price difference must be calculated and the price must then be added to the price
+        # supplement." Auto-detect (the default, unchanged behaviour) picks whichever option
+        # currently carries no live supplement — see price_refresh._current_base_option — which
+        # is exactly the read that Travel Compositor's own API can get wrong (a real supplement
+        # reported as 0.0; see the flat-price-modality warning above and
+        # claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.md). Naming the base
+        # modality explicitly here overrides that read for this round only, for every route.
+        st.caption("Every modality on a transport shares one base price; the others are stored "
+                   "as base + a price difference (a price supplement). Auto-detect uses whichever "
+                   "modality currently reads with no supplement — override it if you already know "
+                   "which one is really the base, especially if a modality's live-read price "
+                   "looks suspect (see the flat-price warning below once prices are loaded).")
+        _base_label_options = ["Auto-detect (recommended when unsure)"] + _labels
+        _base_pick = st.selectbox("Which modality is the BASE price?", _base_label_options,
+                                  index=0, key="pr_base_pick")
+
+        # CONFIRMED REAL REQUEST (product owner, 2026-09-11, same message as the worked-example
+        # request above): "there should also be an AI text field, in case the human shall
+        # clarify what the task is, in case the app does not work properly." Distinct from the
+        # existing per-route "Not right? Tell the AI more about this route" expander further
+        # down (which only fires AFTER a read, one route at a time, once a wrong result is
+        # already on screen) - this one runs BEFORE the read, for the whole batch, specifically
+        # for the modality/base-price detection this step is about: if the auto-detected
+        # modality groups or the base-price choice above don't fit what's actually in the
+        # document, the human can say so here and have it steer the very first read rather than
+        # only correct individual rows afterwards.
+        _clarify = st.text_area(
+            "Anything the AI should know before reading this document? (optional)",
+            key="pr_scope_clarify", placeholder=(
+                "e.g. the Sedan and Hiace columns in this sheet are swapped from usual; or "
+                "ignore the promo surcharge column; or ask any other clarifying question about "
+                "how to read the modalities/base price"),
+            help="Use this if the modality groups above look wrong, or if the base-price choice "
+                 "doesn't match how this specific document is laid out.")
         _c1, _c2 = st.columns([1, 4])
         with _c1:
             if st.button("Read the document", type="primary", key="pr_scope_go",
@@ -13200,9 +13257,15 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         + "; ".join(g["label"] for g in _picked)
                         + ". Ignore any other vehicle class or bracket in the document.",
                     ] if (x or "").strip())
+                if (_clarify or "").strip():
+                    _hint = "\n".join(x for x in [_hint, _clarify.strip()] if (x or "").strip())
+                _base_bracket = None
+                if _base_pick != "Auto-detect (recommended when unsure)":
+                    _base_group = next(g for g in _pending["groups"] if g["label"] == _base_pick)
+                    _base_bracket = (_base_group["min_pax"], _base_group["max_pax"])
                 st.session_state.pop("pr_pending", None)
                 if _pr_read_and_build(_pending["routes"], _pending["raw_text"],
-                                      _pending["fts_csv_tmp_paths"], _hint, _scope):
+                                      _pending["fts_csv_tmp_paths"], _hint, _scope, _base_bracket):
                     st.rerun()
         with _c2:
             if st.button("Cancel", key="pr_scope_cancel"):
@@ -13234,6 +13297,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 + " and ".join(f"**{lo}-{hi} pax**" for lo, hi in _scope)
                 + " modality only. Every other modality is left exactly as it is — its price is "
                   "not read, not compared, and not written.")
+    _base_override = st.session_state.get("pr_base_override")
+    if _base_override:
+        lo, hi = _base_override
+        st.info(f"🧮 **{lo}-{hi} pax** is set as the base price modality for this round. Every "
+                f"other modality's price is being stored as base + a price difference (a price "
+                f"supplement), rather than auto-detected from which one currently reads with no "
+                f"supplement.")
 
     # CONFIRMED REAL BUG (audit, 2026-08-24): routes with an unreadable option used to be filtered
     # out of this screen silently, while their remaining options were repriced around a base
@@ -13377,6 +13447,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     f"moves with it: about **{_side['price']} → {_side['new_price']} "
                     f"{route.get('currency') or ''}**. Travel Compositor's API under-reports "
                     f"supplements, so treat that as indicative and check it in the Prices tab.")
+            # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "if a price is matching to a
+            # modality which will be added to the price supplement, the app shall give one
+            # example and show the human what the app would calculate and add to the product."
+            # Called live (not read from p["supplement_examples"]) so a hand-edit to the "new
+            # price" number above is reflected immediately, exactly like
+            # preview_untouched_modality_effects above it.
+            for _ex in price_refresh.supplement_calculation_examples(route, p["changes"]):
+                _sign = "+" if _ex["supplement"] >= 0 else "−"
+                st.caption(
+                    f"🧮 **{_ex['name']}**'s new price will be stored as base "
+                    f"({_ex['base_name']}: {_ex['base_price']}) {_sign} a price supplement of "
+                    f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} — this is "
+                    f"exactly what gets written to the price supplement field on Publish.")
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
@@ -13845,7 +13928,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-id-suffix-unboundlocal-fix"
+BUILD_VERSION = "2026-09-11-base-modality-and-supplement-example"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

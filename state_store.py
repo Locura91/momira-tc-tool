@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
+MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
 
 _NAMESPACE = "translation_state"
 

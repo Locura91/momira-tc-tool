@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
+MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
