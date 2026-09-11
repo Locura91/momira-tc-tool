@@ -62,7 +62,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 import json
 from datetime import date
@@ -70,6 +70,7 @@ from typing import Any, Dict, List, Optional
 
 import stop_sales_tool
 from ai_extractor import friendly_error_message
+from bulk_notes import normalize_for_put
 
 HOTEL_CLOSE_OUT_END_DATE = "2049-12-31"
 
@@ -144,6 +145,14 @@ def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, An
     create_payload["id"] = None
     create_payload["active"] = True
     create_payload["optionCodes"] = []
+    # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, cancellation_bulk_transport.py):
+    # a whole-record Transport write built from a raw GET response, same as this one, failed
+    # every row with "updateTransport.transport.airlineCode: must not be null" - airlineCode is
+    # REQUIRED by Travel Compositor's own Swagger even though a real GET response for a
+    # non-flight Transport routinely omits it or returns null. Applies equally to a CREATE here
+    # (same ContractTransportVO schema) as it does to the PUT below - see
+    # bulk_notes.normalize_for_put's own docstring for the full history.
+    normalize_for_put(create_payload, "Transport")
     try:
         create_res = client.create_transport(dest_id, create_payload)
     except Exception as e:
@@ -181,6 +190,7 @@ def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, An
 
     deactivate_payload = dict(record)
     deactivate_payload["active"] = False
+    normalize_for_put(deactivate_payload, "Transport")  # same airlineCode fix as the create above
     try:
         deact_res = client.update_transport(source_id, deactivate_payload)
     except Exception as e:

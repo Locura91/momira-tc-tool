@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 _PHASE_KEY = "pkr_phase"
 

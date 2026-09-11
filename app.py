@@ -12326,14 +12326,24 @@ def render_transport_cancellation_bulk_flow(client):
         return
 
     if st.button("📥 Load this supplier's live Transports", key="ctb_load"):
-        with st.spinner("Loading..."):
-            rows, err = cancellation_bulk_transport.load_supplier_transports_for_cancellation(client, supplier_id)
-            if err:
-                st.error(f"❌ Couldn't load Transports: {err}")
-            else:
-                st.session_state.ctb_rows = rows
-                st.session_state.ctb_selected = {r["id"]: True for r in rows}
-                st.rerun()
+        progress_bar = st.progress(0.0)
+        status_line = st.empty()
+
+        def _ctb_load_progress(done, total, name):
+            status_line.caption(f"Fetching {done} / {total}: {name}...")
+            if total:
+                progress_bar.progress(min(1.0, done / total))
+
+        rows, err = cancellation_bulk_transport.load_supplier_transports_for_cancellation(
+            client, supplier_id, progress=_ctb_load_progress)
+        progress_bar.empty()
+        status_line.empty()
+        if err:
+            st.error(f"❌ Couldn't load Transports: {err}")
+        else:
+            st.session_state.ctb_rows = rows
+            st.session_state.ctb_selected = {r["id"]: True for r in rows}
+            st.rerun()
 
     rows = st.session_state.get("ctb_rows")
     if rows is None:
@@ -12433,6 +12443,12 @@ def render_transport_cancellation_bulk_flow(client):
                 st.warning("⚠️ No existing cancellation sentence was found in this Transport's description — "
                           "a new one will be INSERTED rather than replacing one. Double-check the result "
                           "afterward inside Travel Compositor.")
+            if p.get("full_fetch_failed"):
+                st.warning("⚠️ Couldn't re-fetch this Transport's own full record (only the "
+                          "shorter list entry was available) - some rarely-used fields may be "
+                          "filled in with a blank default rather than their real existing value. "
+                          "Safe to include, but worth a quick check in Travel Compositor "
+                          "afterward if this route uses any of those fields.")
 
     selected_ids = [pid for pid, v in st.session_state.ctb_selected.items() if v]
     st.caption(f"{len(selected_ids)} of {len(proposals)} selected.")
@@ -12525,6 +12541,25 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         results = st.session_state.cb_results
         ok = [r for r in results if r["ok"]]
         failed = [r for r in results if not r["ok"]]
+        has_structured = product_type in cancellation_bulk._STRUCTURED_TIER_FIELDS
+        if not has_structured and ok:
+            # CONFIRMED REAL PLATFORM BEHAVIOR (product owner, 2026-09-11, live before/after
+            # GET diff on a real Transfer: setting "30 days or prior" in Travel Compositor's
+            # own Cancellation tab and clicking Save there did NOT change anything the API
+            # returns - the admin UI's structured table for this product type isn't backed by
+            # this resource at all, for anyone, not just this tool). Contrast confirmed the
+            # same way for Transport: its cancellationRanges DOES appear in the GET response
+            # after being set. So "updated" below is 100% true for the voucher text - it is
+            # NOT a partial/silent-failure caveat - there is simply no structured field on
+            # this product type's API for anything to write.
+            st.info(f"ℹ️ {product_type} has no structured cancellation field in Travel "
+                    f"Compositor's API at all (confirmed via a live GET before/after diff, "
+                    f"2026-09-11) - only the customer-facing voucher text below was changed. "
+                    f"If {product_type}'s own \"Cancellation\" tab in Travel Compositor shows "
+                    f"a policy table, that table isn't wired to this API either - it didn't "
+                    f"change when set directly there either. Worth asking Travel Compositor "
+                    f"support whether {product_type} cancellation policies are settable via "
+                    f"API at all.")
         st.caption(f"{len(ok)} updated · {len(failed)} failed.")
         for r in ok:
             st.success(f"✅ **{r['name']}** updated.")
@@ -13562,7 +13597,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+BUILD_VERSION = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

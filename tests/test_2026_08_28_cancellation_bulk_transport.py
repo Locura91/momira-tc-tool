@@ -197,18 +197,39 @@ def test_snippet_finds_a_paragraph_that_has_attributes():
 class _FakeTransportClient:
     """Hand-built fake, not Mock() - same philosophy as conftest.py's FakeTravelCompositorAPI:
     returns real, small, shape-accurate responses rather than an auto-mock that would hide a
-    shape mismatch."""
+    shape mismatch.
 
-    def __init__(self, transports=None, get_error=None, update_error_for=None):
+    `full_records` (added 2026-09-11, real production bug fix) lets a test give a DIFFERENT,
+    fuller record per id than what get_transports' list entry has - mirroring the real Travel
+    Compositor behavior that prompted load_supplier_transports_for_cancellation to stop trusting
+    the list endpoint's own entries for a whole-record PUT (see that function's own docstring).
+    An id with no full_records entry, or listed in `full_fetch_fails_for`, makes get_transport
+    fail/raise so the fallback-to-summary path can be tested too."""
+
+    def __init__(self, transports=None, get_error=None, update_error_for=None,
+                 full_records=None, full_fetch_fails_for=None):
         self._transports = transports or []
         self._get_error = get_error
         self._update_error_for = update_error_for or {}
+        self._full_records = full_records or {}
+        self._full_fetch_fails_for = set(full_fetch_fails_for or [])
         self.update_calls = []
+        self.get_transport_calls = []
 
     def get_transports(self, supplier_id):
         if self._get_error:
             return {"error": 500, "message": self._get_error}
         return {"transport": self._transports}
+
+    def get_transport(self, supplier_id, transport_id):
+        self.get_transport_calls.append(transport_id)
+        if transport_id in self._full_fetch_fails_for:
+            raise RuntimeError("network blip")
+        if transport_id in self._full_records:
+            return self._full_records[transport_id]
+        # Default: no fuller record was given - behave as if the list entry already was the
+        # full record (the common real case), same as every pre-2026-09-11 test in this file.
+        return next((t for t in self._transports if t.get("id") == transport_id), {"error": 404})
 
     def update_transport(self, supplier_id, payload):
         self.update_calls.append((supplier_id, payload))
@@ -412,3 +433,98 @@ def test_apply_only_touches_the_proposals_passed_in():
     results = cbt.apply_proposals(client, "SUP-X", only_first)
     assert len(results) == 1
     assert len(client.update_calls) == 1
+
+
+# ----------------------------------------------------------------------
+# Real production bug fix (product owner, 2026-09-11): "0 updated - 168 failed... airlineCode:
+# must not be null", then, once a plain "" default was tried, "the airline code is already in
+# the existing transport... the app must read the airline code and use the same as already
+# existing." load_supplier_transports_for_cancellation now fetches each Transport's own full
+# individual record (client.get_transport) instead of trusting the list entry, so a field the
+# list omits but the real record has (airlineCode here, but this generalizes to anything) is
+# preserved rather than defaulted away.
+# ----------------------------------------------------------------------
+
+def test_load_prefers_the_full_individual_record_over_the_list_entry():
+    # The list entry (what get_transports returns) has NO airlineCode at all - the real,
+    # individually-fetched record does. If the bug were still there, the list entry alone would
+    # be used and the real value would never reach apply_proposals.
+    list_entry = _sample_record(id_="T1")
+    assert "airlineCode" not in list_entry
+    full_record = dict(list_entry)
+    full_record["airlineCode"] = "XY"  # the real existing value, not present on the list entry
+    client = _FakeTransportClient(transports=[list_entry], full_records={"T1": full_record})
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    assert client.get_transport_calls == ["T1"]
+    assert rows[0]["raw"]["airlineCode"] == "XY"
+    assert rows[0]["full_fetch_failed"] is False
+
+
+def test_apply_preserves_the_real_airline_code_instead_of_blanking_it():
+    # The end-to-end version of the test above: applying a policy change must PUT the real
+    # existing airlineCode back, not silently overwrite it with "" - that was the exact mistake
+    # the product owner caught ("the app must read the airline code and use the same as already
+    # existing"), not just the validation error alone.
+    list_entry = _sample_record(id_="T1")
+    full_record = dict(list_entry)
+    full_record["airlineCode"] = "XY"
+    client = _FakeTransportClient(transports=[list_entry], full_records={"T1": full_record})
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    proposals = cbt.build_proposals(rows, [{"days": 14, "fee_percentage": 50.0}])
+    cbt.apply_proposals(client, "SUP-X", proposals)
+    _, payload = client.update_calls[0]
+    assert payload["airlineCode"] == "XY"
+
+
+def test_apply_falls_back_to_empty_string_only_when_airline_code_is_genuinely_absent_everywhere():
+    # No full_records entry given at all -> get_transport() returns the list entry itself (the
+    # "no fuller record exists" case) - airlineCode is genuinely missing everywhere, so the
+    # last-resort normalize_for_put default ("") is the correct, safe behavior here, same as the
+    # original bug fix intended, just now only as the LAST resort rather than the first.
+    client = _FakeTransportClient(transports=[_sample_record(id_="T1")])
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    proposals = cbt.build_proposals(rows, [{"days": 14, "fee_percentage": 50.0}])
+    cbt.apply_proposals(client, "SUP-X", proposals)
+    _, payload = client.update_calls[0]
+    assert payload["airlineCode"] == ""
+
+
+def test_load_falls_back_to_the_list_entry_and_flags_it_when_the_full_fetch_fails():
+    client = _FakeTransportClient(transports=[_sample_record(id_="T1")],
+                                  full_fetch_fails_for={"T1"})
+    rows, err = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    assert err is None  # one row's fetch failure must not fail the whole load
+    assert len(rows) == 1
+    assert rows[0]["id"] == "T1"  # fell back to the list entry, which does have this much
+    assert rows[0]["full_fetch_failed"] is True
+
+
+def test_build_proposals_carries_full_fetch_failed_through_to_the_proposal():
+    client = _FakeTransportClient(transports=[_sample_record(id_="T1")],
+                                  full_fetch_fails_for={"T1"})
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    proposals = cbt.build_proposals(rows, [{"days": 14, "fee_percentage": 50.0}])
+    assert proposals[0]["full_fetch_failed"] is True
+
+
+def test_load_reports_progress_per_transport():
+    client = _FakeTransportClient(transports=[
+        _sample_record(id_="T1", name="Route One"), _sample_record(id_="T2", name="Route Two"),
+    ])
+    seen = []
+    cbt.load_supplier_transports_for_cancellation(
+        client, "SUP-X", progress=lambda done, total, name: seen.append((done, total, name)))
+    assert seen == [(1, 2, "Route One"), (2, 2, "Route Two")]
+
+
+def test_load_still_works_with_a_client_that_has_no_get_transport_at_all():
+    # A pre-2026-09-11 fake/real client shape (only get_transports) must not crash - falls back
+    # to the list entry for every row, exactly like the old behavior, just flagged.
+    class _OldStyleClient:
+        def get_transports(self, supplier_id):
+            return {"transport": [_sample_record(id_="T1")]}
+
+    rows, err = cbt.load_supplier_transports_for_cancellation(_OldStyleClient(), "SUP-X")
+    assert err is None
+    assert len(rows) == 1
+    assert rows[0]["full_fetch_failed"] is True

@@ -1116,21 +1116,43 @@ def combine(existing: Any, text: str, mode: str):
 # be rejected as a PUT. Every OTHER bulk-write path (structured Supplement entries, the
 # transport_supplement per-option writer) is unaffected: this only bites a whole-record PUT
 # (update_transport/update_transfer/etc), which is exactly what write_field's callers do.
+#
+# RECURRED (product owner, 2026-09-11): the SAME error, same field, on a DIFFERENT whole-record-
+# PUT module (cancellation_bulk_transport.py's bulk cancellation-policy update) - "0 updated ·
+# 168 failed", identical airlineCode message on every row. That module built its own PUT payload
+# independently (`dict(p["raw"])`) instead of reusing this fix, because this function used to be
+# private (`_normalize_for_put`) to this file alone. Made public (dropped the leading
+# underscore) and now imported directly by every other module that PUTs a whole live Transport
+# record back (cancellation_bulk_transport.py, supplier_migration.py's transport deactivation
+# step) so this exact bug class has one fix, not one per module that happens to remember it
+# exists. If a NEW whole-record Transport PUT site turns up anywhere else, it needs this call
+# too - the underlying cause (Travel Compositor's PUT validation being stricter than its own GET
+# response) does not go away just because a new caller didn't know about it yet.
 _REQUIRED_STRING_DEFAULTS: Dict[str, Dict[str, str]] = {
     "Transport": {"airlineCode": ""},
 }
 
 
-def _normalize_for_put(record: Dict[str, Any], product_type: str) -> None:
+def normalize_for_put(record: Dict[str, Any], product_type: str) -> None:
     """Fills in, IN PLACE, any field Travel Compositor's PUT requires non-null but its own GET
     can legitimately omit or send as null - see _REQUIRED_STRING_DEFAULTS's own comment. Only
     touches a field that is genuinely missing or None; never overwrites a real (even empty-
-    string) value already on the record."""
+    string) value already on the record.
+
+    PUBLIC (2026-09-11, was module-private `_normalize_for_put`) - every module that PUTs a
+    whole live Transport record back (not just this one) needs this exact call before the PUT,
+    or it hits the identical "airlineCode: must not be null" failure on every row. See this
+    section's own comment above for the real recurrence that prompted making it shared."""
     if not isinstance(record, dict):
         return
     for field, default in _REQUIRED_STRING_DEFAULTS.get(product_type, {}).items():
         if record.get(field) is None:
             record[field] = default
+
+
+# Old private name kept as an alias - every call site in THIS file was already written against
+# it before the 2026-09-11 publicize; no need to touch each one just to drop an underscore.
+_normalize_for_put = normalize_for_put
 
 
 def write_field(record: Dict[str, Any], product_type: str, target: str,

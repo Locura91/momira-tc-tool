@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 _PHASE_KEY = "ti_phase"
 

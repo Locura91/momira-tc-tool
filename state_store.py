@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 _NAMESPACE = "translation_state"
 

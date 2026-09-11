@@ -31,6 +31,23 @@ schemas.py's own notes on TransferDescriptorVO and the Hotel contract VO) - text
 those two; _STRUCTURED_TIER_FIELDS below is the single source of truth for which three types
 get the structured rewrite.
 
+RE-CONFIRMED WITH LIVE EVIDENCE (product owner, 2026-09-11): after this tool reported "18
+updated" for a Transfer bulk run, the product owner checked Travel Compositor's own
+Cancellation tab for one of those Transfers and found it still empty, and pulled a real
+GET .../transfer/{supplierId}/{transferId} before and after manually setting "30 days or
+prior" in THAT admin screen and clicking Save there - the two GET responses were byte-for-byte
+identical, no cancellation-shaped field appeared anywhere. So Travel Compositor's own admin UI
+Cancellation tab for Transfer isn't wired to this API resource either - it isn't only this
+tool that can't write it. Contrast confirmed the same way for Transport on the same day: a
+before/after GET on a real Transport showed `cancellationRanges` genuinely appear after being
+set - so this isn't a general "the API is unreliable" finding, just a real, confirmed gap
+specific to Transfer (and, per the same original schemas.py reasoning, presumably Hotel,
+though that one hasn't had its own live before/after test yet). See
+claude/transfer-cancellation-no-structured-field-2026-09-11.md (project docs) for the full
+before/after JSON. render_generic_cancellation_bulk_flow (app.py) now shows an explicit info
+banner on the Result screen for these two product types so "N updated" is never misread as
+"the structured field changed too."
+
 WHERE THE TEXT LIVES: all four store their cancellation sentence as one of several PLAIN-TEXT
 blocks in voucherRemarks, separated by a blank line ("\\n\\n") - NOT HTML <p> tags the way
 Transport's description is (see builder.py's _cancellation_voucher_text/_with_what_to_bring/
@@ -76,7 +93,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple

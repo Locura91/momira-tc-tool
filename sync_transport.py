@@ -8,6 +8,7 @@ import time
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from bulk_notes import normalize_for_put
 from state_store import StateStore, compute_hash
 from translator import get_translator, translate_in_batches
 
@@ -287,7 +288,12 @@ def sync_transport_from_data(
     write_start = time.time()
     payload = dict(transport_entry)
     payload["datasheets"] = new_datasheets
-    payload.setdefault("airlineCode", "")
+    # CONFIRMED 2026-09-11: .setdefault only fills a genuinely MISSING key - a real GET response
+    # can also send airlineCode back as an explicit null, which setdefault leaves untouched and
+    # Travel Compositor's PUT still rejects. Switched to the shared, null-safe fix (see
+    # bulk_notes.normalize_for_put's own docstring for the full "airlineCode: must not be null"
+    # history this same bug has already caused in two other modules).
+    normalize_for_put(payload, "Transport")
     result = api.update_transport(supplier_id, payload)
     write_time = time.time() - write_start
     if isinstance(result, dict) and "error" in result:

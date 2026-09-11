@@ -51,13 +51,14 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
+MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cancellation_links
 from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text, strip_stray_html
+from bulk_notes import normalize_for_put
 from state_store import StateStore
 
 # CONFIRMED STANDING RULE (product owner, 2026-08-24, see builder.py's own copy of this
@@ -163,23 +164,65 @@ def _swap_cancellation_paragraph(description_html: str, new_text: str) -> Tuple[
     return new_html, False
 
 
-def load_supplier_transports_for_cancellation(client, supplier_id: str
+def load_supplier_transports_for_cancellation(
+        client, supplier_id: str,
+        progress: Optional[Callable[[int, int, str], None]] = None
                                               ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Every live Transport this supplier has, with its current cancellation policy. Unlike
-    price_refresh.load_supplier_transports, this never fetches per-transport Options (they
-    have no cancellation data of their own - cancellationRanges lives only on the parent
-    record) - one GET /transport/{supplierId} call covers everything this screen needs."""
+    """Every live Transport this supplier has, with its current cancellation policy.
+
+    CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): this used to build `raw` (what
+    apply_proposals later PUTs back whole) directly from the LIST endpoint's own entries
+    (GET /transport/{supplierId}, one call for the whole supplier - the PRODUCTS table in
+    bulk_notes.py documents this endpoint as "full_in_list": True for Transport). In practice a
+    real bulk run failed all 168 rows with "airlineCode: must not be null" - and when the fix
+    tried defaulting a missing airlineCode to an empty string, the product owner immediately
+    caught that this was WRONG, not just incomplete: "the airline code is already in the
+    existing transport... the app must read the airline code and use the same as already
+    existing." The list endpoint's entry for a real Transport can genuinely lack fields (or send
+    them null) that its OWN individual record has - "full_in_list" is not reliable enough to
+    build a whole-record PUT payload from directly, which is exactly why bulk_notes.py's own
+    _plan_transport_price_increase/_plan_transport_voucher_code_repair (both older, both already
+    hardened by earlier real bugs) always re-fetch each transport's full individual record via
+    client.get_transport() rather than trusting the list entry - this now does the same, for the
+    same reason. Costs one extra GET per transport (was the one thing the old "unlike
+    price_refresh.load_supplier_transports... one GET call covers everything" design was trying
+    to avoid) but correctness beats one extra request per row, especially for a whole-record PUT
+    that can silently blank a real field with no validation error to catch it (unlike
+    airlineCode, most fields have no non-null requirement at all - Travel Compositor's PUT
+    validation would accept a payload with, say, a genuinely wiped `companyName` without
+    complaint). A row whose individual re-fetch fails falls back to the list entry (so one bad
+    row can't block the other 167) but is flagged `full_fetch_failed` so the review screen can
+    warn a human before it gets PUT back on a possibly-incomplete record."""
     try:
         data = client.get_transports(supplier_id)
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
     if isinstance(data, dict) and "error" in data:
         return [], str(data.get("message") or data.get("error"))
-    records = data.get("transport", []) if isinstance(data, dict) else (data or [])
-    records = [r for r in records if isinstance(r, dict)]
+    summaries = data.get("transport", []) if isinstance(data, dict) else (data or [])
+    summaries = [r for r in summaries if isinstance(r, dict)]
+    total = len(summaries)
 
     rows = []
-    for record in records:
+    for i, summary in enumerate(summaries):
+        t_id = summary.get("id")
+        t_name = summary.get("name") or t_id or "?"
+        if progress:
+            progress(i + 1, total, t_name)
+        record = summary
+        full_fetch_failed = False
+        if t_id:
+            try:
+                full = client.get_transport(supplier_id, t_id)
+            except Exception:
+                full = None
+            if isinstance(full, dict) and "error" not in full:
+                record = full
+            else:
+                full_fetch_failed = True
+        else:
+            full_fetch_failed = True
+
         datasheet_en = ((record.get("datasheets") or {}).get("EN")) or {}
         description_html = datasheet_en.get("description") or ""
         segment = (record.get("segments") or [{}])[0] if isinstance(record.get("segments"), list) else {}
@@ -191,6 +234,7 @@ def load_supplier_transports_for_cancellation(client, supplier_id: str
             "current_fee_tiers": _wire_ranges_to_fee_tiers(record.get("cancellationRanges")),
             "current_cancellation_snippet": _current_cancellation_snippet(description_html),
             "description_html": description_html,
+            "full_fetch_failed": full_fetch_failed,
             "raw": record,
         })
     return sorted(rows, key=lambda r: (r["name"] or "").lower()), None
@@ -237,6 +281,7 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
             "new_description_html": new_description_html,
             "existing_paragraph_found": existing_found,
             "unchanged": unchanged,
+            "full_fetch_failed": row.get("full_fetch_failed", False),
             "raw": row["raw"],
         })
     return proposals
@@ -277,6 +322,20 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
     results = []
     for p in proposals:
         updated = dict(p["raw"])
+        # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): a real bulk cancellation-
+        # policy run against every Transport of a supplier failed ALL 168 rows with
+        # "updateTransport.transport.airlineCode: must not be null". The REAL fix is
+        # load_supplier_transports_for_cancellation now fetching each Transport's full
+        # individual record instead of trusting the list endpoint's entry (see that function's
+        # own docstring - the product owner caught that the list entry can genuinely be missing
+        # a field the real record has: "the airline code is already in the existing transport...
+        # the app must read the airline code and use the same as already existing", so blindly
+        # defaulting a missing field to "" would have SILENTLY ERASED real data instead of
+        # preserving it). This call is only the last-resort fallback for the rare case where
+        # even the individual record is missing the field (same defensive pattern bulk_notes.py's
+        # own transport bulk-write paths already use) - it never overwrites a real value that's
+        # actually present, only fills a field that is genuinely still None after the real fetch.
+        normalize_for_put(updated, "Transport")
         updated["cancellationRanges"] = p["new_ranges_wire"]
         datasheets = dict(updated.get("datasheets") or {})
         new_text = p["new_cancellation_text"]
