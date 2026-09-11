@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-cancellation-voucher-text-no-bullets"
+MODULE_BUILD = "2026-09-11-price-refresh-transport-full-record-fetch"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -50,6 +50,7 @@ import ai_extractor
 import fts_transfer_matrix
 import transfer_matcher
 import transport_matcher
+from bulk_notes import normalize_for_put
 
 # The product types this flow can refresh. Transport/Transfer are priced per occupancy and both
 # arrive on the same kind of rate sheet, but they store the numbers very differently - see
@@ -217,10 +218,41 @@ def load_supplier_transports(client, supplier_id: str,
     records = [r for r in records if isinstance(r, dict)]
 
     out = []
-    for i, record in enumerate(records):
-        name = record.get("name") or ""
+    for i, summary in enumerate(records):
+        t_id = summary.get("id")
+        name = summary.get("name") or ""
         if progress:
             progress(i + 1, len(records), name)
+        # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): a real bulk price-refresh
+        # run against 13 selected FTS-matched transports failed ALL 13 with "updateTransport.
+        # transport.airlineCode: must not be null" - the identical failure, and identical root
+        # cause, already diagnosed and fixed once this same day in
+        # cancellation_bulk_transport.load_supplier_transports_for_cancellation (see
+        # claude/incident-2026-09-11-bulk-cancellation-transport-airlinecode.md): this function
+        # used to build `raw` (what rebuild_prices/apply_proposals later PUT back whole)
+        # directly from the LIST endpoint's own entry, which can genuinely lack a field (or
+        # send it null) that the transport's own individual GET record actually has populated.
+        # Fixed the same way: re-fetch each transport's full individual record before reading
+        # anything off it. A row whose individual re-fetch fails falls back to the list entry
+        # (so one bad row can't block the rest) but is flagged `full_fetch_failed` so the
+        # review screen can warn a human before it gets PUT back on a possibly-incomplete
+        # record - apply_proposals also re-checks with bulk_notes.normalize_for_put as a
+        # last-resort belt-and-suspenders default, never as the primary fix (defaulting a
+        # missing field to "" would silently erase a real value the individual record has -
+        # the exact mistake the product owner caught and corrected in the sibling incident).
+        record = summary
+        full_fetch_failed = False
+        if t_id:
+            try:
+                full = client.get_transport(supplier_id, t_id)
+            except Exception:
+                full = None
+            if isinstance(full, dict) and "error" not in full:
+                record = full
+            else:
+                full_fetch_failed = True
+        else:
+            full_fetch_failed = True
         # CONFIRMED REAL BUG (found 2026-09-11, tracing the FTS matrix per-vehicle transports
         # this flow's new lookup_prices_from_fts_matrix path is meant to refresh): a per-vehicle
         # transport (pricePerPax=False - every FTS-created Transport is one, see
@@ -270,6 +302,7 @@ def load_supplier_transports(client, supplier_id: str,
             "base_child": _num(record.get("baseChildrenPrice")) if per_pax else 0.0,
             "base_infant": _num(record.get("baseInfantPrice")) if per_pax else 0.0,
             "options": sorted(options, key=lambda o: o.get("min_pax", 0)),
+            "full_fetch_failed": full_fetch_failed,
             "raw": record,
         })
     return out, None
@@ -1168,6 +1201,14 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     base = resolved[widest["code"]]
 
     parent = json.loads(json.dumps(route["raw"]))
+    # BELT AND SUSPENDERS (2026-09-11, "airlineCode: must not be null" incident - see
+    # load_supplier_transports' own docstring above for the real fix, which is fetching each
+    # transport's full individual record so this field is populated in the first place). This
+    # call is only the last-resort fallback for the rare case where even the individual record
+    # is missing the field (same defensive pattern cancellation_bulk_transport.apply_proposals
+    # already uses) - it never overwrites a real value that's actually present, only fills a
+    # field that is genuinely still None.
+    normalize_for_put(parent, "Transport")
     # CONFIRMED REAL BUG (found 2026-09-11, same root cause as load_supplier_transports' own
     # fix above and bulk_notes.py's confirmed 2026-09-10 fix - see
     # claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md): a per-vehicle transport
