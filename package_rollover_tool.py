@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-transport-voucherremarks-revert"
+MODULE_BUILD = "2026-09-11-price-code-en-only"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -1093,13 +1093,23 @@ def write_field(record: Dict[str, Any], product_type: str, target: str,
     reaches the English voucher is invisible to exactly the customers a German or French
     voucher is for. The text stays in whatever language it was typed until the Translate
     tool runs - and because the English text changed, that tool will see the change and
-    re-translate the rest."""
+    re-translate the rest.
+
+    EXCEPTION (product owner, 2026-09-11): MODE_PRICE_CODE is English-only, deliberately NOT
+    the "every language" rule above. The "(YYYYMMDD)" price-validity code is an internal
+    marker for THIS app's own price-validity tracking (price_validity.py's weekly scan reads
+    it back from EN) - it is not customer-facing conditions text that a German/French
+    traveller needs translated, and the product owner does not want it appearing (translated
+    or not) in any non-EN datasheet. Every single-service flow already only ever composes the
+    code onto the EN datasheet (see builder.py's Ticket/Transfer/Transport voucher-text
+    composition); this generic bulk path now matches that everywhere, not just there."""
     field = TARGETS.get(product_type, {}).get(target)
     updated = copy.deepcopy(record)
     _normalize_for_put(updated, product_type)
     changes: Dict[str, Tuple[str, str]] = {}
     if not field:
         return updated, changes
+    en_only = mode == MODE_PRICE_CODE
 
     shape = PRODUCTS[product_type]["shape"]
     if shape == SHAPE_DATASHEETS:
@@ -1110,6 +1120,8 @@ def write_field(record: Dict[str, Any], product_type: str, target: str,
             # publish a service shape nobody reviewed.
             return updated, changes
         for lang, sheet in sheets.items():
+            if en_only and lang != "EN":
+                continue
             if not isinstance(sheet, dict):
                 continue
             raw = sheet.get(field)
@@ -1138,6 +1150,8 @@ def write_field(record: Dict[str, Any], product_type: str, target: str,
         if not isinstance(entry, dict):
             continue
         lang = str(entry.get("language") or "EN")
+        if en_only and lang != "EN":
+            continue
         before = str(entry.get("description") or "")
         after = combine(before, text, mode)
         if after != before:

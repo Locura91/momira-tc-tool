@@ -20,6 +20,13 @@ for PUT /transport/{supplierId}, confirming ContractTransportDataSheetVO has ONL
 description - no voucherRemarks anywhere. "Voucher remarks" is no longer offered as a Transport
 target at all; every Transport price-code write in these tests now targets "Description
 (bottom)" instead, same field the code lived in before 2026-09-10.
+
+EN-ONLY (product owner, 2026-09-11 follow-up): "we need the code only in english, no other
+languages needed (not even when translation)." write_field's general rule is to write into
+EVERY language a record already has (see its own docstring) - but MODE_PRICE_CODE is a
+deliberate exception: the "(YYYYMMDD)" code is this app's own internal price-validity marker,
+not customer-facing text, and must never appear in a non-EN datasheet even after Travel
+Compositor's translation tooling runs. See the "EN-only" tests below.
 """
 import copy
 
@@ -122,6 +129,68 @@ def test_original_record_is_never_mutated_in_place():
     bulk_notes.write_field(record, "Transport", "Description (bottom)", "2027-04-30",
                            bulk_notes.MODE_PRICE_CODE)
     assert record == original_copy
+
+
+# ---------------------------------------------------------------------------
+# EN-only (product owner, 2026-09-11): the price-validity code must never be written into a
+# non-EN datasheet, even when the record already has one (e.g. from Travel Compositor's own
+# translation tooling) - unlike every other bulk-notes mode, which deliberately writes into
+# every language the record has.
+# ---------------------------------------------------------------------------
+
+def test_write_field_price_code_only_touches_en_leaving_other_languages_untouched():
+    record = {
+        "id": "TRANSPORT-1", "name": "CAI Airport Transfer",
+        "datasheets": {
+            "EN": {"description": "Fast transfer from Cairo airport."},
+            "DE": {"description": "Schneller Transfer vom Flughafen Kairo."},
+            "FR": {"description": "Transfert rapide depuis l'aeroport du Caire."},
+        },
+    }
+    updated, changes = bulk_notes.write_field(
+        record, "Transport", "Description (bottom)", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
+    assert list(changes.keys()) == ["EN"]
+    assert "(20270430)" in updated["datasheets"]["EN"]["description"]
+    assert updated["datasheets"]["DE"]["description"] == "Schneller Transfer vom Flughafen Kairo."
+    assert updated["datasheets"]["FR"]["description"] == "Transfert rapide depuis l'aeroport du Caire."
+    assert "(20270430)" not in updated["datasheets"]["DE"]["description"]
+    assert "(20270430)" not in updated["datasheets"]["FR"]["description"]
+
+
+def test_write_field_price_code_removes_a_stray_old_code_from_en_only_not_other_languages():
+    # A leftover code in a non-EN datasheet (e.g. from before this fix, or a stray translation)
+    # is left exactly as it is - this mode only ever touches EN, it never goes hunting through
+    # other languages to clean them up either.
+    record = {
+        "id": "TRANSPORT-1", "name": "CAI Airport Transfer",
+        "datasheets": {
+            "EN": {"description": "Fast transfer.\n(20260101)"},
+            "DE": {"description": "Schneller Transfer.\n(20260101)"},
+        },
+    }
+    updated, changes = bulk_notes.write_field(
+        record, "Transport", "Description (bottom)", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
+    assert list(changes.keys()) == ["EN"]
+    assert "(20260101)" not in updated["datasheets"]["EN"]["description"]
+    assert "(20270430)" in updated["datasheets"]["EN"]["description"]
+    assert updated["datasheets"]["DE"]["description"] == "Schneller Transfer.\n(20260101)"
+
+
+def test_write_field_regular_text_mode_still_writes_every_language():
+    # Confirms the EN-only carve-out is specific to MODE_PRICE_CODE - a normal note (append/
+    # replace) still reaches every language, exactly as write_field's own docstring says.
+    record = {
+        "id": "TRANSPORT-1", "name": "CAI Airport Transfer",
+        "datasheets": {
+            "EN": {"description": "Fast transfer."},
+            "DE": {"description": "Schneller Transfer."},
+        },
+    }
+    updated, changes = bulk_notes.write_field(
+        record, "Transport", "Description (bottom)", "New pickup point.", bulk_notes.MODE_APPEND)
+    assert set(changes.keys()) == {"EN", "DE"}
+    assert "New pickup point." in updated["datasheets"]["EN"]["description"]
+    assert "New pickup point." in updated["datasheets"]["DE"]["description"]
 
 
 # ---------------------------------------------------------------------------
