@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-transport-cancellation-text-relocation"
+MODULE_BUILD = "2026-09-11-transport-generic-write-full-refetch"
 
 _PHASE_KEY = "pkr_phase"
 

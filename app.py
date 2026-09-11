@@ -11947,6 +11947,18 @@ def render_manual_information_flow(client):
             st.success(f"✅ Sent. {len(result['updated'])} service(s) updated.")
             for u in result["updated"]:
                 st.write(f"- {u['name']} ({', '.join(u['languages'])})")
+                # CONFIRMED REAL NEED (product owner, 2026-09-11): a real Transport bulk write
+                # reported success here but the field never actually showed the new value in
+                # Travel Compositor - same shape as the earlier price-refresh write-not-
+                # persisting investigation. Shows the exact request/response so that can be
+                # checked directly instead of guessed at.
+                _mi_dbg = u.get("debug")
+                if _mi_dbg:
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
+                        st.caption("Request body sent:")
+                        st.json(_mi_dbg.get("request"))
+                        st.caption("Response received:")
+                        st.json(_mi_dbg.get("response"))
         if st.session_state.get("mi_future_saved") is False:
             st.error("⚠️ The live services were updated, but the note could NOT be saved for "
                      "future uploads — check the database banner at the top of the page.")
@@ -11954,6 +11966,9 @@ def render_manual_information_flow(client):
             st.error(f"❌ {len(result['failed'])} service(s) failed — nothing was changed on these:")
             for f in result["failed"]:
                 st.write(f"- {f.get('name')}: {f.get('detail')}")
+                if f.get("debug"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
+                        st.json(f["debug"])
             st.caption("Re-running is safe: services already updated are detected and skipped.")
         if st.button("Clear this result", key="mi_clear_result"):
             for k in ("mi_result", "mi_plan", "mi_plan_sig", "mi_future_saved"):
@@ -14269,7 +14284,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-cancellation-text-relocation"
+BUILD_VERSION = "2026-09-11-transport-generic-write-full-refetch"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

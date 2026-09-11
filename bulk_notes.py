@@ -51,9 +51,24 @@ SHAPE_TRANSLATION_LIST = "translation_list"
 
 # Per product type: how to enumerate, fetch, update, and where the text lives.
 #
-# full_in_list says whether the list endpoint already returns complete records. Transfers,
-# transports and tickets do, so a bulk run costs one request; hotels return summaries, so
-# each one has to be fetched individually before it can be safely PUT back.
+# full_in_list says whether the list endpoint already returns complete records. Transfers
+# and tickets do, so a bulk run costs one request; hotels return summaries, so each one has
+# to be fetched individually before it can be safely PUT back.
+#
+# CORRECTED 2026-09-11 (product owner: manually set a Transport's live Voucher remarks to
+# "Test" in Travel Compositor, ran this module's generic "Replace the field completely"
+# write against it with new text, got "Sent N service(s) updated" - and the field in Travel
+# Compositor still read "Test", the write never actually landed). Transport's list entry
+# (GET /transport/{supplierId}) is CONFIRMED unreliable as the source for a whole-record PUT
+# - this is the exact same asymmetry already proven for Transport specifically (not Transfer
+# or Ticket) by the real "airlineCode: must not be null" incident (2026-09-10/11, see
+# normalize_for_put's own comment): a field genuinely present on the individual record
+# (GET /transport/{supplierId}/{id}) can be missing or stale on the list entry. Every OTHER
+# Transport whole-record-PUT path in this codebase already re-fetches the individual record
+# for exactly this reason (price_refresh.py, cancellation_bulk_transport.py's
+# load_supplier_transports_for_cancellation, _plan_transport_price_increase) - this generic
+# plan()/apply() path was the one place still trusting the list entry directly, which is what
+# let a real write silently round-trip stale/incomplete data instead of the live record.
 PRODUCTS: Dict[str, Dict[str, Any]] = {
     "Transfer": {
         "list_fn": "get_transfers", "list_keys": ("transfer",), "id_field": "id",
@@ -63,7 +78,7 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
     "Transport": {
         "list_fn": "get_transports", "list_keys": ("transport",), "id_field": "id",
         "fetch_fn": "get_transport", "update_fn": "update_transport",
-        "full_in_list": True, "shape": SHAPE_DATASHEETS,
+        "full_in_list": False, "shape": SHAPE_DATASHEETS,
     },
     "Ticket": {
         "list_fn": "get_tickets", "list_keys": ("tickets", "ticket"), "id_field": "code",
@@ -567,6 +582,31 @@ def _apply_transport_price_increase(client, supplier_id: str, planned: Dict[str,
     return out
 
 
+def _refetch_full_transport(client, supplier_id: str, summary: Dict[str, Any]
+                            ) -> Tuple[Dict[str, Any], bool]:
+    """Returns (record, full_fetch_failed) - re-fetches `summary`'s own individual full record
+    via client.get_transport() rather than trusting the list entry (GET /transport/
+    {supplierId}) it came from. CONFIRMED NEEDED (product owner, 2026-09-11): a real bulk
+    Voucher-remarks write against a live Transport reported success but never actually
+    changed the field in Travel Compositor - Transport's list entry has already been proven
+    unreliable as the base for a whole-record PUT (see PRODUCTS["Transport"]'s own comment
+    and cancellation_bulk_transport.load_supplier_transports_for_cancellation, which fetches
+    individually for the identical reason). Falls back to `summary` itself, flagged, when the
+    id is missing or the individual fetch fails/errors - one bad row must not block the rest
+    of a bulk repair, but the caller can still warn a human before PUTting a possibly
+    incomplete record back."""
+    t_id = summary.get("id") if isinstance(summary, dict) else None
+    if not t_id:
+        return summary, True
+    try:
+        full = client.get_transport(supplier_id, t_id)
+    except Exception:
+        return summary, True
+    if isinstance(full, dict) and "error" not in full:
+        return full, False
+    return summary, True
+
+
 def _plan_transport_voucher_code_repair(
         client, supplier_id: str,
         progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
@@ -592,16 +632,19 @@ def _plan_transport_voucher_code_repair(
                               "failed": 0, "product_type": "Transport",
                               "target": "transport_voucher_code_repair", "structured": True,
                               "kind": "transport_voucher_code_repair"}
-    records, err = list_services(client, supplier_id, "Transport")
-    if err and not records:
+    summaries, err = list_services(client, supplier_id, "Transport")
+    if err and not summaries:
         result["error"] = err
         return result
     result["error"] = err
-    total = len(records)
-    for i, record in enumerate(records):
-        name = label_for(record, "Transport")
+    total = len(summaries)
+    for i, summary in enumerate(summaries):
+        name = label_for(summary, "Transport")
         if progress:
             progress(i + 1, total, name)
+        # CORRECTED 2026-09-11: re-fetch this Transport's own individual full record rather
+        # than trusting the list entry - see _refetch_full_transport's own docstring for why.
+        record, full_fetch_failed = _refetch_full_transport(client, supplier_id, summary)
         rec_id = record.get("id")
         item_id = str(rec_id or name)
         sheets = record.get("datasheets") or {}
@@ -631,6 +674,7 @@ def _plan_transport_voucher_code_repair(
                 f"description had: (...{code_date.strftime('%Y%m%d')})",
                 f"moved to voucherRemarks; description code removed")},
             "record": updated, "write_kind": "transport",
+            "full_fetch_failed": full_fetch_failed,
         })
     return result
 
@@ -696,16 +740,19 @@ def _plan_transport_cancellation_text_repair(
                               "failed": 0, "product_type": "Transport",
                               "target": "transport_cancellation_text_repair", "structured": True,
                               "kind": "transport_cancellation_text_repair"}
-    records, err = list_services(client, supplier_id, "Transport")
-    if err and not records:
+    summaries, err = list_services(client, supplier_id, "Transport")
+    if err and not summaries:
         result["error"] = err
         return result
     result["error"] = err
-    total = len(records)
-    for i, record in enumerate(records):
-        name = label_for(record, "Transport")
+    total = len(summaries)
+    for i, summary in enumerate(summaries):
+        name = label_for(summary, "Transport")
         if progress:
             progress(i + 1, total, name)
+        # CORRECTED 2026-09-11: re-fetch this Transport's own individual full record rather
+        # than trusting the list entry - see _refetch_full_transport's own docstring for why.
+        record, full_fetch_failed = _refetch_full_transport(client, supplier_id, summary)
         rec_id = record.get("id")
         item_id = str(rec_id or name)
         sheets = record.get("datasheets") or {}
@@ -744,6 +791,7 @@ def _plan_transport_cancellation_text_repair(
                 f"description had: \"{snippet}\"",
                 f"moved to voucherRemarks; description paragraph removed")},
             "record": updated, "write_kind": "transport",
+            "full_fetch_failed": full_fetch_failed,
         })
     return result
 
@@ -1533,15 +1581,26 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
     for n, item in enumerate(pending):
         if progress:
             progress(n + 1, len(pending), item.get("name", ""))
+        # CONFIRMED REAL DIAGNOSTIC NEED (product owner, 2026-09-11, same shape as the
+        # 2026-09-11 price-refresh write-not-persisting investigation): a real bulk write
+        # against Transport reported "Sent N service(s) updated" but a live-checked record
+        # never actually showed the new value in Travel Compositor. Every accepted/updated
+        # item now carries the exact request body sent and the exact body TC handed back
+        # under "debug" so a review screen can show it without needing Postman - see
+        # price_refresh.apply_proposals's own copy of this same fix for the precedent.
+        debug = {"request": item.get("record"), "response": None}
         try:
             res = update_fn(supplier_id, item["record"])
+            debug["response"] = res
             if isinstance(res, dict) and "error" in res:
                 out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                      "detail": str(res.get("message") or res.get("error"))})
+                                      "detail": str(res.get("message") or res.get("error")),
+                                      "debug": debug})
             else:
                 out["updated"].append({"name": item.get("name"), "id": item.get("id"),
-                                       "languages": sorted(item.get("changes", {}).keys())})
+                                       "languages": sorted(item.get("changes", {}).keys()),
+                                       "debug": debug})
         except Exception as e:
             out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                  "detail": f"{type(e).__name__}: {e}"})
+                                  "detail": f"{type(e).__name__}: {e}", "debug": debug})
     return out

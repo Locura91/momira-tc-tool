@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-transport-cancellation-text-relocation"
+MODULE_BUILD = "2026-09-11-transport-generic-write-full-refetch"
 
 _NAMESPACE = "translation_state"
 
