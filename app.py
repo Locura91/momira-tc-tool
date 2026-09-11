@@ -10543,6 +10543,22 @@ def render_hotel_flow(client):
                         st.session_state.hp_data, supplier_id, "Hotel")
                     st.session_state.hp_doc_raw_images = doc_raw_images
                     st.session_state.hp_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
+                    # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "We need to use the
+                    # provided images from the masterdata automatically. Please make sure that
+                    # all images are automatically selected when creating a hotel from
+                    # masterdata." Every OTHER image source (page scrape, uploaded document,
+                    # stock photos) is deliberately left as a candidate the human must pick from
+                    # (extract_hotel_data always starts "images": [] - see its own default) -
+                    # but a master-data match has already been confirmed by a human one step
+                    # earlier (Step 3's candidate-confirmation list, see
+                    # _render_hotel_masterdata_step's own docstring), so requiring a SECOND,
+                    # redundant manual pick here just to avoid the "no image added yet" publish
+                    # warning added no safety, only friction. Extend rather than replace, in the
+                    # unlikely case extract_hotel_data itself ever populates "images" from the
+                    # document text.
+                    if _hp_md_seed and _hp_md_seed.get("image_urls"):
+                        st.session_state.hp_data["images"] = list(dict.fromkeys(
+                            (st.session_state.hp_data.get("images") or []) + _hp_md_seed["image_urls"]))
                     st.session_state.hp_phase = "reviewing"
                     st.rerun()
                 except Exception as e:
@@ -14259,7 +14275,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-price-code-en-only"
+BUILD_VERSION = "2026-09-11-hotel-masterdata-auto-images"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
