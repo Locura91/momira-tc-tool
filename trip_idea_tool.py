@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-price-refresh-fts-matrix-bypass"
+MODULE_BUILD = "2026-09-11-price-refresh-per-vehicle-and-solo-round"
 
 _PHASE_KEY = "ti_phase"
 

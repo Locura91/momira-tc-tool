@@ -25,7 +25,13 @@ that stays with the upload flow. A route in the document matching nothing live i
 never silently dropped, and a human can point it at the right transport by hand.
 
 WHERE A TRANSPORT'S PRICE ACTUALLY LIVES (two places, and they must stay consistent):
-  * the parent record's baseAdultPrice / baseChildrenPrice / baseInfantPrice;
+  * the parent record's baseAdultPrice / baseChildrenPrice / baseInfantPrice - OR, for a
+    per-vehicle transport (pricePerPax=False, confirmed real example: every FTS-created
+    Transport), vehiclePrice instead, with baseAdultPrice/baseChildrenPrice/baseInfantPrice
+    genuinely 0 (see load_supplier_transports and rebuild_prices for the confirmed 2026-09-11
+    fix - this module used to read/write baseAdultPrice unconditionally, the same bug already
+    found once in bulk_notes.py's dated-supplement flow, see
+    claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md);
   * each option's prices[].adultPriceSupplement, which is added to the base.
 So a modality's real price is base + its own supplement. Changing prices means recomputing
 both together, which is why this module owns that arithmetic rather than leaving it to a
@@ -35,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-fts-matrix-bypass"
+MODULE_BUILD = "2026-09-11-price-refresh-per-vehicle-and-solo-round"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -215,7 +221,26 @@ def load_supplier_transports(client, supplier_id: str,
         name = record.get("name") or ""
         if progress:
             progress(i + 1, len(records), name)
-        base_adult = _num(record.get("baseAdultPrice"))
+        # CONFIRMED REAL BUG (found 2026-09-11, tracing the FTS matrix per-vehicle transports
+        # this flow's new lookup_prices_from_fts_matrix path is meant to refresh): a per-vehicle
+        # transport (pricePerPax=False - every FTS-created Transport is one, see
+        # fts_transfer_matrix.fts_route_to_extracted_transport_data's charge_unit="per_service")
+        # has baseAdultPrice/baseChildrenPrice/baseInfantPrice all genuinely 0 - the real base
+        # price lives in vehiclePrice instead (confirmed ContractTransportVO field; see
+        # builder.build_transport_payloads: `vehiclePrice=0.0 if price_per_pax else base_price,
+        # baseAdultPrice=base_price if price_per_pax else 0.0`). This module used to read
+        # baseAdultPrice unconditionally, so every per-vehicle transport's "current price" here
+        # came back 0 regardless of what it actually sells for - the SAME root cause already
+        # found and fixed once in bulk_notes.py's dated-supplement flow
+        # (claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md); mirrored here
+        # exactly (see also rebuild_prices' matching write-side fix below). Defaulting the
+        # missing-key case to per-pax (True) matches bulk_notes.py's own confirmed default -
+        # "a transport missing the pricePerPax field entirely still defaults to the old per-pax
+        # behavior (the confirmed common case)" - the previous `bool(record.get("pricePerPax"))`
+        # here silently defaulted a MISSING key to False (per-vehicle) instead, the opposite of
+        # the confirmed rule.
+        per_pax = bool(record.get("pricePerPax", True))
+        base_for_options = _num(record.get("baseAdultPrice")) if per_pax else _num(record.get("vehiclePrice"))
         options = []
         for code in (record.get("optionCodes") or []):
             try:
@@ -229,7 +254,7 @@ def load_supplier_transports(client, supplier_id: str,
                 "code": code,
                 "min_pax": int(opt.get("minPassengers") or 1),
                 "max_pax": int(opt.get("maxPassengers") or 1),
-                "unit_price": option_unit_price(opt, base_adult),
+                "unit_price": option_unit_price(opt, base_for_options),
                 "name": ((opt.get("translations") or {}).get("EN") or {}).get("name", ""),
                 "raw": opt,
             })
@@ -240,10 +265,10 @@ def load_supplier_transports(client, supplier_id: str,
             "departure_code": segment.get("departureLocationCode"),
             "arrival_code": segment.get("arrivalLocationCode"),
             "currency": record.get("currency"),
-            "price_per_pax": bool(record.get("pricePerPax")),
-            "base_adult": base_adult,
-            "base_child": _num(record.get("baseChildrenPrice")),
-            "base_infant": _num(record.get("baseInfantPrice")),
+            "price_per_pax": per_pax,
+            "base_adult": base_for_options,
+            "base_child": _num(record.get("baseChildrenPrice")) if per_pax else 0.0,
+            "base_infant": _num(record.get("baseInfantPrice")) if per_pax else 0.0,
             "options": sorted(options, key=lambda o: o.get("min_pax", 0)),
             "raw": record,
         })
@@ -545,11 +570,24 @@ FTS_MATCH_MIN_SCORE = 0.5  # same floor as fts_transfer_matrix._AUTO_MATCH_MIN_S
 # wrong one (this would overwrite a live price).
 
 
-def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: str,
-                                  hiace_csv_path: str) -> Tuple[Dict[int, Dict[str, Any]], Optional[str]]:
-    """Finds each known route's price directly in FTS's own two-file rate-matrix CSV export - no
-    AI call, so it cannot overflow no matter how many routes the sheet prices (271, in the real
-    document that triggered this). See the module-level comment above for why this exists.
+def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: Optional[str] = None,
+                                  hiace_csv_path: Optional[str] = None
+                                  ) -> Tuple[Dict[int, Dict[str, Any]], Optional[str]]:
+    """Finds each known route's price directly in FTS's own rate-matrix CSV export - no AI call,
+    so it cannot overflow no matter how many routes the sheet prices (271, in the real document
+    that triggered this). See the module-level comment above for why this exists.
+
+    Either file may be omitted (added 2026-09-11, product owner: "If I have two modalities...
+    could The app understand that Sedan is for base modality and Hiace is for Price supplement
+    calculated? So I would price update in two parts: One round for Sedan and one round for
+    Hiace - would that work?"). Given only one file, this reports a finding with just THAT
+    vehicle's bracket - build_proposals then proposes a change for only that option, leaving the
+    other one's price untouched (reported as "missing" for that option, same as any document
+    that doesn't price every bracket) - exactly a one-vehicle-at-a-time round. Given both, both
+    brackets are reported together in one round, same as before this option existed. Raises
+    nothing and never guesses which file is which - the caller (app.py) is responsible for
+    passing each path under the right keyword, having already classified it with
+    fts_transfer_matrix.classify_fts_matrix_file.
 
     MATCHING: each LIVE route (from Travel Compositor, named via route_places()) is matched to a
     matrix city pair using the SAME fuzzy name-similarity scoring the FTS bulk-import flow already
@@ -562,24 +600,43 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
     rather than guessed at - a wrong match here would silently push the WRONG city pair's price
     onto a live route, which is worse than reporting nothing and asking a human to check by hand.
 
-    PRICES are reported as two brackets - FTS's own confirmed bracket ranges, Sedan 1-3 pax and
-    Hiace 1-8 pax (fts_transfer_matrix.FTS_SEDAN_BRACKET/FTS_HIACE_BRACKET) - regardless of what
-    the LIVE option's own min/max_pax actually are. That is intentional, not an approximation:
+    PRICES are reported as FTS's own confirmed bracket ranges - Sedan 1-3 pax, Hiace 1-8 pax
+    (fts_transfer_matrix.FTS_SEDAN_BRACKET/FTS_HIACE_BRACKET) - regardless of what the LIVE
+    option's own min/max_pax actually are. That is intentional, not an approximation:
     bracket_price_for() (used by build_proposals for every document, not just this one) already
     matches a document's bracket to a live option by OVERLAP, not exact equality, specifically so
     a rate sheet with different bracket boundaries than what's live still prices correctly - the
     same tolerance every other supplier's document already relies on applies here unchanged.
 
-    Returns (findings, format_error). format_error is set (findings then {}) only when the two
-    files don't parse as a matched Sedan/Hiace pair at all - mirrors
+    Returns (findings, format_error). format_error is set (findings then {}) when neither path is
+    given, or when a given file doesn't parse as an FTS matrix at all - mirrors
     fts_transfer_matrix.combine_fts_transfer_matrix's own contract, so a caller can fall back to
     the normal AI-based lookup_prices() rather than silently doing nothing."""
-    combined = fts_transfer_matrix.combine_fts_transfer_matrix(sedan_csv_path, hiace_csv_path)
-    if combined["format_error"]:
-        return {}, combined["format_error"]
-    matrix_routes = combined["routes"]
+    if not sedan_csv_path and not hiace_csv_path:
+        return {}, "No FTS rate-matrix file given."
+
+    if sedan_csv_path and hiace_csv_path:
+        combined = fts_transfer_matrix.combine_fts_transfer_matrix(sedan_csv_path, hiace_csv_path)
+        if combined["format_error"]:
+            return {}, combined["format_error"]
+        matrix_routes = [{"departure_name": r["departure_name"], "arrival_name": r["arrival_name"],
+                          "sedan_price": r["sedan_price"], "hiace_price": r["hiace_price"]}
+                         for r in combined["routes"]]
+    else:
+        # One-vehicle round: parse just that file directly rather than going through
+        # combine_fts_transfer_matrix, which requires both.
+        solo_path = sedan_csv_path or hiace_csv_path
+        solo_key = "sedan_price" if sedan_csv_path else "hiace_price"
+        parsed = fts_transfer_matrix.parse_fts_matrix_csv(solo_path)
+        if parsed["format_error"]:
+            return {}, parsed["format_error"]
+        matrix_routes = [
+            {"departure_name": origin, "arrival_name": dest,
+             "sedan_price": None, "hiace_price": None, solo_key: cell["price"]}
+            for (origin, dest), cell in parsed["cells"].items() if cell["kind"] == "price"
+        ]
     if not matrix_routes:
-        return {}, "The rate sheet parsed, but has no routes priced in both files."
+        return {}, "The rate sheet parsed, but has no priced routes to read."
 
     fake_existing = [{"id": i, "name": f"{r['departure_name']} - {r['arrival_name']}"}
                      for i, r in enumerate(matrix_routes)]
@@ -592,23 +649,63 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
         if not best or best.get("transport_id") is None or best.get("score", 0) < FTS_MATCH_MIN_SCORE:
             continue
         m = matrix_routes[best["transport_id"]]
-        findings[i] = {
+        brackets = []
+        only_option_code = None
+        if sedan_csv_path and hiace_csv_path:
+            # Both vehicles priced this round - bracket_price_for's EXACT match (checked before
+            # its overlap fallback) resolves each live option to the right one of these two
+            # brackets unambiguously, same as it already does for every other two-bracket
+            # document.
+            if m.get("sedan_price") is not None:
+                brackets.append({"min_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[0],
+                                 "max_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[1],
+                                 "price": round(m["sedan_price"], 2),
+                                 "child_price": None, "infant_price": None})
+            if m.get("hiace_price") is not None:
+                brackets.append({"min_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[0],
+                                 "max_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[1],
+                                 "price": round(m["hiace_price"], 2),
+                                 "child_price": None, "infant_price": None})
+        else:
+            # CONFIRMED HAZARD (found while building this): a SINGLE bracket cannot safely rely
+            # on bracket_price_for's overlap fallback the way a two-bracket finding can - Sedan
+            # (1-3) and Hiace (1-8) both start at 1 pax, so they always overlap EACH OTHER too,
+            # and with only one bracket in the finding there is no second, more-specific bracket
+            # to win the exact-match check first. Left as overlap, a Sedan-only round would also
+            # match (and reprice) the live Hiace option, and vice versa - silently pricing a
+            # vehicle this round said nothing about. So a one-vehicle round only trusts an EXACT
+            # boundary match against this route's own live option (never a guess at which one is
+            # "close enough") - if this route's live brackets don't exactly line up with FTS's
+            # own 1-3/1-8 convention (e.g. a human edited them since), it is left out of this
+            # round rather than risked.
+            target_key = "sedan_price" if sedan_csv_path else "hiace_price"
+            target_bracket = (fts_transfer_matrix.FTS_SEDAN_BRACKET if sedan_csv_path
+                              else fts_transfer_matrix.FTS_HIACE_BRACKET)
+            price = m.get(target_key)
+            live_match = next((o for o in route["options"]
+                               if (o.get("min_pax"), o.get("max_pax")) == target_bracket), None)
+            if price is not None and live_match is not None:
+                brackets.append({"min_pax": live_match["min_pax"], "max_pax": live_match["max_pax"],
+                                 "price": round(price, 2), "child_price": None, "infant_price": None})
+                # See build_proposals' matching "only_option_code" comment - restricts this
+                # finding to the one option it actually has a price for, so a lone bracket can
+                # never overlap-match the OTHER live option this round says nothing about.
+                only_option_code = live_match.get("code")
+        if not brackets:
+            continue
+        finding = {
             "found": True,
             "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
                            f"match score {best.get('score')})",
             "currency": "USD",
             "minimum_pax": 1,
-            "brackets": [
-                {"min_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[0],
-                 "max_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[1],
-                 "price": round(m["sedan_price"], 2), "child_price": None, "infant_price": None},
-                {"min_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[0],
-                 "max_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[1],
-                 "price": round(m["hiace_price"], 2), "child_price": None, "infant_price": None},
-            ],
+            "brackets": brackets,
             "confidence": "high",
             "note": "Matched deterministically from the FTS rate matrix (no AI) - see matched_row.",
         }
+        if only_option_code is not None:
+            finding["only_option_code"] = only_option_code
+        findings[i] = finding
     return findings, None
 
 
@@ -789,9 +886,23 @@ def build_proposals(routes: List[Dict[str, Any]],
         finding = findings.get(i) or {"found": False, "brackets": [], "confidence": "low",
                                       "note": "", "matched_row": "", "minimum_pax": 1,
                                       "currency": ""}
+        # CONFIRMED HAZARD (2026-09-11, building the FTS one-vehicle-round price refresh - see
+        # lookup_prices_from_fts_matrix): a finding naming only ONE bracket cannot safely rely on
+        # bracket_price_for's overlap fallback across every option on the route the way a finding
+        # naming a bracket per option can - two live brackets that both start at 1 pax (Sedan
+        # 1-3, Hiace 1-8) always overlap EACH OTHER too, so a single Sedan-only bracket would
+        # also overlap-match (and reprice) the live Hiace option it says nothing about. A finding
+        # may set "only_option_code" to restrict itself to exactly one option by its own live
+        # code - every other option on the route is then left alone entirely (not counted as
+        # missing or unchanged, simply not part of this round), rather than risk bracket_price_for
+        # guessing which live option a lone bracket was meant for. No caller besides the FTS
+        # single-vehicle path sets this key, so every other document's behavior is unchanged.
+        only_option_code = finding.get("only_option_code")
         changes, unchanged, missing = [], 0, 0
         for option in route["options"]:
             if option.get("fetch_failed"):
+                continue
+            if only_option_code is not None and option.get("code") != only_option_code:
                 continue
             new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
                                           finding.get("minimum_pax", 1))
@@ -1057,11 +1168,28 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     base = resolved[widest["code"]]
 
     parent = json.loads(json.dumps(route["raw"]))
-    old_base = _num(parent.get("baseAdultPrice"))
-    parent["baseAdultPrice"] = base
-    # Child and infant prices move with the adult price rather than being left at last
-    # season's number, which would silently change the child discount.
-    if old_base > 0:
+    # CONFIRMED REAL BUG (found 2026-09-11, same root cause as load_supplier_transports' own
+    # fix above and bulk_notes.py's confirmed 2026-09-10 fix - see
+    # claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md): a per-vehicle transport
+    # (pricePerPax=False - every FTS-created Transport is one) stores its base price in
+    # vehiclePrice, not baseAdultPrice, which is genuinely 0 for these and must stay 0 (that's
+    # what builder.build_transport_payloads itself writes at creation:
+    # `baseAdultPrice=base_price if price_per_pax else 0.0`). Writing the new base into
+    # baseAdultPrice unconditionally used to leave the real vehiclePrice field stale forever -
+    # the price a per-vehicle transport's OWN option supplements are computed against (this
+    # function's own resolved-price arithmetic is unaffected either way, since base+supplement
+    # always nets out to the same live per-option price regardless of which field it's stored
+    # in - it's specifically the raw vehiclePrice field itself, and anything reading it
+    # directly, that would have gone stale).
+    per_pax = bool(route.get("price_per_pax", True))
+    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+    old_base = _num(parent.get(base_field))
+    parent[base_field] = base
+    # Child and infant prices move with the adult price rather than being left at last season's
+    # number, which would silently change the child discount. Per-vehicle transports have no
+    # separate child/infant base at all (mirrors bulk_notes.py's own per-vehicle handling,
+    # supplement_fields=("adult",) only) - there is nothing here to scale.
+    if per_pax and old_base > 0:
         ratio = base / old_base
         for key in ("baseChildrenPrice", "baseInfantPrice"):
             if _num(parent.get(key)) > 0:

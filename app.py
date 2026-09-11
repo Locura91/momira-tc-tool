@@ -13100,14 +13100,20 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"what already exists.")
             else:
                 findings = None
-                if "sedan" in fts_csv_tmp_paths and "hiace" in fts_csv_tmp_paths:
+                if fts_csv_tmp_paths:
+                    # Either one file (a one-vehicle round - "One round for Sedan and one round
+                    # for Hiace", product owner, 2026-09-11) or both together works the same way
+                    # here - see lookup_prices_from_fts_matrix's own docstring for what a
+                    # one-vehicle round does to the proposals it builds.
+                    vehicles = " + ".join(sorted(fts_csv_tmp_paths))
                     with st.spinner(f"Reading {len(routes)} route(s) directly from the FTS rate "
-                                    f"matrix (no AI needed, so it can't be cut off)…"):
+                                    f"matrix ({vehicles}, no AI needed, so it can't be cut off)…"):
                         findings, fts_err = price_refresh.lookup_prices_from_fts_matrix(
-                            routes, fts_csv_tmp_paths["sedan"], fts_csv_tmp_paths["hiace"])
+                            routes, sedan_csv_path=fts_csv_tmp_paths.get("sedan"),
+                            hiace_csv_path=fts_csv_tmp_paths.get("hiace"))
                     if fts_err:
-                        st.warning(f"⚠️ These looked like FTS's rate-matrix CSVs but couldn't be "
-                                  f"read as one ({fts_err}) — falling back to the normal reading.")
+                        st.warning(f"⚠️ This looked like an FTS rate-matrix CSV but couldn't be "
+                                  f"read ({fts_err}) — falling back to the normal reading.")
                         findings = None
                 if findings is None and raw_text.strip():
                     with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
@@ -13701,7 +13707,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-price-refresh-fts-matrix-bypass"
+BUILD_VERSION = "2026-09-11-price-refresh-per-vehicle-and-solo-round"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

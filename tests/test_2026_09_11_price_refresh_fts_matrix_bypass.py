@@ -158,6 +158,62 @@ def test_bracket_boundaries_dont_have_to_match_exactly_thanks_to_overlap_matchin
     assert changes["Hiace"] == 140.0
 
 
+def test_sedan_only_round_prices_only_the_sedan_bracket(matrices):
+    # Product owner, 2026-09-11: "could The app understand that Sedan is for base modality and
+    # Hiace is for Price supplement calculated? So I would price update in two parts: One round
+    # for Sedan and one round for Hiace - would that work?" - a Sedan-only file must report only
+    # the Sedan bracket, leaving Hiace alone (missing, not found:false) for this round.
+    sedan_path, hiace_path = matrices
+    routes = [_live_transport_route()]
+    findings, err = price_refresh.lookup_prices_from_fts_matrix(routes, sedan_csv_path=sedan_path)
+    assert err is None
+    assert findings[0]["found"] is True
+    brackets = {(b["min_pax"], b["max_pax"]) for b in findings[0]["brackets"]}
+    assert brackets == {fts_transfer_matrix.FTS_SEDAN_BRACKET}
+    proposals = price_refresh.build_proposals(routes, findings)
+    changes = {c["code"]: c["new"] for c in proposals[0]["changes"]}
+    assert changes == {"Sedan": 100.0}  # Hiace untouched this round
+    # Hiace isn't counted as "missing" either - only_option_code excludes it from this round's
+    # evaluation entirely, rather than reporting it as a bracket the document failed to price.
+    assert proposals[0]["missing"] == 0
+
+
+def test_hiace_only_round_never_reprices_the_untouched_sedan_option(matrices):
+    # CONFIRMED HAZARD this test locks down: a live Hiace bracket (1-8) and a live Sedan
+    # bracket (1-3) both start at 1 pax, so they always OVERLAP each other in pax-range terms -
+    # without only_option_code, bracket_price_for's overlap fallback would apply the lone Hiace
+    # price to the Sedan option too, silently moving a price this round said nothing about. Give
+    # Sedan a starting price that visibly differs from what Hiace's price would produce, so a
+    # regression here would show up as a spurious Sedan change.
+    sedan_path, hiace_path = matrices
+    route = _live_transport_route()
+    route["options"][0]["unit_price"] = 999.0  # Sedan's current price, deliberately untouched
+    findings, err = price_refresh.lookup_prices_from_fts_matrix([route], hiace_csv_path=hiace_path)
+    assert err is None
+    proposals = price_refresh.build_proposals([route], findings)
+    changed_codes = {c["code"] for c in proposals[0]["changes"]}
+    assert changed_codes == {"Hiace"}
+    assert "Sedan" not in changed_codes
+
+
+def test_hiace_only_round_prices_only_the_hiace_bracket(matrices):
+    sedan_path, hiace_path = matrices
+    routes = [_live_transport_route()]
+    findings, err = price_refresh.lookup_prices_from_fts_matrix(routes, hiace_csv_path=hiace_path)
+    assert err is None
+    brackets = {(b["min_pax"], b["max_pax"]) for b in findings[0]["brackets"]}
+    assert brackets == {fts_transfer_matrix.FTS_HIACE_BRACKET}
+    proposals = price_refresh.build_proposals(routes, findings)
+    changes = {c["code"]: c["new"] for c in proposals[0]["changes"]}
+    assert changes == {"Hiace": 140.0}
+
+
+def test_no_file_given_is_a_format_error_not_a_crash():
+    findings, err = price_refresh.lookup_prices_from_fts_matrix([_live_transport_route()])
+    assert findings == {}
+    assert err is not None
+
+
 def test_format_error_is_reported_when_the_two_files_dont_pair_up(tmp_path):
     sedan_path = str(tmp_path / "sedan.csv")
     hiace_path = str(tmp_path / "hiace.csv")
