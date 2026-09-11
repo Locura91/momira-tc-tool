@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
+MODULE_BUILD = "2026-09-11-hotel-master-giata-destination-search"
 
 _PHASE_KEY = "pkr_phase"
 

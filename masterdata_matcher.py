@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-base-modality-and-supplement-example"
+MODULE_BUILD = "2026-09-11-hotel-master-giata-destination-search"
 
 import math
 import re
@@ -113,6 +113,41 @@ def find_candidates(
 
     scored.sort(key=lambda r: r["score"], reverse=True)
     return scored[:limit]
+
+
+def find_by_giata_id(giata_id: str, index: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Exact-match lookup by GIATA id, for a human who already has one written on the contract
+    or knows it by heart, rather than searching by name.
+
+    CONFIRMED REAL REQUEST (product owner, 2026-09-11): "Could we search it with Giatacodes if
+    we enter it or just by manually adding the name of the hotel in the first step". Name search
+    (find_candidates above) exists specifically BECAUSE contracts from local partners never
+    carry a GIATA id (see this module's own docstring) - but that's a statement about what
+    CONTRACTS carry, not about what a human operator might separately know or look up. When a
+    GIATA id is available, it's authoritative - unlike name matching, this never needs a human
+    to confirm which of several candidates is right, because a GIATA id can only belong to one
+    property.
+
+    A GIATA id is compared as a normalized string (Travel Compositor's own data can carry it as
+    either an int or a str depending on record - confirmed by index_meta's own record shape) so
+    "1234" matches whether the stored value is the int 1234 or the string "1234". Returns every
+    exact match (normally zero or one, but never assumes exactly one - a data quality issue in
+    the master index should surface as multiple results for a human to pick between, not crash
+    or silently pick one). Each result carries score=1.0 (an exact id match, not a fuzzy guess)
+    so the UI can render it identically to a find_candidates result."""
+    query = str(giata_id or "").strip()
+    if not query or not index:
+        return []
+    out = []
+    for record in index:
+        if not isinstance(record, dict):
+            continue
+        rid = record.get("giataId")
+        if rid is None:
+            continue
+        if str(rid).strip() == query:
+            out.append({**record, "score": 1.0, "name_score": None, "geo_km": None})
+    return out
 
 
 def datasheet_to_masterdata_seed(datasheet: Dict[str, Any]) -> Dict[str, Any]:
