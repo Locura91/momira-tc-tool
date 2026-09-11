@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
+MODULE_BUILD = "2026-09-11-price-refresh-fts-matrix-bypass"
 
 import math
 import datetime
@@ -706,6 +706,95 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     # cancellation_policy_text (the source's own raw wording) is deliberately never returned -
     # see this function's own docstring, CONFIRMED FINAL RULE 2026-09-04.
     return default_text
+
+
+# Mirror EXACTLY the sentence shapes _cancellation_voucher_text (above) can produce, so a piece
+# of text this same synthesizer wrote earlier can be read back into (days, refund_pct) tiers.
+# Order matters: more specific patterns (day-of-arrival / partial-fee) must be tried before the
+# generic full-refund/no-refund ones only where a match could otherwise be ambiguous - in
+# practice every pattern here has a distinct fixed phrase, so order doesn't actually matter, but
+# kept in the same order as the branches that emit them for easy comparison.
+_VOUCHER_FREE_RE = re.compile(
+    r"^Free cancellation if cancelled at least (\d+) days? before arrival\.$", re.IGNORECASE)
+_VOUCHER_NO_REFUND_DAY_OF_RE = re.compile(
+    r"^No refund for cancellations on the day of arrival or no-shows\.$", re.IGNORECASE)
+_VOUCHER_PARTIAL_DAY_OF_RE = re.compile(
+    r"^([\d.]+)%\s*cancellation fee on the day of arrival or for no-shows \(([\d.]+)%\s*refund\)\.$",
+    re.IGNORECASE)
+_VOUCHER_NO_REFUND_RE = re.compile(
+    r"^No refund if cancelled less than (\d+) days? before arrival\.$", re.IGNORECASE)
+_VOUCHER_PARTIAL_RE = re.compile(
+    r"^([\d.]+)%\s*cancellation fee if cancelled less than (\d+) days? before arrival "
+    r"\(([\d.]+)%\s*refund\)\.$", re.IGNORECASE)
+
+
+def parse_cancellation_tiers_from_voucher_text(text):
+    """Best-effort reverse of _cancellation_voucher_text - given a piece of customer-facing
+    text, returns the (days, refund_pct) tiers it states, or None if the text can't be
+    confidently parsed (never guesses).
+
+    WHY THIS EXISTS (product owner, 2026-09-11): "the cancellation policy is required to ALL
+    services: Ticket, ClosedTour and Hotels too. But most likely ClosedTours and Hotels have a
+    more strict policy" - i.e. existing_cancellation_at_least_as_strict's "don't overwrite an
+    already-stricter policy" rule must also protect Hotel (and, for the identical reason,
+    Transfer), which have NO structured cancellationRanges field at all (confirmed - Hotel via
+    real Swagger, see schemas.ContractHotelVO's own docstring; Transfer via a live before/after
+    GET diff, see claude/transfer-cancellation-no-structured-field-2026-09-11.md). Their ONLY
+    record of the current policy is the free-text voucher/description snippet, so THIS is what
+    makes the strictness check possible there at all.
+
+    ONLY ever recognizes text this exact codebase's OWN _cancellation_voucher_text synthesizer
+    could have written (every phrase pattern above matches one of its branches exactly,
+    including the flat default sentence for cancellation_tiers=None) - it does NOT attempt to
+    parse a supplier's own free-form wording, a hand-edited sentence, or anything that doesn't
+    match one of these exact shapes. That is deliberate: a wrong guess here could silently
+    conclude "existing is strict enough" when it isn't (letting a bulk run skip a row that
+    should have been updated) or the reverse (letting it overwrite a genuinely stricter,
+    differently-worded policy) - either is worse than admitting "can't tell" and asking a human
+    to look, which is what a None return means to every caller.
+
+    Recognizes MULTIPLE bullet lines (a multi-tier policy) under a "Cancellation Policy:"
+    header - if EVEN ONE line fails to match a known shape, the WHOLE result is None (a partial
+    parse could hide a tier and understate how generous the real policy is)."""
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped == _DEFAULT_CANCELLATION_VOUCHER_TEXT.strip():
+        return [(30, 100.0)]
+
+    lines = [ln.strip() for ln in stripped.split("\n") if ln.strip()]
+    if not lines:
+        return None
+    if lines[0].lower() == "cancellation policy:":
+        lines = lines[1:]
+    if not lines:
+        return None
+
+    tiers = []
+    for line in lines:
+        line = re.sub(r"^[-•]\s*", "", line).strip()
+        m = _VOUCHER_FREE_RE.match(line)
+        if m:
+            tiers.append((int(m.group(1)), 100.0))
+            continue
+        m = _VOUCHER_NO_REFUND_DAY_OF_RE.match(line)
+        if m:
+            tiers.append((0, 0.0))
+            continue
+        m = _VOUCHER_PARTIAL_DAY_OF_RE.match(line)
+        if m:
+            tiers.append((0, _safe_float(m.group(2))))
+            continue
+        m = _VOUCHER_NO_REFUND_RE.match(line)
+        if m:
+            tiers.append((int(m.group(1)), 0.0))
+            continue
+        m = _VOUCHER_PARTIAL_RE.match(line)
+        if m:
+            tiers.append((int(m.group(2)), _safe_float(m.group(3))))
+            continue
+        return None  # one unrecognized line makes the whole parse untrustworthy
+    return tiers or None
 
 
 def _locked_on_update(existing_snapshot, field, fallback, label=""):

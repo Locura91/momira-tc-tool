@@ -139,7 +139,8 @@ from ai_extractor import detect_transport_products, extract_transport_data, dete
 # Deterministic (non-AI) bulk importer for FTS's own "TRANSFER MATRIX" CSV format - see
 # fts_transfer_matrix.py's module docstring for why this bypasses the AI pipeline entirely
 # (271 routes/file overflowed AI extraction's token limit) and is scoped to this one supplier.
-from fts_transfer_matrix import build_fts_matrix_candidates, match_fts_candidates_to_existing, publish_fts_candidate
+from fts_transfer_matrix import (build_fts_matrix_candidates, classify_fts_matrix_file,
+                                 match_fts_candidates_to_existing, publish_fts_candidate)
 from ai_extractor import check_ticket_content_drift
 from ai_extractor import min_pax_guaranteed_departure_note, min_pax_forces_on_request
 import ai_extractor as ai_extractor_module
@@ -12721,11 +12722,25 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         elif p.get("existing_stricter"):
             # CONFIRMED REAL RULE (product owner, 2026-09-11): never overwrite a live policy
             # that's already at least as strict as the new one - see
-            # builder.existing_cancellation_at_least_as_strict's own docstring. Only ever True
-            # for ClosedTour/Ticket (the two product types this module can structurally check).
+            # builder.existing_cancellation_at_least_as_strict's own docstring. For ClosedTour/
+            # Ticket this compares the real structured field; for Transfer/Hotel (no structured
+            # field at all) it compares tiers PARSED from the current voucher text - only when
+            # that parse succeeded, see the existing_unparseable branch below for when it can't.
             st.session_state.cb_selected[p["id"]] = False
             st.checkbox(f"{label}  ·  🛡️ existing policy is already at least as strict — left alone",
                        value=False, disabled=True, key=f"cb_pick_{p['id']}")
+        elif p.get("existing_unparseable"):
+            # Transfer/Hotel only: the current voucher text states SOME policy but doesn't match
+            # a shape this app's own text synthesizer could have written (a supplier's own
+            # wording, or a hand-edited sentence) - builder.parse_cancellation_tiers_from_
+            # voucher_text can't read it back into tiers, so we genuinely don't know whether it's
+            # stricter or not. Left UNCHECKED by default (never silently overwritten) but NOT
+            # disabled - a human who reads the current text in the expander below and decides
+            # it's safe to replace can still tick it.
+            st.session_state.cb_selected[p["id"]] = st.checkbox(
+                f"{label}  ·  ⚠️ current policy text couldn't be read automatically — check the "
+                f"Details below before including this one",
+                value=st.session_state.cb_selected.get(p["id"], False), key=f"cb_pick_{p['id']}")
         else:
             st.session_state.cb_selected[p["id"]] = st.checkbox(
                 label, value=st.session_state.cb_selected.get(p["id"], True), key=f"cb_pick_{p['id']}")
@@ -12745,6 +12760,12 @@ def render_generic_cancellation_bulk_flow(client, product_type):
                 st.warning("⚠️ No existing cancellation sentence was found in this service's text — "
                           "a new one will be INSERTED rather than replacing one. Double-check the "
                           "result afterward inside Travel Compositor.")
+            if p.get("existing_unparseable"):
+                st.warning("⚠️ The current text above states SOME policy, but doesn't match a "
+                          "wording this app itself would have written, so it can't be "
+                          "automatically compared to the new policy for strictness. Read it "
+                          "yourself - if it already requires equal or more notice than the new "
+                          "policy for the same refund, leave this row unchecked.")
 
     selected_ids = [pid for pid, v in st.session_state.cb_selected.items() if v]
     st.caption(f"{len(selected_ids)} of {len(proposals)} selected.")
@@ -13032,6 +13053,15 @@ def render_price_refresh_flow(client, preselected_kind=None):
     if st.button(f"🔍 Read prices for this supplier's {kind.lower()}s", type="primary",
                  disabled=not supplier_id, key="pr_read"):
         raw_parts = []
+        # A file that turns out to be one of FTS's own two-file rate-matrix CSVs (see
+        # fts_transfer_matrix.py's module docstring) is set aside here rather than text-extracted
+        # - CONFIRMED REAL BUG (product owner, 2026-09-11): "again error for bulk price update...
+        # Couldn't read the document: The AI's answer was too long and got cut off... This is
+        # crucial and we must make it possible, that the document is fully read." This is the same
+        # 271-route FTS document that already overflowed the bulk-import flow; below, when both a
+        # "sedan" and a "hiace" file are recognized, price_refresh.lookup_prices_from_fts_matrix
+        # reads them directly (no AI, so no token limit) instead of going through lookup_prices().
+        fts_csv_tmp_paths = {}
         if url:
             page_text, page_err = _fetch_url_text_safe(url)
             if page_text is not None:
@@ -13043,9 +13073,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(uploaded.getbuffer())
                 tmp_path = tmp.name
-            raw_parts.append(extract_raw_text(tmp_path))
-            os.remove(tmp_path)
-        if not raw_parts:
+            vehicle = (classify_fts_matrix_file(tmp_path)
+                      if kind == price_refresh.KIND_TRANSPORT and suffix.lower() == ".csv" else None)
+            if vehicle and vehicle not in fts_csv_tmp_paths:
+                fts_csv_tmp_paths[vehicle] = tmp_path
+            else:
+                raw_parts.append(extract_raw_text(tmp_path))
+                os.remove(tmp_path)
+        if not raw_parts and not fts_csv_tmp_paths:
             st.error("No document to read — upload a rate sheet or give a URL.")
         else:
             raw_text = "\n\n".join(raw_parts)
@@ -13064,12 +13099,31 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
-                with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
-                    try:
-                        findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
-                    except Exception as e:
-                        st.error(f"Couldn't read the document: {friendly_error_message(e)}")
+                findings = None
+                if "sedan" in fts_csv_tmp_paths and "hiace" in fts_csv_tmp_paths:
+                    with st.spinner(f"Reading {len(routes)} route(s) directly from the FTS rate "
+                                    f"matrix (no AI needed, so it can't be cut off)…"):
+                        findings, fts_err = price_refresh.lookup_prices_from_fts_matrix(
+                            routes, fts_csv_tmp_paths["sedan"], fts_csv_tmp_paths["hiace"])
+                    if fts_err:
+                        st.warning(f"⚠️ These looked like FTS's rate-matrix CSVs but couldn't be "
+                                  f"read as one ({fts_err}) — falling back to the normal reading.")
                         findings = None
+                if findings is None and raw_text.strip():
+                    with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
+                        try:
+                            findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
+                        except Exception as e:
+                            st.error(f"Couldn't read the document: {friendly_error_message(e)}")
+                            findings = None
+                elif findings is None:
+                    st.error("Couldn't read prices from the FTS matrix, and there's no other "
+                             "document to fall back to.")
+                for _p in fts_csv_tmp_paths.values():
+                    try:
+                        os.remove(_p)
+                    except OSError:
+                        pass
                 if findings is not None:
                     st.session_state.pr_routes = routes
                     st.session_state.pr_proposals = _stamp_proposal_widget_tokens(
@@ -13647,7 +13701,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-existing-cancellation-strictness-preserved"
+BUILD_VERSION = "2026-09-11-price-refresh-fts-matrix-bypass"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

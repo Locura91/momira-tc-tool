@@ -35,12 +35,13 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
+MODULE_BUILD = "2026-09-11-price-refresh-fts-matrix-bypass"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ai_extractor
+import fts_transfer_matrix
 import transfer_matcher
 import transport_matcher
 
@@ -523,6 +524,92 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
             "note": str(item.get("note") or "").strip(),
         }
     return findings
+
+
+# ----------------------------------------------------------------------
+# FTS matrix CSV: a deterministic sibling of lookup_prices() for exactly one document shape
+# ----------------------------------------------------------------------
+# CONFIRMED REAL BUG (product owner, 2026-09-11): "again error for bulk price update... Couldn't
+# read the document: The AI's answer was too long and got cut off before it finished... This is
+# crucial and we must make it possible, that the document is fully read." The document is the
+# same FTS Sedan/Hiace matrix CSV pair (271 routes) that already overflowed the bulk-IMPORT flow
+# and was fixed there by reading the grid directly instead of through the AI (see
+# fts_transfer_matrix.py's module docstring) - lookup_prices() above has the identical failure
+# mode for the same reason (one AI call, max_tokens=8192, describing every route plus the whole
+# document), just in this separate refresh-existing-prices flow. Rather than raising the token
+# limit (which only moves the ceiling, and this flow has no cap on how many routes a supplier can
+# have), this bypasses the AI entirely for this one confirmed document shape, the same fix already
+# applied to the import side.
+FTS_MATCH_MIN_SCORE = 0.5  # same floor as fts_transfer_matrix._AUTO_MATCH_MIN_SCORE - see that
+# module's docstring for why a missed match (silently "not found") is the safer failure than a
+# wrong one (this would overwrite a live price).
+
+
+def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: str,
+                                  hiace_csv_path: str) -> Tuple[Dict[int, Dict[str, Any]], Optional[str]]:
+    """Finds each known route's price directly in FTS's own two-file rate-matrix CSV export - no
+    AI call, so it cannot overflow no matter how many routes the sheet prices (271, in the real
+    document that triggered this). See the module-level comment above for why this exists.
+
+    MATCHING: each LIVE route (from Travel Compositor, named via route_places()) is matched to a
+    matrix city pair using the SAME fuzzy name-similarity scoring the FTS bulk-import flow already
+    uses to auto-suggest matches (transport_matcher.suggest_existing_transport_matches) - just run
+    in the opposite direction. A fake "existing_transports"-shaped list is built from the matrix's
+    own city pairs (name f"{departure} - {arrival}") purely so that existing, already-tested
+    scorer can be reused unchanged rather than writing a second name-matching implementation that
+    could disagree with the first. A live route that doesn't clear FTS_MATCH_MIN_SCORE is left
+    unmatched ("found": False, same as the AI path reporting a route the document doesn't price)
+    rather than guessed at - a wrong match here would silently push the WRONG city pair's price
+    onto a live route, which is worse than reporting nothing and asking a human to check by hand.
+
+    PRICES are reported as two brackets - FTS's own confirmed bracket ranges, Sedan 1-3 pax and
+    Hiace 1-8 pax (fts_transfer_matrix.FTS_SEDAN_BRACKET/FTS_HIACE_BRACKET) - regardless of what
+    the LIVE option's own min/max_pax actually are. That is intentional, not an approximation:
+    bracket_price_for() (used by build_proposals for every document, not just this one) already
+    matches a document's bracket to a live option by OVERLAP, not exact equality, specifically so
+    a rate sheet with different bracket boundaries than what's live still prices correctly - the
+    same tolerance every other supplier's document already relies on applies here unchanged.
+
+    Returns (findings, format_error). format_error is set (findings then {}) only when the two
+    files don't parse as a matched Sedan/Hiace pair at all - mirrors
+    fts_transfer_matrix.combine_fts_transfer_matrix's own contract, so a caller can fall back to
+    the normal AI-based lookup_prices() rather than silently doing nothing."""
+    combined = fts_transfer_matrix.combine_fts_transfer_matrix(sedan_csv_path, hiace_csv_path)
+    if combined["format_error"]:
+        return {}, combined["format_error"]
+    matrix_routes = combined["routes"]
+    if not matrix_routes:
+        return {}, "The rate sheet parsed, but has no routes priced in both files."
+
+    fake_existing = [{"id": i, "name": f"{r['departure_name']} - {r['arrival_name']}"}
+                     for i, r in enumerate(matrix_routes)]
+
+    findings: Dict[int, Dict[str, Any]] = {}
+    for i, route in enumerate(routes):
+        dep, arr = route_places(route)
+        matches = transport_matcher.suggest_existing_transport_matches(dep, arr, fake_existing, top_n=1)
+        best = matches[0] if matches else None
+        if not best or best.get("transport_id") is None or best.get("score", 0) < FTS_MATCH_MIN_SCORE:
+            continue
+        m = matrix_routes[best["transport_id"]]
+        findings[i] = {
+            "found": True,
+            "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
+                           f"match score {best.get('score')})",
+            "currency": "USD",
+            "minimum_pax": 1,
+            "brackets": [
+                {"min_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[0],
+                 "max_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[1],
+                 "price": round(m["sedan_price"], 2), "child_price": None, "infant_price": None},
+                {"min_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[0],
+                 "max_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[1],
+                 "price": round(m["hiace_price"], 2), "child_price": None, "infant_price": None},
+            ],
+            "confidence": "high",
+            "note": "Matched deterministically from the FTS rate matrix (no AI) - see matched_row.",
+        }
+    return findings, None
 
 
 # ----------------------------------------------------------------------

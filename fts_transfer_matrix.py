@@ -121,6 +121,34 @@ def parse_fts_matrix_csv(path: str) -> Dict[str, Any]:
     return {"cities": cities, "season": season, "cells": cells, "format_error": None}
 
 
+def classify_fts_matrix_file(path: str) -> Optional[str]:
+    """Reads just the title row (row 0) of a candidate FTS matrix CSV and returns "sedan" or
+    "hiace" if the title names that vehicle class, else None.
+
+    Added 2026-09-11 for price_refresh.py's deterministic price-lookup path (see
+    price_refresh.lookup_prices_from_fts_matrix) - that flow receives a batch of uploaded files
+    with no guarantee any of them are an FTS matrix at all, so it needs a cheap, honest way to
+    ask "is this one of the two FTS files, and if so which vehicle class" BEFORE committing to
+    the deterministic path over the normal AI one. Deliberately reads only the title row rather
+    than the whole file - classification should be a fast triage, not a second parse (the real
+    parse still happens once, in parse_fts_matrix_csv, only after both files are confirmed
+    present). Returns None (never guesses) for anything that doesn't say "sedan" or "hiace" in
+    its own title row - a differently-named export, or a same-shaped matrix for a THIRD vehicle
+    class this app has never been told about, must not be silently treated as one of the two
+    known classes."""
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            first_row = next(csv.reader(f), [])
+    except (OSError, csv.Error):
+        return None
+    title = " ".join(first_row).strip().lower()
+    if "sedan" in title:
+        return "sedan"
+    if "hiace" in title:
+        return "hiace"
+    return None
+
+
 def combine_fts_transfer_matrix(sedan_csv_path: str, hiace_csv_path: str) -> Dict[str, Any]:
     """Reads both matrices and pairs every (origin, destination) cell across them. Returns:
         {"routes": [...one dict per city pair with a usable price in BOTH files...],
