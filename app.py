@@ -13689,10 +13689,34 @@ def render_price_refresh_flow(client, preselected_kind=None):
             for u in result["updated"]:
                 st.write(f"- {u['name']}: " + ", ".join(
                     f"{c['min_pax']}–{c['max_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
+                # CONFIRMED REAL DIAGNOSTIC NEED (product owner, 2026-09-11): a "repriced" success
+                # here has been reported to NOT show up in Travel Compositor's own admin Prices
+                # tab afterwards. Rather than guess again, this shows the EXACT request body we
+                # sent and the EXACT body TC handed back for that route, so the next time this
+                # happens the raw evidence needed to tell "TC silently dropped our write" apart
+                # from "we wrote the wrong option" is right here, no Postman round-trip needed.
+                _dbg = u.get("debug")
+                if _dbg:
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
+                        st.write(f"write_kind: `{_dbg.get('write_kind')}`")
+                        if _dbg.get("transport_request") is not None:
+                            st.caption("Transport (parent) request body:")
+                            st.json(_dbg["transport_request"])
+                            st.caption("Transport (parent) response:")
+                            st.json(_dbg["transport_response"])
+                        for req, resp in zip(_dbg.get("option_requests", []),
+                                             _dbg.get("option_responses", [])):
+                            st.caption(f"Option {req['code']} request body:")
+                            st.json(req["payload"])
+                            st.caption(f"Option {resp['code']} response:")
+                            st.json(resp["response"])
         if result["failed"]:
             st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
+                if f.get("debug"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
+                        st.json(f["debug"])
         if st.button("🆕 Start again", key="pr_new"):
             for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
                 st.session_state.pop(key, None)
@@ -14035,7 +14059,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-price-structure-overhaul"
+BUILD_VERSION = "2026-09-11-transport-supplement-write-debug-capture"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

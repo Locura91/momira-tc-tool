@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-transport-price-structure-overhaul"
+MODULE_BUILD = "2026-09-11-transport-supplement-write-debug-capture"
 
 import json
 from datetime import date
@@ -2022,17 +2022,34 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
         write_kind = payloads.get("write_kind")
         updater = (client.update_transfer if route.get("kind") == KIND_TRANSFER
                    else client.update_transport)
+        # CONFIRMED REAL DIAGNOSTIC NEED (product owner, 2026-09-11): a real bulk update reported
+        # "3 transport(s) repriced" (every PUT returned 200, no "error" key) but Travel
+        # Compositor's own admin Prices tab still showed the touched modality's supplement as
+        # 0,00 afterwards - i.e. this app cannot currently tell "TC accepted and applied our
+        # write" apart from "TC accepted the HTTP call but silently didn't persist it" or "our
+        # write landed on the wrong option". Both possibilities were traced as far as static code
+        # reading can go without live credentials in this sandbox - the only thing left that can
+        # settle it is the EXACT request body we sent and the EXACT body TC handed back, captured
+        # at the moment of a real failure. Every accepted/updated route now carries that under
+        # "debug" so the review screen can show it without needing Postman.
+        debug = {"write_kind": write_kind, "transport_request": None, "transport_response": None,
+                 "option_requests": [], "option_responses": []}
         try:
             if write_kind != "supplement":
+                debug["transport_request"] = payloads["transport"]
                 res = updater(supplier_id, payloads["transport"])
+                debug["transport_response"] = res
                 if isinstance(res, dict) and "error" in res:
                     out["failed"].append({"name": route.get("name"),
-                                          "detail": str(res.get("message") or res.get("error"))})
+                                          "detail": str(res.get("message") or res.get("error")),
+                                          "debug": debug})
                     continue
             option_errors = []
             if write_kind != "vehicle":
                 for opt in payloads["options"]:
+                    debug["option_requests"].append({"code": opt["code"], "payload": opt["payload"]})
                     res = client.update_transport_option(supplier_id, route.get("id"), opt["payload"])
+                    debug["option_responses"].append({"code": opt["code"], "response": res})
                     if isinstance(res, dict) and "error" in res:
                         option_errors.append(f"{opt['code']}: {res.get('message') or res.get('error')}")
             if option_errors:
@@ -2041,10 +2058,11 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
                 out["failed"].append({
                     "name": route.get("name"),
                     "detail": "the transport updated but " + "; ".join(option_errors)
-                              + " — re-run to finish it"})
+                              + " — re-run to finish it",
+                    "debug": debug})
             else:
                 out["updated"].append({"name": route.get("name"),
-                                       "changes": proposal["changes"]})
+                                       "changes": proposal["changes"], "debug": debug})
         except Exception as e:
             out["failed"].append({"name": route.get("name"),
                                   "detail": ai_extractor.friendly_error_message(e)})
