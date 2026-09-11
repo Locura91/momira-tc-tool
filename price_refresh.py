@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-option-base-and-price-dates"
+MODULE_BUILD = "2026-09-11-price-refresh-option-code-pinned"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1288,6 +1288,20 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     option_payloads = []
     for option in options:
         payload = json.loads(json.dumps(option["raw"]))
+        # DEFENSIVE FIX (2026-09-11, investigating a real report of one option's price update
+        # apparently landing on a DIFFERENT modality - "changed the Modality to Sedan" - after a
+        # Hiace-only round): api_client.update_transport_option's own docstring confirms there is
+        # NO option code in the PUT url - Travel Compositor decides which option gets overwritten
+        # purely from the 'code' field INSIDE the payload body. This used to trust whatever code
+        # came back on option["raw"] (the individual GET response) as-is; if that field were ever
+        # missing, blank, or - worse - identical across two options in a single GET response, one
+        # option's price update could silently overwrite the WRONG modality with no validation
+        # error to catch it (unlike the airlineCode/date bugs above, this would not raise - it
+        # would just quietly corrupt the other option). Pinning it explicitly to the SAME code
+        # this function already trusts (option["code"] - the one load_supplier_transports used to
+        # fetch this exact option) removes that dependency on the GET response's own body
+        # entirely, regardless of whether it was the actual cause of the report above.
+        payload["code"] = option["code"]
         supplement = round(resolved[option["code"]] - base, 2)
         if abs(supplement) < 0.005:
             payload["prices"] = []

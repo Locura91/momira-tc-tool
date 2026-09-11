@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-price-refresh-option-base-and-price-dates"
+MODULE_BUILD = "2026-09-11-price-refresh-option-code-pinned"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

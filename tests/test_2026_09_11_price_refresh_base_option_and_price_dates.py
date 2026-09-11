@@ -128,3 +128,33 @@ def test_an_existing_price_entrys_own_dates_are_never_overwritten():
     hiace_price_entry = by_code["Hiace"]["payload"]["prices"][0]
     assert hiace_price_entry["startDate"] == "2020-05-01"
     assert hiace_price_entry["endDate"] == "2030-05-01"
+
+
+# ----------------------------------------------------------------------
+# rebuild_prices - the payload's own 'code' is always pinned to the option we trust, never left
+# to whatever the raw GET response happened to carry (see api_client.update_transport_option's
+# own docstring: there is no option code in the PUT url, only in the payload body)
+# ----------------------------------------------------------------------
+
+def test_each_options_payload_code_is_pinned_even_when_the_raw_get_body_lacks_one():
+    route = _fts_style_route()
+    route["options"][0]["raw"].pop("code", None)  # Sedan's raw GET body has no 'code' at all
+    route["options"][1]["raw"].pop("code", None)
+    payloads = price_refresh.rebuild_prices(route, {"Hiace": 150.0})
+    by_code = {o["code"]: o for o in payloads["options"]}
+    assert by_code["Sedan"]["payload"]["code"] == "Sedan"
+    assert by_code["Hiace"]["payload"]["code"] == "Hiace"
+
+
+def test_each_options_payload_code_is_corrected_even_when_the_raw_get_body_has_a_wrong_one():
+    # A real hazard this closes: if Travel Compositor's own GET response for one option ever
+    # echoed back the WRONG (or a duplicate) code, blindly forwarding it into the PUT payload
+    # could silently overwrite a DIFFERENT modality instead. Pinning it to the code this
+    # function already trusts (the one used to fetch this exact option) removes that risk
+    # entirely, regardless of what the raw body says.
+    route = _fts_style_route()
+    route["options"][0]["raw"]["code"] = "Hiace"  # wrong/duplicate - should never be trusted
+    payloads = price_refresh.rebuild_prices(route, {"Hiace": 150.0})
+    by_code = {o["code"]: o for o in payloads["options"]}
+    assert by_code["Sedan"]["payload"]["code"] == "Sedan"
+    assert by_code["Hiace"]["payload"]["code"] == "Hiace"
