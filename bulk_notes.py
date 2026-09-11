@@ -221,7 +221,7 @@ STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
     "Transfer": {"Supplement": "transfer_supplement", "Additional Service": "transfer_additional_service"},
     "Transport": {
         "Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement",
-        "Permanent price increase (%)": "transport_price_increase",
+        "Permanent price increase (% or flat amount)": "transport_price_increase",
         # One-off repair (2026-09-10) for the 168 Transports the earlier wrong TARGETS mapping
         # bulk-wrote a price-validity code into description instead of voucherRemarks - see
         # _plan_transport_voucher_code_repair's own docstring.

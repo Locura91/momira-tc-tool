@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
+MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
 
 _PHASE_KEY = "pkr_phase"
 

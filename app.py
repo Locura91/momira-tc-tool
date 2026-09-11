@@ -332,11 +332,11 @@ TICKET_ACTION_LABELS = {
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-09-10): "in Step 1, When creating a new product the
 # app shall only allow 'Create new SERVICE + 1 Modality' and 'Add new Modality to existing
 # SERVICE'. Nr. 3 and 4 and 5 must be removed from this points, as this is more Updating
-# existing product. We must define between create new service and Update existing Service."
+# existing product. We must define between create new service and Price update to existing Products."
 # render_ticket_flow is ONLY reachable via "📦 Create a new product -> Ticket" - its own Step 2
 # radio must offer just these two create-only actions; the update actions (3/4/5) stay defined
 # in TICKET_ACTION_LABELS above (still needed for the summary label after a pre-set action, and
-# by "Update existing Service", which reaches update_ticket/update_option/update_tickets_batch
+# by "Price update to existing Products", which reaches update_ticket/update_option/update_tickets_batch
 # through its own entry points instead - see _render_update_refresh_coded_service and
 # render_update_refresh_flow's Ticket branch).
 TICKET_CREATE_ACTION_KEYS = ("create", "add_option")
@@ -382,7 +382,7 @@ ACTION_LABELS = {
 }
 # Same create/update split as TICKET_CREATE_ACTION_KEYS above, same product-owner request -
 # the generic Step 2 radio below (reached ONLY via "Create a new product -> ClosedTour") must
-# offer just these two; update_tour/update_option stay reachable via "Update existing Service"
+# offer just these two; update_tour/update_option stay reachable via "Price update to existing Products"
 # (_render_update_refresh_coded_service already excludes "create" from ACTION_LABELS there).
 CLOSEDTOUR_CREATE_ACTION_KEYS = ("create", "add_option")
 ACTION_FIELDS = {
@@ -5006,7 +5006,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 f"ℹ️ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
                 f"for {current['label'] or current['ticket_code']}:{_mt_other_list}\n\n"
                 f"This Ticket will be created with just its one Modality above. Add the other one(s) "
-                f"afterward via **Update existing Service -> Ticket -> \"2: Add new Modality to "
+                f"afterward via **Price update to existing Products -> Ticket -> \"2: Add new Modality to "
                 f"existing Ticket\"**."
             )
 
@@ -6613,7 +6613,7 @@ def render_ticket_flow(client):
     else:
         # Create-only here (product owner, 2026-09-10) - this screen is ONLY reached via
         # "Create a new product -> Ticket". Updating an existing Ticket (single or batch) now
-        # lives exclusively under "Update existing Service" - see TICKET_CREATE_ACTION_KEYS.
+        # lives exclusively under "Price update to existing Products" - see TICKET_CREATE_ACTION_KEYS.
         action_key = st.radio(
             "Choose one:", list(TICKET_CREATE_ACTION_KEYS),
             format_func=lambda k: TICKET_ACTION_LABELS[k], key="tk_action_radio"
@@ -7513,7 +7513,7 @@ def render_ticket_flow(client):
                 st.session_state.tk_extra_modalities = []
             st.info("ℹ️ This Ticket will be created with just this one Modality. If your document "
                     "describes other variants (e.g. a different guide language or vehicle class), "
-                    "add them afterward via **Update existing Service -> Ticket -> \"2: Add "
+                    "add them afterward via **Price update to existing Products -> Ticket -> \"2: Add "
                     "new Modality to existing Ticket\"**.")
 
 
@@ -11383,7 +11383,7 @@ def render_hotel_flow(client):
 # box buried inside a service review screen matches how the work actually arrives.
 # ======================================================================
 def render_manual_information_flow(client):
-    st.header("Adding manual information")
+    st.header("Adding manual information to Product")
     st.caption("Information a person knows that the supplier's documents don't say — a moved "
               "pickup point, revised cancellation terms, a temporary closure. Saved against a "
               "supplier and a product type, and **added automatically to the Voucher Remarks of "
@@ -11954,7 +11954,7 @@ def render_update_refresh_flow(client):
         "create") the classic per-type flows already use, then handing off into that same
         already-proven Step 3 code with everything pre-filled, so none of the actual
         extraction/review/publish logic is duplicated here."""
-    st.header("🔄 Update existing Service")
+    st.header("🔄 Price update to existing Products")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()
@@ -13562,7 +13562,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
+BUILD_VERSION = "2026-09-11-ui-relabel-and-price-increase-label-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -13854,7 +13854,7 @@ TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
 # A Step 1 destination that is not a product type. It sits in the same list because that is
 # where a person looks when they have something to record about a supplier, even though
 # nothing is being uploaded.
-MANUAL_INFO_CHOICE = "Adding manual information"
+MANUAL_INFO_CHOICE = "Adding manual information to Product"
 # Update-only price refresh. A Step 1 destination rather than a product type, because the
 # product list comes from Travel Compositor rather than from the document. Kept as the
 # constant price_refresh.py's own code compares against internally (KIND_TRANSPORT/
@@ -13863,7 +13863,7 @@ MANUAL_INFO_CHOICE = "Adding manual information"
 PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): the ONE place every kind of update/refresh
 # happens now, for all five product types - see render_update_refresh_flow's docstring.
-UPDATE_REFRESH_CHOICE = "Update existing Service"
+UPDATE_REFRESH_CHOICE = "Price update to existing Products"
 # CONFIRMED REAL NEED (product owner, 2026-08-24, Transfer only; extended to all 5 product
 # types 2026-09-10): "mass change the supplier - all Transfers from supplier A must now be
 # changed to supplier B." ... "this is not only for the transfer section, it must work for all
@@ -14142,7 +14142,7 @@ else:
         list(CLOSEDTOUR_CREATE_ACTION_KEYS),
         format_func=lambda k: ACTION_LABELS[k],
         help="Creating makes something brand-new; adding a Modality extends one that already "
-             "exists. To update anything else, use \"Update existing Service\" instead.",
+             "exists. To update anything else, use \"Price update to existing Products\" instead.",
     )
 
     if st.session_state.suppliers_cache is None:

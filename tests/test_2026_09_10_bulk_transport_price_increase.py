@@ -292,9 +292,12 @@ def test_no_amount_given_reports_the_right_error_for_each_mode():
 
 
 def test_structured_targets_lists_the_new_transport_option():
-    assert bulk_notes.STRUCTURED_TARGETS["Transport"]["Permanent price increase (%)"] == \
+    # Label updated 2026-09-11 (was "Permanent price increase (%)") to reflect the absolute-mode
+    # extension added the same day this file's other tests cover - the old label went stale the
+    # moment the tool stopped being percent-only.
+    assert bulk_notes.STRUCTURED_TARGETS["Transport"]["Permanent price increase (% or flat amount)"] == \
         "transport_price_increase"
-    assert "Permanent price increase (%)" in bulk_notes.available_structured_targets("Transport")
+    assert "Permanent price increase (% or flat amount)" in bulk_notes.available_structured_targets("Transport")
 
 
 # ---------------------------------------------------------------------------

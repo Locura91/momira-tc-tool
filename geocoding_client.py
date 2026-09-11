@@ -41,7 +41,7 @@ from urllib.parse import urlparse
 
 import requests
 
-MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
+MODULE_BUILD = "2026-09-11-ui-relabel-and-price-increase-label-fix"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
