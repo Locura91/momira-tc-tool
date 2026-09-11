@@ -57,9 +57,13 @@ def _read_app_py():
 # room-response tracking) - still true after the 2026-09-06 zero-new-rooms-inline follow-up.
 # ======================================================================
 def test_room_candidates_are_tried_with_zero_new_rooms_inline_before_one():
+    # SUPERSEDED AS DEFAULT (2026-09-11): candidate 0 is now all_rooms_with_placeholder_codes (see
+    # test_2026_09_11_hotel_publish_all_room_types_in_one_go.py) - the zero-new-rooms and
+    # one-new-room-inline shapes this test names are still present, just as candidates 1 and 2.
     src = _read_app_py()
     assert 'new_rooms = [r for r in all_rooms if not r.get("providerCode")]' in src
-    assert '_hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]' in src
+    assert ("_hp_room_candidates = [all_rooms_with_placeholder_codes, rooms_with_code, "
+            "rooms_with_code + new_rooms[:1]]") in src
 
 
 def test_existing_rooms_with_a_real_provider_code_are_still_sent_inline():

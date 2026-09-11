@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-hotel-publish-room-debug-capture"
+MODULE_BUILD = "2026-09-11-hotel-room-placeholder-codes"
 
 import math
 import re

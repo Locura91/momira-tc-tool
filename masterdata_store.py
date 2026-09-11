@@ -35,7 +35,7 @@ key/value write has to carry the entire ~30-50MB payload at once.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-hotel-publish-room-debug-capture"
+MODULE_BUILD = "2026-09-11-hotel-room-placeholder-codes"
 
 import time
 from typing import Any, Callable, Dict, List, Optional

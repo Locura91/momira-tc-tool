@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-hotel-publish-room-debug-capture"
+MODULE_BUILD = "2026-09-11-hotel-room-placeholder-codes"
 
 import os
 import re

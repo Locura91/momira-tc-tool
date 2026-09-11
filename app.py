@@ -11232,32 +11232,63 @@ def render_hotel_flow(client):
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
             # CONFIRMED REAL BUG, part 2 (reported 2026-09-06, HRG-H1 - Steigenberger Golf Resort
             # El Gouna, a 100%-brand-new hotel with zero pre-existing rooms): the 2026-09-05 fix
-            # below assumed submitting AT MOST ONE brand-new room (providerCode still None) inline
-            # in the main create/update call was safe, based on the only real precedent this tool
-            # had (CAI-H1, Four Seasons Cairo, which came back with providerCode
+            # assumed submitting AT MOST ONE brand-new room (providerCode still None) inline in the
+            # main create/update call was safe, based on the only real precedent this tool had
+            # (CAI-H1, Four Seasons Cairo, which came back with providerCode
             # "AUTO_jr9fFXzBSX1YlVmTLVOw8PuP"). That precedent turned out to be a GET of an
-            # already-populated hotel record (schemas.py/api_client.py's own comments only ever
-            # cite CAI-H1 as "real GET pulls") - never an observed create-time success - so it
-            # never actually proved a null-providerCode room inline was accepted. The real error
-            # that just occurred proves the opposite for at least the one-brand-new-hotel case:
-            #     Bean Validation constraint(s) violated on callback event:'prePersist'.
-            #     Errors: HotelContractRoom.providerCode:must not be null ( Id: null)
-            # Fix: Phase 1 now tries the main call FIRST with ZERO new rooms inline (only rooms
-            # that already carry a real providerCode - i.e. rooms being preserved on an update;
-            # this can be an empty list for a 100%-new hotel). Every brand-new room, including the
-            # very first, is then added afterward one at a time via POST /hotel/room
-            # (client.create_hotel_room). ContractHotelVO's own Swagger docs claim rooms are
-            # "required, min 1 item" inline, which - if actually enforced server-side - would
-            # reject an empty inline array with a DIFFERENT error (about the rooms list itself,
-            # not about a specific room's providerCode); if that happens, this falls back
-            # automatically to the old shape (exactly one new room inline, providerCode still
-            # None) since that's the only other combination this tool has ever tried.
+            # already-populated hotel record - never an observed create-time success - so it never
+            # actually proved a null-providerCode room inline was accepted. Real production errors
+            # (2026-09-06, then again 2026-09-11 on the same hotel) proved the opposite: a room
+            # with providerCode left null is rejected outright -
+            #     "Bean Validation constraint(s) violated on callback event:'prePersist'.
+            #      Errors: HotelContractRoom.providerCode:must not be null ( Id: null)"
+            # - AND (2026-09-11, confirmed via the zero-rooms attempt's own separate error)
+            # ContractHotelVO.rooms genuinely does require at least 1 item -
+            #     "createHotel.contract.rooms: Size must be between 1 and 2147483647 ([])"
+            # - a real deadlock for a 100%-new hotel: no combination of "zero new rooms" or "one
+            # null-providerCode room inline" can satisfy both constraints at once.
+            #
+            # NEW APPROACH (2026-09-11, re-reading the real Swagger for POST/PUT /hotel/{supplierId}
+            # with the product owner): the room providerCode field in that request body's own
+            # schema is a plain, normal string - not marked read-only, and identical in shape to the
+            # response schema. Nothing in the Swagger says it must be server-assigned; the earlier
+            # "never invent one ourselves" rule was inferred only from GET examples showing
+            # "AUTO_..." codes, never actually tested against a client-supplied value. Since the
+            # hotel's OWN providerCode is already confirmed human-assigned (e.g. "HRG-H1"), it's a
+            # reasonable bet that a ROOM's providerCode can be too. So the new default first attempt
+            # generates a simple, deterministic placeholder code for every not-yet-coded room
+            # (derived from the hotel's own code + the room name) and sends the FULL rooms[] array -
+            # every room type in the contract - inline in ONE call, instead of the old empty-list-
+            # then-add-one-at-a-time dance. If Travel Compositor keeps our placeholder or replaces
+            # it with its own, either is fine - resolve_room_provider_codes() below reads whatever
+            # the RESPONSE actually says, never what we sent.
+            #
+            # The two previously-known shapes are kept as fallbacks, tried in order, only if this
+            # new attempt is itself rejected for a room-shaped reason (e.g. Travel Compositor
+            # rejects a client-supplied room code specifically) - so a brand-new hotel is no worse
+            # off than before if this hypothesis turns out wrong, and updates to an EXISTING hotel
+            # (which never hit the zero-rooms deadlock to begin with) get the same one-call
+            # simplification as a bonus when it works.
             all_rooms = contract_result["hotel_payload"].get("rooms") or []
             rooms_with_code = [r for r in all_rooms if r.get("providerCode")]
             new_rooms = [r for r in all_rooms if not r.get("providerCode")]
-            # Two room shapes to try, in order: no new rooms inline first (today's fix), then the
-            # old one-new-room-inline shape as a fallback if TC's server insists on a non-empty list.
-            _hp_room_candidates = [rooms_with_code, rooms_with_code + new_rooms[:1]]
+
+            def _hp_placeholder_room_code(room, index):
+                slug = re.sub(r"[^A-Za-z0-9]+", "", (room.get("name") or "")).upper()[:16] or "ROOM"
+                return f"{provider_code}-{slug}-{index + 1}"
+
+            all_rooms_with_placeholder_codes = list(rooms_with_code)
+            for _i, _r in enumerate(new_rooms):
+                _r2 = dict(_r)
+                _r2["providerCode"] = _hp_placeholder_room_code(_r, _i)
+                all_rooms_with_placeholder_codes.append(_r2)
+
+            # Three room shapes to try, in order:
+            #  1. NEW default - every room, new ones given a generated placeholder code.
+            #  2. Old zero-new-rooms shape - only rooms that already carry a REAL code.
+            #  3. Old one-new-room-inline shape (providerCode left null) - last resort, previously
+            #     confirmed broken, kept only because it's the only other combination ever tried.
+            _hp_room_candidates = [all_rooms_with_placeholder_codes, rooms_with_code, rooms_with_code + new_rooms[:1]]
             _hp_room_candidate_idx = 0
             phase1_payload = dict(contract_result["hotel_payload"])
             phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
@@ -11310,22 +11341,27 @@ def render_hotel_flow(client):
                     continue
 
                 if (_hp_room_candidate_idx < len(_hp_room_candidates) - 1
-                        and "room" in _hp_error_text.lower()
-                        and "providerCode" not in _hp_error_text):
-                    # Only escalate on a rooms-shaped complaint that ISN'T the null-providerCode
-                    # error our new default already avoids - e.g. a "rooms must not be empty"
-                    # style rejection of the zero-new-rooms shape tried first.
+                        and "room" in _hp_error_text.lower()):
+                    # Escalate to the next room shape on any room-related complaint - each
+                    # remaining candidate is strictly more conservative (fewer/no new rooms) than
+                    # the one just rejected, so stepping forward can't make things worse.
                     _hp_room_candidate_idx += 1
                     phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
-                    progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
-                                     "attached yet, so publishing is being retried with one new "
-                                     "room included. Note: that fallback room still has no "
-                                     "providerCode either (Travel Compositor only assigns one "
-                                     "after a room is created), so if it fails too, that's a "
-                                     "known dead end this app cannot currently work around alone - "
-                                     "see the debug expander below.")
-                    # 2026-09-08: surface the zero-rooms attempt's raw error (was discarded).
-                    with progress.expander("Technical details — empty-rooms attempt"):
+                    if _hp_room_candidate_idx == 1:
+                        progress.warning("⚠️ Travel Compositor rejected the attempt that included "
+                                         "every room type with a generated code, so publishing is "
+                                         "being retried with no new rooms attached yet (only rooms "
+                                         "that already have a real Travel Compositor code).")
+                    else:
+                        progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
+                                         "attached yet, so publishing is being retried with one new "
+                                         "room included. Note: that fallback room still has no "
+                                         "providerCode either (Travel Compositor only assigns one "
+                                         "after a room is created), so if it fails too, that's a "
+                                         "known dead end this app cannot currently work around alone - "
+                                         "see the debug expander below.")
+                    # 2026-09-08: surface the rejected attempt's raw error (was discarded).
+                    with progress.expander(f"Technical details — attempt {_hp_room_candidate_idx} rejected"):
                         st.code(_hp_error_text or "(no detail)")
                     continue
 
@@ -11344,9 +11380,11 @@ def render_hotel_flow(client):
                         st.code(str(_att["response"]))
 
             # Every brand-new room NOT included inline in whichever shape actually succeeded above
-            # is added here afterward, one at a time (see the comment above) - for most brand-new
-            # hotels that's now ALL of them, not just the second-and-beyond room. Each response is
-            # merged into the same room list resolve_room_provider_codes reads below, so phase 2
+            # is added here afterward, one at a time - normally NONE, now that the default first
+            # attempt (candidate 0) already inlines every room type with a generated code; this
+            # loop only does real work if that attempt was rejected and candidate 1 or 2 (which
+            # hold back some/all new rooms) is what actually succeeded. Each response is merged
+            # into the same room list resolve_room_provider_codes reads below, so phase 2
             # (offers/supplements/rates) sees every room regardless of which call actually created it.
             _hp_inline_new_room_count = len(_hp_room_candidates[_hp_room_candidate_idx]) - len(rooms_with_code)
             extra_new_rooms = new_rooms[_hp_inline_new_room_count:]
@@ -14320,7 +14358,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-hotel-publish-room-debug-capture"
+BUILD_VERSION = "2026-09-11-hotel-room-placeholder-codes"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
