@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
+MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
 
 import math
 import datetime
@@ -564,6 +564,56 @@ def _cancellation_ranges_from_tiers(tiers):
         merged_by_day[days] = max(refund_pct, merged_by_day.get(days, -1.0))
     cleaned = sorted(merged_by_day.items(), key=lambda pair: pair[0], reverse=True)
     return cleaned
+
+
+def cancellation_refund_at(ranges, days_before_arrival):
+    """The refund% a customer would get cancelling with exactly `days_before_arrival` days'
+    notice, under a policy expressed as `ranges` - a list of (days, refund_pct) tuples in the
+    same shape _cancellation_ranges_from_tiers returns. Same reading as that function's own
+    docstring: the tier with the largest days threshold that is <= the actual notice given
+    wins. An empty/no-match result is 0.0 - matches Travel Compositor's own Cancellation tab
+    caption on a record with no ranges set at all: "If empty, contract will be considered 100%
+    non-refundable"."""
+    applicable = [refund for days, refund in (ranges or []) if days <= days_before_arrival]
+    return max(applicable) if applicable else 0.0
+
+
+def existing_cancellation_at_least_as_strict(current_ranges, new_ranges):
+    """True when `current_ranges` (a LIVE record's existing structured cancellation policy)
+    already protects Momira at least as well as `new_ranges` would at every possible notice
+    window - i.e. applying `new_ranges` on top could only ever make the policy MORE generous to
+    the customer, never stricter, so the live record should be left untouched rather than
+    overwritten.
+
+    CONFIRMED REAL RULE (product owner, 2026-09-11): "the app shall not overwrite any
+    cancellation, if there is an existing cancellation included, which is more strict: example:
+    100 percent refund if cancelled 60 days or prior --> no cancellation [change]. BUT: if
+    existing cancellation states 100% refund if cancelled 5 days or prior --> then we have to
+    change it within Cancellation and also if mentioned in the voucher remarks. On default for
+    Momira Travel is 100% refund if cancelled 30 days or prior." A 60-day threshold demands MORE
+    advance notice than the 30-day default for the same full refund - stricter, protects Momira
+    better, left alone. A 5-day threshold demands LESS notice - more generous to the customer
+    than the house standard - must be brought back in line.
+
+    Both inputs are lists of (days, refund_pct) tuples - a policy is a step function of notice-
+    days (cancellation_refund_at, above), so this compares the two functions POINTWISE at every
+    "days" breakpoint present in either list (sufficient - between breakpoints both functions
+    are locally constant, so a violation can only start exactly at a breakpoint). Current is
+    "at least as strict" only if it never grants MORE refund than new would, at any breakpoint.
+
+    SPECIAL CASE - EMPTY current_ranges is NEVER treated as "already maximally strict", even
+    though Travel Compositor's own UI treats an empty policy as 100% non-refundable (see this
+    function's own docstring above) - in practice an empty policy overwhelmingly means "never
+    configured" rather than a deliberate no-refund choice, and the entire point of the bulk
+    cancellation tools (and cancellation_links.py) is to GIVE every live service a real policy.
+    So an empty `current_ranges` always returns False (the new policy should be applied)."""
+    if not current_ranges:
+        return False
+    breakpoints = sorted({d for d, _ in current_ranges} | {d for d, _ in (new_ranges or [])})
+    for b in breakpoints:
+        if cancellation_refund_at(current_ranges, b) > cancellation_refund_at(new_ranges, b):
+            return False
+    return True
 
 
 _DEFAULT_CANCELLATION_VOUCHER_TEXT = (

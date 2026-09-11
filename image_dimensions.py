@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
+MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

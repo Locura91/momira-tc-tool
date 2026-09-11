@@ -93,7 +93,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
+MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple
@@ -337,6 +337,19 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers, product_type: str) ->
             (tier_fields is None or _tiers_equal(row["current_fee_tiers"], new_fee_tiers))
             and (row["current_cancellation_snippet"] or "").strip() == new_text.strip()
         )
+        # CONFIRMED REAL RULE (product owner, 2026-09-11): "the app shall not overwrite any
+        # cancellation, if there is an existing cancellation included, which is more strict" -
+        # see builder.existing_cancellation_at_least_as_strict's own docstring for the full
+        # rule and cancellation_bulk_transport.build_proposals' identical comment for the
+        # worked example. ONLY checkable for ClosedTour/Ticket (tier_fields is not None) -
+        # Transfer/Hotel have no structured field to compare against at all (this module's own
+        # docstring), so their existing policy can only ever be read from free voucher text,
+        # which isn't reliably parseable into (days, refund%) tiers - existing_stricter stays
+        # False for those two, same as before this rule existed.
+        existing_stricter = False
+        if tier_fields and not unchanged:
+            current_ranges = [(t["days"], 100.0 - t["fee_percentage"]) for t in (row["current_fee_tiers"] or [])]
+            existing_stricter = builder.existing_cancellation_at_least_as_strict(current_ranges, new_ranges)
         proposals.append({
             "id": row["id"], "name": row["name"],
             "current_fee_tiers": row["current_fee_tiers"],
@@ -347,6 +360,7 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers, product_type: str) ->
             "new_text_by_lang": new_by_lang,
             "existing_paragraph_found": any_found,
             "unchanged": unchanged,
+            "existing_stricter": existing_stricter,
             "raw": record,
         })
     return proposals
@@ -369,6 +383,14 @@ def apply_proposals(client, supplier_id: str, product_type: str,
 
     results = []
     for p in proposals:
+        # BELT AND SUSPENDERS (product owner, 2026-09-11 "do not overwrite a stricter existing
+        # policy" rule) - same re-check as cancellation_bulk_transport.apply_proposals' own
+        # identical guard: the review UI already disables/unchecks a row flagged
+        # existing_stricter=True, but this is the actual live-write boundary.
+        if p.get("existing_stricter"):
+            results.append({"id": p["id"], "name": p["name"], "ok": True, "skipped": True,
+                            "detail": "left unchanged - existing policy is already at least as strict"})
+            continue
         updated = copy.deepcopy(p["raw"])
         bulk_notes._normalize_for_put(updated, product_type)
         if tier_fields and p.get("new_ranges_wire") is not None:

@@ -51,13 +51,14 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
+MODULE_BUILD = "2026-09-11-existing-cancellation-strictness-preserved"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cancellation_links
-from builder import _cancellation_ranges_from_tiers, _cancellation_voucher_text, strip_stray_html
+from builder import (_cancellation_ranges_from_tiers, _cancellation_voucher_text,
+                     existing_cancellation_at_least_as_strict, strip_stray_html)
 from bulk_notes import normalize_for_put
 from state_store import StateStore
 
@@ -268,6 +269,18 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
             _tiers_equal(row["current_fee_tiers"], new_fee_tiers)
             and (row["current_cancellation_snippet"] or "").strip() == new_text.strip()
         )
+        # CONFIRMED REAL RULE (product owner, 2026-09-11): "the app shall not overwrite any
+        # cancellation, if there is an existing cancellation included, which is more strict"
+        # (e.g. a live 60-day/100%-refund policy is STRICTER than the 30-day default and must
+        # be left alone; a live 5-day/100%-refund policy is LESS strict and must be brought
+        # back in line - see builder.existing_cancellation_at_least_as_strict's own docstring
+        # for the full rule and the pointwise comparison it uses). Checked here, once per row,
+        # against THIS row's own current policy - never against the new policy in isolation,
+        # since "strict enough" is inherently a per-record comparison. A row already exactly
+        # `unchanged` trivially also satisfies this (equal is "at least as strict"), so this
+        # only adds a NEW reason to skip a row that genuinely differs from the new policy.
+        current_ranges = [(t["days"], 100.0 - t["fee_percentage"]) for t in (row["current_fee_tiers"] or [])]
+        existing_stricter = (not unchanged) and existing_cancellation_at_least_as_strict(current_ranges, new_ranges)
         proposals.append({
             "id": row["id"],
             "name": row["name"],
@@ -281,6 +294,7 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
             "new_description_html": new_description_html,
             "existing_paragraph_found": existing_found,
             "unchanged": unchanged,
+            "existing_stricter": existing_stricter,
             "full_fetch_failed": row.get("full_fetch_failed", False),
             "raw": row["raw"],
         })
@@ -321,6 +335,15 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
     against content this tool just knowingly went around."""
     results = []
     for p in proposals:
+        # BELT AND SUSPENDERS (product owner, 2026-09-11 "do not overwrite a stricter existing
+        # policy" rule): the review UI already disables/unchecks a row flagged
+        # existing_stricter=True (see render_transport_cancellation_bulk_flow) so it should
+        # never reach here selected - but this is the actual live-write boundary, so it's
+        # re-checked here too rather than trusting the UI alone.
+        if p.get("existing_stricter"):
+            results.append({"id": p["id"], "name": p["name"], "ok": True, "skipped": True,
+                            "detail": "left unchanged - existing policy is already at least as strict"})
+            continue
         updated = dict(p["raw"])
         # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): a real bulk cancellation-
         # policy run against every Transport of a supplier failed ALL 168 rows with

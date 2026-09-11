@@ -12312,11 +12312,15 @@ def render_transport_cancellation_bulk_flow(client):
         st.markdown("---")
         st.subheader("Result")
         results = st.session_state.ctb_results
-        ok = [r for r in results if r["ok"]]
+        skipped = [r for r in results if r.get("skipped")]
+        ok = [r for r in results if r["ok"] and not r.get("skipped")]
         failed = [r for r in results if not r["ok"]]
-        st.caption(f"{len(ok)} updated · {len(failed)} failed.")
+        st.caption(f"{len(ok)} updated · {len(skipped)} left unchanged (existing policy already "
+                  f"as strict) · {len(failed)} failed.")
         for r in ok:
             st.success(f"✅ **{r['name']}** updated.")
+        for r in skipped:
+            st.info(f"🛡️ **{r['name']}** — {r['detail']}.")
         for r in failed:
             st.error(f"🚫 **{r['name']}** — {r['detail']}")
         if st.button("↩️ Run again / start over", key="ctb_reset"):
@@ -12441,6 +12445,15 @@ def render_transport_cancellation_bulk_flow(client):
             st.session_state.ctb_selected[p["id"]] = False
             st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
                        key=f"ctb_pick_{p['id']}")
+        elif p.get("existing_stricter"):
+            # CONFIRMED REAL RULE (product owner, 2026-09-11): never overwrite a live policy
+            # that's already at least as strict as the new one - see
+            # builder.existing_cancellation_at_least_as_strict's own docstring. Disabled/
+            # unchecked by default like an exact match, but with its own explanation so it's
+            # not confused with "already identical".
+            st.session_state.ctb_selected[p["id"]] = False
+            st.checkbox(f"{label}  ·  🛡️ existing policy is already at least as strict — left alone",
+                       value=False, disabled=True, key=f"ctb_pick_{p['id']}")
         else:
             st.session_state.ctb_selected[p["id"]] = st.checkbox(
                 label, value=st.session_state.ctb_selected.get(p["id"], True), key=f"ctb_pick_{p['id']}")
@@ -12554,7 +12567,8 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         st.markdown("---")
         st.subheader("Result")
         results = st.session_state.cb_results
-        ok = [r for r in results if r["ok"]]
+        skipped = [r for r in results if r.get("skipped")]
+        ok = [r for r in results if r["ok"] and not r.get("skipped")]
         failed = [r for r in results if not r["ok"]]
         has_structured = product_type in cancellation_bulk._STRUCTURED_TIER_FIELDS
         if not has_structured and ok:
@@ -12575,9 +12589,12 @@ def render_generic_cancellation_bulk_flow(client, product_type):
                     f"change when set directly there either. Worth asking Travel Compositor "
                     f"support whether {product_type} cancellation policies are settable via "
                     f"API at all.")
-        st.caption(f"{len(ok)} updated · {len(failed)} failed.")
+        st.caption(f"{len(ok)} updated · {len(skipped)} left unchanged (existing policy already "
+                  f"as strict) · {len(failed)} failed.")
         for r in ok:
             st.success(f"✅ **{r['name']}** updated.")
+        for r in skipped:
+            st.info(f"🛡️ **{r['name']}** — {r['detail']}.")
         for r in failed:
             st.error(f"🚫 **{r['name']}** — {r['detail']}")
         if st.button("↩️ Run again / start over", key="cb_reset"):
@@ -12701,6 +12718,14 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             st.session_state.cb_selected[p["id"]] = False
             st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
                        key=f"cb_pick_{p['id']}")
+        elif p.get("existing_stricter"):
+            # CONFIRMED REAL RULE (product owner, 2026-09-11): never overwrite a live policy
+            # that's already at least as strict as the new one - see
+            # builder.existing_cancellation_at_least_as_strict's own docstring. Only ever True
+            # for ClosedTour/Ticket (the two product types this module can structurally check).
+            st.session_state.cb_selected[p["id"]] = False
+            st.checkbox(f"{label}  ·  🛡️ existing policy is already at least as strict — left alone",
+                       value=False, disabled=True, key=f"cb_pick_{p['id']}")
         else:
             st.session_state.cb_selected[p["id"]] = st.checkbox(
                 label, value=st.session_state.cb_selected.get(p["id"], True), key=f"cb_pick_{p['id']}")
@@ -13622,7 +13647,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-cancellation-refund-percent-relabel"
+BUILD_VERSION = "2026-09-11-existing-cancellation-strictness-preserved"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
