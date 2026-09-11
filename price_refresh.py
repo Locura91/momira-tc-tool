@@ -41,9 +41,10 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-option-code-pinned"
+MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
 
 import json
+from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ai_extractor
@@ -184,12 +185,67 @@ PRICE_LOOKUP_TOOL_SCHEMA = {
 # ----------------------------------------------------------------------
 # Reading what is already live
 # ----------------------------------------------------------------------
+def _parse_date_safe(value: Any) -> Optional[date]:
+    """An ISO (or DD/MM/YYYY-ish) date, or None - never raises. Reuses date_format's own
+    tolerant parsing so a human-typed date and a wire ISO date both work the same way here."""
+    if not value:
+        return None
+    try:
+        import date_format
+        iso = date_format.to_iso_date(value)
+        return date.fromisoformat(iso[:10]) if iso else None
+    except (ValueError, TypeError, ImportError):
+        return None
+
+
+def _entry_covers(entry: Dict[str, Any], on_date: date) -> bool:
+    """Whether this ONE price entry's own [startDate, endDate] window covers on_date. A missing
+    startDate reads as "always started" and a missing endDate as "never ends" - permissive on
+    purpose, since a real single-period entry very often carries no dates at all, and that must
+    keep reading as "currently active" exactly as it always has."""
+    start = _parse_date_safe(entry.get("startDate"))
+    end = _parse_date_safe(entry.get("endDate"))
+    if start and on_date < start:
+        return False
+    if end and on_date > end:
+        return False
+    return True
+
+
+def _select_price_entry(prices: List[Dict[str, Any]], on_date: Optional[date] = None
+                        ) -> Optional[Dict[str, Any]]:
+    """Which of a modality's price entries is ACTIVE right now (or as of on_date).
+
+    CONFIRMED REAL GAP (product owner, 2026-09-11): "it can have a price supplement for
+    different modalities and it can have different period of times but the time can not
+    overlap within the same modality" - a modality's `prices` list can genuinely hold more than
+    one entry, each its own non-overlapping date range (a standard rate now and an already-
+    scheduled future/peak-season rate, confirmed as already live on real transports). This used
+    to be read with NO date awareness at all - just whichever entry happened to be LAST in the
+    list. Now prefers whichever entry's own window covers on_date (today by default). Falls
+    back to the LAST entry when none does, or when no entry carries dates at all (the common
+    single-period case) - identical to the old behavior, so a single-period transport is
+    completely unaffected by this change."""
+    dated = [p for p in (prices or []) if isinstance(p, dict)]
+    if not dated:
+        return None
+    on_date = on_date or date.today()
+    covering = [p for p in dated if _entry_covers(p, on_date)]
+    if len(covering) == 1:
+        return covering[0]
+    if len(covering) > 1:
+        # Two entries covering the SAME date is the "must not overlap" rule already being
+        # violated in the live data - a display/reference choice only (never a write): the most
+        # recently scheduled one (latest startDate) is the more likely intended "current" rate.
+        return max(covering, key=lambda p: _parse_date_safe(p.get("startDate")) or date.min)
+    return dated[-1]
+
+
 def option_unit_price(option: Dict[str, Any], base_adult: float) -> float:
-    """What one passenger in this bracket actually costs: base plus this option's supplement."""
-    supplement = 0.0
-    for price in (option.get("prices") or []):
-        if isinstance(price, dict):
-            supplement = _num(price.get("adultPriceSupplement"))
+    """What one passenger in this bracket actually costs RIGHT NOW: base plus whichever of this
+    option's price entries is active today (see _select_price_entry)."""
+    current = _select_price_entry(option.get("prices") or [])
+    supplement = _num((current or {}).get("adultPriceSupplement"))
     return round(base_adult + supplement, 2)
 
 
@@ -1303,17 +1359,36 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
         # entirely, regardless of whether it was the actual cause of the report above.
         payload["code"] = option["code"]
         supplement = round(resolved[option["code"]] - base, 2)
+        # CONFIRMED REAL GAP (product owner, 2026-09-11): "it can have a price supplement for
+        # different modalities and it can have different period of times but the time can not
+        # overlap within the same modality" - a modality's `prices` list can hold more than one
+        # entry, each its own non-overlapping date range (confirmed already live: a standard
+        # rate now plus an already-scheduled future/peak-season rate). This used to REPLACE the
+        # entire `prices` list with a single new-or-updated entry on every write - which silently
+        # DELETED every other period the moment any price on this modality changed. Fixed: only
+        # the ONE entry that is active TODAY (see _select_price_entry) is touched; every other
+        # period is carried through byte-for-byte, untouched.
+        #
+        # NOTE - SCOPE OF THIS FIX: matching is against TODAY's date only, not yet against a
+        # validity window the SOURCE DOCUMENT itself states (the rate-sheet reading pipeline
+        # doesn't extract per-bracket dates yet - see price_refresh.PRICE_LOOKUP_TOOL_SCHEMA).
+        # That is real, separate follow-up work (AI schema + prompt changes) rather than
+        # something to guess at here; this fix's job is narrower and unconditional: whatever
+        # period a refresh touches, every OTHER period on that modality must survive it.
+        existing_entries = [p for p in (payload.get("prices") or []) if isinstance(p, dict)]
+        current_entry = _select_price_entry(existing_entries)
+        other_entries = [p for p in existing_entries if p is not current_entry]
         if abs(supplement) < 0.005:
-            payload["prices"] = []
+            # A period whose supplement lands on exactly the base rate carries no entry at all -
+            # the confirmed real shape (see schemas.ContractTransportOptionPriceVO's own
+            # docstring) - but only THIS period's entry is dropped; every sibling period stays.
+            new_entries = other_entries
         else:
-            existing = (payload.get("prices") or [{}])[0]
-            if not isinstance(existing, dict):
-                existing = {}
-            existing = dict(existing)
-            existing["adultPriceSupplement"] = supplement
+            updated = dict(current_entry or {})
+            updated["adultPriceSupplement"] = supplement
             # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, same real bulk Apply
             # failure described in _current_base_option's docstring above): a NEW price entry
-            # (existing == {} - this option never carried a supplement before) had no
+            # (current_entry is None - this option never carried a supplement before) had no
             # startDate/endDate at all, and Travel Compositor's TransportContractPrice requires
             # both non-null on write ("must not be null" on both fields). The parent's OWN
             # startDate/endDate - never touched by this whole flow, see rebuild_prices' and the
@@ -1325,12 +1400,14 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
             # given, which is the last-resort fallback here too, for the rare case where the
             # parent itself has no endDate either - an empty string would still satisfy "must
             # not be null" (same reasoning as normalize_for_put's airlineCode default above),
-            # but a real date is what the parent actually has, so that's used first.
-            if not existing.get("startDate"):
-                existing["startDate"] = parent.get("startDate") or ""
-            if not existing.get("endDate"):
-                existing["endDate"] = parent.get("endDate") or "2049-12-31"
-            payload["prices"] = [existing]
+            # but a real date is what the parent actually has, so that's used first. An EXISTING
+            # entry's own dates (current_entry was found) are never touched here at all.
+            if not updated.get("startDate"):
+                updated["startDate"] = parent.get("startDate") or ""
+            if not updated.get("endDate"):
+                updated["endDate"] = parent.get("endDate") or "2049-12-31"
+            new_entries = other_entries + [updated]
+        payload["prices"] = new_entries
         option_payloads.append({"code": option["code"], "payload": payload,
                                 "unit_price": resolved[option["code"]]})
     return {"transport": parent, "options": option_payloads}

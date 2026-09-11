@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-price-refresh-option-code-pinned"
+MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
 
 _PHASE_KEY = "pkr_phase"
 
