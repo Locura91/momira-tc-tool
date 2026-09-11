@@ -11683,6 +11683,18 @@ def render_manual_information_flow(client):
                       "completely untouched - safe to run more than once, it only ever finds "
                       "what's actually still misplaced.")
             item_data["name"] = "transport_voucher_code_repair"  # no human input needed - enables Preview below
+        elif structured_kind == "transport_cancellation_text_repair":
+            st.warning("One-off repair, not a normal upload. Use this ONLY to fix Transports "
+                      "whose cancellation-policy sentence is still sitting in Description "
+                      "instead of Voucher remarks (product-owner request, 2026-09-11).")
+            st.caption("Scans every Transport of this supplier's own Description for a "
+                      "paragraph mentioning cancellation. Wherever one is found, it is moved: "
+                      "removed from Description (every other paragraph left exactly as it is) "
+                      "and appended onto Voucher remarks (whatever text is already there is "
+                      "kept). A Transport with no cancellation paragraph in Description is left "
+                      "completely untouched - safe to run more than once, it only ever finds "
+                      "what's actually still misplaced.")
+            item_data["name"] = "transport_cancellation_text_repair"  # no human input needed - enables Preview below
         elif structured_kind == "transfer_additional_service":
             st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
             c1, c2 = st.columns(2)
@@ -12519,15 +12531,16 @@ def render_transport_cancellation_bulk_flow(client):
             with dcol1:
                 st.caption("**Current**")
                 st.text(_ctb_fmt_tiers(p["current_fee_tiers"]))
-                st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found in the description)*")
+                st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found)*")
             with dcol2:
-                st.caption("**New**")
+                st.caption("**New**  ·  goes into Voucher remarks")
                 st.text(_ctb_fmt_tiers(p["new_fee_tiers"]))
                 st.caption(p["new_cancellation_text"])
             if not p["existing_paragraph_found"]:
-                st.warning("⚠️ No existing cancellation sentence was found in this Transport's description — "
-                          "a new one will be INSERTED rather than replacing one. Double-check the result "
-                          "afterward inside Travel Compositor.")
+                st.warning("⚠️ No existing cancellation text was found (in Voucher remarks or "
+                          "description) — a new one will be INSERTED into Voucher remarks rather "
+                          "than replacing one. Double-check the result afterward inside Travel "
+                          "Compositor.")
             if p.get("full_fetch_failed"):
                 st.warning("⚠️ Couldn't re-fetch this Transport's own full record (only the "
                           "shorter list entry was available) - some rarely-used fields may be "
@@ -14256,7 +14269,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-price-consistency-report"
+BUILD_VERSION = "2026-09-11-transport-cancellation-text-relocation"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

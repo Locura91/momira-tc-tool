@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-transport-price-consistency-report"
+MODULE_BUILD = "2026-09-11-transport-cancellation-text-relocation"
 
 _PHASE_KEY = "pkr_phase"
 

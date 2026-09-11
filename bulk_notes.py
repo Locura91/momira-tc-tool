@@ -226,6 +226,10 @@ STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
         # bulk-wrote a price-validity code into description instead of voucherRemarks - see
         # _plan_transport_voucher_code_repair's own docstring.
         "Repair: move a price-validity code from Description to Voucher remarks": "transport_voucher_code_repair",
+        # One-off repair (2026-09-11, product owner: "I just want to move this phrase
+        # 'Cancellation Policy: ...' from Description to Voucher remark") - see
+        # _plan_transport_cancellation_text_repair's own docstring.
+        "Repair: move cancellation policy text from Description to Voucher remarks": "transport_cancellation_text_repair",
     },
 }
 
@@ -658,6 +662,120 @@ def _apply_transport_voucher_code_repair(
     return out
 
 
+def _plan_transport_cancellation_text_repair(
+        client, supplier_id: str,
+        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """One-off data repair (product owner, 2026-09-11): "I just want to move this phrase
+    'Cancellation Policy: - Free cancellation if cancelled at least 30 days before arrival.'
+    from Description to Voucher remark from Supplier MOMIRA_EG_FT and MOMIRA_TEST." The
+    companion repair to _plan_transport_voucher_code_repair (same MOVE-not-copy shape, same
+    "unchanged if nothing to move" safety) - that one moves a price-validity CODE; this one
+    moves the whole cancellation-POLICY SENTENCE, which for Transport has always lived inline
+    in `description` as one of several "<p>...</p>" paragraphs (see cancellation_bulk_
+    transport.py's own module docstring: "do not change the name and the description of
+    transfer and transport" locked it there even after voucherRemarks was confirmed to
+    genuinely exist for Transport). Reuses cancellation_bulk_transport's own paragraph-matching
+    helpers (_current_cancellation_snippet to find it, _remove_cancellation_paragraph to delete
+    it cleanly, leaving every other paragraph - service description, "What to bring:", manual
+    notes - untouched) rather than re-deriving that "first paragraph mentioning 'cancella'"
+    matching logic a second time.
+
+    Imported lazily (inside this function, not at module level) to avoid a circular import -
+    cancellation_bulk_transport.py already imports bulk_notes.normalize_for_put.
+
+    For every Transport of this supplier whose EN description carries a cancellation
+    paragraph, this MOVES it: removes it from description (every other paragraph untouched)
+    and appends it to voucherRemarks via builder._append_if_new - the SAME idempotent-append
+    rule every other voucher-text composition in this codebase uses, so running this twice (or
+    against a Transport whose voucherRemarks already happens to contain that exact sentence)
+    never duplicates it. A Transport whose description has no cancellation paragraph at all is
+    left completely untouched."""
+    import cancellation_bulk_transport
+
+    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
+                              "failed": 0, "product_type": "Transport",
+                              "target": "transport_cancellation_text_repair", "structured": True,
+                              "kind": "transport_cancellation_text_repair"}
+    records, err = list_services(client, supplier_id, "Transport")
+    if err and not records:
+        result["error"] = err
+        return result
+    result["error"] = err
+    total = len(records)
+    for i, record in enumerate(records):
+        name = label_for(record, "Transport")
+        if progress:
+            progress(i + 1, total, name)
+        rec_id = record.get("id")
+        item_id = str(rec_id or name)
+        sheets = record.get("datasheets") or {}
+        en = sheets.get("EN") if isinstance(sheets, dict) else None
+        description = (en or {}).get("description") or "" if isinstance(en, dict) else ""
+        snippet = cancellation_bulk_transport._current_cancellation_snippet_in_description(description)
+        if not snippet:
+            result["unchanged"] += 1
+            result["items"].append({
+                "id": item_id, "name": name, "status": "unchanged", "changes": {},
+                "reason": "no cancellation paragraph found in this Transport's description",
+            })
+            continue
+        new_description, found = cancellation_bulk_transport._remove_cancellation_paragraph(description)
+        if not found:
+            # Belt-and-braces only - _current_cancellation_snippet already found a match above,
+            # so this should never actually happen, but a non-match here must never silently
+            # drop the paragraph without also moving it to voucherRemarks.
+            result["unchanged"] += 1
+            result["items"].append({
+                "id": item_id, "name": name, "status": "unchanged", "changes": {},
+                "reason": "no cancellation paragraph found in this Transport's description",
+            })
+            continue
+        existing_voucher_remarks = (en or {}).get("voucherRemarks") or ""
+        new_voucher_remarks = builder._append_if_new(existing_voucher_remarks, snippet)
+        updated = copy.deepcopy(record)
+        _normalize_for_put(updated, "Transport")
+        updated.setdefault("datasheets", {}).setdefault("EN", {})
+        updated["datasheets"]["EN"]["description"] = new_description
+        updated["datasheets"]["EN"]["voucherRemarks"] = new_voucher_remarks
+        result["will_change"] += 1
+        result["items"].append({
+            "id": item_id, "name": name, "status": "will_change",
+            "changes": {"EN": (
+                f"description had: \"{snippet}\"",
+                f"moved to voucherRemarks; description paragraph removed")},
+            "record": updated, "write_kind": "transport",
+        })
+    return result
+
+
+def _apply_transport_cancellation_text_repair(
+        client, supplier_id: str, planned: Dict[str, Any],
+        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
+    """Pushes the moves a human has already previewed via
+    _plan_transport_cancellation_text_repair. Every item is a whole-Transport-record write
+    (write_kind "transport"), identical shape to _apply_transport_voucher_code_repair - kept as
+    its own function only so it can be dispatched to before the generic path runs (see apply()'s
+    own dispatch)."""
+    out = {"updated": [], "failed": [], "skipped": 0}
+    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
+    out["skipped"] = len(planned.get("items", [])) - len(pending)
+    for n, item in enumerate(pending):
+        if progress:
+            progress(n + 1, len(pending), item.get("name", ""))
+        try:
+            res = client.update_transport(supplier_id, item["record"])
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                      "detail": str(res.get("message") or res.get("error"))})
+            else:
+                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
+                                       "languages": sorted(item.get("changes", {}).keys())})
+        except Exception as e:
+            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                  "detail": f"{type(e).__name__}: {e}"})
+    return out
+
+
 def _day_offset(date_str: str, days: int) -> str:
     """`date_str` (ISO 'YYYY-MM-DD') shifted by `days`. Used only for the adjacent-day boundary
     math a peak-season carve needs (the day before a period starts, the day after it ends) -
@@ -922,6 +1040,9 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
 
     if kind == "transport_voucher_code_repair":
         return _plan_transport_voucher_code_repair(client, supplier_id, progress=progress)
+
+    if kind == "transport_cancellation_text_repair":
+        return _plan_transport_cancellation_text_repair(client, supplier_id, progress=progress)
 
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": product_type, "target": kind,
@@ -1397,6 +1518,8 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
         return _apply_transport_price_increase(client, supplier_id, planned, progress=progress)
     if planned.get("kind") == "transport_voucher_code_repair":
         return _apply_transport_voucher_code_repair(client, supplier_id, planned, progress=progress)
+    if planned.get("kind") == "transport_cancellation_text_repair":
+        return _apply_transport_cancellation_text_repair(client, supplier_id, planned, progress=progress)
     product_type = planned.get("product_type")
     cfg = PRODUCTS.get(product_type) or {}
     update_fn = getattr(client, cfg.get("update_fn", ""), None)

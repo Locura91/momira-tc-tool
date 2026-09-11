@@ -20,18 +20,23 @@ terms are baked as a sentence inside free-text voucher wording alongside pickup/
 manual-notes text with no reliable anchor to safely locate and replace, so it isn't offered
 here.
 
-WHERE THE CANCELLATION TEXT ACTUALLY LIVES ON A LIVE TRANSPORT (confirmed via real Swagger
-data - see build_transport_payloads' own comment in builder.py): Transport's
-ContractTransportDataSheetVO has no separate voucherRemarks field the way ClosedTour/Ticket/
-Transfer do - the cancellation sentence is appended into `datasheets.EN.description` itself,
-as one of several "<p>...</p>" paragraphs (service description first, then cancellation, then
-optionally a "What to bring:" block, then optionally a manual note - see builder.py's
-_with_what_to_bring/_with_manual_notes for that fixed ordering). Changing the STRUCTURED
-cancellationRanges field alone would leave the customer-facing description text describing
-the OLD policy, so this module rewrites both together - see _swap_cancellation_paragraph()
-for how the right paragraph is found without disturbing anything else in the description
-(what-to-bring, a manual note, even one that happens to mention "cancellation" itself - see
-that function's docstring for why position, not just a keyword match, keeps this safe).
+WHERE THE CANCELLATION TEXT LIVES ON A LIVE TRANSPORT (CORRECTED 2026-09-11, product owner: "I
+just want to move this phrase 'Cancellation Policy: ...' from Description to Voucher remark"):
+Transport genuinely has its own separate voucherRemarks field (schemas.py's
+TransportDataSheetVO.voucherRemarks, confirmed via a real Travel Compositor screenshot on
+2026-09-10) - this module now writes the cancellation sentence there, as its own "\n\n"-
+separated block (same plain-text block shape every other voucher-text composition in this
+codebase already uses - see builder._append_if_new), rather than inline inside `description`'s
+HTML "<p>...</p>" paragraphs the way it used to. Changing the STRUCTURED cancellationRanges
+field alone would leave the customer-facing text describing the OLD policy, so this module
+rewrites both together - see _swap_cancellation_text_in_voucher_remarks() for how the right
+block is found without disturbing anything else already in Voucher remarks (a price-validity
+code, a manual note), mirroring _swap_cancellation_paragraph()'s same safe-matching approach for
+description. EVERY run also removes any cancellation paragraph still sitting in description (via
+_remove_cancellation_paragraph) - a Transport that predates this change, or was written before
+the one-off repair (bulk_notes._plan_transport_cancellation_text_repair) ran for it, is
+transparently migrated the next time its cancellation policy is bulk-updated here, not left with
+the sentence duplicated in both places.
 
 CONFIRMED SCOPE DECISIONS (product owner, 2026-08-28, AskUserQuestion):
   * Per-supplier only for now, not multi-supplier/all-at-once.
@@ -51,13 +56,13 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-transport-price-consistency-report"
+MODULE_BUILD = "2026-09-11-transport-cancellation-text-relocation"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cancellation_links
-from builder import (_cancellation_ranges_from_tiers, _cancellation_voucher_text,
+from builder import (_append_if_new, _cancellation_ranges_from_tiers, _cancellation_voucher_text,
                      existing_cancellation_at_least_as_strict, strip_stray_html)
 from bulk_notes import normalize_for_put
 from state_store import StateStore
@@ -119,15 +124,84 @@ def _tiers_equal(a, b) -> bool:
     return _norm(a) == _norm(b)
 
 
-def _current_cancellation_snippet(description_html: str) -> Optional[str]:
+def _current_cancellation_snippet_in_description(description_html: str) -> Optional[str]:
     """The plain-text content of the FIRST "<p>...</p>" paragraph that mentions cancellation,
-    or None if none does. Used only for display (the "current" side of the review screen) -
-    see _swap_cancellation_paragraph for why "first match" is the safe choice, not just "any
-    match"."""
+    or None if none does. RENAMED 2026-09-11 (was _current_cancellation_snippet) when Voucher
+    remarks became where this text lives going forward - kept as its own function, still used to
+    detect a Transport that hasn't been migrated yet (see _current_cancellation_snippet and
+    bulk_notes._plan_transport_cancellation_text_repair, both of which call this by its own,
+    unambiguous name now that there are two places to look). See _swap_cancellation_paragraph
+    for why "first match" is the safe choice, not just "any match"."""
     for m in _P_BLOCK_RE.finditer(description_html or ""):
         if "cancella" in m.group(1).lower():
             return strip_stray_html(m.group(1))
     return None
+
+
+def _current_cancellation_snippet_in_voucher_remarks(voucher_remarks: str) -> Optional[str]:
+    """The "\\n\\n"-separated block within Voucher remarks that states the cancellation policy
+    (the one starting with "Cancellation Policy:", case-insensitive - the exact header
+    _cancellation_voucher_text's tiered branch always writes), or None if no such block exists
+    there yet. Voucher remarks is plain text with blocks separated the same way builder.
+    _append_if_new/bulk_notes._contains already treat it (blank-line-separated blocks), unlike
+    description's HTML "<p>" paragraphs."""
+    for block in (voucher_remarks or "").split("\n\n"):
+        if block.strip().lower().startswith("cancellation policy:"):
+            return block.strip()
+    return None
+
+
+def _current_cancellation_snippet(voucher_remarks: str, description_html: str) -> Optional[str]:
+    """The Transport's current cancellation-policy text, wherever it actually lives right now.
+    Prefers Voucher remarks (where this has lived since 2026-09-11 - see this module's own
+    docstring); falls back to description's HTML paragraph only for a Transport that hasn't been
+    through the one-off repair yet or predates this change entirely - so the "current" side of
+    the review screen, and the `unchanged` comparison in build_proposals, are correct either
+    way, not just for an already-migrated record."""
+    from_voucher_remarks = _current_cancellation_snippet_in_voucher_remarks(voucher_remarks)
+    if from_voucher_remarks:
+        return from_voucher_remarks
+    return _current_cancellation_snippet_in_description(description_html)
+
+
+def _swap_cancellation_text_in_voucher_remarks(voucher_remarks: str, new_text: str) -> Tuple[str, bool]:
+    """Replaces the cancellation-policy block inside Voucher remarks with `new_text`, leaving
+    every OTHER block already there (a price-validity code, a manual note) untouched - the
+    Voucher-remarks equivalent of _swap_cancellation_paragraph, but for plain "\\n\\n"-separated
+    text blocks instead of HTML "<p>" paragraphs (see _current_cancellation_snippet_in_voucher_
+    remarks for the same block-splitting convention). Returns (new_voucher_remarks,
+    existing_block_found); when nothing matches, appends the new block instead via builder.
+    _append_if_new (the SAME idempotent-append rule every other voucher-text composition in this
+    codebase already uses) and returns False so the caller can flag it, same "insert, don't
+    silently fail" shape as _swap_cancellation_paragraph's own no-match branch."""
+    blocks = [b for b in (voucher_remarks or "").split("\n\n") if b.strip()]
+    idx = next((i for i, b in enumerate(blocks)
+               if b.strip().lower().startswith("cancellation policy:")), None)
+    if idx is not None:
+        blocks[idx] = new_text.strip()
+        return "\n\n".join(blocks), True
+    return _append_if_new(voucher_remarks, new_text), False
+
+
+def _remove_cancellation_paragraph(description_html: str) -> Tuple[str, bool]:
+    """CONFIRMED REAL REQUEST (product owner, 2026-09-11): "I just want to move this phrase
+    'Cancellation Policy: - Free cancellation if cancelled at least 30 days before arrival.'
+    from Description to Voucher remark" - the companion half of _swap_cancellation_paragraph,
+    for MOVING the cancellation paragraph out of description entirely (to Voucher remarks, see
+    bulk_notes._plan_transport_cancellation_text_repair) rather than replacing it with a new
+    one. Same "first paragraph mentioning 'cancella'" match rule as _swap_cancellation_paragraph
+    (see that function's own docstring for why first-match is the safe choice - a manual note
+    that merely mentions cancellation is never the real policy paragraph, and always comes
+    later). Unlike _swap_cancellation_paragraph, this deletes the matched "<p>...</p>" block
+    entirely rather than replacing its contents, so no empty paragraph is left behind. Returns
+    (new_description_html, paragraph_found) - found=False (html unchanged) when no paragraph
+    mentions cancellation at all, so the caller can skip a needless write."""
+    matches = list(_P_BLOCK_RE.finditer(description_html or ""))
+    target = next((m for m in matches if "cancella" in m.group(1).lower()), None)
+    if target is None:
+        return description_html or "", False
+    new_html = (description_html[:target.start()] + description_html[target.end():]).strip()
+    return new_html, True
 
 
 def _swap_cancellation_paragraph(description_html: str, new_text: str) -> Tuple[str, bool]:
@@ -226,6 +300,7 @@ def load_supplier_transports_for_cancellation(
 
         datasheet_en = ((record.get("datasheets") or {}).get("EN")) or {}
         description_html = datasheet_en.get("description") or ""
+        voucher_remarks = datasheet_en.get("voucherRemarks") or ""
         segment = (record.get("segments") or [{}])[0] if isinstance(record.get("segments"), list) else {}
         rows.append({
             "id": record.get("id"),
@@ -233,8 +308,9 @@ def load_supplier_transports_for_cancellation(
             "departure_code": segment.get("departureLocationCode") or "",
             "arrival_code": segment.get("arrivalLocationCode") or "",
             "current_fee_tiers": _wire_ranges_to_fee_tiers(record.get("cancellationRanges")),
-            "current_cancellation_snippet": _current_cancellation_snippet(description_html),
+            "current_cancellation_snippet": _current_cancellation_snippet(voucher_remarks, description_html),
             "description_html": description_html,
+            "voucher_remarks": voucher_remarks,
             "full_fetch_failed": full_fetch_failed,
             "raw": record,
         })
@@ -264,10 +340,23 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
 
     proposals = []
     for row in rows:
-        new_description_html, existing_found = _swap_cancellation_paragraph(row["description_html"], new_text)
+        # CORRECTED 2026-09-11 (product owner: "move this phrase from Description to Voucher
+        # remark"): the cancellation sentence is now swapped into Voucher remarks (its own
+        # "\n\n"-separated block, everything else there untouched), while description is always
+        # cleaned of any cancellation paragraph it might still carry - a Transport that predates
+        # this change, or hasn't had the one-off repair run for it yet
+        # (bulk_notes._plan_transport_cancellation_text_repair), is transparently migrated the
+        # next time its policy is bulk-updated here, rather than ending up with the sentence
+        # duplicated in both fields.
+        new_voucher_remarks, found_in_voucher_remarks = _swap_cancellation_text_in_voucher_remarks(
+            row["voucher_remarks"], new_text)
+        new_description_html, had_paragraph_in_description = _remove_cancellation_paragraph(
+            row["description_html"])
+        existing_found = found_in_voucher_remarks or had_paragraph_in_description
         unchanged = (
             _tiers_equal(row["current_fee_tiers"], new_fee_tiers)
             and (row["current_cancellation_snippet"] or "").strip() == new_text.strip()
+            and not had_paragraph_in_description  # still needs migrating out of description
         )
         # CONFIRMED REAL RULE (product owner, 2026-09-11): "the app shall not overwrite any
         # cancellation, if there is an existing cancellation included, which is more strict"
@@ -292,6 +381,7 @@ def build_proposals(rows: List[Dict[str, Any]], new_tiers) -> List[Dict[str, Any
             "new_cancellation_text": new_text,
             "new_ranges_wire": new_wire,
             "new_description_html": new_description_html,
+            "new_voucher_remarks": new_voucher_remarks,
             "existing_paragraph_found": existing_found,
             "unchanged": unchanged,
             "existing_stricter": existing_stricter,
@@ -327,12 +417,20 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
     honors, indefinitely.
 
     Fix, two parts: (1) the same new cancellation sentence (English, until the next real
-    translation pass) is swapped into every OTHER language's datasheet too, via the identical
-    _swap_cancellation_paragraph helper used for EN - so no customer, in any language, is ever
-    shown a stale, no-longer-honored policy, even before it's properly translated. (2) the
-    translation-tracker state for this Transport is explicitly cleared (state_store.clear_state)
-    so the next regular sync treats it as never-synced instead of running the self-healing check
-    against content this tool just knowingly went around."""
+    translation pass) is swapped into every OTHER language's Voucher remarks too, via the
+    identical _swap_cancellation_text_in_voucher_remarks helper used for EN (and any leftover
+    cancellation paragraph still sitting in that language's description is removed the same way)
+    - so no customer, in any language, is ever shown a stale, no-longer-honored policy, even
+    before it's properly translated. (2) the translation-tracker state for this Transport is
+    explicitly cleared (state_store.clear_state) so the next regular sync treats it as
+    never-synced instead of running the self-healing check against content this tool just
+    knowingly went around.
+
+    CORRECTED 2026-09-11 (product owner: "move this phrase from Description to Voucher
+    remark"): the cancellation sentence itself now goes into voucherRemarks, not description -
+    see this module's own top-of-file docstring for the full reasoning. description is still
+    touched, but only to REMOVE any cancellation paragraph it might still carry (migrating a
+    not-yet-repaired Transport as a side effect of any future bulk cancellation update)."""
     results = []
     for p in proposals:
         # BELT AND SUSPENDERS (product owner, 2026-09-11 "do not overwrite a stricter existing
@@ -364,11 +462,15 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
         new_text = p["new_cancellation_text"]
         for lang, sheet in datasheets.items():
             sheet = dict(sheet or {})
-            new_html, _found = _swap_cancellation_paragraph(sheet.get("description") or "", new_text)
-            sheet["description"] = new_html
+            new_voucher_remarks, _found_vr = _swap_cancellation_text_in_voucher_remarks(
+                sheet.get("voucherRemarks") or "", new_text)
+            new_description, _found_desc = _remove_cancellation_paragraph(sheet.get("description") or "")
+            sheet["voucherRemarks"] = new_voucher_remarks
+            sheet["description"] = new_description
             datasheets[lang] = sheet
         if "EN" not in datasheets:
-            datasheets["EN"] = {"description": p["new_description_html"]}
+            datasheets["EN"] = {"description": p["new_description_html"],
+                                "voucherRemarks": p["new_voucher_remarks"]}
         updated["datasheets"] = datasheets
         try:
             result = client.update_transport(supplier_id, updated)

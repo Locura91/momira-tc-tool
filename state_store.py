@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-transport-price-consistency-report"
+MODULE_BUILD = "2026-09-11-transport-cancellation-text-relocation"
 
 _NAMESPACE = "translation_state"
 

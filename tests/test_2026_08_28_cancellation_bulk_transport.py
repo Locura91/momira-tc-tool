@@ -106,12 +106,12 @@ def test_tiers_equal_both_empty():
 
 def test_snippet_finds_the_cancellation_paragraph():
     html = "<p>Private transfer from the airport.</p><p>Free cancellation up to 30 days before arrival.</p>"
-    assert cbt._current_cancellation_snippet(html) == "Free cancellation up to 30 days before arrival."
+    assert cbt._current_cancellation_snippet_in_description(html) == "Free cancellation up to 30 days before arrival."
 
 
 def test_snippet_returns_none_when_nothing_mentions_cancellation():
     html = "<p>Private transfer from the airport.</p><p>What to bring:\nPassport</p>"
-    assert cbt._current_cancellation_snippet(html) is None
+    assert cbt._current_cancellation_snippet_in_description(html) is None
 
 
 def test_snippet_prefers_the_first_match_over_a_manual_note_mentioning_it_too():
@@ -122,7 +122,7 @@ def test_snippet_prefers_the_first_match_over_a_manual_note_mentioning_it_too():
     html = ("<p>Private transfer from the airport.</p>"
            "<p>Free cancellation up to 30 days before arrival.</p>"
            "<p>This supplier's cancellation terms changed in March - call ahead.</p>")
-    assert cbt._current_cancellation_snippet(html) == "Free cancellation up to 30 days before arrival."
+    assert cbt._current_cancellation_snippet_in_description(html) == "Free cancellation up to 30 days before arrival."
 
 
 def test_swap_replaces_existing_paragraph_leaving_others_untouched():
@@ -187,7 +187,7 @@ def test_swap_matches_a_paragraph_that_has_attributes():
 def test_snippet_finds_a_paragraph_that_has_attributes():
     html = ('<p dir="ltr">Private transfer from the airport.</p>'
            '<p class="policy">Free cancellation up to 30 days before arrival.</p>')
-    assert cbt._current_cancellation_snippet(html) == "Free cancellation up to 30 days before arrival."
+    assert cbt._current_cancellation_snippet_in_description(html) == "Free cancellation up to 30 days before arrival."
 
 
 # ----------------------------------------------------------------------
@@ -239,13 +239,14 @@ class _FakeTransportClient:
 
 
 def _sample_record(id_="T1", name="Airport - Hotel X", days=30, refund_pct=100.0,
-                   description="<p>Private transfer from the airport.</p><p>Free cancellation up to 30 days before arrival.</p>"):
+                   description="<p>Private transfer from the airport.</p><p>Free cancellation up to 30 days before arrival.</p>",
+                   voucher_remarks=""):
     return {
         "id": id_,
         "name": name,
         "segments": [{"departureLocationCode": "SSH", "arrivalLocationCode": "HTL-X"}],
         "cancellationRanges": [{"days": days, "percentage": refund_pct, "isBeforeStart": True}],
-        "datasheets": {"EN": {"name": name, "description": description}},
+        "datasheets": {"EN": {"name": name, "description": description, "voucherRemarks": voucher_remarks}},
         "baseAdultPrice": 42.0,
         "currency": "EUR",
     }
@@ -301,12 +302,33 @@ def test_build_proposals_flags_unchanged_when_current_matches_new():
     # _cancellation_voucher_text(None, ranges) call) would produce for these tiers, not just
     # be semantically equivalent wording - see the test right below for the more common real
     # case where a record's existing text came from a different source and genuinely differs.
-    matching_description = ("<p>Private transfer from the airport.</p>"
-                            "<p>Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival.</p>")
-    client = _FakeTransportClient(transports=[_sample_record(days=30, refund_pct=100.0, description=matching_description)])
+    # CORRECTED 2026-09-11: the cancellation text now lives in Voucher remarks, not description -
+    # a record already migrated there (and with no leftover paragraph in description) is the
+    # truly-unchanged case.
+    matching_voucher_remarks = "Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival."
+    client = _FakeTransportClient(transports=[_sample_record(
+        days=30, refund_pct=100.0,
+        description="<p>Private transfer from the airport.</p>",
+        voucher_remarks=matching_voucher_remarks)])
     rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
     proposals = cbt.build_proposals(rows, [{"days": 30, "fee_percentage": 0.0}])
     assert proposals[0]["unchanged"] is True
+
+
+def test_build_proposals_not_unchanged_when_cancellation_paragraph_still_sits_in_description():
+    # CORRECTED 2026-09-11: even when Voucher remarks already matches the new policy, a
+    # Transport that still has a leftover cancellation paragraph in description hasn't been
+    # fully migrated yet - build_proposals must keep flagging it as changed so the migration
+    # (removal from description) actually happens on this run.
+    matching_voucher_remarks = "Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival."
+    matching_description = ("<p>Private transfer from the airport.</p>"
+                            "<p>Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival.</p>")
+    client = _FakeTransportClient(transports=[_sample_record(
+        days=30, refund_pct=100.0, description=matching_description,
+        voucher_remarks=matching_voucher_remarks)])
+    rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
+    proposals = cbt.build_proposals(rows, [{"days": 30, "fee_percentage": 0.0}])
+    assert proposals[0]["unchanged"] is False
 
 
 def test_build_proposals_not_unchanged_when_tiers_match_but_wording_differs():
@@ -384,7 +406,7 @@ def test_build_proposals_marks_paragraph_not_found_when_description_has_none():
 # apply_proposals
 # ----------------------------------------------------------------------
 
-def test_apply_updates_cancellation_ranges_and_description_only():
+def test_apply_updates_cancellation_ranges_and_voucher_remarks():
     client = _FakeTransportClient(transports=[_sample_record()])
     rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
     proposals = cbt.build_proposals(rows, [{"days": 14, "fee_percentage": 50.0}])
@@ -394,13 +416,17 @@ def test_apply_updates_cancellation_ranges_and_description_only():
     supplier_id, payload = client.update_calls[0]
     assert supplier_id == "SUP-X"
     assert payload["cancellationRanges"] == [{"days": 14, "percentage": 50.0, "isBeforeStart": True}]
-    new_description = payload["datasheets"]["EN"]["description"]
+    # CORRECTED 2026-09-11 (product owner: "move this phrase from Description to Voucher
+    # remark"): the new cancellation sentence now lands in Voucher remarks, not description.
+    new_voucher_remarks = payload["datasheets"]["EN"]["voucherRemarks"]
     # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): _cancellation_voucher_text's
     # partial-refund wording used to say "within N days OF arrival" (the opposite condition from
     # what the structured tier actually grants) - now says "less than N days BEFORE arrival",
     # matching the free-cancellation branch's existing correct phrasing.
-    assert "50% cancellation fee if cancelled less than 14 days before arrival" in new_description
+    assert "50% cancellation fee if cancelled less than 14 days before arrival" in new_voucher_remarks
+    new_description = payload["datasheets"]["EN"]["description"]
     assert "Free cancellation up to 30 days before arrival" not in new_description  # old text is gone
+    assert "Free cancellation up to 30 days before arrival" not in new_voucher_remarks
     assert "<p>Private transfer from the airport.</p>" in new_description  # unrelated paragraph kept
     # Everything else on the record is untouched.
     assert payload["baseAdultPrice"] == 42.0
