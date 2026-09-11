@@ -13239,6 +13239,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # out of this screen silently, while their remaining options were repriced around a base
     # computed from whatever happened to load - see build_proposals. They are now named here and
     # can never be accepted, so the operator knows to re-run rather than trusting a partial result.
+    def _id_suffix(route):
+        # CONFIRMED REAL REQUEST (product owner): show the TRANSFER-xxxxx / TRANSPORT-xxxxx id
+        # next to the route so a human can find the exact record in Travel Compositor without
+        # having to search by name.
+        rid = route.get("id")
+        return f"  ·  `{rid}`" if rid else ""
+
     if blocked:
         st.error(
             f"🚫 **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
@@ -13292,13 +13299,6 @@ def render_price_refresh_flow(client, preselected_kind=None):
             for p in proposals:
                 p["accepted"] = False
             st.rerun()
-
-    def _id_suffix(route):
-        # CONFIRMED REAL REQUEST (product owner): show the TRANSFER-xxxxx / TRANSPORT-xxxxx id
-        # next to the route so a human can find the exact record in Travel Compositor without
-        # having to search by name.
-        rid = route.get("id")
-        return f"  ·  `{rid}`" if rid else ""
 
     for p in changed:
         route = p["route"]
@@ -13845,7 +13845,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-flat-price-modality-warning"
+BUILD_VERSION = "2026-09-11-id-suffix-unboundlocal-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

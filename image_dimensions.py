@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-flat-price-modality-warning"
+MODULE_BUILD = "2026-09-11-id-suffix-unboundlocal-fix"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
