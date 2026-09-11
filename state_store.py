@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
+MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
 
 _NAMESPACE = "translation_state"
 

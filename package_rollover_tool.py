@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
+MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
 
 _PHASE_KEY = "pkr_phase"
 

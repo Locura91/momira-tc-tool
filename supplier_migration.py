@@ -62,7 +62,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
+MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
 
 import json
 from datetime import date

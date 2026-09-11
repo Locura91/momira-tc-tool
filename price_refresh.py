@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
+MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
 
 import json
 from datetime import date
@@ -770,6 +770,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
             target_key = "sedan_price" if sedan_csv_path else "hiace_price"
             target_bracket = (fts_transfer_matrix.FTS_SEDAN_BRACKET if sedan_csv_path
                               else fts_transfer_matrix.FTS_HIACE_BRACKET)
+            vehicle_label = "Sedan" if sedan_csv_path else "Hiace"
             price = m.get(target_key)
             live_match = next((o for o in route["options"]
                                if (o.get("min_pax"), o.get("max_pax")) == target_bracket), None)
@@ -780,6 +781,34 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
                 # finding to the one option it actually has a price for, so a lone bracket can
                 # never overlap-match the OTHER live option this round says nothing about.
                 only_option_code = live_match.get("code")
+            elif price is not None and live_match is None:
+                # CONFIRMED REAL BUG (product owner, 2026-09-11): "the App... misses out on the
+                # price errors. Example Transport from Marsa Matruh to Siwa and the price was not
+                # detected by the App" - the document WAS matched to this route (best/score below)
+                # and DID have a price, but this route's live option brackets don't exactly equal
+                # FTS's 1-3/1-8 convention (see the comment above for why this path refuses to
+                # guess via overlap), so the route used to just fall through to `continue` and
+                # land in the generic "not found in the document" bucket with zero trace of why -
+                # indistinguishable from a route the sheet genuinely never priced at all. Record a
+                # diagnostic non-finding instead so app.py's "not found" list can show exactly what
+                # happened and the live brackets that didn't line up, rather than the operator
+                # having to guess whether it's a real supplier gap or an app bug.
+                live_brackets = ", ".join(f"{o.get('min_pax')}-{o.get('max_pax')}"
+                                          for o in route["options"] if not o.get("fetch_failed")) \
+                    or "no brackets recorded"
+                findings[i] = {
+                    "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                    "currency": "",
+                    "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
+                                   f"match score {best.get('score')})",
+                    "note": (f"Found ${round(price, 2)} for {vehicle_label} in the FTS matrix, "
+                             f"but this transport's live option brackets ({live_brackets}) don't "
+                             f"exactly match FTS's {target_bracket[0]}-{target_bracket[1]} pax "
+                             f"convention, so it was left unpriced rather than guessed at - fix "
+                             f"the option's passenger range in Travel Compositor, or upload both "
+                             f"the Sedan and Hiace files together this round."),
+                }
+                continue
         if not brackets:
             continue
         finding = {

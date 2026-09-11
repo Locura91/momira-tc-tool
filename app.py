@@ -13300,6 +13300,18 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
                 with mcol1:
                     st.write(f"**{route.get('name')}**{_id_suffix(route)}")
+                    # CONFIRMED REAL BUG (product owner, 2026-09-11): "the App... misses out on
+                    # the price errors" - an FTS single-vehicle-round route that WAS matched to a
+                    # rate-matrix row and DID have a price there, but couldn't be safely applied
+                    # because this route's live option brackets don't exactly match FTS's 1-3/1-8
+                    # convention (see lookup_prices_from_fts_matrix's own comment), used to land
+                    # in this same "not found" bucket with no trace of why - indistinguishable
+                    # from a route the document genuinely never priced. finding["matched_row"] is
+                    # only ever set here when that happened (a plain not-found finding's own
+                    # matched_row is ""), so its presence is what makes this a visible diagnostic
+                    # instead of a silent drop.
+                    if p["finding"].get("matched_row"):
+                        st.warning(f"⚠️ {p['finding'].get('note') or 'Matched the document but could not be applied.'}")
                     st.caption(", ".join(f"{o['min_pax']}–{o['max_pax']} pax now {o['unit_price']}"
                                          for o in route["options"] if not o.get("fetch_failed")))
                 with mcol2:
@@ -13707,7 +13719,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-price-refresh-multi-period-prices"
+BUILD_VERSION = "2026-09-11-fts-bracket-mismatch-visible"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

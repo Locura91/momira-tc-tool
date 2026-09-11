@@ -42,7 +42,7 @@ where it used to live, further down this file.
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_followups.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-11-price-refresh-multi-period-prices"
+MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
 
 import base64
 import hashlib
