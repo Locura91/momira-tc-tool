@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
+MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
 
 _NAMESPACE = "cancellation_links"
 

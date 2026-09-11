@@ -51,7 +51,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
+MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
 
 import re
 from typing import Any, Dict, List, Optional, Tuple

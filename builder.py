@@ -2,13 +2,13 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
+MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
 
 import math
 import datetime
 import re
 import html as _html_module
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pydantic import ValidationError
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
@@ -3757,6 +3757,7 @@ def build_transport_payloads(
     existing_transport_id: str = None,
     existing_transport_snapshot: Dict[str, Any] = None,
     existing_options_snapshot: List[Dict[str, Any]] = None,
+    force_base_occupancy: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, Any]:
     """
     Builds BOTH the main ContractTransportVO payload and one ContractTransportOptionVO payload
@@ -3794,6 +3795,20 @@ def build_transport_payloads(
     options_to_deactivate (CONFIRMED product owner rule: "we cannot sell something, that we have
     no prices" - set active: false rather than leaving a stale price live or deleting it, since
     there is no DELETE endpoint).
+
+    force_base_occupancy (added 2026-09-11, FTS matrix import): overrides the default "widest
+    occupancy bracket wins" base-price selection below with an explicit (min_occupancy,
+    max_occupancy) pair. Needed because that default is a heuristic tuned for documents where
+    the base modality just happens to be the wide/common one (the real Aswan-Hurghada example);
+    it is not a universal rule. FTS's matrix format is the opposite shape by explicit product-
+    owner confirmation: Sedan (1-3 pax, the NARROWER bracket) is always the base price, and
+    Hiace (1-8 pax, the WIDER bracket) is always priced as Sedan + a supplement, regardless of
+    which one happens to be wider. When set, this must exactly match one of the brackets in
+    extracted_transport_data["occupancy_brackets"] (by min/max_occupancy) - every other bracket
+    is then priced as bracket_price - base_price same as always, which for FTS naturally
+    produces supplement = hiace_price - sedan_price with no extra logic needed. Falls back to
+    the default widest-bracket heuristic (with a note) if no bracket matches, rather than
+    silently building against a wrong/empty base.
     """
     departure_name = (extracted_transport_data.get("departure_name") or "").strip()
     arrival_name = (extracted_transport_data.get("arrival_name") or "").strip()
@@ -3866,10 +3881,21 @@ def build_transport_payloads(
     # bracket the same width, as in the real Praslin-La Digue 4-bracket example) break toward the
     # smallest occupancy, deterministically - any tied choice is mathematically equivalent since
     # every bracket's final price is always base+supplement regardless of which one is "base".
-    base_bracket = (
-        max(brackets_sorted, key=lambda b: (b["max_occupancy"] - b["min_occupancy"], -b["min_occupancy"]))
-        if brackets_sorted else None
-    )
+    base_bracket = None
+    force_base_occupancy_matched = False
+    if force_base_occupancy is not None and brackets_sorted:
+        for b in brackets_sorted:
+            if (b["min_occupancy"], b["max_occupancy"]) == tuple(force_base_occupancy):
+                base_bracket = b
+                force_base_occupancy_matched = True
+                break
+    if base_bracket is None:
+        # Default heuristic (see docstring) - also the fallback when force_base_occupancy was
+        # given but didn't match any actual bracket, so this never silently builds with no base.
+        base_bracket = (
+            max(brackets_sorted, key=lambda b: (b["max_occupancy"] - b["min_occupancy"], -b["min_occupancy"]))
+            if brackets_sorted else None
+        )
     base_price = _safe_float(base_bracket.get("price", 0)) if base_bracket else 0.0
     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:3442-3443): child_price
     # is None (not 0) when the document simply didn't state a separate child rate for this
@@ -4163,6 +4189,11 @@ def build_transport_payloads(
         "supplier_id": pre_config.supplier_id,
         "transport_payload": transport_payload,
         "transport_error": transport_error,
+        # True only when force_base_occupancy was given AND matched a real bracket. False with
+        # force_base_occupancy set (but unmatched) means the default widest-bracket heuristic was
+        # used as a fallback instead - a review screen should flag that, since it means the
+        # caller's assumed base bracket didn't actually exist in this data.
+        "force_base_occupancy_matched": force_base_occupancy_matched,
         # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
         "expired_validity_error": expired_validity_window(
             extracted_transport_data.get("start_date"), extracted_transport_data.get("end_date")),

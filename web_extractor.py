@@ -27,7 +27,7 @@ Usage:
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-09-10-transport-price-increase-absolute-mode"
+MODULE_BUILD = "2026-09-11-fts-transport-force-base-occupancy-and-matrix-parser"
 
 import argparse
 import json
