@@ -38,7 +38,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-transport-supplement-write-debug-capture"
+MODULE_BUILD = "2026-09-11-transport-manual-price-adjustment"
 
 import os
 import re

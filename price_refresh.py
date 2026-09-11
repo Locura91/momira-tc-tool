@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-transport-supplement-write-debug-capture"
+MODULE_BUILD = "2026-09-11-transport-manual-price-adjustment"
 
 import json
 from datetime import date
@@ -2066,6 +2066,113 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
         except Exception as e:
             out["failed"].append({"name": route.get("name"),
                                   "detail": ai_extractor.friendly_error_message(e)})
+    return out
+
+
+def build_manual_adjustment_proposals(routes: List[Dict[str, Any]], mode: str, value: float
+                                      ) -> List[Dict[str, Any]]:
+    """CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11, right after confirming the
+    Sept 11 bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
+    correctly - see claude/transport-supplement-write-not-persisting-debug-capture-2026-09-11.md):
+    "I will add the second modality by hand... we must then update in the future in bulk only the
+    pricevehicle or the priceperpax. The modalities are not needed then... ignore the modalities."
+    This is a deliberate SIMPLIFICATION, not a variant of the document-reading flow above: no
+    rate sheet is read, no modality/option is fetched or written, no supplement is ever touched -
+    only the parent Transport record's own shared vehiclePrice/baseAdultPrice field moves, exactly
+    like a "vehicle" round in build_proposals/rebuild_prices, but the new number comes from doing
+    arithmetic on the CURRENT live price instead of reading a document for it.
+
+    CONFIRMED REAL FORMULA (product owner, 2026-09-11, verbatim worked examples): "human adds
+    manually 10% the app must calculate the new price by currentprice * percentage, in this
+    example 100*1,1=110" (mode="percentage", value=10 -> 100 * 1.10 = 110) "Or if number adds in
+    absolute price and it says 12... 100+12=112" (mode="absolute", value=12 -> 100 + 12 = 112).
+    A negative value works the same way in reverse (a price cut), never rejected here - only a
+    resulting price at or below zero is refused, as an obvious data-entry mistake rather than a
+    real price.
+
+    CONFIRMED REAL SCOPE (product owner, follow-up answer, 2026-09-11): "One number for the whole
+    batch" - the SAME mode/value is applied to every route passed in, each against ITS OWN
+    current live price, not a single shared price. Which routes that batch actually is (all of a
+    supplier's transports, or a hand-picked subset) is the caller's decision, made by which
+    `routes` are passed in here - this function has no opinion on that.
+
+    Returns one proposal dict per route: {"route", "name", "old", "new", "mode", "value",
+    "blocked" (a reason string, or None), "accepted" (True only when unblocked and the price
+    actually moves)} - the same "old -> new, human can accept or reject" shape every other
+    proposal list in this module already uses, so the review screen can reuse the same pattern."""
+    out = []
+    for route in routes:
+        per_pax = bool(route.get("price_per_pax", True))
+        base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+        old_base = _num((route.get("raw") or {}).get(base_field))
+        if mode == "percentage":
+            new_base = round(old_base * (1.0 + _num(value) / 100.0), 2)
+        else:
+            new_base = round(old_base + _num(value), 2)
+        blocked = None
+        if route.get("kind") == KIND_TRANSFER:
+            # Belt-and-braces only - the UI never offers this mode for Transfer, which has no
+            # single shared vehicle/base price field the way Transport does.
+            blocked = "Manual adjustment is only for Transport, not Transfer."
+        elif new_base <= 0:
+            blocked = f"Computed price ({new_base}) is zero or negative - check the value."
+        out.append({
+            "route": route, "name": route.get("name"), "old": old_base, "new": new_base,
+            "mode": mode, "value": _num(value), "blocked": blocked,
+            "accepted": blocked is None and abs(new_base - old_base) >= 0.005,
+        })
+    return out
+
+
+def rebuild_manual_adjustment(route: Dict[str, Any], new_base: float) -> Dict[str, Any]:
+    """The parent payload for one manual vehicle/base-price adjustment (see
+    build_manual_adjustment_proposals). Touches ONLY the shared base field (vehiclePrice or
+    baseAdultPrice) - no option/modality is read or written at all, unlike rebuild_prices' own
+    "vehicle" round which this mirrors. Same child/infant proportional scaling as that branch
+    (product owner, 2026-09-11, confirmed keep it: a child discount must not silently change)."""
+    per_pax = bool(route.get("price_per_pax", True))
+    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+    old_base = _num((route.get("raw") or {}).get(base_field))
+    parent = json.loads(json.dumps(route["raw"]))
+    normalize_for_put(parent, "Transport")
+    parent[base_field] = round(_num(new_base), 2)
+    if per_pax and old_base > 0:
+        ratio = _num(new_base) / old_base
+        for key in ("baseChildrenPrice", "baseInfantPrice"):
+            if _num(parent.get(key)) > 0:
+                parent[key] = round(_num(parent.get(key)) * ratio, 2)
+    return parent
+
+
+def apply_manual_adjustments(client, supplier_id: str, proposals: List[Dict[str, Any]],
+                             progress: Optional[Callable[[int, int, str], None]] = None
+                             ) -> Dict[str, Any]:
+    """Push the accepted manual %/absolute adjustments. Each round PUTs only the parent Transport
+    record, with only its own base price (and, for a per-pax transport, child/infant scaled the
+    same ratio) changed - see rebuild_manual_adjustment. Carries the same raw request/response
+    "debug" capture apply_proposals grew after the 2026-09-11 write-not-persisting investigation,
+    for the same reason: an HTTP 200 alone doesn't prove Travel Compositor actually applied it."""
+    accepted = [p for p in proposals if p.get("accepted")]
+    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
+    for n, proposal in enumerate(accepted):
+        route = proposal["route"]
+        if progress:
+            progress(n + 1, len(accepted), route.get("name", ""))
+        payload = rebuild_manual_adjustment(route, proposal["new"])
+        debug = {"transport_request": payload, "transport_response": None}
+        try:
+            res = client.update_transport(supplier_id, payload)
+            debug["transport_response"] = res
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": route.get("name"),
+                                      "detail": str(res.get("message") or res.get("error")),
+                                      "debug": debug})
+                continue
+            out["updated"].append({"name": route.get("name"), "old": proposal["old"],
+                                   "new": proposal["new"], "debug": debug})
+        except Exception as e:
+            out["failed"].append({"name": route.get("name"),
+                                  "detail": ai_extractor.friendly_error_message(e), "debug": debug})
     return out
 
 

@@ -13048,6 +13048,116 @@ def _render_update_refresh_coded_service(client, service):
         st.rerun()
 
 
+def render_transport_manual_adjustment_flow(client, supplier_id):
+    """CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11 - see
+    price_refresh.build_manual_adjustment_proposals' own docstring for the full transcript):
+    a simpler alternative to the rate-sheet-reading flow, for when there is no document at all -
+    just "raise everything by 10%" or "add 12 to every vehicle price". No rate sheet, no AI, no
+    modality/option read or write at all - only the parent Transport record's own shared
+    vehiclePrice/baseAdultPrice field moves, the same field a "vehicle" round in the document flow
+    touches. Reuses price_refresh.load_supplier_products (kind=Transport) for the route list, so
+    the list of transports is exactly the same live-from-Travel-Compositor fact the document flow
+    already trusts."""
+    st.subheader("1 — Load this supplier's transports")
+    if st.button("🔍 Load transports", type="primary", key="pma_load"):
+        bar = st.progress(0.0, text="Loading transports from Travel Compositor…")
+
+        def _tick(done, total, name):
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
+
+        routes, err = price_refresh.load_supplier_products(
+            client, supplier_id, price_refresh.KIND_TRANSPORT, progress=_tick)
+        bar.empty()
+        if err:
+            st.error(f"Couldn't read this supplier's transports: {err}")
+        elif not routes:
+            st.warning("This supplier has no transports yet.")
+        else:
+            st.session_state.pma_routes = routes
+            st.session_state.pop("pma_result", None)
+            st.rerun()
+
+    routes = st.session_state.get("pma_routes")
+    if not routes:
+        return
+
+    st.success(f"{len(routes)} transport(s) loaded for supplier {supplier_id}.")
+    st.subheader("2 — Pick the adjustment")
+    mode_label = st.radio("Adjustment type", ["Percentage (%)", "Absolute amount"],
+                          horizontal=True, key="pma_mode_pick")
+    mode = "percentage" if mode_label == "Percentage (%)" else "absolute"
+    value = st.number_input(
+        "Value (positive to raise, negative to lower)" + (" — e.g. 10 = +10%" if mode == "percentage"
+                                                           else " — e.g. 12 = +12, -5 = -5"),
+        value=0.0, step=1.0, format="%.2f", key="pma_value")
+    _names = [r.get("name") or r.get("id") for r in routes]
+    _chosen_names = st.multiselect("Which transports does this apply to?", _names,
+                                   default=_names, key="pma_scope")
+    scoped_routes = [r for r, n in zip(routes, _names) if n in _chosen_names]
+
+    if not scoped_routes or abs(value) < 0.005:
+        st.caption("Pick at least one transport and a non-zero value to see a preview.")
+        return
+
+    proposals = price_refresh.build_manual_adjustment_proposals(scoped_routes, mode, value)
+    st.session_state.pma_proposals = proposals
+
+    accepted = [p for p in proposals if p.get("accepted")]
+    blocked = [p for p in proposals if p.get("blocked")]
+    st.caption(f"{len(accepted)} route(s) would change · "
+              f"{len(proposals) - len(accepted) - len(blocked)} unaffected (already zero-value change) · "
+              f"{len(blocked)} blocked.")
+    if blocked:
+        st.error(f"❌ {len(blocked)} blocked:")
+        for p in blocked:
+            st.write(f"- **{p['name']}**: {p['blocked']}")
+    if accepted:
+        with st.expander(f"✅ {len(accepted)} route(s) — preview old → new", expanded=True):
+            for p in accepted:
+                st.write(f"- **{p['name']}**: {p['old']} → {p['new']}")
+
+    st.subheader("3 — Apply")
+    st.warning(f"This changes the vehicle/base price on **{len(accepted)} live transport(s)** for "
+              f"supplier {supplier_id}. Nothing else is touched — no option, no supplement, no "
+              f"modality, no validity date.")
+    if st.button(f"🚀 Update {len(accepted)} transport(s)", type="primary",
+                 disabled=not accepted, key="pma_apply"):
+        bar = st.progress(0.0, text="Updating…")
+
+        def _tick2(done, total, name):
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
+
+        st.session_state.pma_result = price_refresh.apply_manual_adjustments(
+            client, supplier_id, proposals, progress=_tick2)
+        bar.empty()
+        st.rerun()
+
+    result = st.session_state.get("pma_result")
+    if result:
+        if result["updated"]:
+            st.success(f"✅ {len(result['updated'])} transport(s) repriced.")
+            for u in result["updated"]:
+                st.write(f"- {u['name']}: {u['old']} → {u['new']}")
+                _dbg = u.get("debug")
+                if _dbg:
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
+                        st.caption("Transport (parent) request body:")
+                        st.json(_dbg["transport_request"])
+                        st.caption("Transport (parent) response:")
+                        st.json(_dbg["transport_response"])
+        if result["failed"]:
+            st.error(f"❌ {len(result['failed'])} failed:")
+            for f in result["failed"]:
+                st.write(f"- **{f.get('name')}**: {f.get('detail')}")
+                if f.get("debug"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
+                        st.json(f["debug"])
+        if st.button("🆕 Start again", key="pma_new"):
+            for key in ("pma_routes", "pma_proposals", "pma_result"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
 
@@ -13098,6 +13208,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
         with st.expander("⚠️ Emergency manual entry"):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", key="pr_supplier_manual").strip()
+
+    # CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11, right after confirming the
+    # earlier bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
+    # correctly): "we must then update in the future in bulk only the pricevehicle or the
+    # priceperpax... ignore the modalities... add just for transport an update field so the human
+    # can manually add a absolute or percentage number." A second, simpler mode alongside the
+    # existing document-reading flow (kept for when there IS a rate sheet to read) - added only
+    # for Transport, which has one shared vehicle/base price field; Transfer has no such single
+    # field (pricesByOccupancy is per-bracket with no shared base), so this mode isn't offered
+    # for it at all. Chosen BEFORE the rate-sheet uploader so picking it skips that section
+    # entirely rather than leaving unused document-upload widgets on screen.
+    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
+        pr_mode = st.radio(
+            "How do you want to set the new price?",
+            ["📄 From a rate sheet document", "🔢 Manual %/absolute adjustment"],
+            horizontal=True, key="pr_source_mode")
+        if pr_mode == "🔢 Manual %/absolute adjustment":
+            render_transport_manual_adjustment_flow(client, supplier_id)
+            return
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
@@ -14059,7 +14188,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-supplement-write-debug-capture"
+BUILD_VERSION = "2026-09-11-transport-manual-price-adjustment"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

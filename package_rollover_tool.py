@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-transport-supplement-write-debug-capture"
+MODULE_BUILD = "2026-09-11-transport-manual-price-adjustment"
 
 _PHASE_KEY = "pkr_phase"
 
