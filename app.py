@@ -13158,6 +13158,70 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
             st.rerun()
 
 
+def render_transport_price_consistency_flow(client, supplier_id):
+    """CONFIRMED REAL REQUEST (product owner, 2026-09-11 - see
+    price_refresh.transport_price_consistency_report's own docstring for the full transcript):
+    "can the app help then, to identify price errors at least for contract transport... once a
+    year we must review the new prices and we must identify price differences for the transport
+    modalities... No upload from the app, but the app must be able to help and to calculate what
+    the modalities usually must be." Deliberately READ-ONLY - there is no accept/apply step here
+    at all, unlike every other Transport flow in this app. It only loads this supplier's live
+    transports and ranks routes by how far their own modality supplement sits from what this
+    SAME supplier's other routes suggest is normal, so a human can go fix anything that looks
+    wrong directly in Travel Compositor (or with the manual adjustment / rate-sheet flows above)."""
+    st.caption("Loads this supplier's live transports and compares each modality's price "
+              "supplement against what this SAME supplier's OTHER routes usually charge for that "
+              "same passenger bracket. Nothing is written — this only helps you spot a route "
+              "whose numbers look out of line before your yearly review.")
+    if st.button("🔍 Load transports", type="primary", key="pcc_load"):
+        bar = st.progress(0.0, text="Loading transports from Travel Compositor…")
+
+        def _tick(done, total, name):
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
+
+        routes, err = price_refresh.load_supplier_products(
+            client, supplier_id, price_refresh.KIND_TRANSPORT, progress=_tick)
+        bar.empty()
+        if err:
+            st.error(f"Couldn't read this supplier's transports: {err}")
+        elif not routes:
+            st.warning("This supplier has no transports yet.")
+        else:
+            st.session_state.pcc_routes = routes
+            st.rerun()
+
+    routes = st.session_state.get("pcc_routes")
+    if not routes:
+        return
+    st.success(f"{len(routes)} transport(s) loaded for supplier {supplier_id}.")
+
+    report = price_refresh.transport_price_consistency_report(routes)
+    if not report:
+        st.info("Nothing to compare — either every transport here has only one passenger "
+                "bracket, or no bracket signature (e.g. \"1–8 pax\") appears on more than one "
+                "route for this supplier.")
+        return
+
+    df = pd.DataFrame([{
+        "Route": r["route_name"], "Modality": r["option_name"] or r["option_code"],
+        "Pax": f"{r['bracket'][0]}-{r['bracket'][1]}",
+        "Vehicle price": r["vehicle_price"], "Modality price": r["modality_price"],
+        "This route's supplement": r["supplement"],
+        "Supplier's typical supplement": r["typical_supplement"],
+        "Deviation": r["deviation"],
+        "Deviation %": r["deviation_pct"] if r["deviation_pct"] is not None else "",
+        "Sample size": r["sample_size"],
+    } for r in report])
+    st.caption(f"{len(df)} route/modality combination(s) had another route on the same "
+              f"passenger bracket to compare against — ranked by |deviation|, biggest first. "
+              f"No hard cutoff: a year of real distance/fuel variation is normal, so use judgement.")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    if st.button("🆕 Start again", key="pcc_new"):
+        st.session_state.pop("pcc_routes", None)
+        st.rerun()
+
+
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
 
@@ -13222,10 +13286,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
     if kind == price_refresh.KIND_TRANSPORT and supplier_id:
         pr_mode = st.radio(
             "How do you want to set the new price?",
-            ["📄 From a rate sheet document", "🔢 Manual %/absolute adjustment"],
+            ["📄 From a rate sheet document", "🔢 Manual %/absolute adjustment",
+             "🔎 Yearly price consistency check (read-only)"],
             horizontal=True, key="pr_source_mode")
         if pr_mode == "🔢 Manual %/absolute adjustment":
             render_transport_manual_adjustment_flow(client, supplier_id)
+            return
+        if pr_mode == "🔎 Yearly price consistency check (read-only)":
+            render_transport_price_consistency_flow(client, supplier_id)
             return
 
     st.subheader("1 — The new rate sheet")
@@ -14188,7 +14256,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-manual-price-adjustment"
+BUILD_VERSION = "2026-09-11-transport-price-consistency-report"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

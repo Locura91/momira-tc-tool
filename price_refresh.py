@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-transport-manual-price-adjustment"
+MODULE_BUILD = "2026-09-11-transport-price-consistency-report"
 
 import json
 from datetime import date
@@ -2174,6 +2174,89 @@ def apply_manual_adjustments(client, supplier_id: str, proposals: List[Dict[str,
             out["failed"].append({"name": route.get("name"),
                                   "detail": ai_extractor.friendly_error_message(e), "debug": debug})
     return out
+
+
+def transport_price_consistency_report(routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """CONFIRMED REAL REQUEST (product owner, 2026-09-11, right after the manual %/absolute
+    adjustment shipped): "can the app help then, to identify price errors at least for contract
+    transport... once a year we must review the new prices and we must identify price differences
+    for the transport modalities... No upload from the app, but the app must be able to help and
+    to calculate what the modalities usually must be." This is deliberately READ-ONLY - there is
+    no proposal/accept/apply path here at all, unlike every other function in this module. It
+    flags nothing as definitively wrong; it ranks routes by how far their own numbers sit from
+    what this SAME supplier's other routes suggest is normal, and leaves the judgement call to
+    the human, same as they already make by hand for a modality's own price.
+
+    CONFIRMED MODEL (AskUserQuestion, same day):
+      - The "usual" relationship between a route's vehicle/base bracket and each other bracket is
+        treated as a roughly FIXED ABSOLUTE markup (not a ratio) - "A fixed absolute amount."
+      - Compared ONLY within the SAME supplier's own routes, never pooled across suppliers -
+        different suppliers can have completely different fleets/pricing without tripping each
+        other's flags. Pass this function one supplier's routes at a time.
+      - No hard pass/fail threshold - returns every comparable (route, bracket) row ranked by
+        |deviation| descending, so the human eyeballs and decides what looks wrong.
+
+    For each route with 2+ live brackets, the SMALLEST-pax bracket is treated as the vehicle/base
+    (the same fallback convention build_proposals/rebuild_prices already use when no human
+    designation exists), and every OTHER bracket's supplement is its own current live total price
+    minus the vehicle bracket's current live total price - reading `unit_price` as already fetched
+    (base + whichever price entry is active today), never re-deriving it, so this reports exactly
+    what a human looking at Travel Compositor's own Prices tab would see right now. Every
+    supplement is grouped by (min_pax, max_pax) SIGNATURE across the supplier's own routes (the
+    one thing that means the same on every transport - modality codes don't), and the supplier's
+    own MEDIAN supplement for that bracket is "typical" (median, not mean, so one wildly wrong
+    entry can't drag its own baseline toward itself). A bracket signature only ONE route in the
+    supplier has at all is skipped entirely - there is nothing to compare it against.
+
+    Returns a list of {"route_id", "route_name", "option_code", "option_name", "bracket"
+    (min_pax, max_pax), "vehicle_price", "modality_price", "supplement", "typical_supplement",
+    "deviation" (this route's supplement minus the supplier's typical for that bracket),
+    "deviation_pct" (None if typical is 0, to avoid a division by zero), "sample_size"} rows,
+    sorted by |deviation| descending."""
+    by_bracket: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+    for route in routes:
+        if route.get("kind", KIND_TRANSPORT) == KIND_TRANSFER:
+            continue  # this report is Transport-only - Transfer has no vehicle/modality concept
+        options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+        if len(options) < 2:
+            continue  # nothing to compare a single-bracket transport's price against
+        live_brackets = sorted({(o["min_pax"], o["max_pax"]) for o in options})
+        vehicle_bracket = live_brackets[0]
+        vehicle_option = next((o for o in options
+                               if (o["min_pax"], o["max_pax"]) == vehicle_bracket), None)
+        if vehicle_option is None:
+            continue
+        vehicle_price = _num(vehicle_option.get("unit_price"))
+        for option in options:
+            bracket = (option["min_pax"], option["max_pax"])
+            if bracket == vehicle_bracket:
+                continue
+            modality_price = _num(option.get("unit_price"))
+            supplement = round(modality_price - vehicle_price, 2)
+            by_bracket.setdefault(bracket, []).append({
+                "route_id": route.get("id"), "route_name": route.get("name"),
+                "option_code": option.get("code"), "option_name": option.get("name", ""),
+                "bracket": bracket, "vehicle_price": vehicle_price,
+                "modality_price": modality_price, "supplement": supplement,
+            })
+
+    rows: List[Dict[str, Any]] = []
+    for bracket, entries in by_bracket.items():
+        if len(entries) < 2:
+            continue  # only one route in this supplier has this bracket - no baseline to compare
+        supplements = sorted(e["supplement"] for e in entries)
+        n = len(supplements)
+        mid = n // 2
+        typical = supplements[mid] if n % 2 else round((supplements[mid - 1] + supplements[mid]) / 2, 2)
+        for e in entries:
+            deviation = round(e["supplement"] - typical, 2)
+            rows.append({
+                **e, "typical_supplement": typical, "deviation": deviation,
+                "deviation_pct": (round(deviation / abs(typical) * 100.0, 1) if abs(typical) >= 0.005 else None),
+                "sample_size": n,
+            })
+    rows.sort(key=lambda r: abs(r["deviation"]), reverse=True)
+    return rows
 
 
 def suggest_route_for_row(row_text: str, routes: List[Dict[str, Any]], limit: int = 5

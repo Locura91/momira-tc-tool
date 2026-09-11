@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-transport-manual-price-adjustment"
+MODULE_BUILD = "2026-09-11-transport-price-consistency-report"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
