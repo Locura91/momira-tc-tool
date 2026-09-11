@@ -13050,8 +13050,58 @@ def render_price_refresh_flow(client, preselected_kind=None):
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
 
+    def _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, scope):
+        """Read the document for these already-loaded routes and put the proposals on screen.
+
+        Factored out 2026-09-11 so the modality confirmation step below can run BETWEEN loading
+        the supplier's products and reading the document, without loading anything twice - see
+        that step's own comment for the product owner's request it implements. `scope` is the
+        human's answer as a list of (min_pax, max_pax) brackets, or None for "every modality",
+        which is exactly the behaviour this flow had before the step existed."""
+        findings = None
+        if fts_csv_tmp_paths:
+            # Either one file (a one-vehicle round - "One round for Sedan and one round for
+            # Hiace", product owner, 2026-09-11) or both together works the same way here - see
+            # lookup_prices_from_fts_matrix's own docstring for what a one-vehicle round does to
+            # the proposals it builds.
+            vehicles = " + ".join(sorted(fts_csv_tmp_paths))
+            with st.spinner(f"Reading {len(routes)} route(s) directly from the FTS rate "
+                            f"matrix ({vehicles}, no AI needed, so it can't be cut off)…"):
+                findings, fts_err = price_refresh.lookup_prices_from_fts_matrix(
+                    routes, sedan_csv_path=fts_csv_tmp_paths.get("sedan"),
+                    hiace_csv_path=fts_csv_tmp_paths.get("hiace"))
+            if fts_err:
+                st.warning(f"⚠️ This looked like an FTS rate-matrix CSV but couldn't be "
+                           f"read ({fts_err}) — falling back to the normal reading.")
+                findings = None
+        if findings is None and (raw_text or "").strip():
+            with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
+                try:
+                    findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
+                except Exception as e:
+                    st.error(f"Couldn't read the document: {friendly_error_message(e)}")
+                    findings = None
+        elif findings is None:
+            st.error("Couldn't read prices from the FTS matrix, and there's no other "
+                     "document to fall back to.")
+        for _p in (fts_csv_tmp_paths or {}).values():
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
+        if findings is not None:
+            st.session_state.pr_routes = routes
+            st.session_state.pr_proposals = _stamp_proposal_widget_tokens(
+                price_refresh.build_proposals(routes, findings, scoped_brackets=scope))
+            st.session_state.pr_raw_text = raw_text
+            st.session_state.pr_scope = scope
+            st.session_state.pop("pr_result", None)
+            return True
+        return False
+
     if st.button(f"🔍 Read prices for this supplier's {kind.lower()}s", type="primary",
                  disabled=not supplier_id, key="pr_read"):
+        st.session_state.pop("pr_scope_answered", None)
         raw_parts = []
         # A file that turns out to be one of FTS's own two-file rate-matrix CSVs (see
         # fts_transfer_matrix.py's module docstring) is set aside here rather than text-extracted
@@ -13099,53 +13149,71 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
-                findings = None
-                if fts_csv_tmp_paths:
-                    # Either one file (a one-vehicle round - "One round for Sedan and one round
-                    # for Hiace", product owner, 2026-09-11) or both together works the same way
-                    # here - see lookup_prices_from_fts_matrix's own docstring for what a
-                    # one-vehicle round does to the proposals it builds.
-                    vehicles = " + ".join(sorted(fts_csv_tmp_paths))
-                    with st.spinner(f"Reading {len(routes)} route(s) directly from the FTS rate "
-                                    f"matrix ({vehicles}, no AI needed, so it can't be cut off)…"):
-                        findings, fts_err = price_refresh.lookup_prices_from_fts_matrix(
-                            routes, sedan_csv_path=fts_csv_tmp_paths.get("sedan"),
-                            hiace_csv_path=fts_csv_tmp_paths.get("hiace"))
-                    if fts_err:
-                        st.warning(f"⚠️ This looked like an FTS rate-matrix CSV but couldn't be "
-                                  f"read ({fts_err}) — falling back to the normal reading.")
-                        findings = None
-                if findings is None and raw_text.strip():
-                    with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
-                        try:
-                            findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
-                        except Exception as e:
-                            st.error(f"Couldn't read the document: {friendly_error_message(e)}")
-                            findings = None
-                elif findings is None:
-                    st.error("Couldn't read prices from the FTS matrix, and there's no other "
-                             "document to fall back to.")
-                for _p in fts_csv_tmp_paths.values():
+                # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
+                # human confirmation for the bulk transport price update. So the app detects all
+                # modalities first, and before the AI reads the document, the app asks the human
+                # which modality it is and which price it shall touch." Asked BEFORE the read (not
+                # after) on purpose: the chosen modality is folded into the AI's own instruction,
+                # so it steers the extraction itself rather than only filtering the result.
+                # Confirmed shape: optional, everything preselected - a supplier whose transports
+                # all have one modality never sees this step at all.
+                _groups = price_refresh.modality_groups(routes) if kind == price_refresh.KIND_TRANSPORT else []
+                if len(_groups) > 1:
+                    st.session_state.pr_pending = {
+                        "routes": routes, "raw_text": raw_text, "hint": hint,
+                        "fts_csv_tmp_paths": fts_csv_tmp_paths, "groups": _groups,
+                    }
+                    st.rerun()
+                # Single-modality supplier (or a Transfer): nothing to confirm, read straight
+                # through exactly as before. The rerun stays conditional on a real result - see
+                # the 2026-09-01 audit fix it preserves: an unconditional rerun here used to wipe
+                # the error message a failed read had just put on screen.
+                elif _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
+                    st.rerun()
+
+    # The modality confirmation step itself. Rendered only while a read is paused waiting for it.
+    _pending = st.session_state.get("pr_pending")
+    if _pending:
+        st.subheader("2 — Which modality does this rate sheet price?")
+        st.caption("Every modality is selected, which reprices exactly as before. Untick the ones "
+                   "this document says nothing about — a rate sheet that only prices the Sedan "
+                   "line must not be allowed to move the Hiace price with it.")
+        _labels = [g["label"] for g in _pending["groups"]]
+        _chosen = st.multiselect(
+            "Modalities this document prices", _labels, default=_labels, key="pr_scope_pick",
+            help="Grouped by passenger range, because that is the one thing that means the same "
+                 "on every transport — modality codes differ from supplier to supplier.")
+        _c1, _c2 = st.columns([1, 4])
+        with _c1:
+            if st.button("Read the document", type="primary", key="pr_scope_go",
+                         disabled=not _chosen):
+                _picked = [g for g in _pending["groups"] if g["label"] in _chosen]
+                _scope = None if len(_picked) == len(_pending["groups"]) else \
+                    [(g["min_pax"], g["max_pax"]) for g in _picked]
+                _hint = _pending["hint"]
+                if _scope:
+                    # Folded into the AI's own instruction, so a scoped round also tells the
+                    # reader WHICH rows to look for rather than only discarding the rest.
+                    _hint = "\n".join(x for x in [
+                        _hint,
+                        "This rate sheet prices only these passenger brackets: "
+                        + "; ".join(g["label"] for g in _picked)
+                        + ". Ignore any other vehicle class or bracket in the document.",
+                    ] if (x or "").strip())
+                st.session_state.pop("pr_pending", None)
+                if _pr_read_and_build(_pending["routes"], _pending["raw_text"],
+                                      _pending["fts_csv_tmp_paths"], _hint, _scope):
+                    st.rerun()
+        with _c2:
+            if st.button("Cancel", key="pr_scope_cancel"):
+                for _p in (_pending["fts_csv_tmp_paths"] or {}).values():
                     try:
                         os.remove(_p)
                     except OSError:
                         pass
-                if findings is not None:
-                    st.session_state.pr_routes = routes
-                    st.session_state.pr_proposals = _stamp_proposal_widget_tokens(
-                        price_refresh.build_proposals(routes, findings))
-                    st.session_state.pr_raw_text = raw_text
-                    st.session_state.pop("pr_result", None)
-                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this st.rerun() used
-                    # to sit unconditionally after the whole button block, at the same indent as
-                    # the "no document"/"couldn't read supplier's X/no X yet" branches above - so
-                    # it fired even when nothing new was read, instantly wiping whichever
-                    # st.error/st.warning had just been shown and leaving the PREVIOUS rate
-                    # sheet's proposals on screen with no indication anything failed, looking
-                    # exactly like a fresh successful read. Moved inside the one branch that
-                    # actually produced a new result, so a failed read's error message stays on
-                    # screen instead of being rerun away.
-                    st.rerun()
+                st.session_state.pop("pr_pending", None)
+                st.rerun()
+        return
 
     proposals = st.session_state.get("pr_proposals")
     if not proposals:
@@ -13160,6 +13228,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
     st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
               f"{len(absent)} not found in it."
               + (f" · {len(blocked)} could not be read" if blocked else ""))
+    _scope = st.session_state.get("pr_scope")
+    if _scope:
+        st.info("🎯 This round is scoped to the "
+                + " and ".join(f"**{lo}-{hi} pax**" for lo, hi in _scope)
+                + " modality only. Every other modality is left exactly as it is — its price is "
+                  "not read, not compared, and not written.")
 
     # CONFIRMED REAL BUG (audit, 2026-08-24): routes with an unreadable option used to be filtered
     # out of this screen silently, while their remaining options were repriced around a base
@@ -13176,6 +13250,33 @@ def render_price_refresh_flow(client, preselected_kind=None):
         for p in blocked:
             names = ", ".join(str(c) for c in (p.get("unreadable_options") or []) if c) or "unknown option(s)"
             st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}** — couldn't read: `{names}`")
+
+    # CONFIRMED REAL RULE (product owner, 2026-09-11): "if a transport has 2 or more modalities,
+    # there will be always base price and multiple price supplements. It does not make sense to
+    # have two modalities with the same price." Shown across EVERY status (changed, unchanged,
+    # not found) because it is a statement about this app's CURRENT READ, not about this
+    # document - a route reading flat is suspect whether or not this round is touching it. See
+    # price_refresh.flat_price_modalities' own docstring for the confirmed mechanism (Travel
+    # Compositor's API can return 0.0 for a real, nonzero supplement its own admin panel shows -
+    # already caught once on real TRANSPORT-423015).
+    _flat = [p for p in proposals if p.get("flat_price_codes")]
+    if _flat:
+        with st.expander(f"⚠️ {len(_flat)} route(s) show identical prices across modalities — "
+                         f"likely a live-data read issue, not a document mismatch", expanded=True):
+            st.caption("Two different vehicle classes should never legitimately cost the same. "
+                      "When this app sees that, the more likely explanation is that Travel "
+                      "Compositor's API returned 0.0 for a real supplement its own admin Prices "
+                      "tab shows as nonzero — this app has no other field to read instead, so it "
+                      "cannot tell the difference between 'genuinely no supplement' and 'the API "
+                      "isn't disclosing one'. Check the Prices tab for these directly before "
+                      "trusting this round's numbers for them.")
+            for p in _flat:
+                route = p["route"]
+                price_bits = ", ".join(f"{o['min_pax']}-{o['max_pax']} pax ({o['code']}): {o['unit_price']}"
+                                       for o in route.get("options") or []
+                                       if o["code"] in p["flat_price_codes"])
+                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
+                           f"{price_bits} {route.get('currency') or ''} · status: *{p['status']}*")
 
     # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
     # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a
@@ -13233,12 +13334,21 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     # differs from what's already live, green when (after any hand-edit above)
                     # it now matches - a quick visual scan instead of reading every number.
                     _ccy = route.get('currency') or ''
+                    # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "the App must
+                    # understand the difference between BasePrice (per vehicle or per Pax)". The
+                    # same number means completely different money depending on this flag - a
+                    # per-vehicle 95 is what the whole car costs, a per-person 95 is 95 x the
+                    # party - and this screen never said which, so an operator could not tell
+                    # whether a rate sheet's number had been applied on the right basis. Stated
+                    # on every row now, read from the live record's own pricePerPax.
+                    _basis = "per person" if route.get("price_per_pax", True) else "per vehicle"
                     if abs(c["new"] - c["old"]) < 0.005:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
-                                   f":green[**{c['new']}**] {_ccy}  ·  *matches the live price*")
+                                   f":green[**{c['new']}**] {_ccy} *{_basis}*  ·  "
+                                   f"*matches the live price*")
                     else:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
-                                   f":red[**{c['new']}**] {_ccy}")
+                                   f":red[**{c['new']}**] {_ccy} *{_basis}*")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f"from the row *“{finding['matched_row']}”*")
@@ -13262,10 +13372,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # the same rebuild_prices the Apply step runs).
             for _side in price_refresh.preview_untouched_modality_effects(route, p["changes"]):
                 st.caption(
-                    f"↳ **{_side['name']}** is not part of this round — it keeps selling at "
-                    f"**{_side['price']} {route.get('currency') or ''}**, but because the shared "
-                    f"base price moves, its stored supplement is recalculated "
-                    f"{_side['old_supplement']} → {_side['new_supplement']}.")
+                    f"↳ **{_side['name']}** is not part of this round, so its supplement is left "
+                    f"untouched — but because every modality shares one base price, its own price "
+                    f"moves with it: about **{_side['price']} → {_side['new_price']} "
+                    f"{route.get('currency') or ''}**. Travel Compositor's API under-reports "
+                    f"supplements, so treat that as indicative and check it in the Prices tab.")
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
@@ -13734,7 +13845,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-fts-matrix-city-resolution"
+BUILD_VERSION = "2026-09-11-flat-price-modality-warning"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

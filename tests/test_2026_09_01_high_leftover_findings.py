@@ -265,21 +265,34 @@ def test_app_py_change_action_supplier_clears_the_persisted_tour_code_key():
 # 6. price-refresh st.rerun() eating error messages (Transfer/Transport + Ticket)
 # ======================================================================
 def test_transfer_transport_price_refresh_rerun_only_fires_on_a_successful_read():
+    # UPDATED 2026-09-11 (modality confirmation step - see price_refresh.modality_groups): the
+    # document read now lives in a _pr_read_and_build() helper, so the "which modality does this
+    # rate sheet price?" step can run BETWEEN loading the supplier's products and reading the
+    # document without loading anything twice. That moved the rerun out of the success branch
+    # and into the helper's CALLERS, so this test's old layout check ("exactly one st.rerun() in
+    # this stretch, immediately after the pop") no longer describes the code. The GUARANTEE it
+    # protected is unchanged, and is now asserted directly instead of via layout: a rerun happens
+    # only when a read genuinely produced proposals, so a failed read's error message survives.
     src = _read_app_py()
-    idx = src.index('st.session_state.pop("pr_result", None)')
-    window = src[idx:idx + 400]
-    assert "st.rerun()" in window
 
-    # And the unconditional top-level rerun right after the whole button block is gone - the
-    # button block's own closing should now flow straight into reading `proposals` without an
-    # intervening bare st.rerun().
-    btn_idx = src.index('if st.button(f"🔍 Read prices for this supplier\'s {kind.lower()}s"')
-    proposals_idx = src.index('proposals = st.session_state.get("pr_proposals")')
-    between = src[btn_idx:proposals_idx]
-    # Only one ACTUAL st.rerun() statement (not counting mentions inside this fix's own
-    # explanatory comment) should remain in this stretch.
-    rerun_statement_lines = [l for l in between.split("\n") if l.strip() == "st.rerun()"]
-    assert len(rerun_statement_lines) == 1
+    # 1. The helper signals success by RETURNING, and never reruns on its own.
+    idx = src.index('st.session_state.pop("pr_result", None)')
+    window = src[idx:idx + 300]
+    assert "return True" in window
+    assert "st.rerun()" not in window, "the helper must not rerun - its callers decide"
+
+    helper_start = src.index("def _pr_read_and_build(")
+    helper_src = src[helper_start:src.index('if st.button(f"🔍 Read prices', helper_start)]
+    assert "return False" in helper_src, "a failed read must report failure to its caller"
+    assert "st.rerun()" not in helper_src
+
+    # 2. Every call site checks that result before rerunning - no unconditional rerun after a read.
+    call_lines = [l.strip() for l in src.split("\n")
+                  if "_pr_read_and_build(" in l and "def _pr_read_and_build(" not in l]
+    assert call_lines, "expected the read helper to actually be called"
+    for line in call_lines:
+        assert line.startswith("if ") or line.startswith("elif "), \
+            f"a read result must be checked before rerunning, got: {line!r}"
 
 
 def test_ticket_price_refresh_rerun_only_fires_on_a_successful_read():
@@ -300,7 +313,11 @@ def test_a_failed_read_no_longer_wipes_its_own_error_message_same_rerun():
     # an unconditional st.rerun() at the same indent - i.e. st.rerun() must be nested inside the
     # `if findings is not None:` block, not dedented back out to the button's own level.
     src = _read_app_py()
-    for pop_key in ('st.session_state.pop("pr_result", None)', 'st.session_state.pop("tpr_result", None)'):
+    # The Transfer/Transport half of this now lives in _pr_read_and_build() and is asserted in
+    # test_transfer_transport_price_refresh_rerun_only_fires_on_a_successful_read above (the
+    # helper returns True/False and every caller checks it). The Ticket flow is untouched and
+    # still has the original inline shape, so it keeps the original layout check here.
+    for pop_key in ('st.session_state.pop("tpr_result", None)',):
         idx = src.index(pop_key)
         # walk forward to the next non-comment, non-blank line after the pop - it must be the
         # (indented, inside-the-if) st.rerun(), not something at a shallower indent.

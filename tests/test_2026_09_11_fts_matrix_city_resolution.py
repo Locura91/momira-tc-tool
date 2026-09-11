@@ -260,19 +260,46 @@ def test_a_pair_priced_in_only_one_of_the_two_files_still_prices_that_one_vehicl
 # preview_untouched_modality_effects - the shared-base side effect, made visible
 # ----------------------------------------------------------------------
 
-def test_a_sedan_only_round_names_the_hiace_supplement_it_will_rewrite():
-    # Real TRANSPORT-418748 numbers: Vehicle 175 (Sedan), Hiace supplement 25, so Hiace = 200.
-    # Repricing Sedan to 95 holds Hiace at 200 by rewriting its supplement to 105 - correct, but
-    # it used to happen with nothing on screen saying so, which is what made a previous run look
-    # like corruption when Travel Compositor showed a supplement nobody had typed.
+def test_a_sedan_only_round_names_what_happens_to_the_hiace_price():
+    # UPDATED 2026-09-11 (real TRANSPORT-423015 - see apply_proposals' own comment): an untouched
+    # modality's stored supplement is no longer rewritten to hold its price steady, because
+    # Travel Compositor's API under-reports supplements and recomputing one from that read
+    # destroys it. Its supplement is left alone, so its price moves with the shared base instead -
+    # which is what the review screen must now say.
+    # Real TRANSPORT-418748 numbers: Vehicle 175 (Sedan), Hiace 200. Sedan 175 -> 95 moves the
+    # shared base down 80, so Hiace follows it down to 120.
     route = _live("Marsa Matruh - Siwa Oasis", sedan_price=175.0, hiace_price=200.0)
     effects = price_refresh.preview_untouched_modality_effects(
         route, [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 175.0, "new": 95.0}])
     assert len(effects) == 1
     assert effects[0]["code"] == "Hiace"
-    assert effects[0]["price"] == 200.0            # its own price does NOT move
-    assert effects[0]["old_supplement"] == 25.0
-    assert effects[0]["new_supplement"] == 105.0   # 200 - 95
+    assert effects[0]["price"] == 200.0
+    assert effects[0]["base_delta"] == -80.0
+    assert effects[0]["new_price"] == 120.0
+
+
+def test_an_untouched_modalitys_price_entries_are_never_written_at_all():
+    # The data-loss guard itself: apply_proposals must PUT only the options this round actually
+    # reprices. A supplement the API reported as 0 but which is really 50 (the confirmed
+    # TRANSPORT-423015 platform mismatch) then survives, instead of being overwritten with a
+    # number derived from the phantom read.
+    route = _live("Marsa Matruh - Siwa Oasis", sedan_price=175.0, hiace_price=200.0)
+    written = []
+
+    class _Client:
+        def update_transport(self, supplier_id, payload):
+            return {"id": payload.get("id")}
+
+        def update_transport_option(self, supplier_id, transport_id, payload):
+            written.append(payload.get("code"))
+            return {"code": payload.get("code")}
+
+    proposal = {"route": route, "accepted": True, "status": "changed", "index": 0,
+                "changes": [{"code": "Sedan", "min_pax": 1, "max_pax": 3,
+                             "old": 175.0, "new": 95.0}]}
+    result = price_refresh.apply_proposals(_Client(), "51758", [proposal])
+    assert result["failed"] == []
+    assert written == ["Sedan"], "only the repriced modality may be written"
 
 
 def test_no_side_effect_is_reported_when_every_modality_is_being_repriced_anyway():

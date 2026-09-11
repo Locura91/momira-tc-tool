@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
+MODULE_BUILD = "2026-09-11-flat-price-modality-warning"
 
 import math
 import re

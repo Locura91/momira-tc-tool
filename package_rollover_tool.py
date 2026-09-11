@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
+MODULE_BUILD = "2026-09-11-flat-price-modality-warning"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -38,7 +38,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
+MODULE_BUILD = "2026-09-11-flat-price-modality-warning"
 
 import os
 import re
