@@ -240,3 +240,42 @@ def test_json_raises_a_friendly_runtime_error_on_a_malformed_body(client):
         client._json(res)
     # The response body is included so the error is actually debuggable, not just "it broke".
     assert "not json" in str(exc_info.value)
+
+
+# ======================================================================
+# get_accommodations_page - CONFIRMED REAL BUG (product owner, 2026-09-11, real sync attempt):
+# "Sync failed at offset 0: {"error":["limit: must be greater than or equal to 1"],
+# "status":"BAD_REQUEST"}" even though this call always sends limit=1000
+# (masterdata_store._PAGE_SIZE_FETCH). first/limit used to be sent as HTTP headers, the same
+# pattern get_closed_tours/get_tickets use elsewhere in this file - but the error's shape (a
+# bean-validation failure on a value that was never populated, defaulting to 0) is what a
+# query-parameter-bound field looks like when it's sent as a header instead. Fixed by sending
+# first/limit as query params for this endpoint specifically.
+# ======================================================================
+def test_get_accommodations_page_sends_first_and_limit_as_query_params_not_headers(client):
+    client.auth_token = "tok"
+    captured = {}
+
+    def record(method, url, headers=None, params=None, **kwargs):
+        captured["headers"] = dict(headers or {})
+        captured["params"] = dict(params or {})
+        return make_response(200, json_body={"accommodations": []})
+
+    with patch("api_client.requests.request", side_effect=record):
+        client.get_accommodations_page(first=2000, limit=1000)
+
+    assert captured["params"] == {"first": 2000, "limit": 1000}
+    # Neither value should have been sent as a custom header instead - that's the exact
+    # regression (the server silently ignored a header-only "limit" and defaulted it to 0).
+    assert "first" not in captured["headers"]
+    assert "limit" not in captured["headers"]
+
+
+def test_get_accommodations_page_reports_the_real_error_body_on_failure(client):
+    client.auth_token = "tok"
+    with patch("api_client.requests.request", return_value=make_response(
+            400, json_body={"error": ["limit: must be greater than or equal to 1"],
+                            "status": "BAD_REQUEST"})):
+        result = client.get_accommodations_page(first=0, limit=1000)
+    assert result["error"] == 400
+    assert "must be greater than or equal to 1" in result["message"]

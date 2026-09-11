@@ -16,7 +16,7 @@ load_dotenv()
 # consequential file to have out of sync (every publish call goes through it). Stamped now, and
 # the detector's module list is auto-discovered (see app.py) so any future module that adds a
 # MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
-MODULE_BUILD = "2026-09-11-hotel-master-giata-destination-search"
+MODULE_BUILD = "2026-09-11-accommodations-page-query-params-fix"
 
 
 class TravelCompositorAPI:
@@ -674,9 +674,22 @@ class TravelCompositorAPI:
         only first/limit pagination. There is no way to look up a hotel by name via a live call.
         The only practical use is a full bulk sync: page through the whole list once (or
         periodically) and build a local name/geo-matchable index - see masterdata_store.py.
+
+        CONFIRMED REAL BUG (product owner, 2026-09-11, real sync attempt against real Travel
+        Compositor credentials): "Sync failed at offset 0: {"error":["limit: must be greater
+        than or equal to 1"],"status":"BAD_REQUEST"}" even though this call always sends
+        limit=1000 (masterdata_store._PAGE_SIZE_FETCH). first/limit were sent as HTTP headers -
+        the same pattern get_closed_tours/get_tickets use elsewhere in this file - but this
+        specific endpoint's error message is the shape of a server-side bean-validation failure
+        on a query-parameter-bound int that was never actually populated (defaults to Java's
+        int default of 0, which then fails its own @Min(1) check) - i.e. THIS endpoint reads
+        first/limit from the query string, not headers, unlike the others. Sent as query params
+        instead fixes it; left get_closed_tours/get_tickets exactly as they are since nothing
+        here confirms they have the same problem, and changing an unrelated, un-broken call on a
+        guess is exactly the kind of unverified fix this codebase avoids.
         """
         url = f"{self.api_base_url}/accommodations"
-        res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
+        res = self._request("GET", url, params={"first": first, "limit": limit})
 
         if res.status_code != 200:
             print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
