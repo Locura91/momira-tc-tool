@@ -12365,11 +12365,25 @@ def render_transport_cancellation_bulk_flow(client):
     import pandas as pd
     from ui_components import editable_table, _safe_int, _safe_float
 
+    # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): this table used to ask for
+    # "Cancellation Fee %", the INVERSE of how a human naturally thinks about the policy they
+    # want to set (the house rule itself is phrased "100% refund", and Travel Compositor's own
+    # wire field is the refund percentage - see schemas.ContractTransportCancellationRangeVO).
+    # A human typing "100" here meaning "100% refund" instead silently applied a 0%-refund/
+    # no-refund policy - confirmed live against 18+ Transports of one supplier (see
+    # claude/bulk-cancellation-refund-fee-inversion-2026-09-11.md, project docs). Storage is
+    # UNCHANGED (still {"days","fee_percentage"} - build_proposals/_cancellation_ranges_from_
+    # tiers etc. all still expect that shape) - only this human-facing column is now Refund%,
+    # converted right at this boundary (refund = 100 - fee) - same fix as cancellation_links.
+    # render_cancellation_link_editor's identical table.
+    _CTB_REFUND_COL = "Refund % if cancelled by this deadline"
+
     def _ctb_tier_table(tiers):
-        table_rows = [{"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+        table_rows = [{"Days before arrival (or more)": t.get("days"),
+                       _CTB_REFUND_COL: round(100.0 - _safe_float(t.get("fee_percentage"), fallback=0.0), 4)}
                      for t in (tiers or []) if isinstance(t, dict)]
         return pd.DataFrame(table_rows) if table_rows else pd.DataFrame(
-            columns=["Days before arrival (or more)", "Cancellation Fee %"])
+            columns=["Days before arrival (or more)", _CTB_REFUND_COL])
 
     def _ctb_df_to_tiers(edited_df):
         new_tiers = []
@@ -12377,9 +12391,10 @@ def render_transport_cancellation_bulk_flow(client):
             days_val = row.get("Days before arrival (or more)")
             if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
                 continue
+            refund_pct = max(0.0, min(100.0, _safe_float(row.get(_CTB_REFUND_COL), fallback=100.0)))
             new_tiers.append({
                 "days": _safe_int(days_val, fallback=0),
-                "fee_percentage": max(0.0, min(100.0, _safe_float(row.get("Cancellation Fee %"), fallback=0.0))),
+                "fee_percentage": max(0.0, min(100.0, 100.0 - refund_pct)),
             })
         return new_tiers
 
@@ -12388,15 +12403,15 @@ def render_transport_cancellation_bulk_flow(client):
 
     ctb_col_config = {
         "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
-        "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+        _CTB_REFUND_COL: st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
     }
     editable_table("New policy", _ctb_tier_table(st.session_state.ctb_new_tiers), "ctb_new_policy",
                    on_save=_ctb_save_new_tiers, column_config=ctb_col_config)
 
     def _ctb_fmt_tiers(tiers):
         if not tiers:
-            return "(system default — 30 days, 0% fee)"
-        return "; ".join(f"{t['days']}+ days: {t['fee_percentage']:.0f}% fee"
+            return "(system default — 30 days, 100% refund)"
+        return "; ".join(f"{t['days']}+ days: {100.0 - t['fee_percentage']:.0f}% refund"
                          for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
 
     proposals = cancellation_bulk_transport.build_proposals(rows, st.session_state.ctb_new_tiers)
@@ -12616,11 +12631,20 @@ def render_generic_cancellation_bulk_flow(client, product_type):
     import pandas as pd
     from ui_components import editable_table, _safe_int, _safe_float
 
+    # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): same "Cancellation Fee %"
+    # inversion trap fixed in render_transport_cancellation_bulk_flow's identical table (see
+    # that fix's own comment, and claude/bulk-cancellation-refund-fee-inversion-2026-09-11.md
+    # in project docs) - a human typing the desired RESULT policy here naturally thinks in
+    # refund%, not fee%. Storage stays {"days","fee_percentage"} - only this column's label and
+    # the boundary conversion changed.
+    _CB_REFUND_COL = "Refund % if cancelled by this deadline"
+
     def _cb_tier_table(tiers):
-        table_rows = [{"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+        table_rows = [{"Days before arrival (or more)": t.get("days"),
+                       _CB_REFUND_COL: round(100.0 - _safe_float(t.get("fee_percentage"), fallback=0.0), 4)}
                      for t in (tiers or []) if isinstance(t, dict)]
         return pd.DataFrame(table_rows) if table_rows else pd.DataFrame(
-            columns=["Days before arrival (or more)", "Cancellation Fee %"])
+            columns=["Days before arrival (or more)", _CB_REFUND_COL])
 
     def _cb_df_to_tiers(edited_df):
         new_tiers = []
@@ -12628,9 +12652,10 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             days_val = row.get("Days before arrival (or more)")
             if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
                 continue
+            refund_pct = max(0.0, min(100.0, _safe_float(row.get(_CB_REFUND_COL), fallback=100.0)))
             new_tiers.append({
                 "days": _safe_int(days_val, fallback=0),
-                "fee_percentage": max(0.0, min(100.0, _safe_float(row.get("Cancellation Fee %"), fallback=0.0))),
+                "fee_percentage": max(0.0, min(100.0, 100.0 - refund_pct)),
             })
         return new_tiers
 
@@ -12639,15 +12664,15 @@ def render_generic_cancellation_bulk_flow(client, product_type):
 
     cb_col_config = {
         "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
-        "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+        _CB_REFUND_COL: st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
     }
     editable_table("New policy", _cb_tier_table(st.session_state.cb_new_tiers), "cb_new_policy",
                    on_save=_cb_save_new_tiers, column_config=cb_col_config)
 
     def _cb_fmt_tiers(tiers):
         if not tiers:
-            return "(system default — 30 days, 0% fee)"
-        return "; ".join(f"{t['days']}+ days: {t['fee_percentage']:.0f}% fee"
+            return "(system default — 30 days, 100% refund)"
+        return "; ".join(f"{t['days']}+ days: {100.0 - t['fee_percentage']:.0f}% refund"
                          for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
 
     proposals = cancellation_bulk.build_proposals(rows, st.session_state.cb_new_tiers, product_type)
@@ -13597,7 +13622,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
+BUILD_VERSION = "2026-09-11-cancellation-refund-percent-relabel"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

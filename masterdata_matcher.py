@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
+MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
 
 import math
 import re

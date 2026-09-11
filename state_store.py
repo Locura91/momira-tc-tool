@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
+MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
 
 _NAMESPACE = "translation_state"
 

@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-transfer-cancellation-no-structured-field-confirmed"
+MODULE_BUILD = "2026-09-11-cancellation-refund-percent-relabel"
 
 _NAMESPACE = "cancellation_links"
 
@@ -192,18 +192,35 @@ def list_links() -> List[Dict[str, Any]]:
 def render_cancellation_link_editor(supplier_id: str, product_type: str, key_suffix: str = "") -> None:
     """Setup-screen widget (mirrors service_notes.render_standing_note_editor's placement and
     shape) letting a human view/edit BOTH the supplier-scoped and the company-wide link for
-    this product type, in one place. Reuses the same Days/Fee% table shape as
-    render_cancellation_policy_editor (ui_components.py) so what's entered here matches what
-    a human would type directly on a product's own review screen."""
+    this product type, in one place.
+
+    CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): a human typing a policy directly
+    here (or in cancellation_bulk_transport.py's/cancellation_bulk.py's own near-identical "New
+    policy" tables) naturally thinks in REFUND% - the house rule itself is phrased that way
+    ("30 days or prior for 100% refund"), and Travel Compositor's own wire field is the refund
+    percentage too (see schemas.ContractTransportCancellationRangeVO.percentage). But this
+    table used to ask for "Cancellation Fee %" (the INVERSE), the same convention
+    ui_components.render_cancellation_policy_editor correctly uses for TRANSCRIBING a
+    supplier's own document (which genuinely states its terms as a fee, e.g. "25% fee if
+    cancelled within 30 days"). Typing "100" into a Fee% field intending "100% refund" instead
+    silently applies a 0%-refund/100%-fee policy - confirmed via a real bulk run against 18+
+    live Transports (see claude/bulk-cancellation-refund-fee-inversion-2026-09-11.md, project
+    docs). Storage is UNCHANGED (still {"days","fee_percentage"} - every downstream consumer,
+    builder._cancellation_ranges_from_tiers included, still expects that shape) - only the
+    human-facing column here is now Refund%, converted to/from fee_percentage right at this
+    boundary (refund = 100 - fee), so nobody has to do that inversion in their head again."""
     import pandas as pd
     import streamlit as st
 
     from ui_components import editable_table, _safe_int, _safe_float
 
+    _REFUND_COL = "Refund % if cancelled by this deadline"
+
     def _tier_table(tiers):
-        rows = [{"Days before arrival (or more)": t.get("days"), "Cancellation Fee %": t.get("fee_percentage")}
+        rows = [{"Days before arrival (or more)": t.get("days"),
+                 _REFUND_COL: round(100.0 - _safe_float(t.get("fee_percentage"), fallback=0.0), 4)}
                 for t in (tiers or []) if isinstance(t, dict)]
-        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Days before arrival (or more)", "Cancellation Fee %"])
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Days before arrival (or more)", _REFUND_COL])
 
     def _df_to_tiers(edited_df):
         new_tiers = []
@@ -211,9 +228,10 @@ def render_cancellation_link_editor(supplier_id: str, product_type: str, key_suf
             days_val = row.get("Days before arrival (or more)")
             if days_val is None or (isinstance(days_val, float) and pd.isna(days_val)):
                 continue
+            refund_pct = max(0.0, min(100.0, _safe_float(row.get(_REFUND_COL), fallback=100.0)))
             new_tiers.append({
                 "days": _safe_int(days_val, fallback=0),
-                "fee_percentage": max(0.0, min(100.0, _safe_float(row.get("Cancellation Fee %"), fallback=0.0))),
+                "fee_percentage": max(0.0, min(100.0, 100.0 - refund_pct)),
             })
         return new_tiers
 
@@ -238,7 +256,7 @@ def render_cancellation_link_editor(supplier_id: str, product_type: str, key_suf
         supplier_df = _tier_table((supplier_existing or {}).get("tiers"))
         col_config = {
             "Days before arrival (or more)": st.column_config.NumberColumn(min_value=0, step=1),
-            "Cancellation Fee %": st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
+            _REFUND_COL: st.column_config.NumberColumn(min_value=0, max_value=100, step=1),
         }
 
         def _save_supplier(edited_df):
