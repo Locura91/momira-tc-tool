@@ -135,23 +135,27 @@ def test_per_vehicle_rebuild_writes_the_new_base_into_vehicle_price_not_base_adu
     route = _per_vehicle_route()
     payloads = price_refresh.rebuild_prices(route, {"Sedan": 110.0, "Hiace": 150.0})
     parent = payloads["transport"]
-    # Widest bracket (Hiace, 1-8) is chosen as base, same widest-bracket rule as always - only
-    # WHICH FIELD it's written into changes for a per-vehicle transport.
-    assert parent["vehiclePrice"] == 150.0
+    # UPDATED 2026-09-11 (real bulk Apply failure, "TransportContractPrice.startDate/endDate:
+    # must not be null"): base is no longer re-derived from bracket width ("widest wins" would
+    # wrongly pick Hiace here) - it's whichever option is ALREADY the live base (Sedan, whose
+    # own current supplement is zero in this fixture's raw prices=[]). See
+    # price_refresh._current_base_option's own docstring for the full real-world incident this
+    # fixes.
+    assert parent["vehiclePrice"] == 110.0
     assert parent["baseAdultPrice"] == 0.0  # must stay 0, never repurposed
 
 
 def test_per_vehicle_rebuild_still_nets_out_to_the_correct_per_option_price():
     # Base+supplement must still reproduce the exact requested price for EVERY option,
-    # regardless of which one was chosen as base - this is what makes the base-field choice
-    # safe to change without touching the actual arithmetic.
+    # regardless of which one is currently the live base - this is what makes the base-field
+    # choice safe without touching the actual arithmetic.
     route = _per_vehicle_route()
     payloads = price_refresh.rebuild_prices(route, {"Sedan": 110.0, "Hiace": 150.0})
     by_code = {o["code"]: o for o in payloads["options"]}
     assert by_code["Hiace"]["unit_price"] == 150.0
     assert by_code["Sedan"]["unit_price"] == 110.0
-    sedan_supplement = by_code["Sedan"]["payload"]["prices"][0]["adultPriceSupplement"]
-    assert round(payloads["transport"]["vehiclePrice"] + sedan_supplement, 2) == 110.0
+    hiace_supplement = by_code["Hiace"]["payload"]["prices"][0]["adultPriceSupplement"]
+    assert round(payloads["transport"]["vehiclePrice"] + hiace_supplement, 2) == 150.0
 
 
 def test_per_vehicle_rebuild_does_not_touch_child_or_infant_base_fields():
@@ -178,7 +182,10 @@ def test_per_pax_rebuild_is_unaffected_still_writes_base_adult_price():
     }
     payloads = price_refresh.rebuild_prices(route, {"A": 40.0, "B": 60.0})
     parent = payloads["transport"]
-    assert parent["baseAdultPrice"] == 60.0  # widest bracket (B) still wins, as before
+    # UPDATED 2026-09-11: base is A (its own current supplement is zero, prices=[]) - the live
+    # base is preserved rather than re-derived from bracket width (B is wider but is NOT the
+    # live base here). See price_refresh._current_base_option's docstring.
+    assert parent["baseAdultPrice"] == 40.0
     assert "vehiclePrice" not in parent
-    # Child base scales with the adult base ratio, exactly as before this fix.
-    assert parent["baseChildrenPrice"] == round(15.0 * (60.0 / 30.0), 2)
+    # Child base still scales with the adult base ratio.
+    assert parent["baseChildrenPrice"] == round(15.0 * (40.0 / 30.0), 2)

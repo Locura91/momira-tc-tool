@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-transport-full-record-fetch"
+MODULE_BUILD = "2026-09-11-price-refresh-option-base-and-price-dates"
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1174,14 +1174,63 @@ def _rebuild_transfer_prices(route: Dict[str, Any],
     return {"transport": payload, "options": []}
 
 
+def _option_supplement(option: Dict[str, Any]) -> float:
+    """This option's CURRENT live adultPriceSupplement (0.0 if it has no price entry at all -
+    the confirmed real shape for a bracket that costs exactly the base rate, see
+    schemas.ContractTransportOptionPriceVO's own docstring)."""
+    for price in ((option.get("raw") or {}).get("prices") or []):
+        if isinstance(price, dict):
+            return _num(price.get("adultPriceSupplement"))
+    return 0.0
+
+
+def _current_base_option(options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Which option IS the transport's base modality right now - not a guess from bracket
+    width, but whichever option already carries no supplement live.
+
+    CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11): this used to always pick the
+    WIDEST bracket as base and express every OTHER option as a supplement against it - correct
+    for a transport that was built that way, but WRONG for FTS's Sedan/Hiace structure, where
+    Sedan (the NARROWER 1-3 pax bracket) was deliberately made the base at creation time (see
+    fts_transfer_matrix.py's own module docstring: "Sedan is base price as one modality...
+    Hiace is second modality and is used as price supplement with Sedan" -
+    builder.build_transport_payloads is even called with
+    force_base_occupancy=FTS_SEDAN_BRACKET specifically to override the default widest-wins
+    heuristic at creation time). Recomputing "widest wins" from scratch on every price refresh
+    silently FLIPPED which option carries the supplement on every run - Sedan (previously
+    supplement-free) suddenly needed a brand-new price entry it had never had before, and
+    Hiace's real existing supplement was thrown away - even on an Apply that only meant to
+    touch Hiace's own price (a one-vehicle round, see only_option_code above). Real symptom: a
+    real bulk Apply against 13 FTS-matched Transports failed all 13 with "TransportContractPrice.
+    startDate/endDate: must not be null" - Sedan's option had never carried a price entry
+    before, so building one from scratch (see rebuild_prices below) had no dates to carry
+    forward, the SAME class of bug already found and fixed once for the parent record's own
+    airlineCode (see load_supplier_transports' docstring above), just one level down on the
+    option sub-resource instead.
+
+    Fix: keep whichever option is ALREADY the live base (a "no supplement" option) rather than
+    re-deriving it from bracket width - this reflects how the transport is ACTUALLY structured
+    today, so a refresh can never restructure a transport that was deliberately built with a
+    non-widest base. Only when the live data is ambiguous (no option is currently
+    zero-supplement, or more than one is) does this fall back to the original widest-bracket
+    heuristic, which is exactly correct for a transport that has never had this choice made
+    explicitly - and is also why every pre-existing single/two-option test fixture in this
+    codebase (none of which set up a genuinely ambiguous case) still passes unchanged."""
+    zero_supplement = [o for o in options if abs(_option_supplement(o)) < 0.005]
+    if len(zero_supplement) == 1:
+        return zero_supplement[0]
+    return max(options, key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]))
+
+
 def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
     """The payloads that put these prices live, keeping base and supplements consistent.
 
     A modality's price is base + its own supplement, so a new set of prices has to be split
-    across the parent record and every option. The base is taken from the WIDEST bracket -
-    the same rule the upload flow uses - so the common bracket carries no supplement and only
-    genuine outliers (the solo surcharge) do. Sending an option's supplement without updating
-    the base, or the reverse, would silently reprice every OTHER modality on the transport."""
+    across the parent record and every option. The base is taken from whichever option is
+    ALREADY the live base (see _current_base_option) - the common bracket carries no
+    supplement and only genuine outliers (the solo surcharge) do. Sending an option's
+    supplement without updating the base, or the reverse, would silently reprice every OTHER
+    modality on the transport."""
     if route.get("kind") == KIND_TRANSFER:
         return _rebuild_transfer_prices(route, new_unit_prices)
     # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
@@ -1197,8 +1246,8 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
         return {"transport": None, "options": []}
     resolved = {o["code"]: round(float(new_unit_prices.get(o["code"], o["unit_price"])), 2)
                 for o in options}
-    widest = max(options, key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]))
-    base = resolved[widest["code"]]
+    base_option = _current_base_option(options)
+    base = resolved[base_option["code"]]
 
     parent = json.loads(json.dumps(route["raw"]))
     # BELT AND SUSPENDERS (2026-09-11, "airlineCode: must not be null" incident - see
@@ -1248,6 +1297,25 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
                 existing = {}
             existing = dict(existing)
             existing["adultPriceSupplement"] = supplement
+            # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, same real bulk Apply
+            # failure described in _current_base_option's docstring above): a NEW price entry
+            # (existing == {} - this option never carried a supplement before) had no
+            # startDate/endDate at all, and Travel Compositor's TransportContractPrice requires
+            # both non-null on write ("must not be null" on both fields). The parent's OWN
+            # startDate/endDate - never touched by this whole flow, see rebuild_prices' and the
+            # Apply screen's own promise that "validity dates stay as they are" - are the
+            # correct values to carry forward here too, exactly matching how
+            # builder.build_transport_payloads seeds a brand-new price entry at create time
+            # (startDate=the transport's own effective_start_date). schemas.
+            # ContractTransportOptionPriceVO.endDate even defaults to "2049-12-31" when not
+            # given, which is the last-resort fallback here too, for the rare case where the
+            # parent itself has no endDate either - an empty string would still satisfy "must
+            # not be null" (same reasoning as normalize_for_put's airlineCode default above),
+            # but a real date is what the parent actually has, so that's used first.
+            if not existing.get("startDate"):
+                existing["startDate"] = parent.get("startDate") or ""
+            if not existing.get("endDate"):
+                existing["endDate"] = parent.get("endDate") or "2049-12-31"
             payload["prices"] = [existing]
         option_payloads.append({"code": option["code"], "payload": payload,
                                 "unit_price": resolved[option["code"]]})

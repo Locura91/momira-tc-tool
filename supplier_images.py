@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-price-refresh-transport-full-record-fetch"
+MODULE_BUILD = "2026-09-11-price-refresh-option-base-and-price-dates"
 
 _NAMESPACE = "supplier_images"
 
