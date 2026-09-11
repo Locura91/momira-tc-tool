@@ -28,11 +28,12 @@ Both are now fixed the same way: on an update, the EXISTING LIVE text (its own o
 is the base; genuinely NEW what-to-bring/manual-notes content still lands (idempotent - already-
 present text is never duplicated); the new code is applied last, unconditionally.
 
-CORRECTED (2026-09-10): Transport's price-validity code now lives in a genuine voucherRemarks
-field (schemas.py's TransportDataSheetVO.voucherRemarks), same as Transfer - a real screenshot
-of Travel Compositor's own Transport edit screen proved the "no separate field" belief above was
-wrong. description is still locked/composed exactly as this docstring describes; only the code's
-destination field changed - see the updated assertions below.
+REVERTED 2026-09-11 (real production evidence): the 2026-09-10 "Transport has a genuine
+voucherRemarks field" belief was wrong - it was based only on a screenshot of Travel
+Compositor's admin UI, never confirmed against Swagger. The product owner has since pasted
+Travel Compositor's real Swagger for PUT /transport/{supplierId}: ContractTransportDataSheetVO
+has ONLY name and description, no voucherRemarks anywhere. The price-validity code is back to
+living inside description, same as it did before 2026-09-10 - see the assertions below.
 """
 from schemas import TransferHumanPreConfig, TransportHumanPreConfig
 from builder import build_transfer_payload, build_transport_payloads, _append_if_new
@@ -184,10 +185,10 @@ def _transport_snapshot(description, name="Aswan - Luxor"):
 
 
 def test_transport_update_swaps_only_the_price_validity_code(fake_api_client):
-    # CORRECTED (2026-09-10): the code now lands in the real voucherRemarks field, not
-    # description - see this file's own header update. Any OLD code still sitting in a legacy
-    # description (as this snapshot simulates) is still stripped out on every publish; it just
-    # no longer gets a new one put back into description in its place.
+    # REVERTED 2026-09-11 (see this file's own header update): the code lands back in
+    # description - Transport has no working voucherRemarks field via Travel Compositor's real
+    # API. The OLD code already sitting in the existing description is stripped, and the NEW
+    # code is appended, same "strip old, append new" rule as always.
     existing_description = "<p>Private Transport from Aswan to Luxor.</p><p>(20250101)</p>"
     snapshot = _transport_snapshot(existing_description)
     result = build_transport_payloads(
@@ -196,11 +197,10 @@ def test_transport_update_swaps_only_the_price_validity_code(fake_api_client):
         fake_api_client, existing_transport_id="123", existing_transport_snapshot=snapshot,
     )
     description = result["transport_payload"]["datasheets"]["EN"]["description"]
-    voucher_remarks = result["transport_payload"]["datasheets"]["EN"]["voucherRemarks"]
-    assert "(20271031)" not in description
+    assert "(20271031)" in description
     assert "(20250101)" not in description
     assert "Private Transport from Aswan to Luxor." in description
-    assert voucher_remarks == "(20271031)"
+    assert "voucherRemarks" not in result["transport_payload"]["datasheets"]["EN"]
 
 
 def test_transport_update_preserves_the_locked_description_text_untouched(fake_api_client):
@@ -239,7 +239,6 @@ def test_transport_create_with_no_existing_snapshot_is_unaffected(fake_api_clien
         fake_api_client,
     )
     description = result["transport_payload"]["datasheets"]["EN"]["description"]
-    voucher_remarks = result["transport_payload"]["datasheets"]["EN"]["voucherRemarks"]
-    assert "(20271031)" not in description
+    assert "(20271031)" in description
     assert "Private Transport" in description or "Aswan" in description
-    assert voucher_remarks == "(20271031)"
+    assert "voucherRemarks" not in result["transport_payload"]["datasheets"]["EN"]

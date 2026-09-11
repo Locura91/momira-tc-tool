@@ -127,20 +127,23 @@ TARGETS: Dict[str, Dict[str, str]] = {
         "Cancellation update": "voucherRemarks",
     },
     "Transport": {
-        # CORRECTED (2026-09-10, real production evidence): "Voucher remarks" used to be
-        # aliased to "description" here, on the belief that Transport had no separate
-        # voucherRemarks field in Travel Compositor. A real screenshot of Travel Compositor's
-        # own Transport edit screen proved that wrong - it has a genuine, separate Voucher
-        # remarks input, same as every other product type (see schemas.py's
-        # TransportDataSheetVO.voucherRemarks). This bug sent a real bulk price-validity-code
-        # write into the WRONG field for all 168 Transports of one supplier before it was
-        # caught - see bulk_notes._plan_transport_voucher_code_repair for the one-off fix that
-        # moves an already-mis-written code back to the right field.
-        # "Cancellation update" is left pointing at "description" deliberately - that is a
-        # separate, unrelated rule (see builder.py's own comment: Transport's cancellation/
-        # conditions text is locked whole to description on every update, code or no code).
+        # CORRECTED AGAIN (2026-09-11, real production evidence): a "Voucher remarks" target
+        # briefly pointed at "voucherRemarks" here (2026-09-10 - present), on the belief that
+        # Transport had a genuine, separately-persisted voucherRemarks field in Travel
+        # Compositor, based only on a screenshot of the admin UI showing an input box for it.
+        # That belief was WRONG - the product owner pasted Travel Compositor's actual Swagger
+        # for PUT /transport/{supplierId} (the real endpoint every Transport write here goes
+        # through) and its datasheet type (ContractTransportDataSheetVO) has ONLY `name` and
+        # `description` - no voucherRemarks field exists anywhere in Transport's real API
+        # schema. Every write sent to it was silently dropped by Travel Compositor (confirmed
+        # via a live debug capture: the PUT response echoed back a datasheet with no
+        # voucherRemarks key at all, plus a live screenshot showing the field still empty on
+        # Travel Compositor's own page). "Voucher remarks" is therefore NOT offered as a target
+        # for Transport at all now (see unavailable_targets()) - there is no field to point it
+        # at. "Cancellation update" stays pointed at "description" (unaffected by any of this -
+        # see builder.py's own comment: Transport's cancellation/conditions text is locked whole
+        # to description on every update).
         "Description (bottom)": "description",
-        "Voucher remarks": "voucherRemarks",
         "Cancellation update": "description",
     },
     "Hotel": {
@@ -157,6 +160,11 @@ UNAVAILABLE_REASON: Dict[str, Dict[str, str]] = {
         "Included (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
         "Excluded (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
         "Remark": "Transport has no separate remark field.",
+        # CONFIRMED 2026-09-11 via Travel Compositor's own Swagger for PUT /transport/
+        # {supplierId}: ContractTransportDataSheetVO only has name/description - no
+        # voucherRemarks field exists on Transport at all, unlike every other product type.
+        "Voucher remarks": "Transport has no separate voucher-remarks field in Travel "
+                           "Compositor's API (confirmed via Swagger) — use Description.",
     },
     "Transfer": {
         "Included (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
@@ -237,14 +245,15 @@ STRUCTURED_TARGETS: Dict[str, Dict[str, str]] = {
     "Transport": {
         "Price supplement (dated, e.g. Christmas/NYE/Easter)": "transport_supplement",
         "Permanent price increase (% or flat amount)": "transport_price_increase",
-        # One-off repair (2026-09-10) for the 168 Transports the earlier wrong TARGETS mapping
-        # bulk-wrote a price-validity code into description instead of voucherRemarks - see
-        # _plan_transport_voucher_code_repair's own docstring.
-        "Repair: move a price-validity code from Description to Voucher remarks": "transport_voucher_code_repair",
-        # One-off repair (2026-09-11, product owner: "I just want to move this phrase
-        # 'Cancellation Policy: ...' from Description to Voucher remark") - see
-        # _plan_transport_cancellation_text_repair's own docstring.
-        "Repair: move cancellation policy text from Description to Voucher remarks": "transport_cancellation_text_repair",
+        # REMOVED 2026-09-11 (product owner): two one-off repair tools used to live here
+        # ("move a price-validity code" and "move cancellation policy text" from Description to
+        # Voucher remarks). Both were built on the wrong belief that Transport has a genuine,
+        # separately-persisted voucherRemarks field - it does not (confirmed via Travel
+        # Compositor's real Swagger: ContractTransportDataSheetVO only has name/description).
+        # Every write either tool sent to voucherRemarks was silently dropped by Travel
+        # Compositor, and the cancellation-text repair additionally REMOVED real text from live
+        # Description without the replacement ever landing anywhere. See cancellation_bulk_
+        # transport.py's own module docstring for the full incident writeup.
     },
 }
 
@@ -582,248 +591,6 @@ def _apply_transport_price_increase(client, supplier_id: str, planned: Dict[str,
     return out
 
 
-def _refetch_full_transport(client, supplier_id: str, summary: Dict[str, Any]
-                            ) -> Tuple[Dict[str, Any], bool]:
-    """Returns (record, full_fetch_failed) - re-fetches `summary`'s own individual full record
-    via client.get_transport() rather than trusting the list entry (GET /transport/
-    {supplierId}) it came from. CONFIRMED NEEDED (product owner, 2026-09-11): a real bulk
-    Voucher-remarks write against a live Transport reported success but never actually
-    changed the field in Travel Compositor - Transport's list entry has already been proven
-    unreliable as the base for a whole-record PUT (see PRODUCTS["Transport"]'s own comment
-    and cancellation_bulk_transport.load_supplier_transports_for_cancellation, which fetches
-    individually for the identical reason). Falls back to `summary` itself, flagged, when the
-    id is missing or the individual fetch fails/errors - one bad row must not block the rest
-    of a bulk repair, but the caller can still warn a human before PUTting a possibly
-    incomplete record back."""
-    t_id = summary.get("id") if isinstance(summary, dict) else None
-    if not t_id:
-        return summary, True
-    try:
-        full = client.get_transport(supplier_id, t_id)
-    except Exception:
-        return summary, True
-    if isinstance(full, dict) and "error" not in full:
-        return full, False
-    return summary, True
-
-
-def _plan_transport_voucher_code_repair(
-        client, supplier_id: str,
-        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
-    """One-off data repair (product owner, 2026-09-10): "Code upload in Bulk for Transport
-    worked, but it was uploaded in the Description field - the goal was to upload it within
-    the Voucher remarks of the base information. Now I have full 168 Transports with the code
-    in the wrong field." Root cause: TARGETS used to (wrongly) alias Transport's "Voucher
-    remarks" bulk target to `description` - see this module's own corrected comment on
-    TARGETS["Transport"]. Transport genuinely has its own voucherRemarks field (schemas.py's
-    TransportDataSheetVO.voucherRemarks), confirmed via a real screenshot of Travel
-    Compositor's own Transport edit screen.
-
-    For every Transport of this supplier whose EN description carries a plausible
-    "(YYYYMMDD)" price-validity code, this MOVES it in one write: strips the code out of
-    description (collapsing any blank line the removal leaves - same rule
-    strip_price_validity_code always applies - every other word is untouched) and writes it
-    into voucherRemarks instead, composed onto whatever voucher-remarks text is already there
-    (preserved verbatim). A Transport whose description has no code is left completely
-    untouched - never a needless write, and never confused with one that has a code in the
-    CORRECT field already (voucherRemarks is not re-checked - the whole point is "was this
-    caught by the bug", not "does it currently have a code at all")."""
-    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
-                              "failed": 0, "product_type": "Transport",
-                              "target": "transport_voucher_code_repair", "structured": True,
-                              "kind": "transport_voucher_code_repair"}
-    summaries, err = list_services(client, supplier_id, "Transport")
-    if err and not summaries:
-        result["error"] = err
-        return result
-    result["error"] = err
-    total = len(summaries)
-    for i, summary in enumerate(summaries):
-        name = label_for(summary, "Transport")
-        if progress:
-            progress(i + 1, total, name)
-        # CORRECTED 2026-09-11: re-fetch this Transport's own individual full record rather
-        # than trusting the list entry - see _refetch_full_transport's own docstring for why.
-        record, full_fetch_failed = _refetch_full_transport(client, supplier_id, summary)
-        rec_id = record.get("id")
-        item_id = str(rec_id or name)
-        sheets = record.get("datasheets") or {}
-        en = sheets.get("EN") if isinstance(sheets, dict) else None
-        description = (en or {}).get("description") or "" if isinstance(en, dict) else ""
-        code_date = price_validity.extract_price_validity_date(description)
-        if not code_date:
-            result["unchanged"] += 1
-            result["items"].append({
-                "id": item_id, "name": name, "status": "unchanged", "changes": {},
-                "reason": "no price-validity code found in this Transport's description",
-            })
-            continue
-        new_description = price_validity.strip_price_validity_code(description)
-        existing_voucher_remarks = (en or {}).get("voucherRemarks") or ""
-        new_voucher_remarks = price_validity.with_price_validity_code(
-            existing_voucher_remarks, {"price_valid_until_date": code_date.isoformat()})
-        updated = copy.deepcopy(record)
-        _normalize_for_put(updated, "Transport")
-        updated.setdefault("datasheets", {}).setdefault("EN", {})
-        updated["datasheets"]["EN"]["description"] = new_description
-        updated["datasheets"]["EN"]["voucherRemarks"] = new_voucher_remarks
-        result["will_change"] += 1
-        result["items"].append({
-            "id": item_id, "name": name, "status": "will_change",
-            "changes": {"EN": (
-                f"description had: (...{code_date.strftime('%Y%m%d')})",
-                f"moved to voucherRemarks; description code removed")},
-            "record": updated, "write_kind": "transport",
-            "full_fetch_failed": full_fetch_failed,
-        })
-    return result
-
-
-def _apply_transport_voucher_code_repair(
-        client, supplier_id: str, planned: Dict[str, Any],
-        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
-    """Pushes the moves a human has already previewed via _plan_transport_voucher_code_repair.
-    Every item is a whole-Transport-record write (write_kind "transport"), same shape as the
-    generic apply() path - kept as its own function only so it can be dispatched to before the
-    generic path runs (see apply()'s own dispatch), mirroring _apply_transport_price_increase."""
-    out = {"updated": [], "failed": [], "skipped": 0}
-    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
-    out["skipped"] = len(planned.get("items", [])) - len(pending)
-    for n, item in enumerate(pending):
-        if progress:
-            progress(n + 1, len(pending), item.get("name", ""))
-        try:
-            res = client.update_transport(supplier_id, item["record"])
-            if isinstance(res, dict) and "error" in res:
-                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                      "detail": str(res.get("message") or res.get("error"))})
-            else:
-                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
-                                       "languages": sorted(item.get("changes", {}).keys())})
-        except Exception as e:
-            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                  "detail": f"{type(e).__name__}: {e}"})
-    return out
-
-
-def _plan_transport_cancellation_text_repair(
-        client, supplier_id: str,
-        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
-    """One-off data repair (product owner, 2026-09-11): "I just want to move this phrase
-    'Cancellation Policy: - Free cancellation if cancelled at least 30 days before arrival.'
-    from Description to Voucher remark from Supplier MOMIRA_EG_FT and MOMIRA_TEST." The
-    companion repair to _plan_transport_voucher_code_repair (same MOVE-not-copy shape, same
-    "unchanged if nothing to move" safety) - that one moves a price-validity CODE; this one
-    moves the whole cancellation-POLICY SENTENCE, which for Transport has always lived inline
-    in `description` as one of several "<p>...</p>" paragraphs (see cancellation_bulk_
-    transport.py's own module docstring: "do not change the name and the description of
-    transfer and transport" locked it there even after voucherRemarks was confirmed to
-    genuinely exist for Transport). Reuses cancellation_bulk_transport's own paragraph-matching
-    helpers (_current_cancellation_snippet to find it, _remove_cancellation_paragraph to delete
-    it cleanly, leaving every other paragraph - service description, "What to bring:", manual
-    notes - untouched) rather than re-deriving that "first paragraph mentioning 'cancella'"
-    matching logic a second time.
-
-    Imported lazily (inside this function, not at module level) to avoid a circular import -
-    cancellation_bulk_transport.py already imports bulk_notes.normalize_for_put.
-
-    For every Transport of this supplier whose EN description carries a cancellation
-    paragraph, this MOVES it: removes it from description (every other paragraph untouched)
-    and appends it to voucherRemarks via builder._append_if_new - the SAME idempotent-append
-    rule every other voucher-text composition in this codebase uses, so running this twice (or
-    against a Transport whose voucherRemarks already happens to contain that exact sentence)
-    never duplicates it. A Transport whose description has no cancellation paragraph at all is
-    left completely untouched."""
-    import cancellation_bulk_transport
-
-    result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
-                              "failed": 0, "product_type": "Transport",
-                              "target": "transport_cancellation_text_repair", "structured": True,
-                              "kind": "transport_cancellation_text_repair"}
-    summaries, err = list_services(client, supplier_id, "Transport")
-    if err and not summaries:
-        result["error"] = err
-        return result
-    result["error"] = err
-    total = len(summaries)
-    for i, summary in enumerate(summaries):
-        name = label_for(summary, "Transport")
-        if progress:
-            progress(i + 1, total, name)
-        # CORRECTED 2026-09-11: re-fetch this Transport's own individual full record rather
-        # than trusting the list entry - see _refetch_full_transport's own docstring for why.
-        record, full_fetch_failed = _refetch_full_transport(client, supplier_id, summary)
-        rec_id = record.get("id")
-        item_id = str(rec_id or name)
-        sheets = record.get("datasheets") or {}
-        en = sheets.get("EN") if isinstance(sheets, dict) else None
-        description = (en or {}).get("description") or "" if isinstance(en, dict) else ""
-        snippet = cancellation_bulk_transport._current_cancellation_snippet_in_description(description)
-        if not snippet:
-            result["unchanged"] += 1
-            result["items"].append({
-                "id": item_id, "name": name, "status": "unchanged", "changes": {},
-                "reason": "no cancellation paragraph found in this Transport's description",
-            })
-            continue
-        new_description, found = cancellation_bulk_transport._remove_cancellation_paragraph(description)
-        if not found:
-            # Belt-and-braces only - _current_cancellation_snippet already found a match above,
-            # so this should never actually happen, but a non-match here must never silently
-            # drop the paragraph without also moving it to voucherRemarks.
-            result["unchanged"] += 1
-            result["items"].append({
-                "id": item_id, "name": name, "status": "unchanged", "changes": {},
-                "reason": "no cancellation paragraph found in this Transport's description",
-            })
-            continue
-        existing_voucher_remarks = (en or {}).get("voucherRemarks") or ""
-        new_voucher_remarks = builder._append_if_new(existing_voucher_remarks, snippet)
-        updated = copy.deepcopy(record)
-        _normalize_for_put(updated, "Transport")
-        updated.setdefault("datasheets", {}).setdefault("EN", {})
-        updated["datasheets"]["EN"]["description"] = new_description
-        updated["datasheets"]["EN"]["voucherRemarks"] = new_voucher_remarks
-        result["will_change"] += 1
-        result["items"].append({
-            "id": item_id, "name": name, "status": "will_change",
-            "changes": {"EN": (
-                f"description had: \"{snippet}\"",
-                f"moved to voucherRemarks; description paragraph removed")},
-            "record": updated, "write_kind": "transport",
-            "full_fetch_failed": full_fetch_failed,
-        })
-    return result
-
-
-def _apply_transport_cancellation_text_repair(
-        client, supplier_id: str, planned: Dict[str, Any],
-        progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
-    """Pushes the moves a human has already previewed via
-    _plan_transport_cancellation_text_repair. Every item is a whole-Transport-record write
-    (write_kind "transport"), identical shape to _apply_transport_voucher_code_repair - kept as
-    its own function only so it can be dispatched to before the generic path runs (see apply()'s
-    own dispatch)."""
-    out = {"updated": [], "failed": [], "skipped": 0}
-    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
-    out["skipped"] = len(planned.get("items", [])) - len(pending)
-    for n, item in enumerate(pending):
-        if progress:
-            progress(n + 1, len(pending), item.get("name", ""))
-        try:
-            res = client.update_transport(supplier_id, item["record"])
-            if isinstance(res, dict) and "error" in res:
-                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                      "detail": str(res.get("message") or res.get("error"))})
-            else:
-                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
-                                       "languages": sorted(item.get("changes", {}).keys())})
-        except Exception as e:
-            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
-                                  "detail": f"{type(e).__name__}: {e}"})
-    return out
-
-
 def _day_offset(date_str: str, days: int) -> str:
     """`date_str` (ISO 'YYYY-MM-DD') shifted by `days`. Used only for the adjacent-day boundary
     math a peak-season carve needs (the day before a period starts, the day after it ends) -
@@ -1085,12 +852,6 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             bool((item_data or {}).get("increase_supplement")),
             is_percent=bool((item_data or {}).get("is_percent", True)),
             progress=progress)
-
-    if kind == "transport_voucher_code_repair":
-        return _plan_transport_voucher_code_repair(client, supplier_id, progress=progress)
-
-    if kind == "transport_cancellation_text_repair":
-        return _plan_transport_cancellation_text_repair(client, supplier_id, progress=progress)
 
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": product_type, "target": kind,
@@ -1564,10 +1325,6 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
         # "transport_option" (active supplement entry) - see
         # _apply_transport_price_increase's own docstring.
         return _apply_transport_price_increase(client, supplier_id, planned, progress=progress)
-    if planned.get("kind") == "transport_voucher_code_repair":
-        return _apply_transport_voucher_code_repair(client, supplier_id, planned, progress=progress)
-    if planned.get("kind") == "transport_cancellation_text_repair":
-        return _apply_transport_cancellation_text_repair(client, supplier_id, planned, progress=progress)
     product_type = planned.get("product_type")
     cfg = PRODUCTS.get(product_type) or {}
     update_fn = getattr(client, cfg.get("update_fn", ""), None)

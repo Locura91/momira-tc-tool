@@ -11671,30 +11671,6 @@ def render_manual_information_flow(client):
                          "supplement are left unchanged.")
             if not item_data["increase_base"] and not item_data["increase_supplement"]:
                 st.warning("Choose at least one: base price, active supplement, or both.")
-        elif structured_kind == "transport_voucher_code_repair":
-            st.warning("One-off repair, not a normal upload. Use this ONLY if a bulk "
-                      "price-validity-code run landed the code in Description instead of "
-                      "Voucher remarks (the bug fixed 2026-09-10).")
-            st.caption("Scans every Transport of this supplier's own Description for a "
-                      "\"(YYYYMMDD)\" price-validity code. Wherever one is found, it is moved: "
-                      "removed from Description (every other word left exactly as it is) and "
-                      "written into Voucher remarks instead (added onto whatever text is "
-                      "already there). A Transport with no code in Description is left "
-                      "completely untouched - safe to run more than once, it only ever finds "
-                      "what's actually still misplaced.")
-            item_data["name"] = "transport_voucher_code_repair"  # no human input needed - enables Preview below
-        elif structured_kind == "transport_cancellation_text_repair":
-            st.warning("One-off repair, not a normal upload. Use this ONLY to fix Transports "
-                      "whose cancellation-policy sentence is still sitting in Description "
-                      "instead of Voucher remarks (product-owner request, 2026-09-11).")
-            st.caption("Scans every Transport of this supplier's own Description for a "
-                      "paragraph mentioning cancellation. Wherever one is found, it is moved: "
-                      "removed from Description (every other paragraph left exactly as it is) "
-                      "and appended onto Voucher remarks (whatever text is already there is "
-                      "kept). A Transport with no cancellation paragraph in Description is left "
-                      "completely untouched - safe to run more than once, it only ever finds "
-                      "what's actually still misplaced.")
-            item_data["name"] = "transport_cancellation_text_repair"  # no human input needed - enables Preview below
         elif structured_kind == "transfer_additional_service":
             st.caption("A genuinely optional extra the client chooses to take, e.g. a child seat.")
             c1, c2 = st.columns(2)
@@ -11717,19 +11693,19 @@ def render_manual_information_flow(client):
         also_future = False
     elif add_price_code:
         st.markdown("### 2. Set the price-validity date")
-        # CORRECTED (2026-09-10): Transport has its own real Voucher remarks field, same as
-        # every other product type here - the special-cased "goes into description instead"
-        # wording (and the bug it described) is gone. See bulk_notes.TARGETS["Transport"] and
-        # _plan_transport_voucher_code_repair for the one-off fix for services this bug already
-        # wrote to the wrong field before it was caught.
+        # REVERTED 2026-09-11 (real production evidence - see bulk_notes.TARGETS["Transport"]'s
+        # own note): Transport has NO separate voucher-remarks field in Travel Compositor's real
+        # API (confirmed via Swagger, not just a UI screenshot) - the code goes into Description
+        # for Transport, same as every other piece of Transport conditions text. Every other
+        # product type here still uses its real Voucher remarks field.
+        target = "Description (bottom)" if product_type == "Transport" else "Voucher remarks"
         st.caption(
-            f"Writes a \"(YYYYMMDD)\" code into every {product_type} service's Voucher remarks. "
+            f"Writes a \"(YYYYMMDD)\" code into every {product_type} service's {target}. "
             "The code means: prices are confirmed until this date. If a service ALREADY has "
             "a code, only the code itself is replaced - every other word already in the field "
             "is left exactly as it is."
         )
         pv_date = st.date_input("Prices confirmed until", key="mi_pv_date")
-        target = "Voucher remarks"
         text = pv_date.isoformat() if pv_date else ""
         mode = bulk_notes.MODE_PRICE_CODE
         codes = None
@@ -12548,14 +12524,13 @@ def render_transport_cancellation_bulk_flow(client):
                 st.text(_ctb_fmt_tiers(p["current_fee_tiers"]))
                 st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found)*")
             with dcol2:
-                st.caption("**New**  ·  goes into Voucher remarks")
+                st.caption("**New**  ·  goes into Description")
                 st.text(_ctb_fmt_tiers(p["new_fee_tiers"]))
                 st.caption(p["new_cancellation_text"])
             if not p["existing_paragraph_found"]:
-                st.warning("⚠️ No existing cancellation text was found (in Voucher remarks or "
-                          "description) — a new one will be INSERTED into Voucher remarks rather "
-                          "than replacing one. Double-check the result afterward inside Travel "
-                          "Compositor.")
+                st.warning("⚠️ No existing cancellation paragraph was found in Description — a "
+                          "new one will be INSERTED into Description rather than replacing one. "
+                          "Double-check the result afterward inside Travel Compositor.")
             if p.get("full_fetch_failed"):
                 st.warning("⚠️ Couldn't re-fetch this Transport's own full record (only the "
                           "shorter list entry was available) - some rarely-used fields may be "
@@ -14284,7 +14259,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-transport-generic-write-full-refetch"
+BUILD_VERSION = "2026-09-11-transport-voucherremarks-revert"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

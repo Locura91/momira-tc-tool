@@ -89,9 +89,10 @@ def _fake_client(update_calls):
 
 
 def test_apply_proposals_swaps_the_new_text_into_every_language_not_just_en():
-    # CORRECTED 2026-09-11 (product owner: "move this phrase from Description to Voucher
-    # remark"): the new cancellation sentence now lands in each language's Voucher remarks,
-    # not description - description is only ever cleaned of a leftover cancellation paragraph.
+    # REVERTED 2026-09-11 (real production evidence, see cancellation_bulk_transport.py's own
+    # top-of-file docstring): the new cancellation sentence lands in each language's
+    # description, same as it always did - Transport has no working voucherRemarks field via
+    # Travel Compositor's real API.
     raw = {
         "id": "T-1",
         "datasheets": {
@@ -105,7 +106,6 @@ def test_apply_proposals_swaps_the_new_text_into_every_language_not_just_en():
         "new_ranges_wire": [{"days": 14, "percentage": 100.0, "isBeforeStart": True}],
         "new_cancellation_text": "Free cancellation up to 14 days before departure.",
         "new_description_html": "<p>Service info</p>",
-        "new_voucher_remarks": "Free cancellation up to 14 days before departure.",
         "raw": raw,
     }
     update_calls = []
@@ -113,12 +113,10 @@ def test_apply_proposals_swaps_the_new_text_into_every_language_not_just_en():
     assert results[0]["ok"] is True
     sent_datasheets = update_calls[0]["datasheets"]
     for lang in ("EN", "DE", "FR"):
-        assert "14 days before departure" in sent_datasheets[lang]["voucherRemarks"], (
+        assert "14 days before departure" in sent_datasheets[lang]["description"], (
             f"{lang} datasheet must carry the NEW cancellation text - leaving it behind is "
             f"exactly the stale-policy bug this fix closes"
         )
-        # The old cancellation sentence must be removed from description in every language.
-        assert "cancellation" not in sent_datasheets[lang]["description"].lower()
     # The other paragraph (service info) must be untouched.
     assert "Serviceinfo" in sent_datasheets["DE"]["description"]
     assert "Infos service" in sent_datasheets["FR"]["description"]

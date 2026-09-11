@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-transport-generic-write-full-refetch"
+MODULE_BUILD = "2026-09-11-transport-voucherremarks-revert"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator, root_validator
@@ -742,17 +742,18 @@ class TransportDataSheetVO(BaseModel):
     for both). Only EN populated by this tool - Travel Compositor's own translation tooling
     fills in the ~30 other languages afterward (confirmed via real examples). NOTE: real option
     translations only ever populate `name`, never `description` - description is optional here
-    specifically to support that case without sending a meaningless empty string."""
+    specifically to support that case without sending a meaningless empty string.
+
+    REVERTED 2026-09-11 (real production evidence): a `voucherRemarks: Optional[str]` field
+    briefly lived here (2026-09-10), on the belief that Transport had a genuine, separately-
+    persisted voucherRemarks field, based only on a screenshot of Travel Compositor's admin UI
+    showing an input box for it. That was wrong - the product owner pasted Travel Compositor's
+    actual Swagger for PUT /transport/{supplierId} and confirmed ContractTransportDataSheetVO
+    has ONLY name and description. Every write this codebase sent to voucherRemarks for
+    Transport was silently dropped by Travel Compositor. Do not re-add this field without a
+    real Swagger confirmation this time, not just a UI screenshot."""
     name: str
     description: Optional[str] = None
-    # CORRECTED (2026-09-10, real production evidence): the earlier "Transport has no separate
-    # voucherRemarks field" claim here was wrong - a real screenshot of Travel Compositor's own
-    # Transport edit screen shows a genuine, separate "Voucher remarks" input alongside
-    # Description. Added as Optional/None-default (not required, no empty-string default) so a
-    # payload that never sets it behaves exactly as before this field existed - no None-vs-""
-    # write on services that were never touched. See price_validity.py and bulk_notes.py's
-    # TARGETS for the fix to where the "(YYYYMMDD)" code actually gets written now.
-    voucherRemarks: Optional[str] = None
 
 
 class ContractTransportCancellationRangeVO(BaseModel):

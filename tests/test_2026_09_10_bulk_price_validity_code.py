@@ -12,6 +12,14 @@ would wipe every other word already in the field) - it strips whatever code is a
 and appends the new one, via the SAME price_validity.with_price_validity_code function the
 single-service flows already use, so the surgical strip+append behaviour can never drift
 between the single-service and bulk paths.
+
+REVERTED 2026-09-11 (real production evidence): a brief 2026-09-10 "fix" pointed Transport's
+"Voucher remarks" target at a genuine, separately-persisted voucherRemarks field, on the belief
+of a UI screenshot alone. The product owner has since pasted Travel Compositor's real Swagger
+for PUT /transport/{supplierId}, confirming ContractTransportDataSheetVO has ONLY name and
+description - no voucherRemarks anywhere. "Voucher remarks" is no longer offered as a Transport
+target at all; every Transport price-code write in these tests now targets "Description
+(bottom)" instead, same field the code lived in before 2026-09-10.
 """
 import copy
 
@@ -19,14 +27,10 @@ import bulk_notes
 import price_validity
 
 
-def _transport_record(description="Fast, comfortable transfer from Cairo airport to the hotel.",
-                      voucher_remarks=None):
-    sheet = {"description": description}
-    if voucher_remarks is not None:
-        sheet["voucherRemarks"] = voucher_remarks
+def _transport_record(description="Fast, comfortable transfer from Cairo airport to the hotel."):
     return {
         "id": "TRANSPORT-1", "name": "CAI Airport Transfer",
-        "datasheets": {"EN": sheet},
+        "datasheets": {"EN": {"description": description}},
     }
 
 
@@ -72,38 +76,34 @@ def test_price_code_mode_on_empty_field_writes_just_the_code():
 # write_field / plan() - the datasheet-shaped record round trip
 # ---------------------------------------------------------------------------
 
-def test_write_field_updates_transport_voucher_remarks_leaving_description_untouched():
-    # CORRECTED (2026-09-10): Transport has its own real voucherRemarks field - see this
-    # module's own docstring update below. Description is a separate field entirely now and
-    # must be left completely alone by a "Voucher remarks" write.
+def test_write_field_updates_transport_description_with_the_code():
+    # REVERTED 2026-09-11 (see this module's own header update): Transport has no separate
+    # voucherRemarks field - the code lands in description, the only field Transport has.
     record = _transport_record(
-        description="Fast, comfortable transfer from Cairo airport to the hotel.",
-        voucher_remarks="(20260101)")
+        description="Fast, comfortable transfer from Cairo airport to the hotel.\n(20260101)")
     updated, changes = bulk_notes.write_field(
-        record, "Transport", "Voucher remarks", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
-    new_text = updated["datasheets"]["EN"]["voucherRemarks"]
+        record, "Transport", "Description (bottom)", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
+    new_text = updated["datasheets"]["EN"]["description"]
     assert "(20260101)" not in new_text
     assert "(20270430)" in new_text
-    assert updated["datasheets"]["EN"]["description"] == \
-        "Fast, comfortable transfer from Cairo airport to the hotel."
+    assert "Fast, comfortable transfer from Cairo airport to the hotel." in new_text
     assert "EN" in changes
 
 
-def test_write_field_transport_voucher_remarks_writes_to_its_own_real_field():
-    # CORRECTED (2026-09-10, real production evidence): Transport DOES have its own separate
-    # voucherRemarks field after all - a real screenshot of Travel Compositor's own Transport
-    # edit screen proved the earlier "aliased to description" belief wrong. A real bulk write
-    # under that wrong belief landed a code in description for 168 Transports of one supplier -
-    # see bulk_notes._plan_transport_voucher_code_repair for the one-off fix.
-    assert bulk_notes.TARGETS["Transport"]["Voucher remarks"] == "voucherRemarks"
+def test_write_field_transport_voucher_remarks_is_not_a_valid_target():
+    # REVERTED 2026-09-11 (real production evidence, Swagger-confirmed): the 2026-09-10 belief
+    # that Transport had its own separate voucherRemarks field was wrong.
+    assert "Voucher remarks" not in bulk_notes.TARGETS["Transport"]
+    assert "Voucher remarks" not in bulk_notes.available_targets("Transport")
+    assert "Voucher remarks" in bulk_notes.unavailable_targets("Transport")
 
 
 def test_write_field_unchanged_when_same_code_already_present():
-    record = _transport_record(voucher_remarks="Fast transfer.\n(20270430)")
+    record = _transport_record(description="Fast transfer.\n(20270430)")
     updated, changes = bulk_notes.write_field(
-        record, "Transport", "Voucher remarks", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
+        record, "Transport", "Description (bottom)", "2027-04-30", bulk_notes.MODE_PRICE_CODE)
     assert changes == {}
-    assert updated["datasheets"]["EN"]["voucherRemarks"] == "Fast transfer.\n(20270430)"
+    assert updated["datasheets"]["EN"]["description"] == "Fast transfer.\n(20270430)"
 
 
 def test_write_field_updates_transfer_voucher_remarks_field():
@@ -119,7 +119,7 @@ def test_write_field_updates_transfer_voucher_remarks_field():
 def test_original_record_is_never_mutated_in_place():
     record = _transport_record("Fast transfer.\n(20260101)")
     original_copy = copy.deepcopy(record)
-    bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+    bulk_notes.write_field(record, "Transport", "Description (bottom)", "2027-04-30",
                            bulk_notes.MODE_PRICE_CODE)
     assert record == original_copy
 
@@ -130,7 +130,7 @@ def test_original_record_is_never_mutated_in_place():
 
 def test_unchanged_reason_names_the_price_validity_code_specifically():
     record = _transport_record("Fast transfer.\n(20270430)")
-    reason = bulk_notes._unchanged_reason(record, "Transport", "Voucher remarks", "2027-04-30",
+    reason = bulk_notes._unchanged_reason(record, "Transport", "Description (bottom)", "2027-04-30",
                                           bulk_notes.MODE_PRICE_CODE)
     assert "price-validity code" in reason
 
@@ -170,11 +170,14 @@ def test_app_py_offers_the_price_validity_code_bulk_option():
     assert "price_code_available = product_type in price_validity.PRODUCT_TYPES" in src
 
 
-def test_app_py_price_code_branch_wires_the_new_mode_and_fixed_target():
+def test_app_py_price_code_branch_wires_the_new_mode_and_transport_aware_target():
+    # REVERTED 2026-09-11: the target is no longer a single fixed string - Transport gets
+    # "Description (bottom)" (no working voucherRemarks field), every other product type still
+    # gets "Voucher remarks".
     src = _read_app_py()
     assert 'elif add_price_code:' in src
     branch = src.split("elif add_price_code:")[1].split("\n    else:")[0]
-    assert 'target = "Voucher remarks"' in branch
+    assert 'target = "Description (bottom)" if product_type == "Transport" else "Voucher remarks"' in branch
     assert "mode = bulk_notes.MODE_PRICE_CODE" in branch
     assert 'pv_date.isoformat()' in branch
 
@@ -194,7 +197,7 @@ def test_write_field_fills_in_a_missing_airline_code_for_transport():
     record = {"id": "TRANSPORT-1", "name": "Luxor - Hurghada",
              "datasheets": {"EN": {"description": "Private transfer."}}}
     assert "airlineCode" not in record
-    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+    updated, _ = bulk_notes.write_field(record, "Transport", "Description (bottom)", "2027-04-30",
                                         bulk_notes.MODE_PRICE_CODE)
     assert updated["airlineCode"] == ""
 
@@ -202,7 +205,7 @@ def test_write_field_fills_in_a_missing_airline_code_for_transport():
 def test_write_field_fills_in_a_null_airline_code_for_transport():
     record = {"id": "TRANSPORT-1", "name": "Cairo - Alexandria", "airlineCode": None,
              "datasheets": {"EN": {"description": "Private transfer."}}}
-    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+    updated, _ = bulk_notes.write_field(record, "Transport", "Description (bottom)", "2027-04-30",
                                         bulk_notes.MODE_PRICE_CODE)
     assert updated["airlineCode"] == ""
 
@@ -210,7 +213,7 @@ def test_write_field_fills_in_a_null_airline_code_for_transport():
 def test_write_field_never_overwrites_a_real_airline_code_already_present():
     record = {"id": "TRANSPORT-1", "name": "Cairo - Hurghada", "airlineCode": "MS",
              "datasheets": {"EN": {"description": "Private transfer."}}}
-    updated, _ = bulk_notes.write_field(record, "Transport", "Voucher remarks", "2027-04-30",
+    updated, _ = bulk_notes.write_field(record, "Transport", "Description (bottom)", "2027-04-30",
                                         bulk_notes.MODE_PRICE_CODE)
     assert updated["airlineCode"] == "MS"
 

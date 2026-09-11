@@ -10,17 +10,22 @@ delivery (same conversation): both an in-app banner and an email, warning 60 day
 date.
 
 WHY VOUCHER REMARKS AT ALL, NOT SOME INTERNAL-ONLY FIELD: none of ContractTicketDataSheetVO /
-TransferDescriptorVO / TransportDataSheetVO carry an internal-only notes field the way Travel
-Compositor's own MASTER hotel data does (IdeaHotelDataVO.internalRemark - a completely different,
-master-data-only object, unrelated to any of these three - see masterdata_matcher.py). Voucher
-remarks is genuinely the only place a persistent per-service note can live in Travel Compositor
-at all, so embedding a parseable code in text that's already there is the only option, not a
-workaround. CORRECTED (2026-09-10): Transport DOES have its own genuine voucherRemarks field,
-same as Ticket/Transfer (see schemas.py's TransportDataSheetVO.voucherRemarks) - an earlier
-"no separate field, folded into description" claim here was wrong, confirmed via a real
-screenshot of Travel Compositor's own Transport edit screen. A one-off repair tool in
-bulk_notes.py moves the code on any Transport whose code landed in description during the brief
-window this was wrong.
+TransferDescriptorVO carry an internal-only notes field the way Travel Compositor's own MASTER
+hotel data does (IdeaHotelDataVO.internalRemark - a completely different, master-data-only
+object, unrelated to any of these - see masterdata_matcher.py). Voucher remarks is genuinely the
+only place a persistent per-service note can live in Travel Compositor for Ticket/Transfer, so
+embedding a parseable code in text that's already there is the only option, not a workaround.
+
+TRANSPORT IS DIFFERENT (REVERTED 2026-09-11, real production evidence): a "Transport DOES have
+its own genuine voucherRemarks field" claim briefly lived here (2026-09-10), based only on a
+screenshot of Travel Compositor's admin UI showing an input box for it - never confirmed against
+the actual API. That was wrong: the product owner pasted Travel Compositor's real Swagger for
+PUT /transport/{supplierId} and its datasheet type (ContractTransportDataSheetVO) has ONLY name
+and description - no voucherRemarks field exists for Transport at all. Every write sent there
+was silently dropped by Travel Compositor. Transport's price-validity code goes back into
+description, same as before 2026-09-10 - the "no separate field" characterization for Transport
+specifically was correct all along, it just needed the right conclusion (write to description)
+rather than inventing a field that doesn't exist.
 
 THE CODE ITSELF: encode_price_validity_code()/extract_price_validity_date()/
 strip_price_validity_code() are the parse/round-trip primitives. with_price_validity_code() is
@@ -38,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-transport-generic-write-full-refetch"
+MODULE_BUILD = "2026-09-11-transport-voucherremarks-revert"
 
 import os
 import re
@@ -170,20 +175,26 @@ def with_price_validity_code(voucher_text: Optional[str], extracted_data: Dict[s
 
 def _voucher_text_of(service: Dict[str, Any], product_type: str) -> str:
     """Real live-record shapes (confirmed via api_client.py's get_tickets/get_transfers/
-    get_transports and their per-item GETs): Ticket/Transfer/Transport all carry their datasheet
-    under ['datasheet'][lang]['voucherRemarks'] (falls back to a bare top-level 'voucherRemarks'
-    for a leaner/different response shape some list endpoints return).
+    get_transports and their per-item GETs): Ticket/Transfer carry their datasheet under
+    ['datasheet'][lang]['voucherRemarks'] (falls back to a bare top-level 'voucherRemarks' for a
+    leaner/different response shape some list endpoints return).
 
-    CORRECTED (2026-09-10): Transport DOES have a real voucherRemarks field after all (see
-    schemas.py's TransportDataSheetVO.voucherRemarks) - the earlier "no voucherRemarks, code
-    lives in description instead" claim was wrong. voucherRemarks is checked FIRST for every
-    product type now; Transport additionally falls back to description if voucherRemarks is
-    empty, purely so this scan still finds a code on any Transport that hasn't been through
-    bulk_notes.py's one-off repair yet (the 2026-09-10 bulk mis-write that landed codes in
-    description before this fix) - once every Transport is repaired that fallback is dead code,
-    but leaving it costs nothing and prevents a silently-missed expiry warning in the meantime."""
+    REVERTED 2026-09-11 (real production evidence): Transport has NO voucherRemarks field at
+    all - confirmed via Travel Compositor's own Swagger for PUT /transport/{supplierId}
+    (ContractTransportDataSheetVO only has name/description). A "Transport DOES have a real
+    voucherRemarks field" claim briefly lived here (2026-09-10) based only on a UI screenshot,
+    never confirmed against the API - wrong. Transport's price-validity code lives in
+    description, same as Ticket/Transfer's own voucherRemarks-based code, just a different
+    field."""
     if not isinstance(service, dict):
         return ""
+    if product_type == "Transport":
+        datasheet = service.get("datasheet")
+        if isinstance(datasheet, dict):
+            en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
+            if isinstance(en, dict) and en.get("description"):
+                return en["description"]
+        return service.get("description") or ""
     datasheet = service.get("datasheet")
     if isinstance(datasheet, dict):
         en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
@@ -191,14 +202,7 @@ def _voucher_text_of(service: Dict[str, Any], product_type: str) -> str:
             text = en.get("voucherRemarks")
             if text:
                 return text
-            if product_type == "Transport" and en.get("description"):
-                return en["description"]
-    text = service.get("voucherRemarks")
-    if text:
-        return text
-    if product_type == "Transport":
-        return service.get("description") or ""
-    return ""
+    return service.get("voucherRemarks") or ""
 
 
 def _service_label(service: Dict[str, Any]) -> str:
