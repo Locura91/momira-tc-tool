@@ -71,7 +71,7 @@ import uuid
 import mimetypes
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
+MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old

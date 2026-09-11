@@ -43,8 +43,11 @@ import csv
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import difflib
+
 from builder import build_transport_payloads
-from transport_matcher import suggest_existing_transport_matches, remember_transport_id
+from transport_matcher import (suggest_existing_transport_matches, remember_transport_id,
+                               _expand_airport_codes)
 
 _PRICE_RE = re.compile(r"^\$\s*([0-9]+(?:\.[0-9]+)?)$")
 
@@ -201,6 +204,101 @@ def combine_fts_transfer_matrix(sedan_csv_path: str, hiace_csv_path: str) -> Dic
                                 "hiace_kind": h["kind"]})
 
     return {"routes": routes, "skipped": skipped, "format_error": None}
+
+
+# ----------------------------------------------------------------------
+# Resolving ONE live place name to exactly one of the matrix's own 21 cities
+# ----------------------------------------------------------------------
+# CONFIRMED REAL BUG (product owner, 2026-09-11): "the App gives me Transports, which are not on
+# the list and it misses out on the price errors."
+#
+# price_refresh.lookup_prices_from_fts_matrix used to match a live route by building a fake
+# "existing transports" list - one entry per priced cell, named f"{origin} - {arrival}" - and
+# running transport_matcher.suggest_existing_transport_matches over all 271 of them, taking the
+# single best-scoring one. That scorer is built for a DIFFERENT job: recognizing one route among a
+# handful of free-text, descriptive live transport names ("One-way transfer Praslin - La Digue").
+# Pointed at a dense 21x21 city grid, where hundreds of candidate names share a city with each
+# other, it fails badly, because it averages the two endpoint half-scores: a perfect 0.9
+# substring hit on ONE endpoint plus a meaningless fuzzy score on the other still clears the 0.5
+# floor, so it returns a confidently-wrong neighbouring cell instead of no match. Measured against
+# the real Sedan export (271 priced cells, 21 cities):
+#
+#   * 18 of the 271 priced routes got the WRONG price - every same-city route (e.g. live
+#     "Hurghada - Hurghada", genuinely $30 in the grid) was matched to "Cairo - Hurghada" ($140).
+#   * ALL 170 unpriced pairs (the "—" and "Train" cells) were matched to some OTHER cell's price -
+#     live "Cairo - Luxor", which the sheet deliberately sells as train-only, came back priced at
+#     $135 from "El Gouna - Cairo".
+#   * 7 of 8 sampled routes with an endpoint the sheet doesn't list at all still matched - live
+#     "Cairo - Alexandria" came back at $155 from "Cairo - Makadi Bay", and "Sharm El Sheikh - Ras
+#     Mohammed" at $285 from "Marsa Matruh - Sharm El Sheikh".
+#
+# Every one of those is a wrong price offered for a live record, which is exactly the "Transports,
+# which are not on the list" half of the report - they are not merely spurious rows, they carry
+# real prices from the wrong city pair.
+#
+# The fix is to stop fuzzy-matching a whole route name against a concatenated pair name at all.
+# The matrix is a STRUCTURED grid, so each endpoint is resolved to exactly one city on its own,
+# and the price is then read from that one exact (origin, destination) cell - never a neighbour,
+# never the reverse direction, never a different row. An endpoint that doesn't clearly resolve, or
+# that resolves ambiguously, yields no price at all rather than the nearest-looking one.
+FTS_CITY_MATCH_MIN_SCORE = 0.85   # a genuine spelling variant ("Marsa Matrouh"), not a guess
+FTS_CITY_MATCH_MIN_MARGIN = 0.05  # the winner must be clearly ahead of the runner-up
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _place_words(text: str) -> List[str]:
+    """Normalizes a place name to a bare word list: airport codes expanded to their city (the
+    same confirmed rule transport_matcher applies - "when Transfer or Transport says a three
+    letter code from Airport, this must be seen as a City name too"), lowercased, punctuation
+    dropped. Matching on WORDS rather than raw substrings is what keeps "Taba" from matching
+    inside a longer unrelated word."""
+    return _WORD_RE.findall(_expand_airport_codes(text or "").lower())
+
+
+def _contains_words(haystack: List[str], needle: List[str]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(haystack[i:i + len(needle)] == needle for i in range(len(haystack) - len(needle) + 1))
+
+
+def _city_score(place_words: List[str], city_words: List[str]) -> float:
+    if place_words == city_words:
+        return 1.0
+    # Either direction of whole-word containment: a live name is routinely the matrix city plus
+    # something else ("Siwa Oasis", "Hurghada Airport", "Private Transfer Marsa Matruh"), and
+    # occasionally the bare half of a longer city name.
+    if _contains_words(place_words, city_words) or _contains_words(city_words, place_words):
+        return 0.9
+    return difflib.SequenceMatcher(None, " ".join(place_words), " ".join(city_words)).ratio()
+
+
+def match_place_to_city(place_name: str, cities: List[str],
+                        min_score: float = FTS_CITY_MATCH_MIN_SCORE,
+                        min_margin: float = FTS_CITY_MATCH_MIN_MARGIN) -> Dict[str, Any]:
+    """Resolves ONE endpoint of a live route to exactly one of the matrix's own city names.
+
+    Returns {"city": str|None, "score": float, "ambiguous": [str, ...]}.
+
+    "city" is None when nothing scored high enough (the sheet simply doesn't cover this place -
+    the ordinary, expected case for a supplier's non-FTS routes) or when two or more cities tied
+    within min_margin of each other, which is reported in "ambiguous" so a caller can say WHY
+    rather than silently picking one. The ambiguous case is real, not theoretical: this grid holds
+    both "Marsa Alam" and "Marsa Matruh", so a live route naming only "Marsa" genuinely cannot be
+    resolved and must never be guessed at - one of the two is 600km from the other."""
+    place_words = _place_words(place_name)
+    if not place_words or not cities:
+        return {"city": None, "score": 0.0, "ambiguous": []}
+
+    scored = sorted(((_city_score(place_words, _place_words(c)), c) for c in cities),
+                    key=lambda pair: pair[0], reverse=True)
+    best_score, best_city = scored[0]
+    if best_score < min_score:
+        return {"city": None, "score": round(best_score, 3), "ambiguous": []}
+    tied = [c for score, c in scored if best_score - score < min_margin]
+    if len(tied) > 1:
+        return {"city": None, "score": round(best_score, 3), "ambiguous": tied}
+    return {"city": best_city, "score": round(best_score, 3), "ambiguous": []}
 
 
 # Confirmed bracket ranges (product owner, 2026-09-11) - see module docstring.

@@ -13251,6 +13251,21 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
                 st.caption("  ·  ".join(bits))
+            # CONFIRMED REAL GAP (product owner, 2026-09-11, reviewing bulk Transport update
+            # against real TRANSPORT-418748): every modality shares ONE base price, so repricing
+            # one of them rewrites the others' stored supplements to keep their own final prices
+            # steady. Correct and non-destructive, but invisible until now - after a Sedan-only
+            # round the operator would open Travel Compositor and find Hiace's supplement changed
+            # from 25 to 105 with nothing in this app having mentioned it, which reads as
+            # corruption even though Hiace's price never moved. Named here BEFORE Publish, with
+            # the numbers that will actually be written (preview_untouched_modality_effects runs
+            # the same rebuild_prices the Apply step runs).
+            for _side in price_refresh.preview_untouched_modality_effects(route, p["changes"]):
+                st.caption(
+                    f"↳ **{_side['name']}** is not part of this round — it keeps selling at "
+                    f"**{_side['price']} {route.get('currency') or ''}**, but because the shared "
+                    f"base price moves, its stored supplement is recalculated "
+                    f"{_side['old_supplement']} → {_side['new_supplement']}.")
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
@@ -13719,7 +13734,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-fts-bracket-mismatch-visible"
+BUILD_VERSION = "2026-09-11-fts-matrix-city-resolution"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
+MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
 
 import json
 from datetime import date
@@ -654,9 +654,12 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
 # limit (which only moves the ceiling, and this flow has no cap on how many routes a supplier can
 # have), this bypasses the AI entirely for this one confirmed document shape, the same fix already
 # applied to the import side.
-FTS_MATCH_MIN_SCORE = 0.5  # same floor as fts_transfer_matrix._AUTO_MATCH_MIN_SCORE - see that
-# module's docstring for why a missed match (silently "not found") is the safer failure than a
-# wrong one (this would overwrite a live price).
+# SUPERSEDED 2026-09-11 (see fts_transfer_matrix.FTS_CITY_MATCH_MIN_SCORE's own comment for the
+# measured failure this replaced): this flow no longer fuzzy-scores a whole live route name
+# against every priced cell's concatenated "origin - arrival" name. Each endpoint is resolved to
+# exactly one matrix city on its own, and the price comes from that one exact cell. Kept only
+# because it is part of this module's public surface; nothing reads it any more.
+FTS_MATCH_MIN_SCORE = 0.5
 
 
 def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: Optional[str] = None,
@@ -678,16 +681,17 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
     passing each path under the right keyword, having already classified it with
     fts_transfer_matrix.classify_fts_matrix_file.
 
-    MATCHING: each LIVE route (from Travel Compositor, named via route_places()) is matched to a
-    matrix city pair using the SAME fuzzy name-similarity scoring the FTS bulk-import flow already
-    uses to auto-suggest matches (transport_matcher.suggest_existing_transport_matches) - just run
-    in the opposite direction. A fake "existing_transports"-shaped list is built from the matrix's
-    own city pairs (name f"{departure} - {arrival}") purely so that existing, already-tested
-    scorer can be reused unchanged rather than writing a second name-matching implementation that
-    could disagree with the first. A live route that doesn't clear FTS_MATCH_MIN_SCORE is left
-    unmatched ("found": False, same as the AI path reporting a route the document doesn't price)
-    rather than guessed at - a wrong match here would silently push the WRONG city pair's price
-    onto a live route, which is worse than reporting nothing and asking a human to check by hand.
+    MATCHING (rewritten 2026-09-11 after a confirmed real failure - see
+    fts_transfer_matrix.FTS_CITY_MATCH_MIN_SCORE's own comment for the measured numbers): each
+    LIVE route (from Travel Compositor, named via route_places()) has its departure and arrival
+    resolved SEPARATELY to one of the matrix's own 21 city names
+    (fts_transfer_matrix.match_place_to_city), and the price is then read from that one exact
+    (origin, destination) cell. The matrix is a structured grid, so there is never a reason to
+    guess at a nearby cell: a route whose endpoints don't both resolve is left unpriced, a route
+    whose endpoints resolve to a cell the sheet doesn't price (an em dash, or a train-only pair)
+    is reported as exactly that, and an endpoint that resolves ambiguously (the grid holds both
+    "Marsa Alam" and "Marsa Matruh") is reported rather than picked. Nothing here ever reads a
+    price from a different city pair than the one the route actually names.
 
     PRICES are reported as FTS's own confirmed bracket ranges - Sedan 1-3 pax, Hiace 1-8 pax
     (fts_transfer_matrix.FTS_SEDAN_BRACKET/FTS_HIACE_BRACKET) - regardless of what the LIVE
@@ -704,56 +708,97 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
     if not sedan_csv_path and not hiace_csv_path:
         return {}, "No FTS rate-matrix file given."
 
-    if sedan_csv_path and hiace_csv_path:
-        combined = fts_transfer_matrix.combine_fts_transfer_matrix(sedan_csv_path, hiace_csv_path)
-        if combined["format_error"]:
-            return {}, combined["format_error"]
-        matrix_routes = [{"departure_name": r["departure_name"], "arrival_name": r["arrival_name"],
-                          "sedan_price": r["sedan_price"], "hiace_price": r["hiace_price"]}
-                         for r in combined["routes"]]
-    else:
-        # One-vehicle round: parse just that file directly rather than going through
-        # combine_fts_transfer_matrix, which requires both.
-        solo_path = sedan_csv_path or hiace_csv_path
-        solo_key = "sedan_price" if sedan_csv_path else "hiace_price"
-        parsed = fts_transfer_matrix.parse_fts_matrix_csv(solo_path)
-        if parsed["format_error"]:
+    sedan = fts_transfer_matrix.parse_fts_matrix_csv(sedan_csv_path) if sedan_csv_path else None
+    hiace = fts_transfer_matrix.parse_fts_matrix_csv(hiace_csv_path) if hiace_csv_path else None
+    for parsed in (sedan, hiace):
+        if parsed and parsed["format_error"]:
             return {}, parsed["format_error"]
-        matrix_routes = [
-            {"departure_name": origin, "arrival_name": dest,
-             "sedan_price": None, "hiace_price": None, solo_key: cell["price"]}
-            for (origin, dest), cell in parsed["cells"].items() if cell["kind"] == "price"
-        ]
-    if not matrix_routes:
+    if sedan and hiace and sedan["cities"] != hiace["cities"]:
+        return {}, ("The Sedan and Hiace files list different cities (or a different order) - "
+                    "they must be exported from the same workbook/season so every cell lines up "
+                    f"1:1. Sedan: {sedan['cities']}. Hiace: {hiace['cities']}.")
+    grid = sedan or hiace
+    cities = grid["cities"]
+    if not any(c["kind"] == "price" for c in grid["cells"].values()):
         return {}, "The rate sheet parsed, but has no priced routes to read."
 
-    fake_existing = [{"id": i, "name": f"{r['departure_name']} - {r['arrival_name']}"}
-                     for i, r in enumerate(matrix_routes)]
+    def _cell_price(parsed, origin, dest):
+        """The ONE exact cell for this city pair, or (None, why-not). Never a neighbouring cell,
+        never the reverse direction - see fts_transfer_matrix's own FTS_CITY_MATCH_MIN_SCORE
+        comment for the measured damage the old nearest-match behaviour did."""
+        if parsed is None:
+            return None, None
+        cell = parsed["cells"].get((origin, dest))
+        if cell is None:
+            return None, "not in the grid"
+        if cell["kind"] == "price":
+            return cell["price"], None
+        return None, {"train": "sold as a train journey, not a road transfer",
+                      "unavailable": "marked as no transfer available (—)",
+                      "blank": "left blank",
+                      "unrecognized": f"an unrecognized entry ({cell['raw']!r})"}.get(
+                          cell["kind"], cell["kind"])
 
     findings: Dict[int, Dict[str, Any]] = {}
     for i, route in enumerate(routes):
         dep, arr = route_places(route)
-        matches = transport_matcher.suggest_existing_transport_matches(dep, arr, fake_existing, top_n=1)
-        best = matches[0] if matches else None
-        if not best or best.get("transport_id") is None or best.get("score", 0) < FTS_MATCH_MIN_SCORE:
+        dep_match = fts_transfer_matrix.match_place_to_city(dep, cities)
+        arr_match = fts_transfer_matrix.match_place_to_city(arr, cities)
+        if not dep_match["city"] or not arr_match["city"]:
+            # An endpoint the sheet simply doesn't list is the ordinary case for a supplier's
+            # non-FTS routes - it is left out silently, exactly as "the document doesn't price
+            # this" already means everywhere else. An AMBIGUOUS one is different and is reported:
+            # the app could see a plausible city but genuinely cannot tell which, and a human
+            # needs to know that rather than have it look identical to "not covered".
+            ambiguous = [(dep, dep_match), (arr, arr_match)]
+            ambiguous = [(name, m) for name, m in ambiguous if m["ambiguous"]]
+            if ambiguous:
+                bits = "; ".join(f"“{name}” could be {' or '.join(m['ambiguous'])}"
+                                 for name, m in ambiguous)
+                findings[i] = {
+                    "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                    "currency": "", "matched_row": "ambiguous place name",
+                    "note": (f"Not repriced because a place name on this route is ambiguous in the "
+                             f"FTS matrix: {bits}. Rename the transport (or tell me which city it "
+                             f"is) rather than risk pricing the wrong one."),
+                }
             continue
-        m = matrix_routes[best["transport_id"]]
+        origin_city, dest_city = dep_match["city"], arr_match["city"]
+        sedan_price, sedan_why = _cell_price(sedan, origin_city, dest_city)
+        hiace_price, hiace_why = _cell_price(hiace, origin_city, dest_city)
+        if sedan_price is None and hiace_price is None:
+            # Both endpoints resolved, so this route IS one the sheet covers - it just has no
+            # usable price in this cell. That is worth saying out loud (train-only pairs and "—"
+            # pairs are deliberate supplier decisions, not app failures), and is precisely the
+            # case the old nearest-match behaviour used to paper over with another cell's price.
+            why = "; ".join(f"{label}: {reason}" for label, reason in
+                            (("Sedan", sedan_why), ("Hiace", hiace_why)) if reason)
+            findings[i] = {
+                "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
+                "currency": "", "matched_row": f"{origin_city} -> {dest_city} (FTS matrix)",
+                "note": (f"Matched {origin_city} → {dest_city} in the FTS matrix, but that "
+                         f"cell carries no price ({why}) - left exactly as it is."),
+            }
+            continue
+        m = {"departure_name": origin_city, "arrival_name": dest_city,
+             "sedan_price": sedan_price, "hiace_price": hiace_price}
+        best = {"score": round(min(dep_match["score"], arr_match["score"]), 3)}
         brackets = []
         only_option_code = None
-        if sedan_csv_path and hiace_csv_path:
+        priced = [(label, price, bracket) for label, price, bracket in (
+            ("Sedan", sedan_price, fts_transfer_matrix.FTS_SEDAN_BRACKET),
+            ("Hiace", hiace_price, fts_transfer_matrix.FTS_HIACE_BRACKET),
+        ) if price is not None]
+        if len(priced) > 1:
             # Both vehicles priced this round - bracket_price_for's EXACT match (checked before
             # its overlap fallback) resolves each live option to the right one of these two
             # brackets unambiguously, same as it already does for every other two-bracket
-            # document.
-            if m.get("sedan_price") is not None:
-                brackets.append({"min_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[0],
-                                 "max_pax": fts_transfer_matrix.FTS_SEDAN_BRACKET[1],
-                                 "price": round(m["sedan_price"], 2),
-                                 "child_price": None, "infant_price": None})
-            if m.get("hiace_price") is not None:
-                brackets.append({"min_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[0],
-                                 "max_pax": fts_transfer_matrix.FTS_HIACE_BRACKET[1],
-                                 "price": round(m["hiace_price"], 2),
+            # document. This is the shape that expresses the product owner's own confirmed rule
+            # end to end: base (vehiclePrice) = Sedan, and Hiace's supplement = Hiace - Sedan,
+            # both computed from the document in one round.
+            for _label, price, bracket in priced:
+                brackets.append({"min_pax": bracket[0], "max_pax": bracket[1],
+                                 "price": round(price, 2),
                                  "child_price": None, "infant_price": None})
         else:
             # CONFIRMED HAZARD (found while building this): a SINGLE bracket cannot safely rely
@@ -767,21 +812,22 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
             # "close enough") - if this route's live brackets don't exactly line up with FTS's
             # own 1-3/1-8 convention (e.g. a human edited them since), it is left out of this
             # round rather than risked.
-            target_key = "sedan_price" if sedan_csv_path else "hiace_price"
-            target_bracket = (fts_transfer_matrix.FTS_SEDAN_BRACKET if sedan_csv_path
-                              else fts_transfer_matrix.FTS_HIACE_BRACKET)
-            vehicle_label = "Sedan" if sedan_csv_path else "Hiace"
-            price = m.get(target_key)
+            #
+            # This also covers a pair that is priced in only ONE of two uploaded files (the
+            # "one_sided" case in combine_fts_transfer_matrix's own terms) - previously such a
+            # pair was dropped from a both-files round entirely; it now prices the vehicle that
+            # genuinely has a price, under this same single-bracket safety rule.
+            vehicle_label, price, target_bracket = priced[0]
             live_match = next((o for o in route["options"]
                                if (o.get("min_pax"), o.get("max_pax")) == target_bracket), None)
-            if price is not None and live_match is not None:
+            if live_match is not None:
                 brackets.append({"min_pax": live_match["min_pax"], "max_pax": live_match["max_pax"],
                                  "price": round(price, 2), "child_price": None, "infant_price": None})
                 # See build_proposals' matching "only_option_code" comment - restricts this
                 # finding to the one option it actually has a price for, so a lone bracket can
                 # never overlap-match the OTHER live option this round says nothing about.
                 only_option_code = live_match.get("code")
-            elif price is not None and live_match is None:
+            else:
                 # CONFIRMED REAL BUG (product owner, 2026-09-11): "the App... misses out on the
                 # price errors. Example Transport from Marsa Matruh to Siwa and the price was not
                 # detected by the App" - the document WAS matched to this route (best/score below)
@@ -1440,6 +1486,51 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
         option_payloads.append({"code": option["code"], "payload": payload,
                                 "unit_price": resolved[option["code"]]})
     return {"transport": parent, "options": option_payloads}
+
+
+def preview_untouched_modality_effects(route: Dict[str, Any],
+                                       changes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """What this round does to the modalities it is NOT repricing.
+
+    CONFIRMED REAL GAP (product owner, 2026-09-11, reviewing bulk Transport update against the
+    real TRANSPORT-418748: "One Modality for Sedan, 1 to 3 Pax. A second modality for Hiace, 1 to
+    8 Pax. PriceVehicle = price Sedan. Price Hiace = Price Hiace from file - price from Sedan"):
+    every modality on a transport shares ONE base price, so moving the base necessarily rewrites
+    every other modality's stored supplement to hold its own final price steady. That is correct
+    and non-destructive - the other modality still sells for exactly what it sold for - but it was
+    completely invisible. On a Sedan-only round against that real record (Vehicle 175, Hiace
+    supplement 25, so Hiace = 200), accepting "Sedan 175 → 95" also rewrites Hiace's supplement
+    from 25 to 105 behind the scenes. Travel Compositor then shows a supplement the operator never
+    typed, which reads as corruption even though Hiace's price never moved.
+
+    Returns one entry per modality whose STORED supplement changes without its own price changing:
+    {"code", "name", "price", "old_supplement", "new_supplement"}. Empty when nothing else shifts.
+
+    Uses rebuild_prices itself rather than re-deriving the arithmetic, so the numbers shown to a
+    human before Publish are by construction the numbers that get written."""
+    if route.get("kind") == KIND_TRANSFER or not changes:
+        return []
+    new_prices = {c["code"]: c["new"] for c in changes}
+    payloads = rebuild_prices(route, new_prices)
+    if not payloads.get("transport"):
+        return []
+    by_code = {o["code"]: o for o in route["options"] if not o.get("fetch_failed")}
+    out = []
+    for built in payloads["options"]:
+        code = built["code"]
+        if code in new_prices or code not in by_code:
+            continue
+        old_supplement = _option_supplement(by_code[code])
+        entry = _select_price_entry([p for p in (built["payload"].get("prices") or [])
+                                     if isinstance(p, dict)])
+        new_supplement = _num((entry or {}).get("adultPriceSupplement"))
+        if abs(new_supplement - old_supplement) < 0.005:
+            continue
+        out.append({"code": code, "name": by_code[code].get("name") or code,
+                    "price": by_code[code].get("unit_price"),
+                    "old_supplement": round(old_supplement, 2),
+                    "new_supplement": round(new_supplement, 2)})
+    return out
 
 
 def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],

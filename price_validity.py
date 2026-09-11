@@ -38,7 +38,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
+MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
 
 import os
 import re

@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-fts-bracket-mismatch-visible"
+MODULE_BUILD = "2026-09-11-fts-matrix-city-resolution"
 
 import math
 import re
