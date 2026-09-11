@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-price-refresh-per-vehicle-and-solo-round"
+MODULE_BUILD = "2026-09-11-cancellation-voucher-text-no-bullets"
 
 import math
 import datetime
@@ -676,19 +676,31 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
     words, so the voucher can never describe a policy Momira doesn't actually enforce.
     """
     if cancellation_tiers:
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-11): "please change also the writting
+        # structure... as in the remarks are no bullet points allowed, we just need to write a
+        # text without '-'." Same underlying request as the 2026-08-25 Ticket-modality-Remarks
+        # rule (_strip_bullet_points's own docstring), now extended to every Voucher Remarks
+        # write this shared synthesizer produces (Transport, Transfer, ClosedTour, Ticket, and
+        # anywhere else cancellation_tiers is a real tier list - see this module's own docstring
+        # for the current call sites). Each tier is its own line under the "Cancellation
+        # Policy:" header, same as before - only the leading "- " marker is gone.
+        # parse_cancellation_tiers_from_voucher_text (below) already tolerates a leading "-"/"•"
+        # or none at all on each line, so this is a safe one-way change: old bulleted text
+        # already live on a record still parses correctly, and this function simply stops
+        # writing new bullets from now on.
         lines = ["Cancellation Policy:"]
         for days, refund_pct in cancellation_tiers:
             fee_pct = round(100.0 - refund_pct, 2)
             if fee_pct <= 0:
-                lines.append(f"- Free cancellation if cancelled at least {days} days before arrival.")
+                lines.append(f"Free cancellation if cancelled at least {days} days before arrival.")
             elif days == 0:
                 # The days=0 tier is the extraction convention for "day of check-in / no-show"
                 # (see ai_extractor's cancellation_policy_tiers rule) - phrase it as such rather
                 # than the slightly odd-sounding "within 0 days of arrival".
                 if refund_pct <= 0:
-                    lines.append("- No refund for cancellations on the day of arrival or no-shows.")
+                    lines.append("No refund for cancellations on the day of arrival or no-shows.")
                 else:
-                    lines.append(f"- {fee_pct:g}% cancellation fee on the day of arrival or for no-shows "
+                    lines.append(f"{fee_pct:g}% cancellation fee on the day of arrival or for no-shows "
                                   f"({refund_pct:g}% refund).")
             elif refund_pct <= 0:
                 # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): a tier means "cancel
@@ -698,9 +710,9 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
                 # to say "within {days} days OF arrival" instead - the OPPOSITE condition (close
                 # to arrival, not far from it) - so the voucher told the customer the reverse of
                 # what the structured refund tier actually grants.
-                lines.append(f"- No refund if cancelled less than {days} days before arrival.")
+                lines.append(f"No refund if cancelled less than {days} days before arrival.")
             else:
-                lines.append(f"- {fee_pct:g}% cancellation fee if cancelled less than {days} days before "
+                lines.append(f"{fee_pct:g}% cancellation fee if cancelled less than {days} days before "
                               f"arrival ({refund_pct:g}% refund).")
         return "\n".join(lines)
     # cancellation_policy_text (the source's own raw wording) is deliberately never returned -

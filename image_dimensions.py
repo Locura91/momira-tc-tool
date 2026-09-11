@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-price-refresh-per-vehicle-and-solo-round"
+MODULE_BUILD = "2026-09-11-cancellation-voucher-text-no-bullets"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

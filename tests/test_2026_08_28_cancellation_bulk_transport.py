@@ -302,7 +302,7 @@ def test_build_proposals_flags_unchanged_when_current_matches_new():
     # be semantically equivalent wording - see the test right below for the more common real
     # case where a record's existing text came from a different source and genuinely differs.
     matching_description = ("<p>Private transfer from the airport.</p>"
-                            "<p>Cancellation Policy:\n- Free cancellation if cancelled at least 30 days before arrival.</p>")
+                            "<p>Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival.</p>")
     client = _FakeTransportClient(transports=[_sample_record(days=30, refund_pct=100.0, description=matching_description)])
     rows, _ = cbt.load_supplier_transports_for_cancellation(client, "SUP-X")
     proposals = cbt.build_proposals(rows, [{"days": 30, "fee_percentage": 0.0}])

@@ -309,7 +309,7 @@ def test_build_proposals_transfer_has_no_structured_ranges():
 
 def test_build_proposals_flags_unchanged_when_text_and_tiers_already_match():
     matching_text = ("Book direct.\n\n"
-                     "Cancellation Policy:\n- Free cancellation if cancelled at least 30 days before arrival.")
+                     "Cancellation Policy:\nFree cancellation if cancelled at least 30 days before arrival.")
     client = _FakeClient(records=[_hotel_record("H1", text=matching_text)])
     rows, _ = cb.load_supplier_services_for_cancellation(client, "SUP-X", "Hotel")
     proposals = cb.build_proposals(rows, [{"days": 30, "fee_percentage": 0.0}], "Hotel")
