@@ -53,11 +53,23 @@ def _base_option():
 
 
 def _route(options, base_adult=100.0):
+    # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a two-or-more
+    # modality route requires an explicit base_bracket_override (no auto-detect fallback) -
+    # BASE (1-99) is always the designated vehicle/base modality in every fixture below, since
+    # these tests are about the SUPPLEMENT-writing side, not base selection.
     return {"id": "T1", "name": "Cairo - Luxor", "kind": None, "price_per_pax": True,
+            "base_bracket_override": (1, 99),
             "options": [_base_option()] + options,
             "raw": {"id": "T1", "pricePerPax": True, "baseAdultPrice": base_adult,
                     "baseChildrenPrice": 0.0, "baseInfantPrice": 0.0,
                     "startDate": "2020-01-01", "endDate": "2099-12-31"}}
+
+
+def _supplement_change(code, min_pax, max_pax, new_price, start_date=None, end_date=None):
+    """A single 'changes' entry for the modality under test - rebuild_prices' own signature is
+    the SAME list build_proposals produces, one entry per period (see bracket_periods_for)."""
+    return {"code": code, "min_pax": min_pax, "max_pax": max_pax, "old": None, "new": new_price,
+            "name": code, "write_kind": "supplement", "start_date": start_date, "end_date": end_date}
 
 
 # ----------------------------------------------------------------------
@@ -99,7 +111,8 @@ def test_updating_todays_period_leaves_a_future_scheduled_period_completely_unto
         {"startDate": NEXT_YEAR, "endDate": TWO_YEARS, "adultPriceSupplement": 999.0},
     ])
     route = _route([option])
-    payloads = price_refresh.rebuild_prices(route, {"A": 150.0})  # base 100 + new supplement 50
+    changes = [_supplement_change("A", 1, 4, 150.0)]  # base 100 + new supplement 50
+    payloads = price_refresh.rebuild_prices(route, changes)
     by_code = {o["code"]: o for o in payloads["options"]}
     prices = by_code["A"]["payload"]["prices"]
     assert len(prices) == 2
@@ -115,7 +128,8 @@ def test_three_periods_only_the_one_covering_today_changes():
     future = {"startDate": NEXT_YEAR, "endDate": TWO_YEARS, "adultPriceSupplement": 30.0}
     option = _option_with_periods("A", 1, 4, [past, current, future])
     route = _route([option])
-    payloads = price_refresh.rebuild_prices(route, {"A": 200.0})  # base 100 + new supplement 100
+    changes = [_supplement_change("A", 1, 4, 200.0)]  # base 100 + new supplement 100
+    payloads = price_refresh.rebuild_prices(route, changes)
     by_code = {o["code"]: o for o in payloads["options"]}
     prices = by_code["A"]["payload"]["prices"]
     assert past in prices
@@ -126,16 +140,21 @@ def test_three_periods_only_the_one_covering_today_changes():
     assert updated["startDate"] == TODAY and updated["endDate"] == NEXT_YEAR  # own dates preserved
 
 
-def test_a_period_dropping_to_exactly_base_price_removes_only_that_entry_not_its_siblings():
+def test_a_period_computing_to_exactly_base_price_is_a_hard_block_not_a_silent_drop():
+    # CONFIRMED ABSOLUTE RULE (product owner, 2026-09-11): "Supplement cannot be 0, if it is 0
+    # there is an error." A period whose price equals the base used to have its entry silently
+    # dropped - that behaviour is GONE: it's a hard refusal now, since two different vehicle
+    # classes can never legitimately cost the same.
     future_period = {"startDate": NEXT_YEAR, "endDate": TWO_YEARS, "adultPriceSupplement": 999.0}
     option = _option_with_periods("A", 1, 4, [
         {"startDate": "2020-01-01", "endDate": None, "adultPriceSupplement": 20.0},
         future_period,
     ])
     route = _route([option])
-    payloads = price_refresh.rebuild_prices(route, {"A": 100.0})  # == base -> today's period drops
-    by_code = {o["code"]: o for o in payloads["options"]}
-    assert by_code["A"]["payload"]["prices"] == [future_period]
+    changes = [_supplement_change("A", 1, 4, 100.0)]  # == base -> would compute to 0 supplement
+    payloads = price_refresh.rebuild_prices(route, changes)
+    assert payloads["transport"] is None
+    assert "0" in payloads["blocked"]
 
 
 def test_single_period_with_no_dates_still_behaves_exactly_as_before_this_fix():
@@ -146,7 +165,8 @@ def test_single_period_with_no_dates_still_behaves_exactly_as_before_this_fix():
     option = {"code": "A", "min_pax": 1, "max_pax": 4, "unit_price": 120.0, "name": "A",
               "raw": {"code": "A", "prices": [{"adultPriceSupplement": 20.0}]}}
     route = _route([option])
-    payloads = price_refresh.rebuild_prices(route, {"A": 150.0})
+    changes = [_supplement_change("A", 1, 4, 150.0)]
+    payloads = price_refresh.rebuild_prices(route, changes)
     by_code = {o["code"]: o for o in payloads["options"]}
     prices = by_code["A"]["payload"]["prices"]
     assert len(prices) == 1
@@ -156,7 +176,8 @@ def test_single_period_with_no_dates_still_behaves_exactly_as_before_this_fix():
 def test_a_brand_new_supplement_on_a_previously_supplement_free_option_still_gets_real_dates():
     option = _option_with_periods("A", 1, 4, [])  # no price entries at all yet
     route = _route([option])
-    payloads = price_refresh.rebuild_prices(route, {"A": 130.0})
+    changes = [_supplement_change("A", 1, 4, 130.0)]
+    payloads = price_refresh.rebuild_prices(route, changes)
     by_code = {o["code"]: o for o in payloads["options"]}
     entry = by_code["A"]["payload"]["prices"][0]
     assert entry["adultPriceSupplement"] == 30.0

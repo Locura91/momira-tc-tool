@@ -99,6 +99,9 @@ def _live(name, sedan=(1, 3), hiace=(1, 8), sedan_price=1.0, hiace_price=2.0):
     return {
         "id": "TRANSPORT-418748", "name": name, "departure_code": None, "arrival_code": None,
         "currency": "USD", "price_per_pax": False, "base_adult": sedan_price,
+        # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a
+        # two-modality route requires an explicit base_bracket_override - Sedan is base here.
+        "base_bracket_override": sedan,
         "options": [
             {"code": "Sedan", "min_pax": sedan[0], "max_pax": sedan[1],
              "unit_price": sedan_price, "name": "Sedan", "raw": {"code": "Sedan", "prices": []}},
@@ -232,13 +235,23 @@ def test_both_files_together_price_sedan_as_base_and_hiace_as_the_difference(sed
     assert prices[fts_transfer_matrix.FTS_HIACE_BRACKET] == 120.0
 
     proposals = price_refresh.build_proposals([route], {0: finding})
-    payloads = price_refresh.rebuild_prices(route, {c["code"]: c["new"]
-                                                    for c in proposals[0]["changes"]})
-    assert payloads["transport"]["vehiclePrice"] == 95.0        # base IS the Sedan price
+    # A vehicle round and a supplement round are now applied separately (one field per round -
+    # see rebuild_prices' own docstring) - apply the Sedan (vehicle) change first, then Hiace's
+    # own (supplement) change, mirroring how these two rounds are actually run in practice.
+    sedan_change = next(c for c in proposals[0]["changes"] if c["code"] == "Sedan")
+    hiace_change = next(c for c in proposals[0]["changes"] if c["code"] == "Hiace")
+    vehicle_payloads = price_refresh.rebuild_prices(route, [sedan_change])
+    assert vehicle_payloads["transport"]["vehiclePrice"] == 95.0  # base IS the Sedan price
+    assert vehicle_payloads["options"] == []
+    # The Hiace round is INDEPENDENT of the Sedan round above (one field per round - see
+    # rebuild_prices' own docstring) - its supplement is computed against whatever the base
+    # CURRENTLY is (175, since this call never touches the vehicle field), not a hypothetical
+    # not-yet-applied Sedan change from a different round.
+    payloads = price_refresh.rebuild_prices(route, [hiace_change])
+    assert payloads["transport"]["vehiclePrice"] == 175.0        # unchanged this round
     by_code = {o["code"]: o for o in payloads["options"]}
-    assert by_code["Sedan"]["payload"]["prices"] == []          # base modality carries no supplement
-    assert by_code["Hiace"]["payload"]["prices"][0]["adultPriceSupplement"] == 25.0  # 120 - 95
-    assert by_code["Hiace"]["unit_price"] == 120.0
+    assert "Sedan" not in by_code  # base modality is never part of a supplement round's payload
+    assert by_code["Hiace"]["payload"]["prices"][0]["adultPriceSupplement"] == round(120.0 - 175.0, 2)
 
 
 def test_a_pair_priced_in_only_one_of_the_two_files_still_prices_that_one_vehicle(tmp_path,
@@ -257,55 +270,61 @@ def test_a_pair_priced_in_only_one_of_the_two_files_still_prices_that_one_vehicl
 
 
 # ----------------------------------------------------------------------
-# preview_untouched_modality_effects - the shared-base side effect, made visible
+# apply_proposals - a round writes EXACTLY ONE thing, never any other modality
 # ----------------------------------------------------------------------
+# CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): "but if we only
+# update the Sedan price whey should the app touches even the Hiace price supplement?" -
+# preview_untouched_modality_effects (which used to report how an untouched modality's final
+# price would drift with the shared base) was DELETED entirely, not fixed - a round now writes
+# ONLY the vehicle field (Sedan, in these fixtures) or ONLY the touched modality's own supplement,
+# and nothing else on the transport is read, computed, shown, or written.
 
-def test_a_sedan_only_round_names_what_happens_to_the_hiace_price():
-    # UPDATED 2026-09-11 (real TRANSPORT-423015 - see apply_proposals' own comment): an untouched
-    # modality's stored supplement is no longer rewritten to hold its price steady, because
-    # Travel Compositor's API under-reports supplements and recomputing one from that read
-    # destroys it. Its supplement is left alone, so its price moves with the shared base instead -
-    # which is what the review screen must now say.
-    # Real TRANSPORT-418748 numbers: Vehicle 175 (Sedan), Hiace 200. Sedan 175 -> 95 moves the
-    # shared base down 80, so Hiace follows it down to 120.
+def test_a_sedan_only_vehicle_round_writes_only_the_parent_never_any_option():
     route = _live("Marsa Matruh - Siwa Oasis", sedan_price=175.0, hiace_price=200.0)
-    effects = price_refresh.preview_untouched_modality_effects(
-        route, [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 175.0, "new": 95.0}])
-    assert len(effects) == 1
-    assert effects[0]["code"] == "Hiace"
-    assert effects[0]["price"] == 200.0
-    assert effects[0]["base_delta"] == -80.0
-    assert effects[0]["new_price"] == 120.0
-
-
-def test_an_untouched_modalitys_price_entries_are_never_written_at_all():
-    # The data-loss guard itself: apply_proposals must PUT only the options this round actually
-    # reprices. A supplement the API reported as 0 but which is really 50 (the confirmed
-    # TRANSPORT-423015 platform mismatch) then survives, instead of being overwritten with a
-    # number derived from the phantom read.
-    route = _live("Marsa Matruh - Siwa Oasis", sedan_price=175.0, hiace_price=200.0)
-    written = []
+    written_options = []
 
     class _Client:
         def update_transport(self, supplier_id, payload):
             return {"id": payload.get("id")}
 
         def update_transport_option(self, supplier_id, transport_id, payload):
-            written.append(payload.get("code"))
+            written_options.append(payload.get("code"))
             return {"code": payload.get("code")}
 
     proposal = {"route": route, "accepted": True, "status": "changed", "index": 0,
                 "changes": [{"code": "Sedan", "min_pax": 1, "max_pax": 3,
-                             "old": 175.0, "new": 95.0}]}
+                             "old": 175.0, "new": 95.0, "write_kind": "vehicle",
+                             "start_date": None, "end_date": None}]}
     result = price_refresh.apply_proposals(_Client(), "51758", [proposal])
     assert result["failed"] == []
-    assert written == ["Sedan"], "only the repriced modality may be written"
+    assert written_options == [], "a vehicle round must never write any option, not even Hiace"
 
 
-def test_no_side_effect_is_reported_when_every_modality_is_being_repriced_anyway():
+def test_a_hiace_only_supplement_round_writes_only_hiace_never_the_parent():
+    # The data-loss guard itself: apply_proposals must PUT the parent record ONLY for a vehicle
+    # round. A supplement the API reported as 0 but which is really 50 (the confirmed
+    # TRANSPORT-423015 platform mismatch) then survives untouched, instead of the parent's shared
+    # base being resent (and every OTHER modality's untouched supplement along with it).
     route = _live("Marsa Matruh - Siwa Oasis", sedan_price=175.0, hiace_price=200.0)
-    effects = price_refresh.preview_untouched_modality_effects(route, [
-        {"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 175.0, "new": 95.0},
-        {"code": "Hiace", "min_pax": 1, "max_pax": 8, "old": 200.0, "new": 120.0},
-    ])
-    assert effects == []
+    written_parent = []
+    written_options = []
+
+    class _Client:
+        def update_transport(self, supplier_id, payload):
+            written_parent.append(payload.get("id"))
+            return {"id": payload.get("id")}
+
+        def update_transport_option(self, supplier_id, transport_id, payload):
+            written_options.append(payload.get("code"))
+            return {"code": payload.get("code")}
+
+    proposal = {"route": route, "accepted": True, "status": "changed", "index": 0,
+                "changes": [{"code": "Hiace", "min_pax": 1, "max_pax": 8,
+                             "old": 200.0, "new": 220.0, "write_kind": "supplement",
+                             "start_date": None, "end_date": None}]}
+    result = price_refresh.apply_proposals(_Client(), "51758", [proposal])
+    assert result["failed"] == []
+    assert written_parent == [], "a supplement round must never PUT the parent record"
+    assert written_options == ["Hiace"]
+
+

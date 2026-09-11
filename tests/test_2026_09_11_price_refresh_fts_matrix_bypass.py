@@ -91,9 +91,13 @@ def test_classify_returns_none_for_a_missing_or_unreadable_file():
 # ----------------------------------------------------------------------
 
 def _live_transport_route(name="Cairo - Luxor", min_max=((1, 3), (1, 8))):
+    # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a two-modality
+    # route now requires an explicit base_bracket_override - Sedan (the narrower bracket) is the
+    # designated base in every fixture here, matching FTS's own real structure (see
+    # fts_transfer_matrix.py's own module docstring: "Sedan is base price").
     return {
         "id": "TRANSPORT-1", "name": name, "departure_code": None, "arrival_code": None,
-        "currency": "USD", "price_per_pax": False,
+        "currency": "USD", "price_per_pax": False, "base_bracket_override": min_max[0],
         "base_adult": 30.0, "base_child": 0.0, "base_infant": 0.0,
         "options": [
             {"code": "Sedan", "min_pax": min_max[0][0], "max_pax": min_max[0][1], "unit_price": 30.0,

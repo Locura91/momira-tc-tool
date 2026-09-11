@@ -131,38 +131,52 @@ def _per_vehicle_route(min_max=((1, 3), (1, 8))):
     }
 
 
+# CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): "we update each
+# modality individual" - a round now writes EXACTLY ONE field (the vehicle price OR one
+# modality's own supplement), never both together, and rebuild_prices' own signature changed
+# from a flat {code: new_price} dict to the SAME "changes" list build_proposals produces (each
+# entry carrying its own write_kind). The four tests below are rewritten to that one-field-per-
+# round shape rather than updating Sedan and Hiace in the same call, which the confirmed model
+# no longer allows.
+
 def test_per_vehicle_rebuild_writes_the_new_base_into_vehicle_price_not_base_adult_price():
     route = _per_vehicle_route()
-    payloads = price_refresh.rebuild_prices(route, {"Sedan": 110.0, "Hiace": 150.0})
+    route["base_bracket_override"] = (1, 3)  # Sedan is the designated vehicle/base modality
+    changes = [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 100.0, "new": 110.0,
+               "name": "Sedan", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
     parent = payloads["transport"]
-    # UPDATED 2026-09-11 (real bulk Apply failure, "TransportContractPrice.startDate/endDate:
-    # must not be null"): base is no longer re-derived from bracket width ("widest wins" would
-    # wrongly pick Hiace here) - it's whichever option is ALREADY the live base (Sedan, whose
-    # own current supplement is zero in this fixture's raw prices=[]). See
-    # price_refresh._current_base_option's own docstring for the full real-world incident this
-    # fixes.
+    assert payloads["write_kind"] == "vehicle"
     assert parent["vehiclePrice"] == 110.0
     assert parent["baseAdultPrice"] == 0.0  # must stay 0, never repurposed
+    # A vehicle round writes ONLY the parent's base field - not even Hiace's own (untouched)
+    # supplement is read, computed, or written.
+    assert payloads["options"] == []
 
 
-def test_per_vehicle_rebuild_still_nets_out_to_the_correct_per_option_price():
-    # Base+supplement must still reproduce the exact requested price for EVERY option,
-    # regardless of which one is currently the live base - this is what makes the base-field
-    # choice safe without touching the actual arithmetic.
+def test_per_vehicle_rebuild_of_the_supplement_modality_nets_out_to_the_correct_price():
+    # A supplement round (Hiace) computes its supplement against the CURRENT live base (Sedan's
+    # own current price, since the vehicle field isn't moving this round) and writes only Hiace.
     route = _per_vehicle_route()
-    payloads = price_refresh.rebuild_prices(route, {"Sedan": 110.0, "Hiace": 150.0})
-    by_code = {o["code"]: o for o in payloads["options"]}
-    assert by_code["Hiace"]["unit_price"] == 150.0
-    assert by_code["Sedan"]["unit_price"] == 110.0
-    hiace_supplement = by_code["Hiace"]["payload"]["prices"][0]["adultPriceSupplement"]
-    assert round(payloads["transport"]["vehiclePrice"] + hiace_supplement, 2) == 150.0
+    route["base_bracket_override"] = (1, 3)
+    changes = [{"code": "Hiace", "min_pax": 1, "max_pax": 8, "old": 140.0, "new": 150.0,
+               "name": "Hiace", "write_kind": "supplement", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
+    assert payloads["write_kind"] == "supplement"
+    assert payloads["transport"]["vehiclePrice"] == 100.0  # unchanged - this round never moves it
+    hiace_payload = next(o for o in payloads["options"] if o["code"] == "Hiace")
+    hiace_supplement = hiace_payload["payload"]["prices"][0]["adultPriceSupplement"]
+    assert round(100.0 + hiace_supplement, 2) == 150.0
 
 
 def test_per_vehicle_rebuild_does_not_touch_child_or_infant_base_fields():
     route = _per_vehicle_route()
+    route["base_bracket_override"] = (1, 3)
     route["raw"]["baseChildrenPrice"] = 5.0  # should never legitimately be nonzero on a
     route["raw"]["baseInfantPrice"] = 3.0    # per-vehicle record, but must be left alone if it is
-    payloads = price_refresh.rebuild_prices(route, {"Sedan": 110.0, "Hiace": 150.0})
+    changes = [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 100.0, "new": 110.0,
+               "name": "Sedan", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
     assert payloads["transport"]["baseChildrenPrice"] == 5.0
     assert payloads["transport"]["baseInfantPrice"] == 3.0
 
@@ -170,7 +184,7 @@ def test_per_vehicle_rebuild_does_not_touch_child_or_infant_base_fields():
 def test_per_pax_rebuild_is_unaffected_still_writes_base_adult_price():
     route = {
         "id": "TRANSPORT-2", "name": "Aswan - Hurghada", "kind": None,
-        "price_per_pax": True,
+        "price_per_pax": True, "base_bracket_override": (1, 1),
         "options": [
             {"code": "A", "min_pax": 1, "max_pax": 1, "unit_price": 30.0, "name": "A",
              "raw": {"code": "A", "prices": []}},
@@ -180,12 +194,12 @@ def test_per_pax_rebuild_is_unaffected_still_writes_base_adult_price():
         "raw": {"id": "TRANSPORT-2", "pricePerPax": True, "baseAdultPrice": 30.0,
                "baseChildrenPrice": 15.0, "baseInfantPrice": 0.0},
     }
-    payloads = price_refresh.rebuild_prices(route, {"A": 40.0, "B": 60.0})
+    changes = [{"code": "A", "min_pax": 1, "max_pax": 1, "old": 30.0, "new": 40.0,
+               "name": "A", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
     parent = payloads["transport"]
-    # UPDATED 2026-09-11: base is A (its own current supplement is zero, prices=[]) - the live
-    # base is preserved rather than re-derived from bracket width (B is wider but is NOT the
-    # live base here). See price_refresh._current_base_option's docstring.
     assert parent["baseAdultPrice"] == 40.0
     assert "vehiclePrice" not in parent
     # Child base still scales with the adult base ratio.
     assert parent["baseChildrenPrice"] == round(15.0 * (40.0 / 30.0), 2)
+    assert payloads["options"] == []

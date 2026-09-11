@@ -65,7 +65,7 @@ def _live_transport_route(min_max=((1, 3), (1, 8))):
     """Mirrors test_2026_09_11_price_refresh_fts_matrix_bypass.py's own helper."""
     return {
         "id": "TRANSPORT-1", "name": "Cairo - Luxor", "departure_code": None, "arrival_code": None,
-        "currency": "USD", "price_per_pax": False,
+        "currency": "USD", "price_per_pax": False, "base_bracket_override": min_max[0],
         "base_adult": 30.0, "base_child": 0.0, "base_infant": 0.0,
         "options": [
             {"code": "Sedan", "min_pax": min_max[0][0], "max_pax": min_max[0][1], "unit_price": 30.0,

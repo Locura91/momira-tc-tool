@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-accommodations-page-query-params-fix"
+MODULE_BUILD = "2026-09-11-transport-price-structure-overhaul"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

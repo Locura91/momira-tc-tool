@@ -105,30 +105,36 @@ def test_forced_bracket_matching_two_options_falls_back_to_auto_detect():
 # rebuild_prices - the override flows through from the route dict
 # ----------------------------------------------------------------------
 
-def test_rebuild_prices_with_no_override_reproduces_the_confirmed_real_423134_style_bug():
-    # Both modalities read with no live supplement (the confirmed corrupted-read symptom) - with
-    # no override, auto-detect keeps whichever HAPPENS to be zero-supplement (here: Sedan, since
-    # it's listed second and ties go to the last zero-supplement candidate found... actually both
-    # are zero-supplement, so len(zero_supplement) != 1 and it falls back to widest-bracket, i.e.
-    # Hiace). This test pins today's behaviour so the "with override" test below shows the real
-    # contrast, not an accidental one.
+# CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11, "yes build it now
+# please" - see price_refresh.build_proposals' own comment for the full transcript reference):
+# the auto-detect fallback that used to exist in rebuild_prices was REMOVED entirely - a route
+# with two or more live brackets and no base_bracket_override is now a hard refusal, not a guess.
+# rebuild_prices' own signature also changed from a flat {code: new_price} dict to the SAME
+# "changes" list build_proposals produces (each entry carrying which write_kind it is), so these
+# three tests below build that list directly rather than a bare price dict.
+
+def test_rebuild_prices_with_no_override_on_a_two_bracket_route_is_a_hard_refusal():
     route = _route_two_modalities(sedan_price=40.0, hiace_price=40.0,
                                   sedan_supplement_live=0.0, hiace_supplement_live=0.0)
-    payloads = price_refresh.rebuild_prices(route, {"Sedan": 60.0})
-    assert payloads["transport"]["vehiclePrice"] == 40.0  # Hiace (widest) was picked as base
+    changes = [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 40.0, "new": 60.0,
+               "name": "Sedan", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
+    assert payloads["transport"] is None
+    assert "designated" in payloads["blocked"]
 
 
 def test_rebuild_prices_with_forced_base_bracket_uses_the_humans_answer_instead():
     route = _route_two_modalities(sedan_price=40.0, hiace_price=40.0,
                                   sedan_supplement_live=0.0, hiace_supplement_live=0.0,
                                   base_override=(1, 3))  # human says: Sedan is base
-    payloads = price_refresh.rebuild_prices(route, {"Sedan": 60.0})
+    changes = [{"code": "Sedan", "min_pax": 1, "max_pax": 3, "old": 40.0, "new": 60.0,
+               "name": "Sedan", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
     assert payloads["transport"]["vehiclePrice"] == 60.0  # Sedan's NEW price becomes the base
-    hiace_payload = next(o for o in payloads["options"] if o["code"] == "Hiace")
-    # Hiace's own live price (40) didn't move, but the base moved to 60, so Hiace's supplement
-    # must now be -20 to hold its own price steady at 40.
-    hiace_supp = hiace_payload["payload"]["prices"][0]["adultPriceSupplement"]
-    assert hiace_supp == -20.0
+    # A vehicle round writes ONLY the parent's base field - Hiace (untouched) is never read,
+    # computed, or written at all (product owner, 2026-09-11: "why should the app touches even
+    # the Hiace price supplement?").
+    assert payloads["options"] == []
 
 
 def test_updating_hiace_only_with_sedan_forced_as_base_computes_the_supplement_correctly():
@@ -138,8 +144,13 @@ def test_updating_hiace_only_with_sedan_forced_as_base_computes_the_supplement_c
     route = _route_two_modalities(sedan_price=40.0, hiace_price=40.0,
                                   sedan_supplement_live=0.0, hiace_supplement_live=0.0,
                                   base_override=(1, 3))
-    payloads = price_refresh.rebuild_prices(route, {"Hiace": 90.0})
-    assert payloads["transport"]["vehiclePrice"] == 40.0  # Sedan (base) untouched this round
+    changes = [{"code": "Hiace", "min_pax": 1, "max_pax": 8, "old": 40.0, "new": 90.0,
+               "name": "Hiace", "write_kind": "supplement", "start_date": None, "end_date": None}]
+    payloads = price_refresh.rebuild_prices(route, changes)
+    # A supplement round writes ONLY the touched option - the parent record is returned
+    # unmodified but is never PUT for this write_kind (see apply_proposals).
+    assert payloads["transport"]["vehiclePrice"] == 40.0
+    assert payloads["write_kind"] == "supplement"
     hiace_payload = next(o for o in payloads["options"] if o["code"] == "Hiace")
     assert hiace_payload["payload"]["prices"][0]["adultPriceSupplement"] == 50.0  # 90 - 40
 

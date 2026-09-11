@@ -221,7 +221,9 @@ def test_a_fully_readable_route_still_rebuilds_normally():
     """The guard must not block the normal path."""
     route = _route_with_a_failed_option()
     route["options"] = [o for o in route["options"] if not o.get("fetch_failed")]
-    out = price_refresh.rebuild_prices(route, {"WIDE": 120.0})
+    changes = [{"code": "WIDE", "min_pax": 2, "max_pax": 9, "old": 100.0, "new": 120.0,
+               "name": "WIDE", "write_kind": "vehicle", "start_date": None, "end_date": None}]
+    out = price_refresh.rebuild_prices(route, changes)
     assert out["transport"] is not None
     assert out["transport"]["baseAdultPrice"] == 120.0
     # Child price moves with the adult price rather than silently changing the discount.

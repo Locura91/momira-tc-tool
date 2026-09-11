@@ -13258,25 +13258,26 @@ def render_price_refresh_flow(client, preselected_kind=None):
             help="Grouped by passenger range, because that is the one thing that means the same "
                  "on every transport — modality codes differ from supplier to supplier.")
 
-        # CONFIRMED REAL REQUEST (product owner, 2026-09-11, after the scope question above
-        # already shipped): "if the selected modality we want to update in this exact update
+        # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11, full
+        # 8-question Q&A): "if the selected modality we want to update in this exact update
         # process, if this will be the base price or if it has to be calculated to the base
         # price on top? Sedan Modality would be base price and if I would update the Hiace the
         # price difference must be calculated and the price must then be added to the price
-        # supplement." Auto-detect (the default, unchanged behaviour) picks whichever option
-        # currently carries no live supplement — see price_refresh._current_base_option — which
-        # is exactly the read that Travel Compositor's own API can get wrong (a real supplement
-        # reported as 0.0; see the flat-price-modality warning above and
-        # claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.md). Naming the base
-        # modality explicitly here overrides that read for this round only, for every route.
-        st.caption("Every modality on a transport shares one base price; the others are stored "
-                   "as base + a price difference (a price supplement). Auto-detect uses whichever "
-                   "modality currently reads with no supplement — override it if you already know "
-                   "which one is really the base, especially if a modality's live-read price "
-                   "looks suspect (see the flat-price warning below once prices are loaded).")
-        _base_label_options = ["Auto-detect (recommended when unsure)"] + _labels
-        _base_pick = st.selectbox("Which modality is the BASE price?", _base_label_options,
-                                  index=0, key="pr_base_pick")
+        # supplement." An auto-detect fallback used to exist here and picked whichever option
+        # currently carries no live supplement — REMOVED entirely, because that is exactly the
+        # read that can be wrong: Travel Compositor's own API is confirmed to under-report a real
+        # supplement as 0.0 (see claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.
+        # md), and this app's own prior update run is confirmed to have zeroed out real
+        # supplements by trusting that read. Which modality is the vehicle/base price is now a
+        # required human decision every round, with no silent fallback if it's left unanswered.
+        st.caption("Every modality on a transport shares one base (vehicle) price; every other "
+                   "modality is stored as its own price supplement, in its own separate round. "
+                   "This choice is required — pick whichever modality this round's document "
+                   "prices as the vehicle rate.")
+        _base_placeholder = "— choose the vehicle/base-price modality (required) —"
+        _base_label_options = [_base_placeholder] + _labels
+        _base_pick = st.selectbox("Which modality is the VEHICLE/BASE price this round?",
+                                  _base_label_options, index=0, key="pr_base_pick")
 
         # CONFIRMED REAL REQUEST (product owner, 2026-09-11, same message as the worked-example
         # request above): "there should also be an AI text field, in case the human shall
@@ -13299,7 +13300,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
         _c1, _c2 = st.columns([1, 4])
         with _c1:
             if st.button("Read the document", type="primary", key="pr_scope_go",
-                         disabled=not _chosen):
+                         disabled=not _chosen or _base_pick == _base_placeholder):
                 _picked = [g for g in _pending["groups"] if g["label"] in _chosen]
                 _scope = None if len(_picked) == len(_pending["groups"]) else \
                     [(g["min_pax"], g["max_pax"]) for g in _picked]
@@ -13315,10 +13316,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     ] if (x or "").strip())
                 if (_clarify or "").strip():
                     _hint = "\n".join(x for x in [_hint, _clarify.strip()] if (x or "").strip())
-                _base_bracket = None
-                if _base_pick != "Auto-detect (recommended when unsure)":
-                    _base_group = next(g for g in _pending["groups"] if g["label"] == _base_pick)
-                    _base_bracket = (_base_group["min_pax"], _base_group["max_pax"])
+                _base_group = next(g for g in _pending["groups"] if g["label"] == _base_pick)
+                _base_bracket = (_base_group["min_pax"], _base_group["max_pax"])
                 st.session_state.pop("pr_pending", None)
                 if _pr_read_and_build(_pending["routes"], _pending["raw_text"],
                                       _pending["fts_csv_tmp_paths"], _hint, _scope, _base_bracket):
@@ -13342,11 +13341,21 @@ def render_price_refresh_flow(client, preselected_kind=None):
     unchanged = [p for p in proposals if p["status"] == "unchanged"]
     absent = [p for p in proposals if p["status"] == "not_in_document"]
     blocked = [p for p in proposals if p["status"] == "blocked_unreadable"]
+    # CONFIRMED ABSOLUTE RULES (product owner, 2026-09-11): no auto-detect fallback when a route
+    # has two or more live modalities, and a computed supplement that rounds to 0 is always an
+    # error, never a legitimate change. Both are HARD blocks - a route in either list can never
+    # be accepted until it's resolved (re-run with the base modality designated, or check the
+    # document/live data for what's actually wrong), unlike blocked_unreadable which just needs a
+    # re-run once the API hiccup clears.
+    needs_base = [p for p in proposals if p["status"] == "blocked_needs_base_designation"]
+    zero_supplement = [p for p in proposals if p["status"] == "blocked_zero_supplement"]
 
     st.subheader("2 — Check the new prices")
     st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
               f"{len(absent)} not found in it."
-              + (f" · {len(blocked)} could not be read" if blocked else ""))
+              + (f" · {len(blocked)} could not be read" if blocked else "")
+              + (f" · {len(needs_base)} need a base modality designated" if needs_base else "")
+              + (f" · {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
     _scope = st.session_state.get("pr_scope")
     if _scope:
         st.info("🎯 This round is scoped to the "
@@ -13383,6 +13392,43 @@ def render_price_refresh_flow(client, preselected_kind=None):
         for p in blocked:
             names = ", ".join(str(c) for c in (p.get("unreadable_options") or []) if c) or "unknown option(s)"
             st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}** — couldn't read: `{names}`")
+
+    # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a route with
+    # two or more live modalities has no auto-detect fallback any more - the human must have
+    # designated one as the vehicle/base price in Step 2 above. This should be rare in practice
+    # (Step 2 requires the choice before the document is even read), but a route can still land
+    # here if its live modality structure changed between the choice and this screen.
+    if needs_base:
+        st.error(
+            f"🚫 **{len(needs_base)} route(s) have two or more modalities and no vehicle/base "
+            f"price was designated for them** - re-run this refresh and pick the vehicle/base "
+            f"modality in Step 2. Nothing here is proposed or writable until that's answered; "
+            f"there is no fallback guess."
+        )
+        for p in needs_base:
+            st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}**{_id_suffix(p['route'])}")
+
+    # CONFIRMED ABSOLUTE RULE (product owner, 2026-09-11): "Supplement cannot be 0, if it is 0
+    # there is an error." A hard block, not a warning - two different vehicle classes can never
+    # legitimately cost the same, so a computed 0 means the read (or the base designation) is
+    # wrong, not that nothing needs to change here.
+    if zero_supplement:
+        st.error(
+            f"🚫 **{len(zero_supplement)} route(s) would compute a price supplement of exactly 0** "
+            f"for a modality that isn't the vehicle/base price - that can never be right, so "
+            f"nothing on these routes is writable until it's resolved. Check whether the vehicle/"
+            f"base modality was designated correctly, or use the AI text field in Step 2 to "
+            f"clarify how this document should be read."
+        )
+        for p in zero_supplement:
+            route = p["route"]
+            for err in p.get("zero_supplement_errors") or []:
+                period = (f" ({err['start_date']} → {err['end_date']})"
+                         if err.get("start_date") or err.get("end_date") else "")
+                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
+                           f"**{err.get('name') or err.get('code')}**{period}: would be "
+                           f"{err.get('would_be_price')} {route.get('currency') or ''} — exactly "
+                           f"the vehicle/base price")
 
     # CONFIRMED REAL RULE (product owner, 2026-09-11): "if a transport has 2 or more modalities,
     # there will be always base price and multiple price supplements. It does not make sense to
@@ -13446,14 +13492,23 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # gets applied on Publish.
             for c in p["changes"]:
                 pcol1, pcol2 = st.columns([3, 2])
+                # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "Hiace had three
+                # supplements because of a high season and peak season time, but the app never
+                # filled out the actual prices" - a single modality can carry several changes in
+                # one round now, one per season the document states, each labelled with its own
+                # date range so a human can tell them apart.
+                _period_label = (f" ({c['start_date']} → {c['end_date']})"
+                                 if c.get("start_date") or c.get("end_date") else "")
                 with pcol2:
                     c["new"] = st.number_input(
-                        f"New price ({c['min_pax']}-{c['max_pax']} pax)", min_value=0.0, step=1.0,
-                        value=float(c["new"]),
+                        f"New price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
+                        min_value=0.0, step=1.0, value=float(c["new"]),
                         # Token, not just index+code - see _stamp_proposal_widget_tokens: without
                         # it, a re-read's corrected price was displayed as (and published as) the
-                        # old one.
-                        key=f"pr_price_{p['index']}_{c['code']}_{p.get('widget_token', 'g0')}",
+                        # old one. Periods on the same option/code need their own key too, so the
+                        # date range is folded in.
+                        key=f"pr_price_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
+                            f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
                         label_visibility="collapsed")
                 with pcol1:
                     # CONFIRMED REAL REQUEST (product owner): red when the price to apply
@@ -13468,13 +13523,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     # whether a rate sheet's number had been applied on the right basis. Stated
                     # on every row now, read from the live record's own pricePerPax.
                     _basis = "per person" if route.get("price_per_pax", True) else "per vehicle"
+                    _kind_label = " *(vehicle price)*" if c.get("write_kind") == "vehicle" \
+                        else " *(price supplement)*" if c.get("write_kind") == "supplement" else ""
+                    _new_period_label = "  ·  *new period*" if c.get("is_new_period") else ""
                     if abs(c["new"] - c["old"]) < 0.005:
-                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
-                                   f":green[**{c['new']}**] {_ccy} *{_basis}*  ·  "
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
+                                   f":green[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}  ·  "
                                    f"*matches the live price*")
                     else:
-                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax: {c['old']} → "
-                                   f":red[**{c['new']}**] {_ccy} *{_basis}*")
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
+                                   f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f"from the row *“{finding['matched_row']}”*")
@@ -13487,32 +13545,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
                 st.caption("  ·  ".join(bits))
-            # CONFIRMED REAL GAP (product owner, 2026-09-11, reviewing bulk Transport update
-            # against real TRANSPORT-418748): every modality shares ONE base price, so repricing
-            # one of them rewrites the others' stored supplements to keep their own final prices
-            # steady. Correct and non-destructive, but invisible until now - after a Sedan-only
-            # round the operator would open Travel Compositor and find Hiace's supplement changed
-            # from 25 to 105 with nothing in this app having mentioned it, which reads as
-            # corruption even though Hiace's price never moved. Named here BEFORE Publish, with
-            # the numbers that will actually be written (preview_untouched_modality_effects runs
-            # the same rebuild_prices the Apply step runs).
-            for _side in price_refresh.preview_untouched_modality_effects(route, p["changes"]):
-                st.caption(
-                    f"↳ **{_side['name']}** is not part of this round, so its supplement is left "
-                    f"untouched — but because every modality shares one base price, its own price "
-                    f"moves with it: about **{_side['price']} → {_side['new_price']} "
-                    f"{route.get('currency') or ''}**. Travel Compositor's API under-reports "
-                    f"supplements, so treat that as indicative and check it in the Prices tab.")
+            # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): "but
+            # if we only update the Sedan price whey should the app touches even the Hiace price
+            # supplement?" - the untouched-modality preview that used to run here was DELETED
+            # entirely, not fixed: a round now reads, shows, computes, and writes exactly one
+            # thing (the designated vehicle price, or the touched modality's own supplement) and
+            # nothing else on the transport is mentioned, because nothing else is touched.
+            #
             # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "if a price is matching to a
             # modality which will be added to the price supplement, the app shall give one
             # example and show the human what the app would calculate and add to the product."
             # Called live (not read from p["supplement_examples"]) so a hand-edit to the "new
-            # price" number above is reflected immediately, exactly like
-            # preview_untouched_modality_effects above it.
+            # price" number above is reflected immediately. One line per changed PERIOD, not per
+            # modality - see supplement_calculation_examples' own docstring.
             for _ex in price_refresh.supplement_calculation_examples(route, p["changes"]):
                 _sign = "+" if _ex["supplement"] >= 0 else "−"
+                _ex_period = (f" ({_ex['start_date']} → {_ex['end_date']})"
+                             if _ex.get("start_date") or _ex.get("end_date") else "")
                 st.caption(
-                    f"🧮 **{_ex['name']}**'s new price will be stored as base "
+                    f"🧮 **{_ex['name']}**'s new price{_ex_period} will be stored as base "
                     f"({_ex['base_name']}: {_ex['base_price']}) {_sign} a price supplement of "
                     f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} — this is "
                     f"exactly what gets written to the price supplement field on Publish.")
@@ -13984,7 +14035,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-accommodations-page-query-params-fix"
+BUILD_VERSION = "2026-09-11-transport-price-structure-overhaul"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

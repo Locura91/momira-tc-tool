@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-accommodations-page-query-params-fix"
+MODULE_BUILD = "2026-09-11-transport-price-structure-overhaul"
 
 import json
 from datetime import date
@@ -104,6 +104,14 @@ PRICES:
 - "per person, minimum 2 pax" means the 2+ bracket takes the stated number. Report that bracket and set
   "minimum_pax" to the stated minimum - don't also add a separate min_pax=1 entry, the application
   computes the 1-pax price itself from minimum_pax.
+- SEASONS: a document may price the SAME bracket differently for different date ranges (e.g. "standard
+  season", "high season", "peak season", each with its own dates). When it does, put "price" as the
+  currently-applicable rate (so old behaviour is unaffected), AND additionally list EVERY stated season in
+  "seasons", each with its own "start_date"/"end_date" (ISO YYYY-MM-DD if the document gives real dates,
+  otherwise your best reading of what it says, e.g. "2026-10-01") and "price". Report every season the
+  document states for that bracket, not only the one active today - a human who only updates one modality
+  at a time still needs every future period filled in from a single document read. Leave "seasons" empty
+  when the bracket has only one flat price.
 - If the document does not price a route at all, say so with "found": false. That is a useful, correct
   answer - a route the supplier dropped this season should not be guessed at.
 - If you are unsure which row a route matches, set "confidence": "low" and say why in "note". A human
@@ -167,6 +175,24 @@ PRICE_LOOKUP_TOOL_SCHEMA = {
                                 "price": {"type": "number"},
                                 "child_price": {"type": ["number", "null"]},
                                 "infant_price": {"type": ["number", "null"]},
+                                "seasons": {
+                                    "type": "array",
+                                    "description": "Only when the document states MORE THAN ONE price "
+                                                    "for this bracket, each for a different date range "
+                                                    "(standard/high/peak season). Empty when the bracket "
+                                                    "has one flat price.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start_date": {"type": "string"},
+                                            "end_date": {"type": "string"},
+                                            "price": {"type": "number"},
+                                            "child_price": {"type": ["number", "null"]},
+                                            "infant_price": {"type": ["number", "null"]},
+                                        },
+                                        "required": ["price"],
+                                    },
+                                },
                             },
                             "required": ["min_pax", "max_pax", "price"],
                         },
@@ -239,6 +265,41 @@ def _select_price_entry(prices: List[Dict[str, Any]], on_date: Optional[date] = 
         # recently scheduled one (latest startDate) is the more likely intended "current" rate.
         return max(covering, key=lambda p: _parse_date_safe(p.get("startDate")) or date.min)
     return dated[-1]
+
+
+def _entry_matches_period(entry: Dict[str, Any], start_date: Optional[str],
+                          end_date: Optional[str]) -> bool:
+    """Whether an existing raw price entry IS the entry for a document-stated season period
+    (both compared as parsed dates, so "2026-10-01" and "01/10/2026" match identically)."""
+    return (_parse_date_safe(entry.get("startDate")) == _parse_date_safe(start_date) and
+            _parse_date_safe(entry.get("endDate")) == _parse_date_safe(end_date))
+
+
+def _find_entry_for_period(option: Dict[str, Any], start_date: Optional[str],
+                           end_date: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The existing raw price entry (from option['raw']['prices']) that a document-stated season
+    period corresponds to, for seasonal multi-period writes (see rebuild_prices and
+    bracket_periods_for). A flat, non-seasonal period (start_date and end_date both None) uses
+    the same "whichever entry is active today" choice _select_price_entry already makes, so a
+    non-seasonal document still lands on the one entry a pre-seasonal refresh always touched.
+    A seasonal period first looks for an entry whose OWN dates match exactly; failing that, an
+    entry that covers the period's start date - a document rewording an existing season's exact
+    boundary dates should still update that same season's entry rather than create a duplicate.
+    None when nothing on the live option corresponds to this period at all - the period is new."""
+    entries = [p for p in ((option.get("raw") or {}).get("prices") or []) if isinstance(p, dict)]
+    if not entries:
+        return None
+    if start_date is None and end_date is None:
+        return _select_price_entry(entries)
+    for entry in entries:
+        if _entry_matches_period(entry, start_date, end_date):
+            return entry
+    p_start = _parse_date_safe(start_date)
+    if p_start:
+        for entry in entries:
+            if _entry_covers(entry, p_start):
+                return entry
+    return None
 
 
 def option_unit_price(option: Dict[str, Any], base_adult: float) -> float:
@@ -621,12 +682,27 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
             price = _num(b.get("price"), fallback=-1.0)
             if price < 0:
                 continue
+            seasons = []
+            for s in (b.get("seasons") or []):
+                if not isinstance(s, dict):
+                    continue
+                s_price = _num(s.get("price"), fallback=-1.0)
+                if s_price < 0:
+                    continue
+                seasons.append({
+                    "start_date": str(s.get("start_date") or "").strip() or None,
+                    "end_date": str(s.get("end_date") or "").strip() or None,
+                    "price": round(s_price, 2),
+                    "child_price": None if s.get("child_price") is None else round(_num(s.get("child_price")), 2),
+                    "infant_price": None if s.get("infant_price") is None else round(_num(s.get("infant_price")), 2),
+                })
             brackets.append({
                 "min_pax": int(_num(b.get("min_pax"), 1)),
                 "max_pax": int(_num(b.get("max_pax"), 1)),
                 "price": round(price, 2),
                 "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
                 "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+                "seasons": seasons,
             })
         findings[index] = {
             "found": bool(item.get("found")) and bool(brackets),
@@ -1078,6 +1154,78 @@ def bracket_price_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
     return None
 
 
+def _matched_bracket_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
+                         minimum_pax: int, price_per_pax: bool = True,
+                         allow_overlap: bool = True) -> Tuple[Optional[Dict[str, Any]], float]:
+    """The SAME bracket dict bracket_price_for would use to answer this route's price, plus the
+    multiplier bracket_price_for would apply to it (the solo-bracket minimum-party rule). Shared
+    by bracket_price_for and bracket_periods_for so the two can never disagree about which row
+    of the document answers a given (min_pax, max_pax) - one finds a single number in it, the
+    other every season it carries."""
+    if not finding.get("found"):
+        return None, 1.0
+    brackets = finding.get("brackets") or []
+    if max_pax == 1 and minimum_pax > 1 and price_per_pax:
+        matched = next((b for b in brackets if b["min_pax"] == minimum_pax), None)
+        if matched is None:
+            matched = next((b for b in brackets if b["min_pax"] > 1), None)
+        if matched is None and brackets:
+            matched = brackets[0]
+        return matched, float(minimum_pax)
+    for b in brackets:
+        if b["min_pax"] == min_pax and b["max_pax"] == max_pax:
+            return b, 1.0
+    if not allow_overlap:
+        return None, 1.0
+    for b in brackets:
+        if b["min_pax"] <= max_pax and b["max_pax"] >= min_pax:
+            return b, 1.0
+    return None, 1.0
+
+
+def bracket_periods_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
+                        minimum_pax: int, price_per_pax: bool = True,
+                        allow_overlap: bool = True) -> List[Dict[str, Any]]:
+    """Like bracket_price_for, but returns EVERY period the document states for the matched
+    bracket rather than one flat number - built for the confirmed real gap (product owner,
+    2026-09-11): "Hiace had three supplements because of a high season and peak season time, but
+    the app never filled out the actual prices." A bracket with no "seasons" (the common, non-
+    seasonal case) still returns exactly one period, with start_date/end_date both None - so a
+    caller can treat every bracket uniformly as "a list of periods to write" without a separate
+    flat-price code path.
+
+    Uses the exact same matching (solo-bracket multiplication, exact bracket, then overlap) as
+    bracket_price_for via _matched_bracket_for, so this can never pick a different row of the
+    document than the single-price lookup would.
+
+    Each period: {"price", "child_price", "infant_price", "start_date", "end_date"} - price
+    (and child/infant, when present) already has the minimum-party multiplier applied, exactly
+    like bracket_price_for's own return value."""
+    matched, multiplier = _matched_bracket_for(finding, min_pax, max_pax, minimum_pax,
+                                                price_per_pax=price_per_pax,
+                                                allow_overlap=allow_overlap)
+    if matched is None:
+        return []
+    seasons = matched.get("seasons") or []
+    if not seasons:
+        price = matched.get("price")
+        if price is None:
+            return []
+        return [{"price": round(price * multiplier, 2),
+                 "child_price": matched.get("child_price"),
+                 "infant_price": matched.get("infant_price"),
+                 "start_date": None, "end_date": None}]
+    out = []
+    for s in seasons:
+        price = s.get("price")
+        if price is None:
+            continue
+        out.append({"price": round(price * multiplier, 2),
+                    "child_price": s.get("child_price"), "infant_price": s.get("infant_price"),
+                    "start_date": s.get("start_date") or None, "end_date": s.get("end_date") or None})
+    return out
+
+
 def modality_groups(routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The distinct modalities across a supplier's whole product list, for the review screen's
     "which modality does this rate sheet price?" chooser.
@@ -1197,61 +1345,159 @@ def build_proposals(routes: List[Dict[str, Any]],
         # and keep the overlap fallback they have always relied on.
         per_pax = bool(route.get("price_per_pax", True))
         allow_overlap = not options_are_alternatives(route.get("options") or [])
-        changes, unchanged, missing = [], 0, 0
-        for option in route["options"]:
-            if option.get("fetch_failed"):
-                continue
-            if only_option_code is not None and option.get("code") != only_option_code:
-                continue
-            if scope is not None and (option.get("min_pax"), option.get("max_pax")) not in scope:
-                continue
-            new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
-                                          finding.get("minimum_pax", 1),
-                                          price_per_pax=per_pax,
-                                          # An explicitly scoped round is the human saying which
-                                          # modality this sheet is for, which is a better answer
-                                          # than any bracket heuristic - so the exact-match-only
-                                          # rule relaxes back to overlap inside that scope.
-                                          allow_overlap=allow_overlap or scope is not None)
-            if new_price is None:
-                missing += 1
-                continue
-            if abs(new_price - option["unit_price"]) < 0.005:
-                unchanged += 1
-                continue
-            changes.append({"code": option["code"], "min_pax": option["min_pax"],
-                            "max_pax": option["max_pax"], "old": option["unit_price"],
-                            "new": new_price, "name": option.get("name", "")})
         currency_changed = bool(finding.get("currency")) and \
             finding["currency"] != str(route.get("currency") or "").upper()
-        if changes:
-            status = "changed"
-        elif not finding.get("found"):
-            status = "not_in_document"
-        elif missing and not unchanged:
-            status = "not_in_document"
-        else:
-            status = "unchanged"
+
         # CONFIRMED REAL BUG (audit, 2026-08-24): an option whose live price could not be READ
-        # must block this whole route, not be quietly skipped.
-        #
-        # WHY THE WHOLE ROUTE: rebuild_prices derives ONE base price for the transport from the
-        # WIDEST bracket and then expresses every other option as a supplement relative to it. It
-        # used to compute that base from the SURVIVING options only, so a single transient GET
-        # failure (and GETs are deliberately never retried - see api_client._request) had two
-        # silent effects: the unread option kept its old supplement against a NEW base, becoming a
-        # price nobody chose, and if the failed option happened to BE the widest bracket, the base
-        # was taken from a narrower one - often the 1-pax solo rate - repricing every modality on
-        # the transport. baseChildrenPrice/baseInfantPrice are then scaled by base/old_base, so the
-        # error compounds into the child prices too.
-        #
-        # Nothing surfaced any of this: every UI site filters fetch_failed out without a word, and
-        # apply_proposals reported success. stop_sales_tool.py (~500) already handles the identical
-        # "couldn't read it" case correctly - naming it and excluding it from Apply - and this is
-        # that same treatment.
+        # must block this whole route, not be quietly skipped. See rebuild_prices' identical
+        # refusal for why: a partial read can never safely be turned into a base/supplement
+        # split, so nothing about this route is safe to propose.
         unreadable = [o.get("code") for o in route["options"] if o.get("fetch_failed")]
+        usable_options = [o for o in route["options"] if not o.get("fetch_failed")]
+
+        zero_supplement_errors: List[Dict[str, Any]] = []
+
         if unreadable:
             status = "blocked_unreadable"
+            changes, unchanged, missing = [], 0, 0
+        elif route.get("kind") == KIND_TRANSFER:
+            # Transfer has no vehicle/supplement modality concept at all (see
+            # _rebuild_transfer_prices) - unchanged from before this overhaul.
+            changes, unchanged, missing = [], 0, 0
+            for option in usable_options:
+                if only_option_code is not None and option.get("code") != only_option_code:
+                    continue
+                if scope is not None and (option.get("min_pax"), option.get("max_pax")) not in scope:
+                    continue
+                new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
+                                              finding.get("minimum_pax", 1),
+                                              price_per_pax=per_pax,
+                                              allow_overlap=allow_overlap or scope is not None)
+                if new_price is None:
+                    missing += 1
+                    continue
+                if abs(new_price - option["unit_price"]) < 0.005:
+                    unchanged += 1
+                    continue
+                changes.append({"code": option["code"], "min_pax": option["min_pax"],
+                                "max_pax": option["max_pax"], "old": option["unit_price"],
+                                "new": new_price, "name": option.get("name", "")})
+            if changes:
+                status = "changed"
+            elif not finding.get("found"):
+                status = "not_in_document"
+            elif missing and not unchanged:
+                status = "not_in_document"
+            else:
+                status = "unchanged"
+        else:
+            # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11, full
+            # 8-question Q&A - see claude/ project docs for the transcript). A transport's real
+            # sell price for any modality is ONE shared Vehicle/baseAdultPrice number at the
+            # PARENT level plus that modality's OWN price supplement - and which modality is
+            # "the vehicle-price one" is a HUMAN decision made per round, never auto-detected
+            # (Travel Compositor's API is confirmed to under-report a real supplement as 0.0, and
+            # this app's own prior update run is confirmed to have zeroed out real supplements by
+            # trusting that read - see _current_base_option's docstring). So: when a route has
+            # two or more live brackets, a designation is REQUIRED (route["base_bracket_override"]
+            # - the human's answer to app.py's "Which modality is the BASE/vehicle price?"
+            # question) before anything is proposed at all. A single-bracket route has nothing to
+            # designate - that one bracket is trivially the vehicle price.
+            live_brackets = sorted({(o["min_pax"], o["max_pax"]) for o in usable_options})
+            base_bracket = route.get("base_bracket_override")
+            needs_base_designation = len(live_brackets) >= 2 and base_bracket is None
+            if needs_base_designation:
+                status = "blocked_needs_base_designation"
+                changes, unchanged, missing = [], 0, 0
+            else:
+                if base_bracket is None and live_brackets:
+                    base_bracket = live_brackets[0]
+                vehicle_option = next((o for o in usable_options
+                                       if (o["min_pax"], o["max_pax"]) == base_bracket), None)
+                base_reference = vehicle_option["unit_price"] if vehicle_option is not None else 0.0
+                changes, unchanged, missing = [], 0, 0
+                for option in usable_options:
+                    if only_option_code is not None and option.get("code") != only_option_code:
+                        continue
+                    if scope is not None and (option.get("min_pax"), option.get("max_pax")) not in scope:
+                        continue
+                    is_vehicle = (option["min_pax"], option["max_pax"]) == base_bracket
+                    if is_vehicle:
+                        new_price = bracket_price_for(finding, option["min_pax"], option["max_pax"],
+                                                      finding.get("minimum_pax", 1),
+                                                      price_per_pax=per_pax,
+                                                      allow_overlap=allow_overlap or scope is not None)
+                        if new_price is None:
+                            missing += 1
+                            continue
+                        if abs(new_price - option["unit_price"]) < 0.005:
+                            unchanged += 1
+                            continue
+                        changes.append({"code": option["code"], "min_pax": option["min_pax"],
+                                        "max_pax": option["max_pax"], "old": option["unit_price"],
+                                        "new": new_price, "name": option.get("name", ""),
+                                        "write_kind": "vehicle",
+                                        "start_date": None, "end_date": None})
+                        continue
+                    # A non-vehicle (supplement) bracket - every SEASON the document states for
+                    # it, each written to its own period (product owner, 2026-09-11: "Hiace had
+                    # three supplements... but the app never filled out the actual prices").
+                    periods = bracket_periods_for(finding, option["min_pax"], option["max_pax"],
+                                                  finding.get("minimum_pax", 1),
+                                                  price_per_pax=per_pax,
+                                                  allow_overlap=allow_overlap or scope is not None)
+                    if not periods:
+                        missing += 1
+                        continue
+                    any_reported = False
+                    for period in periods:
+                        supplement = round(period["price"] - base_reference, 2)
+                        if abs(supplement) < 0.005:
+                            # CONFIRMED ABSOLUTE RULE (product owner, 2026-09-11): "Supplement
+                            # cannot be 0, if it is 0 there is an error." A hard block, not a
+                            # warning - two different vehicle classes can never legitimately cost
+                            # the same, so a computed 0 means the read (or the base designation)
+                            # is wrong, not that nothing needs to change.
+                            zero_supplement_errors.append({
+                                "code": option["code"], "name": option.get("name", ""),
+                                "start_date": period["start_date"], "end_date": period["end_date"],
+                                "would_be_price": period["price"],
+                            })
+                            any_reported = True
+                            continue
+                        existing_entry = _find_entry_for_period(option, period["start_date"],
+                                                                period["end_date"])
+                        if existing_entry is not None:
+                            old_total = round(base_reference + _num(existing_entry.get("adultPriceSupplement")), 2)
+                        else:
+                            old_total = None
+                        if old_total is not None and abs(period["price"] - old_total) < 0.005:
+                            unchanged += 1
+                            any_reported = True
+                            continue
+                        changes.append({"code": option["code"], "min_pax": option["min_pax"],
+                                        "max_pax": option["max_pax"],
+                                        "old": old_total if old_total is not None else option["unit_price"],
+                                        "new": period["price"], "name": option.get("name", ""),
+                                        "write_kind": "supplement",
+                                        "start_date": period["start_date"], "end_date": period["end_date"],
+                                        "is_new_period": old_total is None})
+                        any_reported = True
+                    if not any_reported:
+                        missing += 1
+            if needs_base_designation:
+                pass  # status already set above - never overwritten by the read below
+            elif zero_supplement_errors:
+                status = "blocked_zero_supplement"
+            elif changes:
+                status = "changed"
+            elif not finding.get("found"):
+                status = "not_in_document"
+            elif missing and not unchanged:
+                status = "not_in_document"
+            else:
+                status = "unchanged"
+
         proposals.append({
             "index": i, "route": route, "finding": finding, "changes": changes,
             "unchanged": unchanged, "missing": missing, "status": status,
@@ -1267,8 +1513,15 @@ def build_proposals(routes: List[Dict[str, Any]],
             # shown on screen, so the example always matches what's actually about to be applied,
             # even after a hand-edit to a "new price" field re-runs this.
             "supplement_examples": supplement_calculation_examples(route, changes),
-            # Only genuine changes are pre-ticked. An accept-all button must not sweep up a
-            # route the document never mentioned - nor one we couldn't fully read.
+            # CONFIRMED ABSOLUTE RULE (product owner, 2026-09-11) - see the zero-supplement block
+            # above. Non-empty means this route CANNOT be published until resolved (a wrong read,
+            # a wrong base designation, or a clarification typed into the AI text field), however
+            # many valid changes it also contains.
+            "zero_supplement_errors": zero_supplement_errors,
+            # Only genuine changes are pre-ticked, and never a route that's blocked for any
+            # reason - an accept-all button must not sweep up a route the document never
+            # mentioned, one we couldn't fully read, one with no base designation, or one with a
+            # zero-supplement error.
             "accepted": status == "changed",
         })
     return proposals
@@ -1527,16 +1780,24 @@ def _current_base_option(options: List[Dict[str, Any]],
     return max(options, key=lambda o: (o["max_pax"] - o["min_pax"], -o["min_pax"]))
 
 
-def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
+def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict[str, Any]:
     """The payloads that put these prices live, keeping base and supplements consistent.
 
-    A modality's price is base + its own supplement, so a new set of prices has to be split
-    across the parent record and every option. The base is taken from whichever option is
-    ALREADY the live base (see _current_base_option) - the common bracket carries no
-    supplement and only genuine outliers (the solo surcharge) do. Sending an option's
-    supplement without updating the base, or the reverse, would silently reprice every OTHER
-    modality on the transport."""
+    CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11 - see
+    build_proposals' own comment for the full transcript reference): a round touches EXACTLY ONE
+    thing - either the shared Vehicle/baseAdultPrice field (a "vehicle" round) or the touched
+    modality's own price-supplement entries (a "supplement" round) - never both, and never any
+    OTHER modality's data, not even for display. `changes` is a proposal's own "changes" list
+    (as build_proposals produces it), each entry already carrying which kind it is
+    ("write_kind": "vehicle" or "supplement") and, for a supplement entry, which season/period
+    it belongs to ("start_date"/"end_date", both None for a flat, non-seasonal price).
+
+    Returns {"transport": the parent payload to PUT (None if refused), "options": a list of
+    {"code", "payload"} for ONLY the option(s) this round actually touches (empty for a vehicle
+    round - nothing else is written), "write_kind": "vehicle" or "supplement" (absent for
+    Transfer, which has no such concept and always PUTs the whole record as before)}."""
     if route.get("kind") == KIND_TRANSFER:
+        new_unit_prices = {c["code"]: c["new"] for c in changes}
         return _rebuild_transfer_prices(route, new_unit_prices)
     # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
     # Refusing here as well as at the proposal stage is deliberate belt-and-braces: this function
@@ -1549,17 +1810,49 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     options = [o for o in route["options"] if not o.get("fetch_failed")]
     if not options:
         return {"transport": None, "options": []}
-    resolved = {o["code"]: round(float(new_unit_prices.get(o["code"], o["unit_price"])), 2)
-                for o in options}
+    if not changes:
+        return {"transport": None, "options": [], "blocked": "Nothing to write."}
+
     # CONFIRMED REAL REQUEST (product owner, 2026-09-11): the human's own answer to "which
-    # modality is the base price this round?" (see the modality-confirmation step in app.py,
-    # asked alongside the scope question, before the document is even read) - stashed on the
-    # route dict itself rather than threaded through every caller's signature, since every
-    # caller of this function already receives the SAME route object build_proposals was given.
-    # None (the default, unchanged behaviour) means "auto-detect from the live read", exactly as
-    # before this override existed.
-    base_option = _current_base_option(options, forced_bracket=route.get("base_bracket_override"))
-    base = resolved[base_option["code"]]
+    # modality is the vehicle/base price this round?" - stashed on the route dict itself rather
+    # than threaded through every caller's signature, since every caller of this function already
+    # receives the SAME route object build_proposals was given. A route with two or more live
+    # brackets and no designation is refused here too (belt-and-braces with build_proposals'
+    # identical refusal) - there is no "auto-detect" fallback left in this write path at all, per
+    # the product owner's explicit instruction: no more silently guessing which modality is base.
+    live_brackets = sorted({(o["min_pax"], o["max_pax"]) for o in options})
+    base_bracket = route.get("base_bracket_override")
+    if len(live_brackets) >= 2 and base_bracket is None:
+        return {"transport": None, "options": [],
+                "blocked": "Which modality is the vehicle/base price was not designated for this route."}
+    if base_bracket is None and live_brackets:
+        base_bracket = live_brackets[0]
+    base_option = next((o for o in options if (o["min_pax"], o["max_pax"]) == base_bracket), None)
+    if base_option is None:
+        # Belt-and-braces only - build_proposals should never hand back a change for a bracket
+        # that no longer exists live, but a stale/hand-edited proposal is not a reason to guess.
+        return {"transport": None, "options": [],
+                "blocked": "The designated base bracket is no longer among this route's live modalities."}
+
+    vehicle_changes = [c for c in changes if c["code"] == base_option["code"]]
+    supplement_changes = [c for c in changes if c["code"] != base_option["code"]]
+
+    per_pax = bool(route.get("price_per_pax", True))
+    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
+    old_base = _num((route.get("raw") or {}).get(base_field))
+    base_for_supplement_calc = round(_num(vehicle_changes[0]["new"]), 2) if vehicle_changes else old_base
+
+    # CONFIRMED ABSOLUTE RULE (product owner, 2026-09-11): "Supplement cannot be 0, if it is 0
+    # there is an error." build_proposals already screens these out of `changes` before a human
+    # ever sees them as an acceptable change, but this is the actual write path, so it refuses
+    # the WHOLE round rather than trust a stale or hand-edited proposal to have done that.
+    zero = [c for c in supplement_changes
+            if abs(round(_num(c["new"]) - base_for_supplement_calc, 2)) < 0.005]
+    if zero:
+        codes = ", ".join(sorted({c["code"] for c in zero}))
+        return {"transport": None, "options": [],
+                "blocked": f"Computed supplement is 0 for {codes} - a modality can never "
+                           "legitimately cost exactly the vehicle/base price."}
 
     parent = json.loads(json.dumps(route["raw"]))
     # BELT AND SUSPENDERS (2026-09-11, "airlineCode: must not be null" incident - see
@@ -1570,154 +1863,81 @@ def rebuild_prices(route: Dict[str, Any], new_unit_prices: Dict[str, float]) -> 
     # already uses) - it never overwrites a real value that's actually present, only fills a
     # field that is genuinely still None.
     normalize_for_put(parent, "Transport")
-    # CONFIRMED REAL BUG (found 2026-09-11, same root cause as load_supplier_transports' own
-    # fix above and bulk_notes.py's confirmed 2026-09-10 fix - see
-    # claude/transport-supplement-per-vehicle-price-bug-2026-09-10.md): a per-vehicle transport
-    # (pricePerPax=False - every FTS-created Transport is one) stores its base price in
-    # vehiclePrice, not baseAdultPrice, which is genuinely 0 for these and must stay 0 (that's
-    # what builder.build_transport_payloads itself writes at creation:
-    # `baseAdultPrice=base_price if price_per_pax else 0.0`). Writing the new base into
-    # baseAdultPrice unconditionally used to leave the real vehiclePrice field stale forever -
-    # the price a per-vehicle transport's OWN option supplements are computed against (this
-    # function's own resolved-price arithmetic is unaffected either way, since base+supplement
-    # always nets out to the same live per-option price regardless of which field it's stored
-    # in - it's specifically the raw vehiclePrice field itself, and anything reading it
-    # directly, that would have gone stale).
-    per_pax = bool(route.get("price_per_pax", True))
-    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
-    old_base = _num(parent.get(base_field))
-    parent[base_field] = base
-    # Child and infant prices move with the adult price rather than being left at last season's
-    # number, which would silently change the child discount. Per-vehicle transports have no
-    # separate child/infant base at all (mirrors bulk_notes.py's own per-vehicle handling,
-    # supplement_fields=("adult",) only) - there is nothing here to scale.
-    if per_pax and old_base > 0:
-        ratio = base / old_base
-        for key in ("baseChildrenPrice", "baseInfantPrice"):
-            if _num(parent.get(key)) > 0:
-                parent[key] = round(_num(parent.get(key)) * ratio, 2)
 
+    write_kind = "vehicle" if vehicle_changes else "supplement"
+
+    if vehicle_changes:
+        # CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11): "but if we only update the
+        # Sedan price whey should the app touches even the Hiace price supplement?" - a vehicle
+        # round writes ONLY the parent's shared base field. No option is read, computed, shown, or
+        # written - not even the one this round happens to also be scoped to structurally, since
+        # the base bracket IS the vehicle bracket and carries no supplement of its own to touch.
+        new_base = round(_num(vehicle_changes[0]["new"]), 2)
+        parent[base_field] = new_base
+        # Child and infant prices move with the adult price rather than being left at last
+        # season's number, which would silently change the child discount. Per-vehicle transports
+        # have no separate child/infant base at all - there is nothing here to scale.
+        if per_pax and old_base > 0:
+            ratio = new_base / old_base
+            for key in ("baseChildrenPrice", "baseInfantPrice"):
+                if _num(parent.get(key)) > 0:
+                    parent[key] = round(_num(parent.get(key)) * ratio, 2)
+        return {"transport": parent, "options": [], "write_kind": "vehicle"}
+
+    # A supplement round: write ONLY the touched option(s)' own price entries - the parent record
+    # is returned unchanged (still needed by apply_proposals' caller shape) but is never PUT for
+    # this write kind (see apply_proposals). Every period this round did NOT touch (including
+    # every season on every OTHER, untouched option) survives byte for byte.
     option_payloads = []
+    touched_codes = sorted({c["code"] for c in supplement_changes})
     for option in options:
-        payload = json.loads(json.dumps(option["raw"]))
-        # DEFENSIVE FIX (2026-09-11, investigating a real report of one option's price update
-        # apparently landing on a DIFFERENT modality - "changed the Modality to Sedan" - after a
-        # Hiace-only round): api_client.update_transport_option's own docstring confirms there is
-        # NO option code in the PUT url - Travel Compositor decides which option gets overwritten
-        # purely from the 'code' field INSIDE the payload body. This used to trust whatever code
-        # came back on option["raw"] (the individual GET response) as-is; if that field were ever
-        # missing, blank, or - worse - identical across two options in a single GET response, one
-        # option's price update could silently overwrite the WRONG modality with no validation
-        # error to catch it (unlike the airlineCode/date bugs above, this would not raise - it
-        # would just quietly corrupt the other option). Pinning it explicitly to the SAME code
-        # this function already trusts (option["code"] - the one load_supplier_transports used to
-        # fetch this exact option) removes that dependency on the GET response's own body
-        # entirely, regardless of whether it was the actual cause of the report above.
-        payload["code"] = option["code"]
-        supplement = round(resolved[option["code"]] - base, 2)
+        if option["code"] not in touched_codes:
+            continue
+        this_option_changes = [c for c in supplement_changes if c["code"] == option["code"]]
+        raw_entries = [p for p in ((option.get("raw") or {}).get("prices") or []) if isinstance(p, dict)]
+        touched_ids = set()
+        for c in this_option_changes:
+            entry = _find_entry_for_period(option, c.get("start_date"), c.get("end_date"))
+            if entry is not None:
+                touched_ids.add(id(entry))
         # CONFIRMED REAL GAP (product owner, 2026-09-11): "it can have a price supplement for
         # different modalities and it can have different period of times but the time can not
         # overlap within the same modality" - a modality's `prices` list can hold more than one
-        # entry, each its own non-overlapping date range (confirmed already live: a standard
-        # rate now plus an already-scheduled future/peak-season rate). This used to REPLACE the
-        # entire `prices` list with a single new-or-updated entry on every write - which silently
-        # DELETED every other period the moment any price on this modality changed. Fixed: only
-        # the ONE entry that is active TODAY (see _select_price_entry) is touched; every other
-        # period is carried through byte-for-byte, untouched.
-        #
-        # NOTE - SCOPE OF THIS FIX: matching is against TODAY's date only, not yet against a
-        # validity window the SOURCE DOCUMENT itself states (the rate-sheet reading pipeline
-        # doesn't extract per-bracket dates yet - see price_refresh.PRICE_LOOKUP_TOOL_SCHEMA).
-        # That is real, separate follow-up work (AI schema + prompt changes) rather than
-        # something to guess at here; this fix's job is narrower and unconditional: whatever
-        # period a refresh touches, every OTHER period on that modality must survive it.
-        existing_entries = [p for p in (payload.get("prices") or []) if isinstance(p, dict)]
-        current_entry = _select_price_entry(existing_entries)
-        other_entries = [p for p in existing_entries if p is not current_entry]
-        if abs(supplement) < 0.005:
-            # A period whose supplement lands on exactly the base rate carries no entry at all -
-            # the confirmed real shape (see schemas.ContractTransportOptionPriceVO's own
-            # docstring) - but only THIS period's entry is dropped; every sibling period stays.
-            new_entries = other_entries
-        else:
-            updated = dict(current_entry or {})
-            updated["adultPriceSupplement"] = supplement
-            # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, same real bulk Apply
-            # failure described in _current_base_option's docstring above): a NEW price entry
-            # (current_entry is None - this option never carried a supplement before) had no
-            # startDate/endDate at all, and Travel Compositor's TransportContractPrice requires
-            # both non-null on write ("must not be null" on both fields). The parent's OWN
-            # startDate/endDate - never touched by this whole flow, see rebuild_prices' and the
-            # Apply screen's own promise that "validity dates stay as they are" - are the
-            # correct values to carry forward here too, exactly matching how
-            # builder.build_transport_payloads seeds a brand-new price entry at create time
-            # (startDate=the transport's own effective_start_date). schemas.
-            # ContractTransportOptionPriceVO.endDate even defaults to "2049-12-31" when not
-            # given, which is the last-resort fallback here too, for the rare case where the
-            # parent itself has no endDate either - an empty string would still satisfy "must
-            # not be null" (same reasoning as normalize_for_put's airlineCode default above),
-            # but a real date is what the parent actually has, so that's used first. An EXISTING
-            # entry's own dates (current_entry was found) are never touched here at all.
-            if not updated.get("startDate"):
+        # entry, each its own non-overlapping date range. Every period this round is NOT writing
+        # (a season the document didn't mention, or a season belonging to a different round)
+        # survives here byte for byte.
+        new_entries = [json.loads(json.dumps(e)) for e in raw_entries if id(e) not in touched_ids]
+        for c in this_option_changes:
+            existing = _find_entry_for_period(option, c.get("start_date"), c.get("end_date"))
+            updated = dict(existing) if existing else {}
+            updated["adultPriceSupplement"] = round(_num(c["new"]) - base_for_supplement_calc, 2)
+            # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, real bulk Apply failure -
+            # see _current_base_option's docstring above): a NEW price entry (no existing entry
+            # matched this period) had no startDate/endDate at all, and Travel Compositor's
+            # TransportContractPrice requires both non-null on write. A period the DOCUMENT itself
+            # stated a date for uses that date; otherwise the parent's own startDate/endDate (never
+            # touched by this flow) are the correct values to carry forward, exactly matching how
+            # builder.build_transport_payloads seeds a brand-new price entry at create time.
+            if c.get("start_date"):
+                updated["startDate"] = c["start_date"]
+            elif not updated.get("startDate"):
                 updated["startDate"] = parent.get("startDate") or ""
-            if not updated.get("endDate"):
+            if c.get("end_date"):
+                updated["endDate"] = c["end_date"]
+            elif not updated.get("endDate"):
                 updated["endDate"] = parent.get("endDate") or "2049-12-31"
-            new_entries = other_entries + [updated]
+            new_entries.append(updated)
+        payload = json.loads(json.dumps(option["raw"]))
+        # DEFENSIVE FIX (2026-09-11, investigating a real report of one option's price update
+        # apparently landing on a DIFFERENT modality): api_client.update_transport_option's own
+        # docstring confirms there is NO option code in the PUT url - Travel Compositor decides
+        # which option gets overwritten purely from the 'code' field INSIDE the payload body.
+        # Pinning it explicitly to the SAME code this function already trusts removes any
+        # dependency on the GET response's own body being correct.
+        payload["code"] = option["code"]
         payload["prices"] = new_entries
-        option_payloads.append({"code": option["code"], "payload": payload,
-                                "unit_price": resolved[option["code"]]})
-    return {"transport": parent, "options": option_payloads}
-
-
-def preview_untouched_modality_effects(route: Dict[str, Any],
-                                       changes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """What this round does to the modalities it is NOT repricing.
-
-    CONFIRMED REAL GAP (product owner, 2026-09-11, reviewing bulk Transport update against the
-    real TRANSPORT-418748: "One Modality for Sedan, 1 to 3 Pax. A second modality for Hiace, 1 to
-    8 Pax. PriceVehicle = price Sedan. Price Hiace = Price Hiace from file - price from Sedan"):
-    every modality on a transport shares ONE base price, so moving the base necessarily rewrites
-    every other modality's stored supplement to hold its own final price steady. That is correct
-    and non-destructive - the other modality still sells for exactly what it sold for - but it was
-    completely invisible. On a Sedan-only round against that real record (Vehicle 175, Hiace
-    supplement 25, so Hiace = 200), accepting "Sedan 175 → 95" also rewrites Hiace's supplement
-    from 25 to 105 behind the scenes. Travel Compositor then shows a supplement the operator never
-    typed, which reads as corruption even though Hiace's price never moved.
-
-    UPDATED 2026-09-11 (real TRANSPORT-423015, and see apply_proposals' own comment): an untouched
-    modality's stored price entries are no longer rewritten at all, because Travel Compositor's
-    API under-reports supplements and recomputing one from that read destroys it. So the effect to
-    report is no longer "its supplement is rewritten to hold its price steady" but the opposite:
-    its supplement is left exactly as it is, and its final price therefore moves with the shared
-    base by the same amount the base moves.
-
-    Returns one entry per modality that is not being repriced but whose final price still shifts:
-    {"code", "name", "price", "base_delta", "new_price"}. Empty when the base doesn't move.
-
-    Uses rebuild_prices itself for the base arithmetic rather than re-deriving it, so the numbers
-    shown to a human before Publish are the same ones the Apply step computes."""
-    if route.get("kind") == KIND_TRANSFER or not changes:
-        return []
-    new_prices = {c["code"]: c["new"] for c in changes}
-    payloads = rebuild_prices(route, new_prices)
-    if not payloads.get("transport"):
-        return []
-    per_pax = bool(route.get("price_per_pax", True))
-    base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
-    base_delta = round(_num(payloads["transport"].get(base_field))
-                       - _num((route.get("raw") or {}).get(base_field)), 2)
-    if abs(base_delta) < 0.005:
-        return []
-    out = []
-    for option in route["options"]:
-        code = option.get("code")
-        if option.get("fetch_failed") or code in new_prices:
-            continue
-        price = _num(option.get("unit_price"))
-        out.append({"code": code, "name": option.get("name") or code,
-                    "price": round(price, 2), "base_delta": base_delta,
-                    "new_price": round(price + base_delta, 2)})
-    return out
+        option_payloads.append({"code": option["code"], "payload": payload})
+    return {"transport": parent, "options": option_payloads, "write_kind": "supplement"}
 
 
 def supplement_calculation_examples(route: Dict[str, Any],
@@ -1734,19 +1954,22 @@ def supplement_calculation_examples(route: Dict[str, Any],
     update the Hiace the price difference must be calculated and the price must then be added to
     the price supplement" - i.e. new Hiace price 90 = base (Sedan) 40 + supplement 50.
 
-    Uses _current_base_option (the SAME function rebuild_prices calls, honouring
+    Iterates every CHANGE entry (not deduped by code), so a modality with multiple seasonal
+    periods in one round gets its own worked example per period (product owner, 2026-09-11:
+    "Hiace had three supplements because of a high season and peak season time"). Uses
+    _current_base_option (the SAME function rebuild_prices calls, honouring
     route["base_bracket_override"] exactly the way it does) to find which changed option is the
     base and which are supplements, so this can never disagree with what Apply actually writes.
-    The changed option that IS the base itself is skipped - it's written directly, no supplement
-    arithmetic involved. Empty for Transfers (which have no modality/supplement concept at all)
-    and when nothing is changing."""
+    Any change entry that IS the base option's own vehicle change is skipped - it's written
+    directly, no supplement arithmetic involved. Empty for Transfers (which have no
+    modality/supplement concept at all) and when nothing is changing."""
     if route.get("kind") == KIND_TRANSFER or not changes:
         return []
     options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
     if len(options) < 2:
         return []  # a single modality is never expressed as a supplement against itself
     base_option = _current_base_option(options, forced_bracket=route.get("base_bracket_override"))
-    new_by_code = {c["code"]: c["new"] for c in changes}
+    new_by_code = {c["code"]: c["new"] for c in changes if c["code"] == base_option["code"]}
     base_new_price = round(_num(new_by_code.get(base_option["code"], base_option["unit_price"])), 2)
     out = []
     for c in changes:
@@ -1759,6 +1982,7 @@ def supplement_calculation_examples(route: Dict[str, Any],
             "base_name": base_option.get("name") or base_option["code"],
             "base_price": base_new_price, "new_price": round(_num(c["new"]), 2),
             "supplement": supplement,
+            "start_date": c.get("start_date"), "end_date": c.get("end_date"),
         })
     return out
 
@@ -1772,54 +1996,45 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
         route = proposal["route"]
         if progress:
             progress(n + 1, len(accepted), route.get("name", ""))
-        new_prices = {c["code"]: c["new"] for c in proposal["changes"]}
-        payloads = rebuild_prices(route, new_prices)
+        payloads = rebuild_prices(route, proposal["changes"])
         if not payloads["transport"]:
             out["failed"].append({
                 "name": route.get("name"),
                 # rebuild_prices names WHY when it refused on purpose (some option prices were
-                # unreadable), rather than reporting the same "no readable modalities" for both
-                # "this route has nothing" and "this route could not be safely repriced".
+                # unreadable, no base designation, or a zero-supplement round), rather than
+                # reporting the same "no readable modalities" for every refusal reason.
                 "detail": payloads.get("blocked") or "no readable modalities",
             })
             continue
+        # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): "but if we
+        # only update the Sedan price whey should the app touches even the Hiace price
+        # supplement?" - a round writes EXACTLY ONE thing. write_kind "vehicle" means ONLY the
+        # parent record's shared base field moves - no option is read, recomputed, or PUT at all,
+        # not even the base bracket's own (supplement-free) entry. write_kind "supplement" means
+        # ONLY the touched option(s)' own price entries move - the parent record is never PUT, so
+        # its base field (and every OTHER modality's untouched supplement) is not even sent back
+        # to Travel Compositor, let alone rewritten. This is also what a real prior data-loss
+        # incident this design exists to prevent needed: "Error of the App as last update fucked
+        # up and deleted the correct supplements" (product owner, 2026-09-11) - the old
+        # unconditional "PUT parent, then PUT every listed option" behaviour is kept ONLY for
+        # Transfer (write_kind absent - Transfer has no vehicle/supplement concept at all, see
+        # _rebuild_transfer_prices), exactly as before this overhaul.
+        write_kind = payloads.get("write_kind")
         updater = (client.update_transfer if route.get("kind") == KIND_TRANSFER
                    else client.update_transport)
         try:
-            res = updater(supplier_id, payloads["transport"])
-            if isinstance(res, dict) and "error" in res:
-                out["failed"].append({"name": route.get("name"),
-                                      "detail": str(res.get("message") or res.get("error"))})
-                continue
-            option_errors = []
-            for opt in payloads["options"]:
-                # CONFIRMED REAL DATA-LOSS PATH (product owner, 2026-09-11, real TRANSPORT-423015:
-                # "modality Hiace, price displayed on the app is 195, but the actual price would
-                # be 195+50"). Travel Compositor's own admin Prices tab shows that Hiace
-                # supplement as US$50.00 while its public API returns adultPriceSupplement 0.0 for
-                # the same entry - a mismatch inside their platform, proven on 2026-09-10 with a
-                # control test using THEIR form and no code of ours (see
-                # claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.md), and there
-                # is no other supplement field in the schema to read instead.
-                #
-                # The consequence, which that earlier doc did not draw out: rebuild_prices
-                # expresses every option as (its price - the shared base), and an untouched
-                # option's "price" here can only come from that same under-reporting read. So
-                # PUTting EVERY option on every accepted route - which is what this loop used to
-                # do - overwrites a real supplement the API never disclosed with one derived from
-                # a phantom number, silently destroying it. That is the most likely mechanism
-                # behind the Hiace supplement that vanished in the 2026-09-11 bulk run.
-                #
-                # An option this round is not repricing is therefore left completely alone: not
-                # read back, not recomputed, not written. Its stored supplement survives intact,
-                # whatever it really is. The trade-off is honest and is stated on the review
-                # screen: because modalities share one base price, an untouched modality's final
-                # price moves with the base rather than being held steady.
-                if opt["code"] not in new_prices:
-                    continue
-                res = client.update_transport_option(supplier_id, route.get("id"), opt["payload"])
+            if write_kind != "supplement":
+                res = updater(supplier_id, payloads["transport"])
                 if isinstance(res, dict) and "error" in res:
-                    option_errors.append(f"{opt['code']}: {res.get('message') or res.get('error')}")
+                    out["failed"].append({"name": route.get("name"),
+                                          "detail": str(res.get("message") or res.get("error"))})
+                    continue
+            option_errors = []
+            if write_kind != "vehicle":
+                for opt in payloads["options"]:
+                    res = client.update_transport_option(supplier_id, route.get("id"), opt["payload"])
+                    if isinstance(res, dict) and "error" in res:
+                        option_errors.append(f"{opt['code']}: {res.get('message') or res.get('error')}")
             if option_errors:
                 # The parent went through, so the base price has already moved. Saying so
                 # matters: leaving it at "failed" would suggest nothing had changed.

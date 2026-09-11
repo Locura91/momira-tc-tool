@@ -36,10 +36,16 @@ import price_refresh
 
 
 def _route(sedan=(1, 3), hiace=(1, 8), per_pax=False, sedan_price=175.0, hiace_price=200.0):
-    """The real TRANSPORT-418748 shape: per-vehicle, Sedan 1-3 as base, Hiace 1-8 + supplement."""
+    """The real TRANSPORT-418748 shape: per-vehicle, Sedan 1-3 as base, Hiace 1-8 + supplement.
+
+    CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a two-or-more
+    modality route now REQUIRES an explicit base_bracket_override - Sedan (1-3) is the
+    designated base in every fixture below, matching the real TRANSPORT-418748 shape this file
+    is built around ("PriceVehicle = price Sedan").
+    """
     return {
         "id": "TRANSPORT-418748", "name": "Marsa Matruh - Siwa Oasis", "kind": None,
-        "price_per_pax": per_pax, "currency": "USD",
+        "price_per_pax": per_pax, "currency": "USD", "base_bracket_override": sedan,
         "options": [
             {"code": "Sedan", "min_pax": sedan[0], "max_pax": sedan[1], "unit_price": sedan_price,
              "name": "Private Transfer with Car Sedan - 1 to 3 Pax",

@@ -91,8 +91,16 @@ def _finding_matching(price):
                                                  "child_price": None, "infant_price": None}]}
 
 
+# CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a two-or-more
+# modality route with no base_bracket_override designated is now a hard "blocked_needs_base_
+# designation" refusal at the build_proposals stage (see its own comment) - flat_price_codes is
+# still computed regardless of status (see flat_price_modalities' own docstring: "a route can be
+# flagged whether this round is proposing changes to it or not"), so every test below now
+# designates Sedan as base explicitly, to exercise each status this warning can appear alongside.
+
 def test_flagged_even_when_the_route_is_unchanged():
     route = _route(sedan_price=40.0, hiace_price=40.0)
+    route["base_bracket_override"] = (1, 3)
     finding = _finding_matching(40.0)  # document also says 40 - nothing to propose
     proposal = price_refresh.build_proposals([route], {0: finding})[0]
     assert proposal["status"] == "unchanged"
@@ -101,6 +109,7 @@ def test_flagged_even_when_the_route_is_unchanged():
 
 def test_flagged_even_when_the_route_is_not_in_the_document():
     route = _route(sedan_price=40.0, hiace_price=40.0)
+    route["base_bracket_override"] = (1, 3)
     proposal = price_refresh.build_proposals([route], {})[0]
     assert proposal["status"] == "not_in_document"
     assert set(proposal["flat_price_codes"]) == {"Sedan", "Hiace"}
@@ -108,9 +117,18 @@ def test_flagged_even_when_the_route_is_not_in_the_document():
 
 def test_flagged_even_when_a_change_is_being_proposed():
     route = _route(sedan_price=40.0, hiace_price=40.0)
+    route["base_bracket_override"] = (1, 3)
     finding = _finding_matching(60.0)  # Sedan is about to change; Hiace is untouched this round
     proposal = price_refresh.build_proposals([route], {0: finding})[0]
     assert proposal["status"] == "changed"
+    assert set(proposal["flat_price_codes"]) == {"Sedan", "Hiace"}
+
+
+def test_a_route_needing_base_designation_still_flags_the_flat_price_warning():
+    # The new hard block is a SEPARATE concern from this warning - a route can be both.
+    route = _route(sedan_price=40.0, hiace_price=40.0)
+    proposal = price_refresh.build_proposals([route], {})[0]
+    assert proposal["status"] == "blocked_needs_base_designation"
     assert set(proposal["flat_price_codes"]) == {"Sedan", "Hiace"}
 
 
