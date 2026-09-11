@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-room-placeholder-codes"
+MODULE_BUILD = "2026-09-11-hotel-offer-supplement-rate-gaps"
 
 import math
 import datetime
@@ -4791,12 +4791,22 @@ def resolve_room_provider_codes(hotel_response_rooms):
     return result
 
 
-def _build_offer_or_supplement_common_kwargs(item_data, apply_default="LODGING"):
+def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_types, apply_default="LODGING"):
     """Shared field-building for Offers and Supplements - they're structurally identical except
     Offers have an extra type value (STAY_TO_PAY) plus stay/pay fields, added by the caller.
 
     apply_default=None (used for Supplements) makes an unrecognised basis come back as None
-    instead of silently becoming LODGING - see _map_apply_type."""
+    instead of silently becoming LODGING - see _map_apply_type.
+
+    `room_codes`/`meal_plan_types`: the ALREADY-RESOLVED lists the caller computed (see
+    build_hotel_offer_payloads/build_hotel_supplement_payloads) - "applies to every room"/"every
+    meal plan" (the document naming none in particular) resolved to the hotel's actual full lists,
+    not left as an empty array. CONFIRMED REAL BUG (2026-09-11, HRG-H1): both fields are required
+    non-empty by Travel Compositor - "providerRoomCodes: Size must be between 1 and ..." /
+    "mealPlans: Size must be between 1 and ..." - so passing through the raw (often empty, meaning
+    "no specific restriction") extracted lists always failed once a document's offer/supplement
+    didn't name specific rooms or meal plans, which is the common case (e.g. "All room category"
+    Early Bird discounts, hotel-wide supplements)."""
     windows_travel = [w for w in (item_data or {}).get("travel_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
     windows_booking = [w for w in (item_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
     return dict(
@@ -4813,8 +4823,8 @@ def _build_offer_or_supplement_common_kwargs(item_data, apply_default="LODGING")
         names=_translation_list((item_data or {}).get("name")),
         travelWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_travel],
         bookingWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_booking],
-        providerRoomCodes=[c for c in ((item_data or {}).get("room_provider_codes") or []) if c],
-        mealPlans=(item_data or {}).get("meal_plans") or [],
+        providerRoomCodes=list(room_codes or []),
+        mealPlans=list(meal_plan_types or []),
         operationalDays=(item_data or {}).get("operational_days") or WEEKDAY_NAMES.copy(),
     )
 
@@ -4839,7 +4849,37 @@ def _hotel_offer_supplement_value_changed_error(kind_label, name, item_data, exi
         f"Compositor if the document's new value is correct.")
 
 
-def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None):
+def _resolve_offer_or_supplement_room_codes(item_data, room_name_to_provider_code, all_room_codes):
+    """Resolves an offer/supplement's "room_names" (extraction's convention: empty list means
+    "applies to all rooms" - see ai_extractor.py's ROOMS/OFFERS section) into real providerRoomCodes.
+
+    Returns (room_codes, error) - error is set instead of silently applying to every room when
+    SPECIFIC rooms were named but NONE of them resolved (a real name mismatch/typo is a data
+    problem to surface, not a reason to widen the offer/supplement to rooms it was never meant
+    to cover)."""
+    room_names = (item_data or {}).get("room_names") or []
+    if not room_names:
+        return list(all_room_codes), None
+    room_codes = [room_name_to_provider_code.get(rn) for rn in room_names if room_name_to_provider_code.get(rn)]
+    if not room_codes:
+        return [], f"names room(s) {room_names} but none matched a published room - check the room name(s)"
+    return room_codes, None
+
+
+def _resolve_offer_or_supplement_meal_plans(item_data, all_meal_plan_types):
+    """Resolves an offer/supplement's "meal_plans" (a list of free-text hints like "Half Board",
+    same convention as the top-level meal_plans block - empty means "applies under any meal
+    plan") into Travel Compositor's fixed enum values via the shared _map_meal_plan_type mapper,
+    de-duplicated in order. Empty resolves to every meal plan type currently on the hotel - see
+    _build_offer_or_supplement_common_kwargs's docstring for why an empty list can't be sent as-is."""
+    hints = (item_data or {}).get("meal_plans") or []
+    if not hints:
+        return list(dict.fromkeys(all_meal_plan_types or []))
+    return list(dict.fromkeys(_map_meal_plan_type(h) for h in hints))
+
+
+def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None,
+                                hotel_meal_plan_types=None):
     """
     PHASE 2 (offers). Builds one ContractHotelOffersVO payload per extracted offer, ready for
     api_client.create_hotel_offer() (CONFIRMED create-only, no update path - see
@@ -4849,13 +4889,18 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
 
     `room_name_to_provider_code`: {room_name: providerCode}, from resolve_room_provider_codes()
     against Phase 1's create/update RESPONSE - used to translate a document's room-name
-    references into the real providerRoomCodes this offer applies to.
+    references into the real providerRoomCodes this offer applies to. `hotel_meal_plan_types`:
+    every mealPlan enum value currently on the hotel (from the Phase 1 payload's own mealPlans) -
+    both are used to resolve "applies to everything" (an empty room_names/meal_plans list) into
+    the hotel's actual full lists, since Travel Compositor requires both fields non-empty
+    (CONFIRMED REAL BUG, 2026-09-11, HRG-H1 - see _build_offer_or_supplement_common_kwargs).
 
     Returns a list of {"offer_payload": dict|None, "offer_error": str|None,
                         "action": "create"|"skip_duplicate", "matched_provider_code": str|None}.
     A skip_duplicate result can still carry an offer_error - see the value-changed check below.
     """
     existing_offers = (existing_hotel_snapshot or {}).get("offers") or []
+    all_room_codes = list(dict.fromkeys(c for c in (room_name_to_provider_code or {}).values() if c))
     results = []
     for offer_data in extracted_offers or []:
         offer_name = (offer_data or {}).get("name")
@@ -4875,8 +4920,13 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
 
-        room_codes = [room_name_to_provider_code.get(rn) for rn in (offer_data or {}).get("room_names") or []]
-        kwargs = _build_offer_or_supplement_common_kwargs({**(offer_data or {}), "room_provider_codes": room_codes})
+        room_codes, room_error = _resolve_offer_or_supplement_room_codes(offer_data, room_name_to_provider_code, all_room_codes)
+        if room_error:
+            results.append({"offer_payload": None, "action": "create", "matched_provider_code": None,
+                             "offer_error": f"Offer '{offer_name or '(unnamed)'}' {room_error}."})
+            continue
+        meal_plan_types = _resolve_offer_or_supplement_meal_plans(offer_data, hotel_meal_plan_types)
+        kwargs = _build_offer_or_supplement_common_kwargs(offer_data, room_codes, meal_plan_types)
         kwargs["type"] = _map_offer_type((offer_data or {}).get("type"))
         kwargs["stay"] = (offer_data or {}).get("stay")
         kwargs["pay"] = (offer_data or {}).get("pay")
@@ -4896,11 +4946,13 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
     return results
 
 
-def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider_code, existing_hotel_snapshot=None):
+def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider_code, existing_hotel_snapshot=None,
+                                     hotel_meal_plan_types=None):
     """Same as build_hotel_offer_payloads but for Supplements - see that function's docstring;
     identical mechanics, minus the type=STAY_TO_PAY/stay/pay option since supplements only have
     PERCENT/ABSOLUTE."""
     existing_supplements = (existing_hotel_snapshot or {}).get("supplements") or []
+    all_room_codes = list(dict.fromkeys(c for c in (room_name_to_provider_code or {}).values() if c))
     results = []
     for supp_data in extracted_supplements or []:
         supp_name = (supp_data or {}).get("name")
@@ -4915,9 +4967,13 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
 
-        room_codes = [room_name_to_provider_code.get(rn) for rn in (supp_data or {}).get("room_names") or []]
-        kwargs = _build_offer_or_supplement_common_kwargs(
-            {**(supp_data or {}), "room_provider_codes": room_codes}, apply_default=None)
+        room_codes, room_error = _resolve_offer_or_supplement_room_codes(supp_data, room_name_to_provider_code, all_room_codes)
+        if room_error:
+            results.append({"supplement_payload": None, "action": "create", "matched_provider_code": None,
+                             "supplement_error": f"Supplement '{supp_name or '(unnamed)'}' {room_error}."})
+            continue
+        meal_plan_types = _resolve_offer_or_supplement_meal_plans(supp_data, hotel_meal_plan_types)
+        kwargs = _build_offer_or_supplement_common_kwargs(supp_data, room_codes, meal_plan_types, apply_default=None)
         kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
 
         # CONFIRMED PRODUCT-OWNER RULE: never guess a supplement's basis. Stop here with a
@@ -4949,8 +5005,55 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
     return results
 
 
+def _fill_missing_distribution_prices(distribution_prices_data, allowed_distributions):
+    """CONFIRMED REAL BUG (2026-09-11, HRG-H1): Travel Compositor rejects a rate outright if a
+    room's own allowed occupancy (its `distributions`, set on the room itself) includes a
+    combination this season's seasonRoomPrices has no price for at all - a real production error
+    named the exact missing combos: "java.lang.IllegalArgumentException: Room price missing for
+    distributions: 1 Ad. + 2 Ch., 2 Ad. + 1 Ch." This is a common shape for extraction to
+    slightly under-cover: many contracts price by a Single/Double/Triple/Quad OCCUPANCY-COUNT
+    column, while a room's own occupancy note lists SEVERAL different adult+children
+    combinations that all share that one column (e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 2 CH" all
+    priced at the same "Triple" figure) - it's easy to capture the price but only enumerate one
+    or two of the listed combos.
+
+    Fills any allowed combo missing an explicit price by reusing the price already given for
+    another combo with the SAME TOTAL occupancy (adults+children) - a safe inference given how
+    these tables are actually structured (priced by total pax, not by the adult/child split),
+    not a guess at an unrelated number. Returns (filled_distribution_prices_data, still_missing,
+    fill_notes) - a combo that shares no total-pax price with anything already extracted is left
+    in `still_missing` rather than invented from nothing, so the caller can surface it as an
+    error instead of letting Travel Compositor's own cryptic exception be the first anyone hears
+    of it."""
+    have = {(_safe_int(p.get("adults", 1), fallback=1), _safe_int(p.get("children", 0)))
+            for p in distribution_prices_data}
+    price_by_total_pax = {}
+    for p in distribution_prices_data:
+        total = _safe_int(p.get("adults", 1), fallback=1) + _safe_int(p.get("children", 0))
+        price_by_total_pax.setdefault(total, _safe_float(p.get("amount", 0)))
+
+    filled = list(distribution_prices_data)
+    fill_notes = []
+    still_missing = []
+    for d in allowed_distributions or []:
+        if not isinstance(d, dict):
+            continue
+        adults = _safe_int(d.get("adults", 1), fallback=1)
+        children = _safe_int(d.get("children", 0))
+        if (adults, children) in have:
+            continue
+        total = adults + children
+        if total in price_by_total_pax:
+            filled.append({"adults": adults, "children": children, "amount": price_by_total_pax[total]})
+            fill_notes.append(f"{adults} Ad. + {children} Ch. (reused the {total}-pax price)")
+        else:
+            still_missing.append(f"{adults} Ad. + {children} Ch.")
+    return filled, still_missing, fill_notes
+
+
 def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer_name_to_provider_code,
-                               supplement_name_to_provider_code, existing_hotel_snapshot=None):
+                               supplement_name_to_provider_code, existing_hotel_snapshot=None,
+                               room_name_to_distributions=None):
     """
     PHASE 2 (rates) - the last step. Builds one ContractHotelRateVO payload per extracted rate-
     group (each with its nested seasons/seasonRoomPrices/stopSales), ready for
@@ -4966,6 +5069,12 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
     Used to translate the document's own name references into the real provider codes
     seasonRoomPrices/rate.offers/rate.supplements need.
 
+    `room_name_to_distributions`: {room_name: [{"adults", "children"}, ...]} - every room's OWN
+    allowed occupancy list (the same data that went into that room's Phase 1 payload). Used to
+    fill in a season's missing distribution-price combos (see _fill_missing_distribution_prices) -
+    CONFIRMED REAL BUG, 2026-09-11, HRG-H1: Travel Compositor rejects a rate outright if any
+    combo a room allows has no price at all for a season it's sold in.
+
     CONFIRMED REAL RULE (product owner): no deactivation/deletion logic needed for stale
     seasons/rates - "no deleting needed for rates, if the time window is closed, it is done then
     and it cant be sold anymore, so no harm if not deleted."
@@ -4979,9 +5088,13 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
 
     Returns a list of {"rate_payload": dict|None, "rate_error": str|None, "rate_name": str,
                         "action": "create"|"update", "matched_rate_id": int|None,
+                        "rate_warnings": [str, ...],
                         "season_actions": [{"season_name", "action", "matched_season_id"}]}.
+    `rate_warnings` are non-blocking - e.g. a missing distribution price that was safely filled
+    by reusing a same-occupancy-count price already given.
     """
     existing_rates = (existing_hotel_snapshot or {}).get("rates") or []
+    room_name_to_distributions = room_name_to_distributions or {}
     results = []
 
     for rate_data in extracted_rates or []:
@@ -4991,6 +5104,8 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
 
         season_payloads = []
         season_actions = []
+        rate_warnings = []
+        missing_price_notes = []
         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:4294-4305): tracks
         # which of this rate's EXISTING seasons got matched (and therefore re-included, with
         # this run's own updated data) by the fresh document below - anything left over gets
@@ -5011,6 +5126,24 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 if not provider_room_code:
                     continue
                 distribution_prices_data = _clip_distributions_to_pax_cap_priced((rp_data or {}).get("distribution_prices") or [])
+                # CONFIRMED REAL BUG (2026-09-11, HRG-H1): Travel Compositor rejects the whole
+                # rate if this room allows an occupancy combo (its own `distributions`) that has
+                # no price at all here - fill any gap safely (same total-pax price) before it
+                # ever reaches the API; anything that can't be safely filled blocks this rate
+                # with a clear, editable message instead of Travel Compositor's raw exception.
+                allowed_distributions = _clip_distributions_to_pax_cap(room_name_to_distributions.get(room_name) or [])
+                distribution_prices_data, still_missing, fill_notes = _fill_missing_distribution_prices(
+                    distribution_prices_data, allowed_distributions)
+                if fill_notes:
+                    rate_warnings.append(
+                        f"Season '{season_name}', room '{room_name}': filled missing price(s) for "
+                        f"{', '.join(fill_notes)}.")
+                if still_missing:
+                    missing_price_notes.append(
+                        f"Season '{season_name}', room '{room_name}' has no price for "
+                        f"{', '.join(still_missing)}, and no same-occupancy-count price to reuse - "
+                        f"add a price for {'this combo' if len(still_missing) == 1 else 'these combos'} "
+                        f"on the review screen.")
                 room_prices.append(ContractHotelSeasonPricesVO(
                     unitsQuota=_safe_int((rp_data or {}).get("units_quota", 20), fallback=20),
                     unitsOnRequest=_safe_int((rp_data or {}).get("units_on_request", 0), fallback=0),
@@ -5131,17 +5264,26 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
 
         rate_error = None
         rate_payload = None
-        try:
-            rate = ContractHotelRateVO(**rate_kwargs)
-            rate_payload = rate.dict()
-        except ValidationError as e:
-            rate_error = str(e)
-        except (ValueError, TypeError) as e:
-            rate_error = f"Couldn't build rate '{rate_name}' - {e}"
+        if missing_price_notes:
+            # CONFIRMED REAL BUG (2026-09-11, HRG-H1): Travel Compositor rejects the ENTIRE rate
+            # if even one room/season combo it allows has no price and none could be safely
+            # filled (see _fill_missing_distribution_prices) - block here with a clear, editable
+            # message rather than let the same cryptic Java exception be the first anyone sees.
+            rate_error = ("Missing room price(s) for " + str(len(missing_price_notes)) +
+                          " combo(s): " + " ".join(missing_price_notes))
+        else:
+            try:
+                rate = ContractHotelRateVO(**rate_kwargs)
+                rate_payload = rate.dict()
+            except ValidationError as e:
+                rate_error = str(e)
+            except (ValueError, TypeError) as e:
+                rate_error = f"Couldn't build rate '{rate_name}' - {e}"
 
         results.append({
             "rate_payload": rate_payload,
             "rate_error": rate_error,
+            "rate_warnings": rate_warnings,
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): rate_name is now always
             # present (even when rate_payload is None because the build failed) - the caller
             # used to reach into rate_payload for the name to report a build failure, and

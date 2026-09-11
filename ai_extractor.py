@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-room-placeholder-codes"
+MODULE_BUILD = "2026-09-11-hotel-offer-supplement-rate-gaps"
 
 import os
 import re
@@ -4735,6 +4735,12 @@ occupancy table/grid states (e.g. a table with columns "1 Adult", "2 Adults", "2
 three distribution entries: {"adults":1,"children":0}, {"adults":2,"children":0}, {"adults":2,"children":1}).
 Do NOT invent combinations the document doesn't show pricing/availability for. type_id: always null - there is
 no known master-list reference for this field, never invent one.
+CONFIRMED REAL RULE (2026-09-11, HRG-H1 - Travel Compositor rejects the whole rate otherwise): a "Max
+Occupancy"/occupancy note that lists SEVERAL alternative adult+children combinations sharing ONE price-table
+column (e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 02 CH" all priced under one "Triple" figure) means EVERY listed
+combination is its own distribution entry here - list all of them, not just one representative combination.
+Each of those combinations must ALSO get its own room_prices/distribution_prices entry below, all using that
+SAME column's price (see the matching rule under "room_prices").
 CONFIRMED PRODUCT-OWNER RULE - SHARED PHYSICAL UNITS (e.g. a villa that can be booked as "1 Bedroom", "2
 Bedroom", or "3 Bedroom" configurations, all drawn from the same physical villas): each distinct configuration
 the document names and prices is still its OWN independent "rooms" entry with its own room_prices/units_quota -
@@ -4789,7 +4795,16 @@ Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - 
    "travel_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the stay-date window this applies to),
    "booking_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the window during which this must be BOOKED, if the document states a booking deadline separate from the stay window),
    "room_names": [] (which room type name(s), from the "rooms" list above, this applies to - empty if it applies to all rooms),
-   "meal_plans": [], "operational_days": []}
+   "meal_plans": [] (a list of plain meal-plan hint strings, e.g. ["Half Board"] - same free-text style as
+   "meal_plan_hint" under the top-level MEAL PLANS section above, mapped onto Travel Compositor's fixed 5-value
+   list downstream. Leave EMPTY if this offer/supplement applies regardless of meal plan - the common case. Fill
+   it in ONLY when the document itself ties this specific offer/supplement to one particular meal plan -
+   CONFIRMED REAL EXAMPLE: a document listing separate compulsory Gala Dinner supplements for guests on Bed &
+   Breakfast vs Half Board, each at a DIFFERENT price, is TWO separate supplement entries (see the naming
+   convention two paragraphs below), one with meal_plans=["Bed and Breakfast"] and the other with
+   meal_plans=["Half Board"] - never leave both empty, since that would apply BOTH charges to every booking
+   regardless of the guest's actual meal plan.),
+   "operational_days": []}
 Only fill numeric constraint fields (minimum_stay, minimum_adults, etc) when the document genuinely states that
 constraint for this specific offer/supplement - leave null otherwise, never invent a constraint.
 IMPORTANT - COMBINABLE OFFERS: if a document describes an offer combining MULTIPLE conditions (e.g. "stay 3
@@ -4848,6 +4863,14 @@ CRITICAL: extract distribution_prices LITERALLY, one entry per adults+children c
 actually prices - NEVER assume a formula or fixed increment between different occupancy combinations (real
 contracts have shown non-monotonic, irregular differences between brackets). Only use base_price/adult_prices/
 child_prices instead of distribution_prices when price_type is genuinely "PAX" for that season.
+CONFIRMED REAL RULE (2026-09-11, HRG-H1): EVERY combination listed in this room's own "distributions" (see
+"rooms" above) must have a distribution_prices entry here for every season it's sold in - Travel Compositor
+rejects the entire rate outright if even one allowed combination has no price at all ("Room price missing for
+distributions: ..."). When several combinations share one price-table column (the "Max Occupancy" case
+described under "rooms" above, e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 02 CH" all under one "Triple" price), give
+each of those combinations its OWN distribution_prices entry using that SAME column's price - this is not the
+"invent a formula/increment" mistake the rule above warns against, since the document itself states one price
+for all of them; it is only "not spreading it across the listed combinations" that would leave some unpriced.
 CONFIRMED PRODUCT-OWNER RULE - BASE RATE PLUS PER-BEDROOM/PER-EXTRA-CAP SUPPLEMENT: some documents do NOT give a
 full occupancy grid at all - instead they give ONE flat rate for the room/villa at its base occupancy (e.g. "2
 Bedroom Villa: USD 1,200/night, based on 2 adults"), plus a SEPARATE flat supplement for each additional

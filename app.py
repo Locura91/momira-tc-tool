@@ -11411,10 +11411,23 @@ def render_hotel_flow(client):
                 progress.warning(f"⚠️ Travel Compositor didn't return a code for these room(s): "
                                 f"{', '.join(unresolved)}. Their prices will be skipped in phase 2.")
 
+            # CONFIRMED REAL BUG (2026-09-11, HRG-H1): an offer/supplement that names no specific
+            # room or meal plan ("applies to all rooms"/"all meal plans", per ai_extractor.py's
+            # own documented convention) used to be sent with an EMPTY providerRoomCodes/mealPlans
+            # array - Travel Compositor requires both non-empty, so every hotel-wide offer/
+            # supplement (Early Bird discounts, compulsory Gala Dinners, Half Board/Club Package
+            # supplements - the common case) failed outright. build_hotel_offer_payloads/
+            # build_hotel_supplement_payloads now resolve "applies to everything" into the hotel's
+            # actual current meal-plan list, read straight from the Phase 1 payload that was just
+            # published (so it reflects every meal plan really on the hotel, new or preserved).
+            hotel_meal_plan_types = [mp.get("mealPlan") for mp in (phase1_payload.get("mealPlans") or [])
+                                      if mp.get("mealPlan")]
+
             # ---- PHASE 2a: offers ----
             offer_map = {}
             offer_results = build_hotel_offer_payloads(data.get("offers") or [], room_map,
-                                                        existing_hotel_snapshot=existing_snapshot)
+                                                        existing_hotel_snapshot=existing_snapshot,
+                                                        hotel_meal_plan_types=hotel_meal_plan_types)
             offer_failures = []
             with st.spinner("Phase 2 of 2 — publishing offers..."):
                 for offer_data, res in zip(data.get("offers") or [], offer_results):
@@ -11440,7 +11453,8 @@ def render_hotel_flow(client):
             # ---- PHASE 2b: supplements ----
             supplement_map = {}
             supp_results = build_hotel_supplement_payloads(data.get("supplements") or [], room_map,
-                                                            existing_hotel_snapshot=existing_snapshot)
+                                                            existing_hotel_snapshot=existing_snapshot,
+                                                            hotel_meal_plan_types=hotel_meal_plan_types)
             supp_failures = []
             with st.spinner("Phase 2 of 2 — publishing supplements..."):
                 for supp_data, res in zip(data.get("supplements") or [], supp_results):
@@ -11462,11 +11476,22 @@ def render_hotel_flow(client):
                         supplement_map[name] = resp.get("providerCode") if isinstance(resp, dict) else None
 
             # ---- PHASE 2c: rates (needs the room/offer/supplement codes resolved above) ----
+            # room_name_to_distributions feeds the missing-distribution-price safety net (see
+            # builder._fill_missing_distribution_prices, 2026-09-11 HRG-H1 fix) - every room's own
+            # allowed occupancy list, straight from what extraction gave for "rooms" (same data
+            # that already went into Phase 1's room payloads).
+            room_name_to_distributions = {
+                (r or {}).get("name"): (r or {}).get("distributions") or []
+                for r in data.get("rooms") or [] if (r or {}).get("name")
+            }
             rate_results = build_hotel_rate_payloads(data.get("rates") or [], room_map, offer_map,
-                                                      supplement_map, existing_hotel_snapshot=existing_snapshot)
+                                                      supplement_map, existing_hotel_snapshot=existing_snapshot,
+                                                      room_name_to_distributions=room_name_to_distributions)
             rate_failures = []
+            rate_warnings_all = []
             with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
                 for res in rate_results:
+                    rate_warnings_all.extend(res.get("rate_warnings") or [])
                     if res.get("rate_error") or not res.get("rate_payload"):
                         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to read
                         # res.get("rate_payload", {}).get("name") - rate_payload is present but
@@ -11484,6 +11509,15 @@ def render_hotel_flow(client):
                         resp = client.create_hotel_rates(supplier_id, provider_code, res["rate_payload"])
                     if isinstance(resp, dict) and "error" in resp:
                         rate_failures.append((res["rate_payload"].get("name"), resp.get("message")))
+
+            if rate_warnings_all:
+                # Non-blocking - a missing distribution price was safely filled by reusing the
+                # price already given for the same total occupancy (see
+                # builder._fill_missing_distribution_prices, 2026-09-11 HRG-H1 fix). Surfaced so
+                # a human can double-check the filled figure is actually right for that combo.
+                progress.info("ℹ️ Filled in some missing room prices by reusing the price already "
+                              "given for the same number of guests:\n\n" +
+                              "\n".join(f"- {note}" for note in rate_warnings_all))
 
             all_failures = offer_failures + supp_failures + rate_failures
             if all_failures:
@@ -14358,7 +14392,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-hotel-room-placeholder-codes"
+BUILD_VERSION = "2026-09-11-hotel-offer-supplement-rate-gaps"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
