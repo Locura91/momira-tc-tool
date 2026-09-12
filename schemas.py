@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-rate-gaps"
+MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator, root_validator
@@ -1132,8 +1132,12 @@ class ContractHotelOffersVO(BaseModel):
     into one flat field - which of the 7 is correct depends entirely on how the specific document
     phrases the offer, not something derivable from a formula.
 
-    providerCode: system-generated (AUTO_... - same convention as ContractRoomVO), never set by
-    this tool on create."""
+    providerCode: CONFIRMED REAL BUG (2026-09-11, HRG-H1, second round): the "system-generated,
+    never set by this tool" claim below turned out to be wrong, same as the equivalent claim for
+    ContractRoomVO - a create with providerCode left None was rejected ("HotelContractOffers.
+    providerCode:must not be null"). builder.py now generates a deterministic client-side
+    placeholder (see _hotel_offer_supplement_placeholder_code) and always reads the REAL code back
+    from the create response, never from what was sent."""
     providerCode: Optional[str] = None
     type: str  # PERCENT / ABSOLUTE / STAY_TO_PAY
     apply: str  # LODGING / MEAL / LODGING_AND_MEAL / PER_NIGHT / PER_NIGHT_PERSON / PER_STAY / PER_STAY_PERSON
