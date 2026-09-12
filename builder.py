@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-rate-gaps"
+MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
 
 import math
 import datetime
@@ -4791,7 +4791,24 @@ def resolve_room_provider_codes(hotel_response_rooms):
     return result
 
 
-def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_types, apply_default="LODGING"):
+def _hotel_offer_supplement_placeholder_code(hotel_provider_code, kind_label, name, index):
+    """Same reasoning and shape as _hp_placeholder_room_code in app.py (2026-09-11 room fix): a
+    deterministic, client-generated providerCode so an offer/supplement can be created inline in
+    one call. CONFIRMED REAL BUG (2026-09-11, HRG-H1, second round): a brand-new offer/supplement
+    submitted with providerCode left None was rejected -
+    "HotelContractOffers.providerCode:must not be null" / "HotelContractSupplement.providerCode:
+    must not be null" - exactly the same shape of error the ROOM fix already solved. The
+    ContractHotelOffersVO/ContractHotelSupplementVO docstrings' "system-generated, never set by
+    this tool" claim was, like the equivalent room-code claim before it, inferred only from GET
+    examples showing AUTO_... codes - never actually tested against a client-supplied value.
+    Whatever Travel Compositor does with this placeholder (keep it or replace it) doesn't matter -
+    callers always read the real code back from the create response, never from what was sent."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "", (name or "")).upper()[:16] or kind_label
+    return f"{hotel_provider_code or 'HOTEL'}-{kind_label}-{slug}-{index + 1}"
+
+
+def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_types, provider_code=None,
+                                              apply_default="LODGING"):
     """Shared field-building for Offers and Supplements - they're structurally identical except
     Offers have an extra type value (STAY_TO_PAY) plus stay/pay fields, added by the caller.
 
@@ -4806,10 +4823,26 @@ def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_ty
     "mealPlans: Size must be between 1 and ..." - so passing through the raw (often empty, meaning
     "no specific restriction") extracted lists always failed once a document's offer/supplement
     didn't name specific rooms or meal plans, which is the common case (e.g. "All room category"
-    Early Bird discounts, hotel-wide supplements)."""
+    Early Bird discounts, hotel-wide supplements).
+
+    `provider_code`: the caller's generated placeholder (see _hotel_offer_supplement_placeholder_
+    code) - see that function's docstring for why this field must be sent, not left None.
+
+    travelWindows: CONFIRMED REAL BUG (2026-09-11, HRG-H1, second round): Travel Compositor
+    rejected a compulsory, year-round supplement ("Club Package Supplement") with
+    "java.lang.IllegalArgumentException: Travel window can not be empty!" - unlike
+    providerRoomCodes/mealPlans, there is no "applies to everything" convention documented for
+    travel_windows in ai_extractor.py, so a document that never states specific dates for an
+    always-on charge legitimately extracts an empty list. Same fallback rule as
+    build_transfer_supplement_vos uses for an undated transfer supplement: when no window is
+    stated, default to today -> the far-future date Travel Compositor's own examples use for
+    "runs indefinitely" (2049-12-31), rather than sending an empty (rejected) array."""
     windows_travel = [w for w in (item_data or {}).get("travel_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
     windows_booking = [w for w in (item_data or {}).get("booking_windows") or [] if isinstance(w, dict) and w.get("start") and w.get("end")]
+    travel_window_vos = [LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_travel] or \
+        [LocalDateRangeVO(start=start_date_or_today(None), end=_TRANSFER_MAX_END_DATE)]
     return dict(
+        providerCode=provider_code,
         apply=_map_apply_type((item_data or {}).get("apply"), default=apply_default),
         releaseDays=(item_data or {}).get("release_days"),
         minimumStay=(item_data or {}).get("minimum_stay"),
@@ -4821,7 +4854,7 @@ def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_ty
         value=_safe_float((item_data or {}).get("value", 0)),
         childValue=_safe_float((item_data or {}).get("child_value", 0)),
         names=_translation_list((item_data or {}).get("name")),
-        travelWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_travel],
+        travelWindows=travel_window_vos,
         bookingWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_booking],
         providerRoomCodes=list(room_codes or []),
         mealPlans=list(meal_plan_types or []),
@@ -4879,7 +4912,7 @@ def _resolve_offer_or_supplement_meal_plans(item_data, all_meal_plan_types):
 
 
 def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None,
-                                hotel_meal_plan_types=None):
+                                hotel_meal_plan_types=None, hotel_provider_code=None):
     """
     PHASE 2 (offers). Builds one ContractHotelOffersVO payload per extracted offer, ready for
     api_client.create_hotel_offer() (CONFIRMED create-only, no update path - see
@@ -4894,6 +4927,9 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
     both are used to resolve "applies to everything" (an empty room_names/meal_plans list) into
     the hotel's actual full lists, since Travel Compositor requires both fields non-empty
     (CONFIRMED REAL BUG, 2026-09-11, HRG-H1 - see _build_offer_or_supplement_common_kwargs).
+    `hotel_provider_code`: the hotel's own human-assigned code (e.g. "HRG-H1") - used to generate
+    each new offer's placeholder providerCode (CONFIRMED REAL BUG, 2026-09-11, HRG-H1, second
+    round - see _hotel_offer_supplement_placeholder_code).
 
     Returns a list of {"offer_payload": dict|None, "offer_error": str|None,
                         "action": "create"|"skip_duplicate", "matched_provider_code": str|None}.
@@ -4902,7 +4938,7 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
     existing_offers = (existing_hotel_snapshot or {}).get("offers") or []
     all_room_codes = list(dict.fromkeys(c for c in (room_name_to_provider_code or {}).values() if c))
     results = []
-    for offer_data in extracted_offers or []:
+    for offer_index, offer_data in enumerate(extracted_offers or []):
         offer_name = (offer_data or {}).get("name")
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(offer_name, existing_offers)
         if existing_match:
@@ -4926,7 +4962,8 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
                              "offer_error": f"Offer '{offer_name or '(unnamed)'}' {room_error}."})
             continue
         meal_plan_types = _resolve_offer_or_supplement_meal_plans(offer_data, hotel_meal_plan_types)
-        kwargs = _build_offer_or_supplement_common_kwargs(offer_data, room_codes, meal_plan_types)
+        placeholder_code = _hotel_offer_supplement_placeholder_code(hotel_provider_code, "OFFER", offer_name, offer_index)
+        kwargs = _build_offer_or_supplement_common_kwargs(offer_data, room_codes, meal_plan_types, provider_code=placeholder_code)
         kwargs["type"] = _map_offer_type((offer_data or {}).get("type"))
         kwargs["stay"] = (offer_data or {}).get("stay")
         kwargs["pay"] = (offer_data or {}).get("pay")
@@ -4947,14 +4984,14 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
 
 
 def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider_code, existing_hotel_snapshot=None,
-                                     hotel_meal_plan_types=None):
+                                     hotel_meal_plan_types=None, hotel_provider_code=None):
     """Same as build_hotel_offer_payloads but for Supplements - see that function's docstring;
     identical mechanics, minus the type=STAY_TO_PAY/stay/pay option since supplements only have
     PERCENT/ABSOLUTE."""
     existing_supplements = (existing_hotel_snapshot or {}).get("supplements") or []
     all_room_codes = list(dict.fromkeys(c for c in (room_name_to_provider_code or {}).values() if c))
     results = []
-    for supp_data in extracted_supplements or []:
+    for supp_index, supp_data in enumerate(extracted_supplements or []):
         supp_name = (supp_data or {}).get("name")
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(supp_name, existing_supplements)
         if existing_match:
@@ -4973,7 +5010,9 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
                              "supplement_error": f"Supplement '{supp_name or '(unnamed)'}' {room_error}."})
             continue
         meal_plan_types = _resolve_offer_or_supplement_meal_plans(supp_data, hotel_meal_plan_types)
-        kwargs = _build_offer_or_supplement_common_kwargs(supp_data, room_codes, meal_plan_types, apply_default=None)
+        placeholder_code = _hotel_offer_supplement_placeholder_code(hotel_provider_code, "SUPP", supp_name, supp_index)
+        kwargs = _build_offer_or_supplement_common_kwargs(supp_data, room_codes, meal_plan_types,
+                                                            provider_code=placeholder_code, apply_default=None)
         kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
 
         # CONFIRMED PRODUCT-OWNER RULE: never guess a supplement's basis. Stop here with a

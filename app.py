@@ -11427,7 +11427,8 @@ def render_hotel_flow(client):
             offer_map = {}
             offer_results = build_hotel_offer_payloads(data.get("offers") or [], room_map,
                                                         existing_hotel_snapshot=existing_snapshot,
-                                                        hotel_meal_plan_types=hotel_meal_plan_types)
+                                                        hotel_meal_plan_types=hotel_meal_plan_types,
+                                                        hotel_provider_code=provider_code)
             offer_failures = []
             with st.spinner("Phase 2 of 2 — publishing offers..."):
                 for offer_data, res in zip(data.get("offers") or [], offer_results):
@@ -11454,7 +11455,8 @@ def render_hotel_flow(client):
             supplement_map = {}
             supp_results = build_hotel_supplement_payloads(data.get("supplements") or [], room_map,
                                                             existing_hotel_snapshot=existing_snapshot,
-                                                            hotel_meal_plan_types=hotel_meal_plan_types)
+                                                            hotel_meal_plan_types=hotel_meal_plan_types,
+                                                            hotel_provider_code=provider_code)
             supp_failures = []
             with st.spinner("Phase 2 of 2 — publishing supplements..."):
                 for supp_data, res in zip(data.get("supplements") or [], supp_results):
@@ -14392,7 +14394,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-hotel-offer-supplement-rate-gaps"
+BUILD_VERSION = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
