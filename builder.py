@@ -1,8 +1,7 @@
-
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-numeric-helpers-consolidated"
 
 import math
 import datetime
@@ -10,6 +9,7 @@ import re
 import html as _html_module
 from typing import Dict, Any, List, Optional, Tuple
 from pydantic import ValidationError
+from numeric_helpers import _safe_float, _safe_int
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
@@ -202,42 +202,6 @@ def transport_base_child_price(base_bracket: Optional[Dict[str, Any]], base_pric
     if base_bracket and base_bracket.get("child_price") is not None:
         return _safe_float(base_bracket.get("child_price"))
     return base_price
-
-
-def _safe_float(value, fallback=0.0):
-    """
-    CONFIRMED FIX (real production crash, LXR-3): "Out of range float
-    values are not JSON compliant: nan" - the `requests` library explicitly
-    disallows NaN when serializing a `json=` payload (unlike Python's own
-    json.dumps, which allows it by default), so any NaN float reaching a
-    numeric payload field crashes at publish time with exactly this error.
-
-    NaN commonly reaches here from a blank Streamlit data_editor cell: when
-    a numeric column mixes a blank row with other rows holding real numbers,
-    pandas silently promotes the blank cell to NaN (float) to keep the
-    column's dtype consistent - the exact same promotion behavior already
-    confirmed for text columns (see app.py's _safe_cell_str), just showing
-    up in a numeric field this time. CRITICAL: NaN is TRUTHY in Python (only
-    0/0.0/None/""/False are falsy), so the common "value or 0" guard does
-    NOT catch it - float(nan or 0) still returns nan, not 0. This checks for
-    NaN (and Infinity, equally invalid JSON) explicitly, on top of the
-    normal None/non-numeric cases float() itself would raise on.
-    """
-    if value is None:
-        return fallback
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    if math.isnan(result) or math.isinf(result):
-        return fallback
-    return result
-
-
-def _safe_int(value, fallback=0):
-    """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
-    result = _safe_float(value, fallback=None)
-    return fallback if result is None else int(result)
 
 
 def _safe_supplement_price(value, fallback=0.0):
@@ -5183,6 +5147,34 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         f"{', '.join(still_missing)}, and no same-occupancy-count price to reuse - "
                         f"add a price for {'this combo' if len(still_missing) == 1 else 'these combos'} "
                         f"on the review screen.")
+                # CONFIRMED REAL BUG (2026-09-12, HRG-H1): Travel Compositor rejected the WHOLE
+                # rate with "java.lang.IllegalArgumentException: The 'base price' of the rooms
+                # cannot be zero!" even though this room uses DISTRIBUTION pricing (priced via
+                # distributionPrices, not basePrice/adultPrices/childPrices at all) - basePrice
+                # was always left at its schema default of 0.0 for a DISTRIBUTION-priced room
+                # (see ai_extractor.py's own room_prices schema: "base_price": 0.0 is the fixed,
+                # correct value there), but the server apparently validates this field is
+                # non-zero regardless of price type. Fall back to a real stated price so this
+                # required-but-otherwise-unused field is never literally zero: prefer the room's
+                # own single-occupancy (1 adult, 0 children) distribution price if stated,
+                # otherwise the lowest positive distribution price available. distributionPrices
+                # remains what actually prices the room for every occupancy - this fallback only
+                # satisfies the separate basePrice validation.
+                stated_base_price = _safe_float((rp_data or {}).get("base_price", 0))
+                if stated_base_price:
+                    effective_base_price = stated_base_price
+                else:
+                    single_occ_amount = next(
+                        (_safe_float(p.get("amount", 0)) for p in distribution_prices_data
+                         if _safe_int(p.get("adults", 1), fallback=1) == 1
+                         and _safe_int(p.get("children", 0)) == 0
+                         and _safe_float(p.get("amount", 0)) > 0), None)
+                    if single_occ_amount is not None:
+                        effective_base_price = single_occ_amount
+                    else:
+                        positive_amounts = [_safe_float(p.get("amount", 0)) for p in distribution_prices_data
+                                             if _safe_float(p.get("amount", 0)) > 0]
+                        effective_base_price = min(positive_amounts) if positive_amounts else 0
                 room_prices.append(ContractHotelSeasonPricesVO(
                     unitsQuota=_safe_int((rp_data or {}).get("units_quota", 20), fallback=20),
                     unitsOnRequest=_safe_int((rp_data or {}).get("units_on_request", 0), fallback=0),
@@ -5192,7 +5184,7 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         adults=_safe_int(p.get("adults", 1), fallback=1),
                         children=_safe_int(p.get("children", 0)),
                     ) for p in distribution_prices_data],
-                    basePrice=_safe_float((rp_data or {}).get("base_price", 0)),
+                    basePrice=effective_base_price,
                     adultPrices=[_safe_float(p) for p in (rp_data or {}).get("adult_prices") or []],
                     childPrices=[_safe_float(p) for p in (rp_data or {}).get("child_prices") or []],
                 ))

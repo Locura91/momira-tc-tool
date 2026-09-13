@@ -42,6 +42,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import builder
 import price_validity
+from numeric_helpers import _safe_float
+
+# Stamped on every delivery. app.py compares this against its own build string and says so on
+# screen when they differ - a partial push (one file committed, another not) used to surface only
+# as a traceback whose line numbers pointed at unrelated code. bulk_notes.py never carried this
+# stamp before (2026-09-13, while consolidating _safe_float into numeric_helpers.py) - an oversight
+# that meant a partial deploy touching only this file was invisible to the app's own check.
+MODULE_BUILD = "2026-09-13-numeric-helpers-consolidated"
 
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}
@@ -267,15 +275,6 @@ STRUCTURED_FIELD: Dict[str, str] = {
 
 def available_structured_targets(product_type: str) -> List[str]:
     return list(STRUCTURED_TARGETS.get(product_type, {}).keys())
-
-
-def _safe_float(value, fallback=0.0):
-    try:
-        if value is None or value == "":
-            return fallback
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
 
 
 def _today_iso():

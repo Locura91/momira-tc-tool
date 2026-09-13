@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-numeric-helpers-consolidated"
 
 import re
 import math
@@ -30,6 +30,7 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
+from numeric_helpers import _safe_float, _safe_int
 from builder import (
     coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
     resolve_ticket_child_price_ratio, sanitize_supplement_name, format_what_to_bring_line,
@@ -92,41 +93,6 @@ def _safe_cell_str(value):
     if isinstance(value, float) and pd.isna(value):
         return ""
     return str(value)
-
-
-def _safe_float(value, fallback=0.0):
-    """
-    Numeric counterpart to _safe_cell_str(), for reading a NUMERIC
-    data_editor cell (a price, an occupancy count, etc.) instead of a text
-    one. CONFIRMED FIX (real production crash, LXR-3): "Out of range float
-    values are not JSON compliant: nan" - the same blank-row NaN promotion
-    _safe_cell_str() guards against for text columns also happens to numeric
-    columns, but the common "value or 0" guard pattern used around the app
-    does NOT catch it, because NaN is TRUTHY in Python (only 0/0.0/None/""/
-    False are falsy) - float(nan or 0) still returns nan, not 0. That nan
-    then survives all the way to publish time, where requests' json=
-    serialization explicitly rejects it (unlike Python's own json.dumps,
-    which allows NaN by default) and crashes with this exact error. This
-    explicitly checks for NaN (and Infinity, equally invalid JSON) on top of
-    the normal None/non-numeric cases float() itself would raise on.
-    """
-    if value is None:
-        return fallback
-    if isinstance(value, float) and pd.isna(value):
-        return fallback
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    if math.isnan(result) or math.isinf(result):
-        return fallback
-    return result
-
-
-def _safe_int(value, fallback=0):
-    """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
-    result = _safe_float(value, fallback=None)
-    return fallback if result is None else int(result)
 
 
 def render_readonly_source(text, height):

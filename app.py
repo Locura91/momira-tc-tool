@@ -134,6 +134,7 @@ from builder import (build_hotel_contract_payload, resolve_room_provider_codes, 
                      build_hotel_supplement_payloads, build_hotel_rate_payloads)
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
+from price_audit import run_hotel_price_audit, compare_price_audit_to_extraction, summarize_findings
 from ai_extractor import extract_structured_data, extract_option_only_data, extract_modality_data, detect_tour_variants, detect_multiple_modalities, apply_clarification, extract_ticket_data, extract_ticket_option_only_data, detect_ticket_variants, friendly_error_message, detect_transfer_products, extract_transfer_data, extract_ticket_main_info, extract_ticket_modality_data, detect_ticket_modalities
 from ai_extractor import detect_transport_products, extract_transport_data, detect_hotel_products, extract_hotel_data
 # Deterministic (non-AI) bulk importer for FTS's own "TRANSFER MATRIX" CSV format - see
@@ -10283,6 +10284,71 @@ def _render_hotel_masterdata_step(client):
         st.rerun()
 
 
+def _render_hotel_price_audit_section(data, primary):
+    """Hotel Price Audit UI (product owner, 2026-09-12) - a deliberately TEMPORARY second check,
+    kept separate from the main extraction (`data`), focused ONLY on the numbers (room prices,
+    meal plan supplements, offers/early-birds, other supplements) - see price_audit.py's own
+    docstring for the full reasoning. Prices are what actually cost Momira Travel money if wrong,
+    unlike a mis-extracted hotel description; this exists to catch that specific class of mistake
+    while the app is still learning how different suppliers structure their contracts, and is
+    meant to be removed again once the main extraction reliably gets prices right without a
+    second opinion. Runs on demand (not automatically) since it's a second full AI call over the
+    same document and costs real API spend every time it's used.
+
+    Called from exactly ONE of two places per render (never both - see each call site's own
+    comment): near the top of Step 4, as the PRIMARY action, when the human said this contract is
+    for CHECKING the current period; or lower down, right before Publish, as a SECONDARY sanity
+    check, when they're instead adding a NEW period (or for a brand-new hotel, which never even
+    reaches this function - see render_hotel_flow's contract-purpose question, only asked for an
+    EXISTING hotel). `primary` only changes the heading/copy, not the underlying behaviour."""
+    if primary:
+        st.markdown("#### 🔍 Price audit — check this contract against what's already live")
+        st.caption("You said this contract is for CHECKING the current period. Runs a SECOND, independent "
+                   "read of the contract focused only on prices - room rates, meal plan supplements, "
+                   "offers/early-birds, other supplements - and flags anything that doesn't match the "
+                   "extraction below. Review this before deciding whether anything needs fixing.")
+    else:
+        st.markdown("#### 💰 Price audit (temporary — cross-checks numbers against the contract)")
+        st.caption("Runs a SECOND, independent read of the contract focused only on prices - room rates, meal "
+                   "plan supplements, offers/early-birds, other supplements - and flags anything that doesn't "
+                   "match what's above. This is a temporary safety net while the app is still learning how "
+                   "different suppliers structure their contracts; it costs one extra AI call per run.")
+    if st.button("🔍 Run price audit", key="hp_price_audit_run"):
+        with st.spinner("Re-reading the contract for prices only..."):
+            try:
+                _hp_audit_result = run_hotel_price_audit(st.session_state.get("hp_raw_text") or "")
+                st.session_state.hp_price_audit_facts = _hp_audit_result.get("price_facts") or []
+            except Exception as e:
+                st.session_state.hp_price_audit_facts = None
+                st.error(f"Price audit failed: {e}")
+
+    _hp_audit_facts = st.session_state.get("hp_price_audit_facts")
+    if _hp_audit_facts is not None:
+        _hp_audit_findings = compare_price_audit_to_extraction(_hp_audit_facts, data)
+        _hp_audit_summary = summarize_findings(_hp_audit_findings)
+        if _hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"]:
+            st.warning(f"⚠️ Price audit found **{_hp_audit_summary['mismatch']} mismatch(es)** and "
+                       f"**{_hp_audit_summary['not_found']} item(s) not found** in the extraction above "
+                       f"(**{_hp_audit_summary['match']}** verified OK). Review before publishing.")
+        elif _hp_audit_findings:
+            st.success(f"✅ Price audit: all **{_hp_audit_summary['match']}** priced item(s) it found in "
+                       f"the contract match what's above.")
+        else:
+            st.info("Price audit ran but found no price-bearing numbers to check.")
+
+        if _hp_audit_findings:
+            with st.expander(f"🔍 Price audit details ({len(_hp_audit_findings)} item(s) checked)",
+                              expanded=bool(_hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"])):
+                _status_icon = {"match": "✅", "mismatch": "❌", "not_found": "❓"}
+                # Worst-first ordering so a human scanning the list sees the money-affecting
+                # problems (mismatch) before the merely-unmatched ones, and both before the OK's.
+                _status_order = {"mismatch": 0, "not_found": 1, "match": 2}
+                for _finding in sorted(_hp_audit_findings, key=lambda f: _status_order.get(f.get("status"), 3)):
+                    st.markdown(f"{_status_icon.get(_finding.get('status'), '•')} {_finding.get('message')}")
+                    if _finding.get("quote"):
+                        st.caption(f"Contract: “{_finding['quote']}”")
+
+
 def render_hotel_flow(client):
     """Hotel wizard entry point: Supplier + hotel code + currency + release window, then Input
     Source, then a single review screen, then the two-phase publish."""
@@ -10397,14 +10463,16 @@ def render_hotel_flow(client):
     currency = st.session_state.hp_cfg_currency
     release_days = st.session_state.hp_cfg_release_days
 
-    service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
-    cancellation_links.render_cancellation_link_editor(supplier_id, "Hotel", key_suffix="_setup")
-
     # ---- Does this hotel code already exist? (decides create vs update) ----
     # Hoisted up from Phase 2 (2026-09-06, master-data step): the "use Travel Compositor master
     # data?" prompt below only makes sense for a genuinely NEW hotel - an existing hotel already
     # has its own live images/description in Travel Compositor - so this needs to be known before
     # Phase 1 renders, not just before Phase 2's review screen.
+    # Also hoisted ahead of the standing-note editor below (2026-09-12, product owner): standing
+    # notes are a supplier-wide maintenance job for services that already exist on the platform -
+    # for a brand-new hotel there is nothing yet to attach a note to, and the product owner asked
+    # for that management to live in the dedicated standing-notes tool instead, not on the
+    # create-a-new-hotel path.
     if not st.session_state.get("hp_existing_checked"):
         with st.spinner(f"Checking whether hotel code {provider_code} already exists..."):
             snapshot = client.get_hotel(supplier_id, provider_code)
@@ -10415,6 +10483,10 @@ def render_hotel_flow(client):
         st.session_state.hp_existing_checked = True
 
     existing_snapshot = st.session_state.get("hp_existing_snapshot")
+
+    if existing_snapshot:
+        service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
+    cancellation_links.render_cancellation_link_editor(supplier_id, "Hotel", key_suffix="_setup")
 
     if "hp_phase" not in st.session_state:
         st.session_state.hp_phase = "gather"
@@ -10585,7 +10657,7 @@ def render_hotel_flow(client):
     # ------------------------------------------------------------------
     data = st.session_state.hp_data
     HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked",
-                     "hp_cancellation_link_scope"]
+                     "hp_cancellation_link_scope", "hp_price_audit_facts", "hp_contract_purpose"]
 
     st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
@@ -10645,6 +10717,47 @@ def render_hotel_flow(client):
     if st.button("🔄 Re-check", key="hp_recheck"):
         st.session_state.hp_existing_checked = False
         st.rerun()
+
+    # ------------------------------------------------------------------
+    # CONTRACT PURPOSE (product owner, 2026-09-12) - "once a product is uploaded and prices must
+    # be checked or new prices will be added, it will always be under manage existing products...
+    # the app can also ask the human to make it clear if the contract is for a new period or a
+    # current period to check." Only asked for an EXISTING hotel - a brand-new hotel has nothing
+    # live yet to "check", so there's nothing to disambiguate there; this question, and the Price
+    # Audit tool below it, only exist once there's already something published to compare against.
+    # This is also what keeps the Price Audit from appearing on BOTH the brand-new-hotel path and
+    # the existing-hotel path - product owner: "we must structure it simple and not on both ends."
+    # ------------------------------------------------------------------
+    if existing_snapshot:
+        st.session_state.hp_contract_purpose = st.radio(
+            "What is this contract for?",
+            ["new_period", "check_current"],
+            format_func=lambda v: {
+                "new_period": "📈 A NEW price period - add/extend rates, offers or rooms for a season not yet live",
+                "check_current": "🔍 CHECKING the CURRENT period - verify what's already live against this contract",
+            }[v],
+            index=["new_period", "check_current"].index(st.session_state.get("hp_contract_purpose") or "new_period"),
+            key="hp_contract_purpose_radio",
+        )
+    hp_contract_purpose = st.session_state.get("hp_contract_purpose") if existing_snapshot else None
+
+    # ------------------------------------------------------------------
+    # PRICE AUDIT (product owner, 2026-09-12) - only offered when managing an EXISTING hotel (see
+    # the contract-purpose question above) - a brand-new hotel has no prior numbers to have gotten
+    # wrong yet, so there is nothing this tool would be checking. Deliberately kept separate from
+    # the main extraction below, focused ONLY on the numbers (room prices, meal plan supplements,
+    # offers/early-birds, other supplements) - see price_audit.py's own docstring for the full
+    # reasoning. Prices are what actually cost Momira Travel money if wrong, unlike a mis-
+    # extracted hotel description; this exists to catch that specific class of mistake while the
+    # app is still learning how different suppliers structure their contracts, and is meant to be
+    # removed again once the main extraction reliably gets prices right without a second opinion.
+    # Placed right here (before the editable review fields) when the human is specifically
+    # CHECKING the current period, since that's the primary thing they came here to do; when
+    # they're instead adding a new period, this same tool is still available lower down (right
+    # before Publish) as a secondary sanity check rather than the main event.
+    # ------------------------------------------------------------------
+    if existing_snapshot and hp_contract_purpose == "check_current":
+        _render_hotel_price_audit_section(data, primary=True)
 
     # ---- Hotel basics ----
     st.markdown("#### Property")
@@ -11067,7 +11180,8 @@ def render_hotel_flow(client):
     editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
                    widget="text_area", height=90)
 
-    service_notes.render_notes_editor(supplier_id, "Hotel", data)
+    if existing_snapshot:
+        service_notes.render_notes_editor(supplier_id, "Hotel", data)
 
     pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
                                       currency=currency, days_available_before_release=release_days)
@@ -11165,6 +11279,15 @@ def render_hotel_flow(client):
         disabled=not hp_geo.get("valid"),
     )
     hp_geo_confirmed = st.session_state.hp_geo_confirmed
+
+    # PRICE AUDIT (product owner, 2026-09-12) - secondary placement. When the human is CHECKING
+    # the current period (see the contract-purpose question above), this same tool was already
+    # shown earlier, as the primary thing to do - see _render_hotel_price_audit_section's own
+    # docstring for why it isn't rendered twice. When they're instead adding a NEW price period
+    # (or this is a brand-new hotel, where the question above never even appears), it's offered
+    # here instead, right before Publish, as a secondary sanity check rather than the main event.
+    if existing_snapshot and hp_contract_purpose != "check_current":
+        _render_hotel_price_audit_section(data, primary=False)
 
     # ------------------------------------------------------------------
     # PUBLISH - two phases, in order
@@ -11520,6 +11643,26 @@ def render_hotel_flow(client):
                 progress.info("ℹ️ Filled in some missing room prices by reusing the price already "
                               "given for the same number of guests:\n\n" +
                               "\n".join(f"- {note}" for note in rate_warnings_all))
+
+            # CONFIRMED REAL BUG (2026-09-12, HRG-H1): a republish within the SAME session (e.g.
+            # "fix these and publish again", exactly what the message below invites) reused the
+            # `existing_snapshot` fetched at the START of this Step 4 visit - stale the moment
+            # ANY offer/supplement/room actually got created just now. Since offers/supplements
+            # use a deterministic placeholder providerCode derived from name+index (see
+            # _hotel_offer_supplement_placeholder_code), the SAME offer regenerates the SAME code
+            # on the next attempt - the server correctly rejects it as already existing, but our
+            # own dedup (hotel_matcher.match_offer_or_supplement_by_name, which is what's supposed
+            # to catch exactly this) never even ran against it, because it was still comparing
+            # against the pre-publish snapshot. Re-fetching now means the NEXT publish attempt in
+            # this same session (no page reload needed) correctly recognizes everything that just
+            # went live and skips re-creating it, instead of colliding on its own placeholder code.
+            try:
+                _hp_refreshed_snapshot = client.get_hotel(supplier_id, provider_code)
+                if isinstance(_hp_refreshed_snapshot, dict) and "error" not in _hp_refreshed_snapshot:
+                    st.session_state.hp_existing_snapshot = _hp_refreshed_snapshot
+            except Exception:
+                pass  # best-effort - a failed refresh just means the OLD snapshot is used next time,
+                      # same as before this fix existed; never let this block the result being shown.
 
             all_failures = offer_failures + supp_failures + rate_failures
             if all_failures:
@@ -14394,7 +14537,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+BUILD_VERSION = "2026-09-13-numeric-helpers-consolidated"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
