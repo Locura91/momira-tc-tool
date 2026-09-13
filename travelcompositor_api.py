@@ -1,10 +1,19 @@
 import os
 import json
+import time
 import difflib
 import requests
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 load_dotenv()
+
+# Stamped on every delivery. app.py compares this against its own build string and says so on
+# screen when they differ - a partial push (one file committed, another not) used to surface only
+# as a traceback whose line numbers pointed at unrelated code. travelcompositor_api.py never
+# carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
+# an oversight that meant a partial deploy touching only this file was invisible to the app's own
+# check.
+MODULE_BUILD = "2026-09-13-travelcompositor-api-request-hardening"
 
 
 def _try_parse_json(text: str):
@@ -96,19 +105,91 @@ class TravelCompositorAPI:
             "Accept": "application/json"
         }
 
+    # CONFIRMED REAL GAP (2026-09-13, found while consolidating duplicated code across the
+    # codebase - see api_client.py's own _TRANSIENT_STATUS_CODES/_network_error_response/_request
+    # for the full history of this fix): this class is a SEPARATE, independently-maintained copy
+    # of api_client.TravelCompositorAPI (deliberately kept separate - see translation_tool.py's
+    # "NOTE ON THE TWO API CLIENTS" - the sync engines built against this client are a real
+    # regression risk to re-point, for zero user-visible gain in the common case). But that also
+    # meant a fix made to api_client.py's _request() after the two copies forked never reached
+    # this one: a genuine network-level failure (timeout, DNS failure, connection refused, SSL
+    # error - anything that means the request never even got a real HTTP response) used to raise
+    # straight through this method, uncaught, crashing the WHOLE Streamlit platform with a raw
+    # traceback and losing any in-progress edits in EVERY tool, not just the Translation Sync /
+    # Package Rollover / Sync Tickets tools that actually call this client - Streamlit has one
+    # process per session. Ported the same guard here, without touching anything else about this
+    # client's independence from api_client.py.
+    _TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504, 599}
+
+    @staticmethod
+    def _network_error_response(exc: Exception) -> requests.Response:
+        """Same synthetic-599-response trick as api_client.py's version of this method: builds a
+        real requests.Response with a synthetic 599 status code and a JSON body shaped exactly
+        like a normal API error response, so every existing caller's
+        `if res.status_code != 200: return {"error": ..., "message": ...}` keeps working
+        unchanged instead of needing a try/except at every one of this file's ~40 call sites."""
+        res = requests.Response()
+        res.status_code = 599
+        res._content = json.dumps({
+            "error": "network_error",
+            "message": f"{type(exc).__name__}: {exc}",
+        }).encode("utf-8")
+        return res
+
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
-        Wraps requests.request() with automatic re-authentication if the
-        token has expired (401). Without this, an expired token mid-session
-        looks like a random "connection failure" instead of an auth issue.
+        Wraps requests.request() with:
+          1. Automatic re-authentication if the token has expired (401) - without this, an
+             expired token mid-session looks like a random "connection failure" instead of an
+             auth issue.
+          2. For WRITE calls (POST/PUT) only: automatic retry on a TRANSIENT failure (see
+             _TRANSIENT_STATUS_CODES - up to 6 attempts, 2s apart) - the exact same policy
+             api_client.py uses, ported here rather than re-derived, so both clients treat Travel
+             Compositor's transient-failure behavior identically. A NON-transient write failure
+             (400/404/409/422/etc - a genuine problem with the request itself) returns
+             immediately instead of being retried, since retrying an unchanged payload against
+             the same validation error can never succeed - and retrying a CREATE call
+             indiscriminately risks creating a DUPLICATE resource if the first attempt actually
+             succeeded server-side but the success response was lost/timed-out client-side.
+             Retries deliberately NOT applied to GET calls: those are often used as fast "does
+             this exist" checks where a real 404/4xx is an expected, final answer.
+          3. A raised network-level exception (timeout, DNS failure, connection refused, SSL
+             error - see _network_error_response) is caught and converted into a synthetic error
+             Response rather than propagating uncaught.
         """
         kwargs.setdefault("timeout", 15)
-        res = requests.request(method, url, headers=self.get_headers(), **kwargs)
-        if res.status_code == 401:
-            print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
-            self.authenticate(force=True)
-            res = requests.request(method, url, headers=self.get_headers(), **kwargs)
-        return res
+        extra_headers = kwargs.pop("headers", None) or {}
+        is_write = method.upper() in ("POST", "PUT")
+        max_attempts = 6 if is_write else 1
+        last_res = None
+
+        for attempt in range(max_attempts):
+            try:
+                res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+            except requests.exceptions.RequestException as e:
+                res = self._network_error_response(e)
+
+            if res.status_code == 401:
+                print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
+                self.authenticate(force=True)
+                try:
+                    res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
+                except requests.exceptions.RequestException as e:
+                    res = self._network_error_response(e)
+
+            if res.status_code < 400:
+                return res
+
+            last_res = res
+            is_transient = res.status_code in self._TRANSIENT_STATUS_CODES
+            if is_write and is_transient and attempt < max_attempts - 1:
+                print(f"⚠️ {method} {url} returned {res.status_code} (transient) "
+                      f"(attempt {attempt + 1}/{max_attempts}) - retrying in 2s...")
+                time.sleep(2)
+            elif is_write and not is_transient:
+                break
+
+        return last_res
 
     # ------------------------------------------------------------------
     # DESTINATIONS  (the consolidated, correct resolver)
