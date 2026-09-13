@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 import math
 from difflib import SequenceMatcher
@@ -148,9 +148,26 @@ def datasheet_to_masterdata_seed(datasheet: Dict[str, Any]) -> Dict[str, Any]:
     already-hosted image URLs (Travel Compositor's own CDN - no R2 re-upload needed, unlike
     document-extracted images), a plain-text block for the extraction pipeline to fold in
     alongside the URL/document text, and geolocation for the geocoding-search default.
-    """
+
+    ALSO CARRIES THE MASTER RECORD'S OWN IDENTITY (`accommodation_id`, `giata_id`) as of
+    2026-09-13. Before this, everything identifying WHICH master record a human had picked was
+    dropped the moment its content had been copied out - the datasheet is fetched BY the
+    accommodation id, and then that id was thrown away.
+
+    That matters because of a confirmed API limitation (product owner, 2026-09-13: "we must make
+    sure that Automap with master is also set, so the hotel is not a duplicate in the travel
+    compositor surface"). Travel Compositor's "Automap with master" - the option on its own "New
+    hotel using master data" screen that stops a contract appearing as a duplicate property -
+    CANNOT be set through the API at all. Confirmed against the real Swagger for both relevant
+    sections: `ContractHotelDetailedVO` (the POST/PUT /hotel/{supplierId} request body) carries
+    19 fields and not one of them references a master accommodation, and the entire "Web content
+    - Accommodations" section is read-only - six GET endpoints, no POST, no PUT, nothing with
+    "map" in it. So the mapping is unavoidably a human step in Travel Compositor's back office.
+    The only thing this app can do is make that step short and hard to forget, which needs
+    exactly these two ids kept rather than discarded (see hotel_automap.py for where they go)."""
     if not isinstance(datasheet, dict):
-        return {"image_urls": [], "text_block": "", "geolocation": None, "name": None}
+        return {"image_urls": [], "text_block": "", "geolocation": None, "name": None,
+                "accommodation_id": None, "giata_id": None}
 
     image_urls = [img.get("url") for img in (datasheet.get("images") or [])
                   if isinstance(img, dict) and img.get("url")]
@@ -178,9 +195,17 @@ def datasheet_to_masterdata_seed(datasheet: Dict[str, Any]) -> Dict[str, Any]:
 
     text_block = ("--- SOURCE: TRAVEL COMPOSITOR MASTER DATA ---\n" + "\n".join(lines)) if lines else ""
 
+    # Normalized to str/int-or-None rather than passed through raw: the master index carries a
+    # GIATA id as either an int or a str depending on record (same quirk find_by_giata_id already
+    # handles), and these two values are read back later by a human retyping them into Travel
+    # Compositor's own search box, where "1234" and "1234.0" are not the same thing.
+    accommodation_id = datasheet.get("id")
+    giata_id = datasheet.get("giataId")
     return {
         "image_urls": list(dict.fromkeys(image_urls)),
         "text_block": text_block,
         "geolocation": datasheet.get("geolocation") or None,
         "name": name,
+        "accommodation_id": str(accommodation_id).strip() if accommodation_id is not None else None,
+        "giata_id": str(giata_id).strip() if giata_id is not None else None,
     }

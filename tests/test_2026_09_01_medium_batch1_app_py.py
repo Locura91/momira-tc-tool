@@ -57,11 +57,28 @@ source text and checking the specific code shape. Items involving api_client.py/
 MODULE_BUILD are tested via direct import since those modules import cleanly standalone.
 """
 import os
-
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+import re
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REPO_DIR = os.path.dirname(_APP_PY)
+
+
+def _app_build_version() -> str:
+    """Reads app.py's own BUILD_VERSION rather than hardcoding the string here.
+
+    CONFIRMED FIX (2026-09-13): this used to be a literal copy of the build stamp, which meant
+    every routine restamp - the thing app.py's stale-module check exists to make safe - broke this
+    test for a reason that had nothing to do with the behaviour it guards. Worse, the natural way
+    to "fix" that failure is to retype the new stamp here, which quietly turns the assertion into
+    a tautology. Deriving it keeps the real invariant under test: api_client.py and
+    trip_quote_client.py carry a stamp that MATCHES THE APP, whatever that stamp currently is."""
+    with open(_APP_PY, "r", encoding="utf-8") as f:
+        match = re.search(r'^BUILD_VERSION = "([^"]+)"', f.read(), flags=re.M)
+    assert match, "app.py no longer declares a BUILD_VERSION - the stale-module check depends on it"
+    return match.group(1)
+
+
+MODULE_BUILD = _app_build_version()
 
 
 def _read_app_py():

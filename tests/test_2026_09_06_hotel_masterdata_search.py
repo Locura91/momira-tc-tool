@@ -129,8 +129,18 @@ def test_datasheet_seed_collects_hosted_image_urls_without_dedup_loss():
 
 
 def test_datasheet_seed_handles_missing_fields_without_raising():
-    assert mm.datasheet_to_masterdata_seed({}) == {
-        "image_urls": [], "text_block": "", "geolocation": None, "name": None}
+    """Asserts each field rather than whole-dict equality: this test's subject is "an empty or
+    junk datasheet produces empty values instead of raising", and pinning the exact key set made
+    it fail whenever a NEW field was added to the seed for unrelated reasons - which says nothing
+    about missing-field handling. (2026-09-13: accommodation_id/giata_id were added so the master
+    record a human picked can still be identified at publish time - see hotel_automap.py.)"""
+    seed = mm.datasheet_to_masterdata_seed({})
+    assert seed["image_urls"] == []
+    assert seed["text_block"] == ""
+    assert seed["geolocation"] is None
+    assert seed["name"] is None
+    assert seed["accommodation_id"] is None
+    assert seed["giata_id"] is None
     assert mm.datasheet_to_masterdata_seed(None)["image_urls"] == []
 
 
