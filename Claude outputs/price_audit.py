@@ -50,7 +50,7 @@ the same looseness on the write side would be a real hazard there.
 
 # Stamped on every delivery - see platform_store.py's own header for why this convention exists
 # (a partial deploy that updated every other file but this one would go undetected otherwise).
-MODULE_BUILD = "2026-09-12-hotel-manual-notes-existing-only"
+MODULE_BUILD = "2026-09-12-hotel-price-audit"
 
 import re
 import unicodedata
@@ -116,23 +116,7 @@ it again immediately.
 1. ROOM PRICES - one entry per room type x season x occupancy combination the document prices:
    {"kind": "room_price", "room_name": "", "season_label": "" (whatever the document calls this season/period,
     e.g. "Winter 26-27", "01 Nov - 20 Dec", or "" if there's only one undivided price period),
-    "adults": <int>, "children": <int>, "amount": <the TOTAL price for the WHOLE room at this occupancy - see
-     the PER-PERSON BASIS RULE below, this is often NOT the same number the document prints next to that
-     occupancy>, "currency": "", "quote": ""}
-   CONFIRMED REAL BUG (product owner, 2026-09-12) - PER-PERSON BASIS RULE, THE MOST IMPORTANT RULE IN THIS
-   PROMPT: hotel room-price tables are very often quoted PER PERSON, not as a room total, and this is the
-   single most valuable check this audit exists to catch, since silently treating a per-person rate as a room
-   total under-charges every multi-person booking. THE PRIMARY SIGNAL: if the single-occupancy price is HIGHER
-   than the double/triple price for the same room, THAT TABLE IS PER-PERSON - this is the normal, expected
-   shape (a fixed room cost split across more people costs less per person), and most contracts don't bother
-   labelling it explicitly, so do not wait for an explicit "per person"/"PP"/"per pax" label before applying
-   this. Example: a table stating "1 Pax: USD 220, Double: USD 120, Triple: USD 100" is per-person (220 > 120
-   > 100) - the correct `amount` for this room's Double entry is 120 x 2 = USD 240 TOTAL, and Triple is 100 x 3
-   = USD 300 TOTAL for 3 adults (or 2 adults + 1 child sharing that tier, absent a separately stated child
-   rate). Only treat the stated figures as already-a-room-total (no multiplication) when they do NOT decrease
-   with occupancy, or the document explicitly and unambiguously labels them "per room"/"room rate" with no
-   per-person qualifier. Put the ORIGINAL as-stated per-person figure in the `quote` field regardless (so a
-   human can see exactly what the document said), but `amount` itself must always be the computed TOTAL.
+    "adults": <int>, "children": <int>, "amount": <number>, "currency": "", "quote": ""}
 
 2. MEAL PLAN SUPPLEMENT PRICES - one entry per distinct amount a meal plan add-on charges:
    {"kind": "meal_plan_price", "meal_plan_name": "" (e.g. "Half Board", "All Inclusive"),
@@ -290,23 +274,7 @@ def _check_offer_or_supplement_fact(fact: Dict[str, Any], items: List[Dict[str, 
     label = f"{kind_label}: '{name or '(unnamed)'}'"
 
     def _item_names(item):
-        # CONFIRMED REAL BUG (2026-09-12, found before this tool ever ran against real data):
-        # hotel_data (the Step 4 review dict this tool actually receives - see
-        # ai_extractor.py's OFFERS/SUPPLEMENTS section) stores a plain string "name" field, e.g.
-        # {"name": "Early Bird 20%", ...} - NOT the "names": [{"description": ...}] translation-
-        # list shape ContractHotelOffersVO/ContractHotelSupplementVO use once BUILT for
-        # publishing (see builder.py's _translation_list). Reading only "names" here meant this
-        # function could never match a single real offer/supplement - every one would come back
-        # "not_found" regardless of whether it was actually correct. Support both shapes so this
-        # also works if ever handed an already-built payload or a live GET snapshot instead.
-        names = []
-        plain_name = (item or {}).get("name")
-        if plain_name:
-            names.append(plain_name)
-        for n in (item or {}).get("names") or []:
-            if isinstance(n, dict) and n.get("description"):
-                names.append(n.get("description"))
-        return names
+        return [n.get("description") for n in (item or {}).get("names") or [] if isinstance(n, dict)]
 
     name_matches = [item for item in (items or []) if isinstance(item, dict)
                     and any(_loose_name_match(n, name) for n in _item_names(item))]

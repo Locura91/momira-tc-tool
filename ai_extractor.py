@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-12-hotel-manual-notes-existing-only"
+MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
 
 import os
 import re
@@ -4856,54 +4856,13 @@ hotel/contract itself:
    stating a number, use 1 and note in the top-level description that this figure was assumed, not stated>.
    The room must still be added to the system so it can be sold/requested - it just carries no guaranteed
    inventory.
-   "distribution_prices": [{"adults": <int>, "children": <int>, "amount": <the TOTAL price for the WHOLE room
-     at exactly this adults+children combination - see the PER-PERSON BASIS RULE immediately below, this is
-     NOT always the same number the document prints next to that occupancy>}, ...],
+   "distribution_prices": [{"adults": <int>, "children": <int>, "amount": <the ACTUAL FINAL price for exactly
+     this adults+children combination, exactly as the document states it>}, ...],
    "base_price": 0.0, "adult_prices": [], "child_prices": []}
-CONFIRMED REAL BUG (product owner, 2026-09-12): "amount" here is the room's TOTAL price for that occupancy -
-Travel Compositor's own distribution-pricing model has no per-person multiplication of its own for hotel rooms
-(unlike Transport/Transfer supplements, which have a separate per_pax flag) - so if the source document itself
-prices PER PERSON, this tool must do the multiplication itself before writing "amount", or every multi-person
-booking is silently undercharged. A real contract stated "1 pax: USD 220, Double: USD 120, Triple: USD 100" -
-these are PER-PERSON rates (the per-person rate drops as more people share the room, which is the normal shape
-of a per-person table), so the correct amounts are Double = 120 x 2 = USD 240 total, Triple = 100 x 3 = USD 300
-total for 3 adults (or for 2 adults + 1 child sharing that same tier, if the document doesn't separately state
-a different child rate). Copying 120/100 straight into "amount" unchanged - treating them as if they were
-already room totals - is exactly the mistake that has actually happened and is the reason this rule exists.
-PER-PERSON BASIS RULE - decide this FOR EACH room/season price table, since one document can mix styles.
-CONFIRMED PRODUCT-OWNER RULE, THE PRIMARY SIGNAL TO CHECK FIRST: "it is usually per pax, and it is easily
-detected on contracts - when the single price is higher than the double or triple price, then it is a per pax
-price." A price table where SINGLE > DOUBLE > TRIPLE (occupancy price decreasing, or at least not increasing,
-as more people share the room) is ALWAYS per-person, whether or not the table is explicitly labelled "per
-person"/"PP"/"per pax" - most real contracts do NOT bother labelling this explicitly, so do not wait for an
-explicit label before applying this rule. Treat this decreasing-price pattern as the default assumption for
-any hotel room-price table; only treat a table as already-a-total (see the second bullet below) when the
-figures genuinely do NOT follow this decreasing pattern, or the document is EXPLICITLY and unambiguously
-labelled as a per-room/whole-unit rate.
-  - PER PERSON (multiply) - the default assumption, confirmed by SINGLE > DOUBLE > TRIPLE (or an explicit
-    "per person"/"PP"/"rate per pax" label): for each distribution_prices entry, amount = (the stated
-    per-person rate for that occupancy tier) x (the number of PAYING pax in that specific adults+children
-    combination - normally adults+children together, unless the document separately states a DIFFERENT,
-    typically lower or free, per-person child rate, in which case use that child rate for the children instead
-    of the adult rate: amount = adult_rate x adults + child_rate x children). Example: a table stating "1 Pax:
-    USD 220, Double: USD 120, Triple: USD 100" is per-person (220 > 120 > 100) - Double = 120 x 2 = USD 240
-    total, Triple = 100 x 3 = USD 300 total for 3 adults (or for 2 adults + 1 child sharing that tier, absent a
-    separately stated child rate).
-  - PER ROOM / ALREADY A TOTAL (do not multiply) - only when the figures do NOT decrease with occupancy (e.g.
-    a flat rate regardless of how many people are in the room, or a rate that increases with occupancy because
-    it's charging per additional person on top of a base) AND/OR the table is explicitly and unambiguously
-    labelled "per room"/"room rate"/"whole unit" with no per-person qualifier. Use the stated figure as-is -
-    do NOT invent a multiplication here.
-  CRITICAL SELF-CHECK: before finalizing every distribution_prices amount, explicitly verify which basis this
-  table uses and that you applied it CONSISTENTLY across every occupancy combo for that room/season - never
-  multiply some combos and leave others as literal per-person figures within the same table.
-CRITICAL: beyond the per-person multiplication above, still extract distribution_prices LITERALLY, one entry
-per adults+children combination the document actually prices - NEVER assume a formula or fixed increment
-between DIFFERENT occupancy TIERS (real contracts have shown non-monotonic, irregular differences between
-brackets) - the only computation this tool does is the per-person-to-total multiplication above, using the
-document's own stated per-person figure for each tier, never an invented pattern between tiers. Only use
-base_price/adult_prices/child_prices instead of distribution_prices when price_type is genuinely "PAX" for
-that season.
+CRITICAL: extract distribution_prices LITERALLY, one entry per adults+children combination the document
+actually prices - NEVER assume a formula or fixed increment between different occupancy combinations (real
+contracts have shown non-monotonic, irregular differences between brackets). Only use base_price/adult_prices/
+child_prices instead of distribution_prices when price_type is genuinely "PAX" for that season.
 CONFIRMED REAL RULE (2026-09-11, HRG-H1): EVERY combination listed in this room's own "distributions" (see
 "rooms" above) must have a distribution_prices entry here for every season it's sold in - Travel Compositor
 rejects the entire rate outright if even one allowed combination has no price at all ("Room price missing for
