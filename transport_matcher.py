@@ -37,6 +37,12 @@ file so the two don't collide) - safe to lose, worst case falls back to the
 departure/arrival matching step again. Source of truth is always Travel
 Compositor itself (confirmed via get_transport/get_transports).
 """
+# Stamped on every delivery - see platform_store.py's own header for why. This module never
+# carried a build stamp before (2026-09-13, while consolidating name-normalization into
+# text_normalize.py) - a partial deploy that updated every other file but this one would have
+# gone undetected by app.py's own stale-module check.
+MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
+
 import os
 import json
 import re
@@ -44,6 +50,7 @@ import difflib
 from typing import Dict, Any, List, Optional
 
 import platform_store
+from text_normalize import normalize_name
 
 # Kept only so an existing local transport_match_store.json can still be read once and
 # migrated into the shared durable store - see _load_store() below. Nothing writes
@@ -91,10 +98,11 @@ def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
 def _route_key(departure_name: str, arrival_name: str) -> str:
     """Normalizes a departure/arrival pair into a stable dict key - same convention as
     transfer_matcher._route_key(), so trivial formatting differences don't create duplicate
-    tracked entries for what is really the same route."""
-    def norm(s):
-        return re.sub(r"\s+", " ", (s or "").strip().lower())
-    return f"{norm(departure_name)}::{norm(arrival_name)}"
+    tracked entries for what is really the same route. Shares text_normalize.normalize_name with
+    every other matcher in the platform - see transfer_matcher._route_key's docstring for the
+    2026-09-13 fix this closed (an independently-written copy that had fallen behind the
+    2026-08-30 NFKC-Unicode audit fix)."""
+    return f"{normalize_name(departure_name)}::{normalize_name(arrival_name)}"
 
 
 def remember_transport_id(supplier_id: str, departure_name: str, arrival_name: str, transport_id: str) -> None:

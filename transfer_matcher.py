@@ -30,6 +30,12 @@ app just falls back to the departure/arrival matching step again next time,
 it is a convenience cache, never a source of truth. Source of truth is
 always Travel Compositor itself (confirmed via get_transfer/get_transfers).
 """
+# Stamped on every delivery - see platform_store.py's own header for why. This module never
+# carried a build stamp before (2026-09-13, while consolidating name-normalization into
+# text_normalize.py) - a partial deploy that updated every other file but this one would have
+# gone undetected by app.py's own stale-module check.
+MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
+
 import os
 import json
 import re
@@ -37,6 +43,7 @@ import difflib
 from typing import Dict, Any, List, Optional
 
 import platform_store
+from text_normalize import normalize_name
 
 # Kept only so an existing local transfer_match_store.json can still be read once and
 # migrated into the shared durable store - see _load_store() below. Nothing writes
@@ -82,12 +89,16 @@ def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
 
 
 def _route_key(departure_name: str, arrival_name: str) -> str:
-    """Normalizes a departure/arrival pair into a stable dict key (lowercased, whitespace-
-    collapsed) so trivial formatting differences don't create duplicate tracked entries
-    for what is really the same route."""
-    def norm(s):
-        return re.sub(r"\s+", " ", (s or "").strip().lower())
-    return f"{norm(departure_name)}::{norm(arrival_name)}"
+    """Normalizes a departure/arrival pair into a stable dict key so trivial formatting
+    differences don't create duplicate tracked entries for what is really the same route.
+    CONFIRMED FIX (2026-09-13, while consolidating name-normalization across the codebase): this
+    used to have its own local, weaker normalization (lowercase + whitespace-collapse only) - a
+    separate, independently-written copy of the same NFKC-Unicode gap already fixed for
+    hotel_matcher.py's room/rate/season matching in the 2026-08-30 audit. Now shares that same
+    fix via text_normalize.normalize_name, so a smart quote or full-width character in a
+    departure/arrival name from a re-typed or re-extracted contract doesn't silently miss the
+    app's own remembered route mapping."""
+    return f"{normalize_name(departure_name)}::{normalize_name(arrival_name)}"
 
 
 def remember_transfer_id(supplier_id: str, departure_name: str, arrival_name: str, transfer_id: str) -> None:

@@ -27,13 +27,12 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
 
 import math
-import re
-import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
+from text_normalize import normalize_name as _norm
 
 # Below this, a candidate is noise rather than a real suggestion - keeps the picker short and
 # avoids showing a human a "match" that shares nothing but a common word like "Hotel" or "Resort".
@@ -42,15 +41,6 @@ _MIN_NAME_SCORE = 0.45
 # Within this distance a geolocation match meaningfully boosts confidence; beyond it, no boost.
 _GEO_BOOST_RADIUS_KM = 50.0
 _GEO_BOOST_WEIGHT = 0.15
-
-
-def _norm(s: Optional[str]) -> str:
-    """Same normalization approach as hotel_matcher._norm (NFKC + whitespace collapse +
-    casefold) - deliberately consistent across the app's matching modules."""
-    if not s:
-        return ""
-    normalized = unicodedata.normalize("NFKC", s)
-    return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
 def _name_score(query: str, candidate: str) -> float:
