@@ -1,5 +1,5 @@
 """
-date_format.py — one house date format on screen, one canonical format on the wire.
+date_format.py â€” one house date format on screen, one canonical format on the wire.
 
 CONFIRMED PRODUCT-OWNER RULE: "Please use always for Date: DD/MM/YYYY."
 
@@ -24,7 +24,7 @@ becomes 4 March, moving a season boundary by a month with nothing on screen to s
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import re
 from datetime import date, datetime

@@ -1,5 +1,5 @@
 """
-supplier_migration.py — recreates one supplier's services under a different supplier, then
+supplier_migration.py â€” recreates one supplier's services under a different supplier, then
 retires the originals, for all 5 product types.
 
 CONFIRMED REAL NEED (product owner, 2026-08-24): "If I want mass change the supplier A, like
@@ -62,7 +62,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import json
 from datetime import date

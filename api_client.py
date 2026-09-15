@@ -16,7 +16,7 @@ load_dotenv()
 # consequential file to have out of sync (every publish call goes through it). Stamped now, and
 # the detector's module list is auto-discovered (see app.py) so any future module that adds a
 # MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 
 class TravelCompositorAPI:
@@ -58,7 +58,7 @@ class TravelCompositorAPI:
         }
         headers = {"Content-Type": "application/json"}
 
-        print(f"🔑 Authenticating via POST {url}...")
+        print(f"ðŸ”‘ Authenticating via POST {url}...")
         res = requests.post(url, json=payload, headers=headers, timeout=10)
 
         if res.status_code == 200:
@@ -70,10 +70,10 @@ class TravelCompositorAPI:
                 except Exception:
                     self.auth_token = res.text.strip('"')
 
-            print("✅ Auth successful! Token acquired.")
+            print("âœ… Auth successful! Token acquired.")
             return self.auth_token
         else:
-            print(f"❌ Auth failed (Status {res.status_code}): {res.text}")
+            print(f"âŒ Auth failed (Status {res.status_code}): {res.text}")
             res.raise_for_status()
 
     def get_headers(self) -> Dict[str, str]:
@@ -191,7 +191,7 @@ class TravelCompositorAPI:
                 res = self._network_error_response(e)
 
             if res.status_code == 401:
-                print("♻️  Auth token expired/rejected — re-authenticating and retrying once...")
+                print("â™»ï¸  Auth token expired/rejected â€” re-authenticating and retrying once...")
                 self.authenticate(force=True)
                 try:
                     res = requests.request(method, url, headers={**self.get_headers(), **extra_headers}, **kwargs)
@@ -204,7 +204,7 @@ class TravelCompositorAPI:
             last_res = res
             is_transient = res.status_code in self._TRANSIENT_STATUS_CODES
             if is_write and is_transient and attempt < max_attempts - 1:
-                print(f"⚠️ {method} {url} returned {res.status_code} (transient) "
+                print(f"âš ï¸ {method} {url} returned {res.status_code} (transient) "
                       f"(attempt {attempt + 1}/{max_attempts}) - retrying in 2s...")
                 time.sleep(2)
             elif is_write and not is_transient:
@@ -251,7 +251,7 @@ class TravelCompositorAPI:
 
         destinations = data.get("destination", []) if isinstance(data, dict) else data
         self._destination_cache = destinations or []
-        print(f"📥 Cached {len(self._destination_cache)} destinations for '{self.microsite_id}'.")
+        print(f"ðŸ“¥ Cached {len(self._destination_cache)} destinations for '{self.microsite_id}'.")
         return self._destination_cache
 
     def get_destination_country(self, query_term: str) -> Optional[str]:
@@ -430,7 +430,7 @@ class TravelCompositorAPI:
             zones = []
 
         self._transfer_zone_cache[cache_key] = zones or []
-        print(f"📥 Cached {len(self._transfer_zone_cache[cache_key])} transfer zone(s) for supplier '{supplier_id}'"
+        print(f"ðŸ“¥ Cached {len(self._transfer_zone_cache[cache_key])} transfer zone(s) for supplier '{supplier_id}'"
               + (f" (zoneType={zone_type})" if zone_type else "") + ".")
         return self._transfer_zone_cache[cache_key]
 
@@ -573,16 +573,16 @@ class TravelCompositorAPI:
                 data = self._json(res)
                 if isinstance(data, dict) and data.get("code"):
                     code, name = data["code"], data.get("name", data["code"])
-                    print(f"✅ RESOLVED (by code): '{clean_query}' -> {code} ({name})")
+                    print(f"âœ… RESOLVED (by code): '{clean_query}' -> {code} ({name})")
                     return {"tc_code": code, "name": name, "valid": True, "match_type": "code"}
         except requests.RequestException as e:
-            print(f"⚠️ Direct code lookup failed for '{clean_query}': {e}")
+            print(f"âš ï¸ Direct code lookup failed for '{clean_query}': {e}")
 
         # 2. Name matching against the cached full list
         try:
             destinations = self._get_all_destinations()
         except requests.RequestException as e:
-            print(f"⚠️ Could not fetch destination list: {e}")
+            print(f"âš ï¸ Could not fetch destination list: {e}")
             destinations = []
 
         query_lower = clean_query.lower()
@@ -591,7 +591,7 @@ class TravelCompositorAPI:
         for dest in destinations:
             if dest.get("name", "").strip().lower() == query_lower:
                 code, name = dest.get("code"), dest.get("name")
-                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
+                print(f"âœ… RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
                 return {"tc_code": code, "name": name, "valid": True, "match_type": "exact_name"}
 
         # 2b. Substring match
@@ -599,7 +599,7 @@ class TravelCompositorAPI:
         if matches:
             best = matches[0]
             code, name = best.get("code"), best.get("name")
-            print(f"✅ RESOLVED (partial name, {len(matches)} candidates): '{clean_query}' -> {code} ({name})")
+            print(f"âœ… RESOLVED (partial name, {len(matches)} candidates): '{clean_query}' -> {code} ({name})")
             return {"tc_code": code, "name": name, "valid": True, "match_type": "partial_name", "alternatives": len(matches)}
 
         # 2c. Fuzzy fallback (typos)
@@ -608,10 +608,10 @@ class TravelCompositorAPI:
         if close:
             best = next(d for d in destinations if d.get("name") == close[0])
             code, name = best.get("code"), best.get("name")
-            print(f"✅ RESOLVED (fuzzy): '{clean_query}' -> {code} ({name})")
+            print(f"âœ… RESOLVED (fuzzy): '{clean_query}' -> {code} ({name})")
             return {"tc_code": code, "name": name, "valid": True, "match_type": "fuzzy"}
 
-        print(f"⚠️ Destination '{clean_query}' not found anywhere. Flagging as invalid.")
+        print(f"âš ï¸ Destination '{clean_query}' not found anywhere. Flagging as invalid.")
         return {"tc_code": code_candidate, "name": clean_query, "valid": False, "match_type": "none"}
 
     def lookup_destination_code(self, destination_id: str) -> str:
@@ -638,9 +638,9 @@ class TravelCompositorAPI:
         """Quick manual sanity check of the destination endpoint."""
         result = self.resolve_destination(test_dest_id)
         if result["valid"]:
-            print(f"✅ Connection OK. {test_dest_id} -> {result['tc_code']} ({result['name']})")
+            print(f"âœ… Connection OK. {test_dest_id} -> {result['tc_code']} ({result['name']})")
         else:
-            print(f"❌ Could not resolve '{test_dest_id}'.")
+            print(f"âŒ Could not resolve '{test_dest_id}'.")
         return result
 
     # ------------------------------------------------------------------
@@ -648,7 +648,7 @@ class TravelCompositorAPI:
     # ------------------------------------------------------------------
     def get_all_suppliers(self) -> List[Dict[str, Any]]:
         """
-        Executes GET /suppliers — returns the full list of ContractSupplierVO
+        Executes GET /suppliers â€” returns the full list of ContractSupplierVO
         for this operator (each has 'id', 'commercialName', 'legalName', etc).
         Used to build a human-friendly supplier picker instead of requiring
         people to know/type numeric supplier IDs by heart.
@@ -657,14 +657,14 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return []
         data = self._json(res)
         return data if isinstance(data, list) else []
 
     def get_accommodations_page(self, first: int = 0, limit: int = 1000) -> Dict[str, Any]:
         """
-        Executes GET /accommodations — one page of Travel Compositor's global "Web Content
+        Executes GET /accommodations â€” one page of Travel Compositor's global "Web Content
         Accommodations" master hotel database (361,942 total records confirmed real, 2026-09-06
         feasibility investigation). Each record is the LIGHTWEIGHT shape only: id, giataId, name,
         geolocation, countryCode, lastUpdate - no images/description/facilities (those require a
@@ -692,13 +692,13 @@ class TravelCompositorAPI:
         res = self._request("GET", url, params={"first": first, "limit": limit})
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_accommodation_datasheet(self, accommodation_id: str, lang: str = "EN") -> Dict[str, Any]:
         """
-        Executes GET /accommodations/{accommodationId}/datasheet — full rich content (images,
+        Executes GET /accommodations/{accommodationId}/datasheet â€” full rich content (images,
         description, facilities, geolocation, ratings, address, phone) for ONE master-data
         accommodation record, identified by Travel Compositor's own internal 'id' (NOT the
         human-assigned hotel providerCode used elsewhere in this app - a completely different
@@ -709,13 +709,13 @@ class TravelCompositorAPI:
         res = self._request("GET", url, headers={"lang": lang} if lang else {})
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_all_users(self) -> List[Dict[str, Any]]:
         """
-        Executes GET /user/{micrositeId} — returns real, formally-registered
+        Executes GET /user/{micrositeId} â€” returns real, formally-registered
         users for this microsite. Used to check whether a userId we send in
         payloads (e.g. 'momiratravel-Christian') actually corresponds to a
         real account, or is being silently ignored/replaced.
@@ -724,14 +724,14 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return []
         data = self._json(res)
         return data if isinstance(data, list) else []
 
     def get_closed_tours(self, supplier_id: str, first: int = 0, limit: int = 100) -> Dict[str, Any]:
         """
-        Executes GET /closedtour/{supplierId} (no tour code) — mirrors the
+        Executes GET /closedtour/{supplierId} (no tour code) â€” mirrors the
         confirmed get_tickets() list pattern. Returns whatever the API gives
         back (a bare list, or a paginated dict wrapping the list depending
         on account/version) for the caller to normalize. Used to build a
@@ -744,13 +744,13 @@ class TravelCompositorAPI:
         res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """
-        Executes GET /closedtour/{supplierId}/{closedTourCode} — returns the
+        Executes GET /closedtour/{supplierId}/{closedTourCode} â€” returns the
         full existing tour (name, itinerary, modalityCodes list, etc).
         NOTE: the tour's own 'price' field is deprecated and always 0 -
         real pricing lives per-option, fetched via get_closed_tour_option().
@@ -759,14 +759,14 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_closed_tour_option(self, supplier_id: str, closed_tour_code: str, option_code: str) -> Dict[str, Any]:
         """
         Executes GET /closedtour/{supplierId}/{closedTourCode}/{optionCode}
-        — returns one specific option's full details, including its live
+        â€” returns one specific option's full details, including its live
         priceList. Use this before updating an option, to see exactly
         what's currently there.
         """
@@ -774,33 +774,33 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /closedtour/{supplierId} — creates main tour (draft, active: False)."""
+        """Executes POST /closedtour/{supplierId} â€” creates main tour (draft, active: False)."""
         url = f"{self.api_base_url}/closedtour/{supplier_id}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /closedtour/{supplierId}/{closedTourCode} — pushes modality/pricing option."""
+        """Executes POST /closedtour/{supplierId}/{closedTourCode} â€” pushes modality/pricing option."""
         url = f"{self.api_base_url}/closedtour/{supplier_id}/{closed_tour_code}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_closed_tour(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
-        Executes PUT /closedtour/{supplierId} — updates an EXISTING tour's
+        Executes PUT /closedtour/{supplierId} â€” updates an EXISTING tour's
         details (name, description, itinerary, etc). The payload's 'code'
         field identifies which existing tour to update. Use create_closed_tour
         (POST) instead when creating a brand-new tour.
@@ -809,13 +809,13 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_closed_tour_option(self, supplier_id: str, closed_tour_code: str, payload: dict) -> Dict[str, Any]:
         """
-        Executes PUT /closedtour/{supplierId}/{closedTourCode} — updates an
+        Executes PUT /closedtour/{supplierId}/{closedTourCode} â€” updates an
         EXISTING option (pricing, operational days, etc). The payload's
         'code' field identifies which existing option to update. Use
         create_closed_tour_option (POST) instead to add a brand-new option.
@@ -824,7 +824,7 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
@@ -833,72 +833,72 @@ class TravelCompositorAPI:
     # Confirmed against real Swagger + live GET examples.
     # ------------------------------------------------------------------
     def get_tickets(self, supplier_id: str, first: int = 0, limit: int = 50) -> Dict[str, Any]:
-        """Executes GET /tickets/{supplierId} — returns paginated list of tickets for this supplier."""
+        """Executes GET /tickets/{supplierId} â€” returns paginated list of tickets for this supplier."""
         url = f"{self.api_base_url}/tickets/{supplier_id}"
         res = self._request("GET", url, headers={"first": str(first), "limit": str(limit)})
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_ticket(self, supplier_id: str, ticket_code: str) -> Dict[str, Any]:
-        """Executes GET /tickets/{supplierId}/{ticketCode} — returns the full existing ticket."""
+        """Executes GET /tickets/{supplierId}/{ticketCode} â€” returns the full existing ticket."""
         url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_ticket_option(self, supplier_id: str, ticket_code: str, option_code: str) -> Dict[str, Any]:
-        """Executes GET /tickets/{supplierId}/{ticketCode}/{optionCode} — returns a specific ticket modality."""
+        """Executes GET /tickets/{supplierId}/{ticketCode}/{optionCode} â€” returns a specific ticket modality."""
         url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}/{option_code}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /tickets/{supplierId} — creates a new ticket."""
+        """Executes POST /tickets/{supplierId} â€” creates a new ticket."""
         url = f"{self.api_base_url}/tickets/{supplier_id}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /tickets/{supplierId}/{ticketCode} — creates a new ticket option/modality."""
+        """Executes POST /tickets/{supplierId}/{ticketCode} â€” creates a new ticket option/modality."""
         url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_ticket(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes PUT /tickets/{supplierId} — updates an EXISTING ticket's details."""
+        """Executes PUT /tickets/{supplierId} â€” updates an EXISTING ticket's details."""
         url = f"{self.api_base_url}/tickets/{supplier_id}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_ticket_option(self, supplier_id: str, ticket_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes PUT /tickets/{supplierId}/{ticketCode} — updates an EXISTING ticket option/modality."""
+        """Executes PUT /tickets/{supplierId}/{ticketCode} â€” updates an EXISTING ticket option/modality."""
         url = f"{self.api_base_url}/tickets/{supplier_id}/{ticket_code}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
@@ -911,7 +911,7 @@ class TravelCompositorAPI:
     # ------------------------------------------------------------------
     def get_transfers(self, supplier_id: str) -> Dict[str, Any]:
         """
-        Executes GET /transfer/{supplierId} — returns ALL transfers for this
+        Executes GET /transfer/{supplierId} â€” returns ALL transfers for this
         supplier (no pagination/filter parameter exists in the Swagger).
         Used as the candidate pool for the departure/arrival matching
         fallback when the app has no locally-tracked id for a route yet -
@@ -921,44 +921,44 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_transfer(self, supplier_id: str, transfer_id: str) -> Dict[str, Any]:
-        """Executes GET /transfer/{supplierId}/{transferId} — returns one specific transfer by its TC-generated id."""
+        """Executes GET /transfer/{supplierId}/{transferId} â€” returns one specific transfer by its TC-generated id."""
         url = f"{self.api_base_url}/transfer/{supplier_id}/{transfer_id}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /transfer/{supplierId} — creates a new transfer. Travel Compositor
+        """Executes POST /transfer/{supplierId} â€” creates a new transfer. Travel Compositor
         assigns and returns the new 'id' in the response - remember it via
         transfer_matcher.remember_transfer_id so future updates to this same route auto-match."""
         url = f"{self.api_base_url}/transfer/{supplier_id}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_transfer(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
-        Executes PUT /transfer/{supplierId} — updates an EXISTING transfer.
+        Executes PUT /transfer/{supplierId} â€” updates an EXISTING transfer.
         UNLIKE ClosedTour/Ticket's PUT, the transfer id is NOT in the URL
-        path — it must be set on the payload's own 'id' field (confirmed
+        path â€” it must be set on the payload's own 'id' field (confirmed
         via Swagger), pointing at the transfer being updated.
         """
         url = f"{self.api_base_url}/transfer/{supplier_id}"
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
@@ -990,7 +990,7 @@ class TravelCompositorAPI:
                 url = f"{self.api_base_url}/transportbases"
                 res = self._request("GET", url, params={"first": first, "limit": page_size, "lang": lang})
                 if res.status_code != 200:
-                    print(f"⚠️ Could not fetch transport bases (page starting {first}): {res.status_code} {res.text}")
+                    print(f"âš ï¸ Could not fetch transport bases (page starting {first}): {res.status_code} {res.text}")
                     break
                 data = self._json(res)
                 page = data.get("transportbase", []) if isinstance(data, dict) else (data or [])
@@ -1001,10 +1001,10 @@ class TravelCompositorAPI:
                     break
                 first += page_size
         except requests.RequestException as e:
-            print(f"⚠️ Could not fetch transport bases: {e}")
+            print(f"âš ï¸ Could not fetch transport bases: {e}")
 
         self._transport_base_cache = bases or []
-        print(f"📥 Cached {len(self._transport_base_cache)} transport base(s).")
+        print(f"ðŸ“¥ Cached {len(self._transport_base_cache)} transport base(s).")
         return self._transport_base_cache
 
     # An airport stands for the city or resort area it serves. CONFIRMED REAL RULE (product
@@ -1091,20 +1091,20 @@ class TravelCompositorAPI:
                 data = self._json(res)
                 if isinstance(data, dict) and data.get("code"):
                     geo = data.get("geolocation") or {}
-                    print(f"✅ RESOLVED (by code): '{clean_query}' -> {data['code']} ({data.get('name')})")
+                    print(f"âœ… RESOLVED (by code): '{clean_query}' -> {data['code']} ({data.get('name')})")
                     return {
                         "code": data["code"], "name": data.get("name", data["code"]), "type": data.get("type"),
                         "latitude": geo.get("latitude"), "longitude": geo.get("longitude"),
                         "valid": True, "match_type": "code",
                     }
         except requests.RequestException as e:
-            print(f"⚠️ Direct transport-base code lookup failed for '{clean_query}': {e}")
+            print(f"âš ï¸ Direct transport-base code lookup failed for '{clean_query}': {e}")
 
         # 2. Name matching against the cached full list
         try:
             bases = self._get_all_transport_bases()
         except requests.RequestException as e:
-            print(f"⚠️ Could not fetch transport base list: {e}")
+            print(f"âš ï¸ Could not fetch transport base list: {e}")
             bases = []
 
         query_lower = clean_query.lower()
@@ -1119,13 +1119,13 @@ class TravelCompositorAPI:
 
         for base in bases:
             if (base.get("name") or "").strip().lower() == query_lower:
-                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {base.get('code')} ({base.get('name')})")
+                print(f"âœ… RESOLVED (exact name): '{clean_query}' -> {base.get('code')} ({base.get('name')})")
                 return _to_result(base, "exact_name")
 
         substring_matches = [b for b in bases if query_lower in (b.get("name") or "").lower()]
         if substring_matches:
             best = substring_matches[0]
-            print(f"✅ RESOLVED (substring name): '{clean_query}' -> {best.get('code')} ({best.get('name')})")
+            print(f"âœ… RESOLVED (substring name): '{clean_query}' -> {best.get('code')} ({best.get('name')})")
             return _to_result(best, "substring_name")
 
         # 3. Airport -> the city it serves. See _place_alternates.
@@ -1133,7 +1133,7 @@ class TravelCompositorAPI:
             alt_lower = alternate.lower()
             for base in bases:
                 if (base.get("name") or "").strip().lower() == alt_lower:
-                    print(f"✅ RESOLVED (airport -> city): '{clean_query}' -> '{alternate}' -> "
+                    print(f"âœ… RESOLVED (airport -> city): '{clean_query}' -> '{alternate}' -> "
                           f"{base.get('code')} ({base.get('name')})")
                     result = _to_result(base, "airport_city")
                     result["resolved_via"] = alternate
@@ -1141,13 +1141,13 @@ class TravelCompositorAPI:
             partials = [b for b in bases if alt_lower in (b.get("name") or "").lower()]
             if partials:
                 best = partials[0]
-                print(f"✅ RESOLVED (airport -> city, partial): '{clean_query}' -> '{alternate}' -> "
+                print(f"âœ… RESOLVED (airport -> city, partial): '{clean_query}' -> '{alternate}' -> "
                       f"{best.get('code')} ({best.get('name')})")
                 result = _to_result(best, "airport_city_substring")
                 result["resolved_via"] = alternate
                 return result
 
-        print(f"⚠️ Transport base '{clean_query}' not found anywhere. Flagging as invalid.")
+        print(f"âš ï¸ Transport base '{clean_query}' not found anywhere. Flagging as invalid.")
         return {"code": None, "name": clean_query, "type": None, "latitude": None, "longitude": None,
                 "valid": False, "match_type": "not_found"}
 
@@ -1162,30 +1162,30 @@ class TravelCompositorAPI:
     # TRANSPORT OPTIONS section further below).
     # ------------------------------------------------------------------
     def get_transports(self, supplier_id: str) -> Dict[str, Any]:
-        """Executes GET /transport/{supplierId} — returns ALL transports for this supplier.
+        """Executes GET /transport/{supplierId} â€” returns ALL transports for this supplier.
         Used as the candidate pool for the departure/arrival matching fallback - see
         transport_matcher.suggest_existing_transport_matches."""
         url = f"{self.api_base_url}/transport/{supplier_id}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_transport(self, supplier_id: str, transport_id: str) -> Dict[str, Any]:
-        """Executes GET /transport/{supplierId}/{transportId} — returns one specific transport
+        """Executes GET /transport/{supplierId}/{transportId} â€” returns one specific transport
         (the parent record only - NOT its options, see get_transport_option)."""
         url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /transport/{supplierId} — creates a new transport (the parent record
+        """Executes POST /transport/{supplierId} â€” creates a new transport (the parent record
         only). Travel Compositor assigns and returns the new 'id' in the response - remember it
         via transport_matcher.remember_transport_id, then create one Option per occupancy
         bracket via create_transport_option()."""
@@ -1193,13 +1193,13 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_transport(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
         """
-        Executes PUT /transport/{supplierId} — updates an EXISTING transport's parent record.
+        Executes PUT /transport/{supplierId} â€” updates an EXISTING transport's parent record.
         Like Transfer, the id is NOT in the URL path - it must be set on the payload's own 'id'
         field. Does NOT touch options - see update_transport_option()/create_transport_option().
         """
@@ -1207,7 +1207,7 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
@@ -1217,7 +1217,7 @@ class TravelCompositorAPI:
     # additive-supplement pricing model)
     # ------------------------------------------------------------------
     def get_transport_option(self, supplier_id: str, transport_id: str, option_code: str) -> Dict[str, Any]:
-        """Executes GET /transport/{supplierId}/{transportId}/{optionCode} — returns one specific
+        """Executes GET /transport/{supplierId}/{transportId}/{optionCode} â€” returns one specific
         occupancy-bracket option. Real option codes are NOT predictable from the route/bracket
         (confirmed: "ASWHRG", "PraslinLaDigue12", and ones equal to the transport's own name all
         seen in real data) - always iterate the parent's own optionCodes list rather than
@@ -1226,23 +1226,23 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /transport/{supplierId}/{transportId} — creates a new occupancy-bracket
+        """Executes POST /transport/{supplierId}/{transportId} â€” creates a new occupancy-bracket
         option under an existing transport."""
         url = f"{self.api_base_url}/transport/{supplier_id}/{transport_id}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_transport_option(self, supplier_id: str, transport_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes PUT /transport/{supplierId}/{transportId} — updates an EXISTING occupancy-
+        """Executes PUT /transport/{supplierId}/{transportId} â€” updates an EXISTING occupancy-
         bracket option. Confirmed via Swagger: the option's own 'code' field in the payload body
         identifies WHICH option gets updated (transportId in the URL just scopes to the parent
         transport) - there is no optionCode in the PUT URL, unlike GET."""
@@ -1250,7 +1250,7 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
@@ -1267,19 +1267,19 @@ class TravelCompositorAPI:
     # Seasons/seasonRoomPrices/stopSales).
     # ------------------------------------------------------------------
     def get_hotels(self, supplier_id: str) -> Dict[str, Any]:
-        """Executes GET /hotel/{supplierId} — returns a LIGHTWEIGHT list of all hotels for this
+        """Executes GET /hotel/{supplierId} â€” returns a LIGHTWEIGHT list of all hotels for this
         supplier (confirmed real Swagger: rooms/mealPlans come back as flat string arrays here,
         not full nested objects - use get_hotel() for the full detail of one specific hotel)."""
         url = f"{self.api_base_url}/hotel/{supplier_id}"
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def get_hotel(self, supplier_id: str, provider_code: str) -> Dict[str, Any]:
-        """Executes GET /hotel/{supplierId}/{providerCode} — returns the FULL nested hotel record
+        """Executes GET /hotel/{supplierId}/{providerCode} â€” returns the FULL nested hotel record
         (rooms, mealPlans, descriptions, voucherRemarks, images, facilities, offers, supplements,
         rates with their seasons/seasonRoomPrices/stopSales - everything). This is the only call
         that returns offers/supplements/rates at all - there's no dedicated GET for any of those
@@ -1288,12 +1288,12 @@ class TravelCompositorAPI:
         res = self._request("GET", url)
 
         if res.status_code != 200:
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/{supplierId} — creates a new hotel contract. Payload includes the
+        """Executes POST /hotel/{supplierId} â€” creates a new hotel contract. Payload includes the
         hotel's own fields plus its rooms[] and mealPlans[] inline (both required, min 1 item) -
         NOT offers/supplements/rates, which are separate calls made afterward once the hotel
         exists (see create_hotel_offer/create_hotel_supplement/create_hotel_rates)."""
@@ -1301,12 +1301,12 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_hotel(self, supplier_id: str, payload: dict) -> Dict[str, Any]:
-        """Executes PUT /hotel/{supplierId} — updates an EXISTING hotel contract. Unlike Transfer/
+        """Executes PUT /hotel/{supplierId} â€” updates an EXISTING hotel contract. Unlike Transfer/
         Transport's PUT, providerCode (the identifier) is a normal required field already on this
         payload - there's no separate id-in-body quirk. This is a FULL REPLACE of the hotel-level
         record including the whole rooms[]/mealPlans[] arrays - see build_hotel_payloads()'s
@@ -1316,12 +1316,12 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel_room(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/room/{supplierId}/{providerCode} — adds a single room to an
+        """Executes POST /hotel/room/{supplierId}/{providerCode} â€” adds a single room to an
         EXISTING hotel contract. This tool's builder drives room creation/updates through the
         main create_hotel()/update_hotel() calls instead (which carry the full rooms[] array
         anyway, per PUT's full-replace semantics) - this method is provided for completeness /
@@ -1330,12 +1330,12 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel_mealplan(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/mealplan/{supplierId}/{providerCode} — adds a single meal plan to
+        """Executes POST /hotel/mealplan/{supplierId}/{providerCode} â€” adds a single meal plan to
         an EXISTING hotel contract. Same note as create_hotel_room() - this tool's builder drives
         meal plans through the main create_hotel()/update_hotel() calls; provided for
         completeness / direct use if needed."""
@@ -1343,12 +1343,12 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel_offer(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/offer/{supplierId}/{providerCode} — adds an offer to an existing
+        """Executes POST /hotel/offer/{supplierId}/{providerCode} â€” adds an offer to an existing
         hotel contract. CONFIRMED CREATE-ONLY - no PUT variant exists for offers (see
         ContractHotelOffersVO's docstring in schemas.py for why that's fine: offers are inherently
         date-bounded and self-expire)."""
@@ -1356,23 +1356,23 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel_supplement(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/supplement/{supplierId}/{providerCode} — adds a supplement to an
+        """Executes POST /hotel/supplement/{supplierId}/{providerCode} â€” adds a supplement to an
         existing hotel contract. CONFIRMED CREATE-ONLY, same as offers - no PUT variant exists."""
         url = f"{self.api_base_url}/hotel/supplement/{supplier_id}/{provider_code}"
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def create_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes POST /hotel/rates/{supplierId}/{providerCode} — adds a new rate (with its
+        """Executes POST /hotel/rates/{supplierId}/{providerCode} â€” adds a new rate (with its
         nested seasons/seasonRoomPrices/stopSales) to an existing hotel contract. Travel
         Compositor assigns and returns 'id' (and each season's own 'id') in the response -
         remember them for update_hotel_rates() on the next refresh, see hotel_matcher.py."""
@@ -1380,12 +1380,12 @@ class TravelCompositorAPI:
         res = self._request("POST", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 
     def update_hotel_rates(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
-        """Executes PUT /hotel/rates/{supplierId}/{providerCode} — updates an EXISTING rate.
+        """Executes PUT /hotel/rates/{supplierId}/{providerCode} â€” updates an EXISTING rate.
         The rate's own 'id' field in the payload body identifies WHICH rate gets updated
         (providerCode in the URL just scopes to the parent hotel) - same id-in-body pattern as
         Transport's option PUT."""
@@ -1393,7 +1393,7 @@ class TravelCompositorAPI:
         res = self._request("PUT", url, json=payload)
 
         if res.status_code not in (200, 201):
-            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            print(f"\nâŒ API Error ({res.status_code}):\n{res.text}")
             return {"error": res.status_code, "message": res.text}
         return self._json(res)
 

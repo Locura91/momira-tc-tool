@@ -1,5 +1,5 @@
 """
-stop_sales_tool.py — the supervised Stop Sales Email Reader.
+stop_sales_tool.py â€” the supervised Stop Sales Email Reader.
 
 WHAT IT IS FOR: suppliers announce closures by email, in prose, at short notice. Someone
 has to read each one, work out which product it means, and block the dates in Travel
@@ -7,8 +7,8 @@ Compositor. Until that happens a customer can book something that cannot be deli
 
 WHY IT IS SUPERVISED, AND STAYS SUPERVISED: the two ways this goes wrong are both silent
 and they point in opposite directions. Missing a stop sale sells something undeliverable.
-Applying one wrongly — the wrong month from an ambiguous 01/02, a rate season misread as a
-closure, a RELEASE applied as a block — quietly destroys sellable inventory, and nobody
+Applying one wrongly â€” the wrong month from an ambiguous 01/02, a rate season misread as a
+closure, a RELEASE applied as a block â€” quietly destroys sellable inventory, and nobody
 notices, because a product that stops appearing looks exactly like a product nobody
 searched for. So the AI only ever proposes. Every date is editable, every date is shown
 against the wording it came from, and nothing reaches Travel Compositor until a person
@@ -45,7 +45,7 @@ a warning before Apply.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import json
 from typing import Any, Dict, List, Optional
@@ -284,7 +284,7 @@ def _ranges_editor(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
                             key="ss_ranges_editor",
                             column_config={"From the email": st.column_config.TextColumn(
                                 "From the email", help="The supplier's own words these dates "
-                                                       "came from — check each date against it.",
+                                                       "came from â€” check each date against it.",
                                 disabled=True)})
     out = []
     for _, row in edited.iterrows():
@@ -296,19 +296,19 @@ def _ranges_editor(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def render_stop_sales_tool(client) -> None:
-    st.header("📧 Stop Sales Email Reader")
+    st.header("ðŸ“§ Stop Sales Email Reader")
     st.caption("Paste a supplier's stop-sale email. The tool reads the dates, matches the product, "
               "shows you exactly what would change, and writes nothing until you confirm. A new "
               "closure is **added to** what is already blocked; a reopening **removes** the "
-              "matching dates instead — either way nothing else already live is touched.")
+              "matching dates instead â€” either way nothing else already live is touched.")
 
     if not platform_store.is_durable():
-        st.warning("⚠️ No `DATABASE_URL` configured, so the record of which emails have already "
-                   "been processed is lost on the next redeploy — the same email could be "
+        st.warning("âš ï¸ No `DATABASE_URL` configured, so the record of which emails have already "
+                   "been processed is lost on the next redeploy â€” the same email could be "
                    "applied twice without warning.")
 
     # ---------------- Step 1: the email ----------------
-    st.subheader("Step 1 — The email")
+    st.subheader("Step 1 â€” The email")
     up = st.file_uploader("Upload a .eml file (optional)", type=["eml"], key="ss_eml")
     if up is not None and _get("ss_eml_name") != up.name:
         try:
@@ -325,13 +325,13 @@ def render_stop_sales_tool(client) -> None:
 
     subject = st.text_input("Subject", value=_get("ss_subject", ""), key="ss_subject_in")
     body = st.text_area("Email body", value=_get("ss_body", ""), height=220, key="ss_body_in",
-                        placeholder="Paste the supplier's email here…")
+                        placeholder="Paste the supplier's email hereâ€¦")
     scol1, scol2 = st.columns(2)
     with scol1:
         sent = st.text_input("Date the email was sent (optional)", value=_get("ss_sent", ""),
                              key="ss_sent_in",
                              help="Supplier emails often write dates without a year. Giving the "
-                                  "send date lets '12–19 August' be resolved instead of guessed.")
+                                  "send date lets '12â€“19 August' be resolved instead of guessed.")
     with scol2:
         sender = st.text_input("Sender email (optional)", value=_get("ss_from", ""),
                                key="ss_from_in",
@@ -343,21 +343,21 @@ def render_stop_sales_tool(client) -> None:
     sender_info = ssp.normalize_sender(sender)
 
     st.caption("Reading a mailbox automatically (IMAP) is the obvious next step, and everything "
-              "below it — parsing, matching, review, apply — works the same way when it arrives. "
+              "below it â€” parsing, matching, review, apply â€” works the same way when it arrives. "
               "It is left out on purpose until the supervised path has been used on real emails.")
 
     fingerprint = ssp.email_fingerprint(subject, body, _get("ss_message_id", ""))
     seen = already_processed(fingerprint) if body.strip() else None
     if seen:
-        st.warning(f"⚠️ This email was already processed on "
-                   f"{str(seen.get('applied_at', ''))[:16].replace('T', ' ')} UTC — "
+        st.warning(f"âš ï¸ This email was already processed on "
+                   f"{str(seen.get('applied_at', ''))[:16].replace('T', ' ')} UTC â€” "
                    f"{seen.get('summary', 'no details recorded')}. Re-applying it is safe "
                    f"(dates already blocked are skipped), but check it is not a duplicate first.")
 
     # ---------------- Step 2: parse ----------------
-    st.subheader("Step 2 — Read it")
-    if st.button("🔍 Parse stop sales", type="primary", disabled=not body.strip(), key="ss_parse"):
-        with st.spinner("Reading the email…"):
+    st.subheader("Step 2 â€” Read it")
+    if st.button("ðŸ” Parse stop sales", type="primary", disabled=not body.strip(), key="ss_parse"):
+        with st.spinner("Reading the emailâ€¦"):
             try:
                 st.session_state.ss_parsed = ssp.extract_stop_sales_from_email(
                     body, subject=subject, sent_date=sent)
@@ -381,14 +381,14 @@ def render_stop_sales_tool(client) -> None:
         st.caption(f"AI notes: {parsed['notes']}")
 
     # ---------------- Step 3: match the product ----------------
-    st.subheader("Step 3 — Which product?")
+    st.subheader("Step 3 â€” Which product?")
     hint_bits = [b for b in (parsed.get("product_identifier"), parsed.get("product_name_hint"),
                              parsed.get("supplier_name_hint")) if b]
     if hint_bits:
-        st.caption("Read from the email: " + " · ".join(f"**{b}**" for b in hint_bits))
+        st.caption("Read from the email: " + " Â· ".join(f"**{b}**" for b in hint_bits))
 
     if _get("ss_suppliers") is None:
-        with st.spinner("Loading supplier list…"):
+        with st.spinner("Loading supplier listâ€¦"):
             try:
                 st.session_state.ss_suppliers = client.get_all_suppliers()
             except Exception as e:
@@ -405,7 +405,7 @@ def render_stop_sales_tool(client) -> None:
     sender_key = sender_info["domain"] or sender_info["email"]
     remembered = remembered_supplier_for(sender_key) if sender_key else None
     if momira:
-        options = {f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": str(s.get("id"))
+        options = {f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": str(s.get("id"))
                    for s in momira}
         labels = list(options.keys())
         default_index = 0
@@ -414,14 +414,14 @@ def render_stop_sales_tool(client) -> None:
                          if options[lbl] == remembered.get("supplier_id")), None)
             if match is not None:
                 default_index = match
-                st.caption(f"✓ **{sender_key}** was already matched to this supplier on "
-                          f"{str(remembered.get('first_matched_at', ''))[:10]} — auto-selected. "
+                st.caption(f"âœ“ **{sender_key}** was already matched to this supplier on "
+                          f"{str(remembered.get('first_matched_at', ''))[:10]} â€” auto-selected. "
                           f"Pick a different one below if this email is actually from someone else.")
         chosen = st.selectbox("Supplier", labels, index=default_index, key="ss_supplier")
         supplier_id = options[chosen]
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
-        with st.expander("⚠️ Emergency manual entry"):
+        with st.expander("âš ï¸ Emergency manual entry"):
             supplier_id = st.text_input("Supplier ID (numeric)", key="ss_supplier_manual").strip()
 
     default_type = parsed.get("product_type") if parsed.get("product_type") in ("ClosedTour", "Hotel") else "ClosedTour"
@@ -432,7 +432,7 @@ def render_stop_sales_tool(client) -> None:
         value=parsed.get("product_identifier", ""), key="ss_code",
         help="The code as it exists in Travel Compositor, e.g. ASW-1 or CAI-H1.").strip()
 
-    if st.button("🔎 Load this product", disabled=not (supplier_id and product_code), key="ss_load"):
+    if st.button("ðŸ”Ž Load this product", disabled=not (supplier_id and product_code), key="ss_load"):
         # A human just confirmed this supplier for this sender - remember it if this is a new
         # sender, or if it already matched this exact supplier (see remember_supplier_for's
         # docstring for why a genuinely conflicting re-match is left alone rather than silently
@@ -440,7 +440,7 @@ def render_stop_sales_tool(client) -> None:
         if sender_key and momira:
             chosen_label = next((lbl for lbl, sid in options.items() if sid == supplier_id), "")
             remember_supplier_for(sender_key, supplier_id, chosen_label)
-        with st.spinner("Fetching from Travel Compositor…"):
+        with st.spinner("Fetching from Travel Compositorâ€¦"):
             try:
                 if product_type == "ClosedTour":
                     st.session_state.ss_product = fetch_closed_tour_options(client, supplier_id, product_code)
@@ -453,7 +453,7 @@ def render_stop_sales_tool(client) -> None:
 
     product = _get("ss_product")
     if product and _get("ss_product_key") != (supplier_id, product_type, product_code):
-        st.info("You changed the supplier or code — press **Load this product** again.")
+        st.info("You changed the supplier or code â€” press **Load this product** again.")
         product = None
     if not product:
         st.stop()
@@ -463,16 +463,16 @@ def render_stop_sales_tool(client) -> None:
         st.stop()
 
     # ---------------- Step 4: review ----------------
-    st.subheader("Step 4 — Check the dates, then the targets")
-    with st.expander("📧 The email as received", expanded=False):
+    st.subheader("Step 4 â€” Check the dates, then the targets")
+    with st.expander("ðŸ“§ The email as received", expanded=False):
         st.text((_get("ss_parsed_raw") or {}).get("body", ""))
 
     is_release = bool(parsed.get("is_release"))
     if is_release:
-        st.markdown("**Proposed re-openings** — dates to REMOVE from the live block list. Edit "
+        st.markdown("**Proposed re-openings** â€” dates to REMOVE from the live block list. Edit "
                     "any date before applying.")
     else:
-        st.markdown("**Proposed blocks** — edit any date before applying.")
+        st.markdown("**Proposed blocks** â€” edit any date before applying.")
     new_ranges = _ranges_editor(parsed)
     if not new_ranges:
         st.warning("No valid date ranges. Dates must be written as YYYY-MM-DD.")
@@ -497,10 +497,10 @@ def render_stop_sales_tool(client) -> None:
         targets = [o for o in options if o.get("code") in picked]
         for opt in targets:
             live = existing_tour_stop_sales(opt)
-            with st.expander(f"{opt.get('code')} — {len(live)} block(s) already live"):
+            with st.expander(f"{opt.get('code')} â€” {len(live)} block(s) already live"):
                 if opt.get("_fetch_error"):
                     st.error("This modality couldn't be fetched, so its existing blocks are "
-                             "unknown. Applying to it would risk overwriting them — it is "
+                             "unknown. Applying to it would risk overwriting them â€” it is "
                              "excluded from Apply.")
                 elif live:
                     st.dataframe(pd.DataFrame(live), use_container_width=True)
@@ -527,16 +527,16 @@ def render_stop_sales_tool(client) -> None:
                                       help="Blocking the whole property means blocking every room "
                                            "type. The email named one only if it said so.")
         if not picked_rooms:
-            st.warning("Choose at least one room type — a hotel stop sale is stored per room.")
+            st.warning("Choose at least one room type â€” a hotel stop sale is stored per room.")
             st.stop()
-        st.info("ℹ️ Hotel stop sales are submitted using the room NAME. Travel Compositor never "
+        st.info("â„¹ï¸ Hotel stop sales are submitted using the room NAME. Travel Compositor never "
                 "returns the numeric room id, so there is nothing else to match on. This path has "
-                "not yet been confirmed against the live API — check the result in Travel "
+                "not yet been confirmed against the live API â€” check the result in Travel "
                 "Compositor after the first apply.")
         targets = [rate_labels[k] for k in picked_rates]
         for rate in targets:
             live = existing_hotel_stop_sales(rate)
-            with st.expander(f"{rate.get('name') or rate.get('id')} — {len(live)} block(s) already live"):
+            with st.expander(f"{rate.get('name') or rate.get('id')} â€” {len(live)} block(s) already live"):
                 st.dataframe(pd.DataFrame(live), use_container_width=True) if live \
                     else st.caption("Nothing blocked yet.")
         st.session_state.ss_picked_rooms = picked_rooms
@@ -546,7 +546,7 @@ def render_stop_sales_tool(client) -> None:
         st.stop()
 
     # ---------------- Step 5: apply ----------------
-    st.subheader("Step 5 — Apply")
+    st.subheader("Step 5 â€” Apply")
     unit = 'modality' if product_type == 'ClosedTour' else 'rate'
     if is_release:
         st.warning(f"This RE-OPENS (removes) **{len(new_ranges)} date range(s)** on "
@@ -557,12 +557,12 @@ def render_stop_sales_tool(client) -> None:
                    f"{unit}(s) of live, bookable inventory. Existing blocks are kept; these are "
                    f"added to them.")
 
-    apply_label = "✅ Remove these stop sales" if is_release else "✅ Apply stop sales to Travel Compositor"
+    apply_label = "âœ… Remove these stop sales" if is_release else "âœ… Apply stop sales to Travel Compositor"
     if st.button(apply_label, type="primary", key="ss_apply"):
         results = []
-        bar = st.progress(0.0, text="Applying…")
+        bar = st.progress(0.0, text="Applyingâ€¦")
         for i, target in enumerate(targets):
-            bar.progress((i + 1) / len(targets), text=f"Updating {i + 1} of {len(targets)}…")
+            bar.progress((i + 1) / len(targets), text=f"Updating {i + 1} of {len(targets)}â€¦")
             if product_type == "ClosedTour":
                 results.append(apply_to_tour_option(client, supplier_id, product_code,
                                                     target, new_ranges, is_release=is_release))
@@ -588,7 +588,7 @@ def render_stop_sales_tool(client) -> None:
                 "applied_at": pd.Timestamp.utcnow().isoformat(),
                 "supplier_id": supplier_id, "product_type": product_type,
                 "product_code": product_code,
-                "ranges": [f"{r['start']} → {r['end']}" for r in new_ranges],
+                "ranges": [f"{r['start']} â†’ {r['end']}" for r in new_ranges],
                 "summary": (f"{len(new_ranges)} range(s) released on {product_code}" if is_release
                            else f"{len(new_ranges)} range(s) blocked on {product_code}"),
             })
@@ -602,23 +602,23 @@ def render_stop_sales_tool(client) -> None:
         not_found = [(r["code"], nf) for r in results for nf in (r.get("not_found") or [])]
         if updated:
             verb = "Released on" if is_release else "Blocked on"
-            st.success(f"✅ {verb} {len(updated)} target(s): "
+            st.success(f"âœ… {verb} {len(updated)} target(s): "
                        + ", ".join(str(r["code"]) for r in updated))
         if unchanged:
             detail = "had none of these dates currently blocked" if is_release \
                 else "already had every one of these dates blocked"
-            st.info(f"➖ {len(unchanged)} target(s) {detail}.")
+            st.info(f"âž– {len(unchanged)} target(s) {detail}.")
         if failed:
-            st.error(f"❌ {len(failed)} target(s) failed — nothing was changed on these:")
+            st.error(f"âŒ {len(failed)} target(s) failed â€” nothing was changed on these:")
             for r in failed:
                 st.write(f"- **{r['code']}**: {r['detail']}")
             st.caption("Re-running is safe: dates already blocked are detected and skipped.")
         if is_release and not_found:
-            st.warning(f"⚠️ {len(not_found)} release date range(s) did not exactly match a "
+            st.warning(f"âš ï¸ {len(not_found)} release date range(s) did not exactly match a "
                        f"currently-blocked range and were left alone - check these by hand, the "
                        f"supplier may be releasing only PART of a wider existing block:")
             for code, nf in not_found:
-                st.write(f"- **{code}**: {nf.get('start')} → {nf.get('end')}")
-        if st.button("🆕 Read another email", key="ss_new"):
+                st.write(f"- **{code}**: {nf.get('start')} â†’ {nf.get('end')}")
+        if st.button("ðŸ†• Read another email", key="ss_new"):
             _reset_run(keep=("ss_suppliers",))
             st.rerun()

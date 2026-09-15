@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import os
 import re
@@ -61,10 +61,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -173,15 +173,15 @@ Rules:
   paragraph. CONFIRMED RULE: add it as its own standalone paragraph at the VERY END of the description
   field - after the last day's content, and after the meal legend paragraph too if one was added, so it
   is always the LAST paragraph in the whole description. Write it as PLAIN text only: NO icon/emoji (e.g.
-  no "⚠️") and NO "Important:" label or other bold prefix - those have caused downstream coding/encoding
+  no "âš ï¸") and NO "Important:" label or other bold prefix - those have caused downstream coding/encoding
   issues, so the paragraph must contain nothing but the advisory sentence itself, e.g.:
   <p>In line with the program, customers are strongly advised to spend the night prior to the start of
   this package.</p>
   Only add this paragraph if the source genuinely contains such a package-wide advisory - never invent
   one. If the source has no such advisory, skip this entirely.
 - hotels_text MUST always follow this EXACT template (confirmed against a real published tour) - a fixed intro paragraph (always exactly this wording), then a bulleted list:
-  <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
-  IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
+  <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 â€“ Hotel Name 1</li><li>City2 â€“ Hotel Name 2 (or Alternative Hotel Name)</li></ul>
+  IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] â€“ Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
 - hotels_count: the number of DIFFERENT accommodations/hotels the client actually stays in (count the bullets you just wrote in hotels_text - e.g. a cruise with one ship the whole way is 1, a land tour through 3 different-hotel cities is 3).
 - supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
@@ -1376,7 +1376,7 @@ def _detect_items(system_prompt: str, raw_text: str, model: str, flag_key: str, 
             "Claude's answer was cut off and this document has no paragraph breaks to split on - "
             "try uploading it in smaller sections."
         )
-    print(f"↔️ Answer was cut off - re-reading this document in {len(parts)} sections and merging.")
+    print(f"â†”ï¸ Answer was cut off - re-reading this document in {len(parts)} sections and merging.")
     merged = []
     for part in parts:
         merged.extend(_detect_items(system_prompt, part, model, flag_key, list_key, key_fn,
@@ -1476,14 +1476,14 @@ def detect_multiple_modalities(raw_text: str, model: str = "claude-sonnet-5") ->
     as opposed to one single price table. Returns an empty list if only
     one is found, or a list of {"label": ..., "suggested_code": ...} dicts.
     """
-    print("🔎 Checking for multiple pricing categories/modalities in this content...")
+    print("ðŸ”Ž Checking for multiple pricing categories/modalities in this content...")
     modalities = _detect_items(
         MODALITY_DETECTION_PROMPT, raw_text, model, "multiple_modalities", "modalities",
         lambda m: " ".join(str(m.get("suggested_code") or m.get("label") or "").split()).lower())
     if modalities:
-        print(f"⚠️ Detected {len(modalities)} distinct modalities: {[m.get('label') for m in modalities]}")
+        print(f"âš ï¸ Detected {len(modalities)} distinct modalities: {[m.get('label') for m in modalities]}")
     else:
-        print("✅ Only one pricing category detected.")
+        print("âœ… Only one pricing category detected.")
     return modalities
 
 
@@ -1545,7 +1545,7 @@ def match_modalities_to_existing(existing_codes: list, candidates: list, model: 
              "confidence": "high", "reasoning": "No existing modalities to match against - this tour/ticket has none yet."}
             for c in candidates
         ]
-    print(f"🔎 Matching {len(candidates)} newly-detected modalit{'y' if len(candidates) == 1 else 'ies'} "
+    print(f"ðŸ”Ž Matching {len(candidates)} newly-detected modalit{'y' if len(candidates) == 1 else 'ies'} "
           f"against {len(existing_codes)} existing code(s)...")
     user_content = (
         "EXISTING CODES:\n" + "\n".join(f"- {c}" for c in existing_codes) +
@@ -1554,7 +1554,7 @@ def match_modalities_to_existing(existing_codes: list, candidates: list, model: 
     try:
         result = _call_claude(MODALITY_MATCH_PROMPT, user_content, model, max_tokens=1024)
     except Exception as e:
-        print(f"⚠️ Modality matching call failed ({e}) - treating all candidates as new; a human can still "
+        print(f"âš ï¸ Modality matching call failed ({e}) - treating all candidates as new; a human can still "
               "manually pick an existing code to update instead.")
         return [
             {"candidate_label": c.get("label", ""), "matched_existing_code": None,
@@ -1581,7 +1581,7 @@ def match_modalities_to_existing(existing_codes: list, candidates: list, model: 
         })
     if safe_matches:
         matched_n = len([m for m in safe_matches if m["matched_existing_code"]])
-        print(f"✅ {matched_n} of {len(safe_matches)} candidate(s) suggested as updates to an existing code "
+        print(f"âœ… {matched_n} of {len(safe_matches)} candidate(s) suggested as updates to an existing code "
               f"(pending human confirmation); {len(safe_matches) - matched_n} suggested as new.")
     return safe_matches
 
@@ -1601,14 +1601,14 @@ def detect_tour_variants(raw_text: str, model: str = "claude-sonnet-5") -> list:
     file (it decides whether the app tries to create ONE ClosedTour or
     SEVERAL), so it's worth the extra cost/latency of the stronger model.
     """
-    print("🔎 Checking for multiple tour variants in this content...")
+    print("ðŸ”Ž Checking for multiple tour variants in this content...")
     variants = _detect_items(
         VARIANT_DETECTION_PROMPT, raw_text, model, "multiple_variants", "variants",
         lambda v: " ".join(str(v.get("label") or "").split()).lower())
     if variants:
-        print(f"⚠️ Detected {len(variants)} distinct tour variants: {[v.get('label') for v in variants]}")
+        print(f"âš ï¸ Detected {len(variants)} distinct tour variants: {[v.get('label') for v in variants]}")
     else:
-        print("✅ Only one tour detected.")
+        print("âœ… Only one tour detected.")
     return variants
 
 
@@ -1894,7 +1894,7 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
                             "Supplements by dates to make this change take effect, rather than a "
                             "Modality list.)")
                 else:
-                    note = ("⚠️ This was NOT applied: a Ticket only ever publishes one Modality now, so "
+                    note = ("âš ï¸ This was NOT applied: a Ticket only ever publishes one Modality now, so "
                             "there is no separate Modality list to edit. Please retry, naming the "
                             "specific Supplements by dates row to add/remove/change (e.g. \"delete the "
                             "French-speaking guide supplement\").")
@@ -1989,10 +1989,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -2120,10 +2120,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -2427,7 +2427,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     if prefix_parts:
         user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
 
-    print(f"🤖 Sending document to Claude ({model}) for extraction..."
+    print(f"ðŸ¤– Sending document to Claude ({model}) for extraction..."
           + (f" [variant: {variant_hint}]" if variant_hint else ""))
     # 32768 (up from a previous 16384) - confirmed against a real failure where
     # a longer multi-day tour's response got cut off mid-JSON at the old limit.
@@ -2481,7 +2481,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
             if _s.get(_occ_key) is None:
                 _s[_occ_key] = _flat_price
 
-    print(f"✅ Extraction complete: '{defaults['tour_name']}' "
+    print(f"âœ… Extraction complete: '{defaults['tour_name']}' "
           f"({len(defaults['itinerary_destinations'])} destinations, {defaults['nights']} nights)")
     return defaults
 
@@ -2497,10 +2497,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -2590,7 +2590,7 @@ Extract:
   traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
   beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
   standalone paragraph at the VERY END of the description - after the normal descriptive paragraphs, so
-  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "⚠️") and NO
+  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "âš ï¸") and NO
   "Important:" label or other bold prefix - those have caused downstream coding/encoding issues, so the
   paragraph must contain nothing but the advisory sentence itself, e.g. <p>...</p>. Only add it if the
   source genuinely contains such an advisory - never invent one.
@@ -2947,16 +2947,16 @@ def detect_ticket_variants(raw_text: str, model: str = HAIKU_MODEL) -> list:
     even though the AI clearly knew the excursion's name all along). An empty list now means only
     that no usable excursion name/title could be found at all.
     """
-    print("🔎 Checking for multiple excursions/tickets in this content...")
+    print("ðŸ”Ž Checking for multiple excursions/tickets in this content...")
     excursions = _detect_items(
         TICKET_VARIANT_DETECTION_PROMPT, raw_text, model, "multiple_excursions", "excursions",
         lambda e: " ".join(str(e.get("label") or "").split()).lower())
     if len(excursions) > 1:
-        print(f"⚠️ Detected {len(excursions)} distinct excursions: {[e.get('label') for e in excursions]}")
+        print(f"âš ï¸ Detected {len(excursions)} distinct excursions: {[e.get('label') for e in excursions]}")
     elif excursions:
-        print(f"✅ Only one excursion detected: {excursions[0].get('label')!r}")
+        print(f"âœ… Only one excursion detected: {excursions[0].get('label')!r}")
     else:
-        print("✅ Only one excursion detected (no usable name/title found to prefill).")
+        print("âœ… Only one excursion detected (no usable name/title found to prefill).")
     return excursions
 
 
@@ -3211,7 +3211,7 @@ Extract:
   traveler must know/do BEFORE or independent of the activity itself (e.g. a required overnight stay
   beforehand, an early arrival/check-in requirement, a strong advisory about timing), put this as its own
   standalone paragraph at the VERY END of the description - after the normal descriptive paragraphs, so
-  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "⚠️") and NO
+  it is always the LAST paragraph. Write it as PLAIN text only: NO icon/emoji (e.g. no "âš ï¸") and NO
   "Important:" label or other bold prefix - those have caused downstream coding/encoding issues, so the
   paragraph must contain nothing but the advisory sentence itself, e.g. <p>...</p>. Only add it if the
   source genuinely contains such an advisory - never invent one.
@@ -3444,10 +3444,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one.
@@ -3696,7 +3696,7 @@ def detect_ticket_modalities(raw_text: str, variant_hint: str = None, model: str
     them. CONFIRMED PRODUCT-OWNER REQUEST: "if the ticket has detected another Modality, the app must
     call for each modality separately." Mirrors detect_multiple_modalities (ClosedTour) exactly.
     """
-    print("🔎 Checking for multiple pricing Modalities for this ticket...")
+    print("ðŸ”Ž Checking for multiple pricing Modalities for this ticket...")
     content = raw_text
     if variant_hint:
         content = (
@@ -3707,9 +3707,9 @@ def detect_ticket_modalities(raw_text: str, variant_hint: str = None, model: str
         TICKET_MODALITY_DETECTION_PROMPT, content, model, "multiple_modalities", "modalities",
         lambda m: " ".join(str(m.get("suggested_code") or m.get("label") or "").split()).lower())
     if modalities:
-        print(f"⚠️ Detected {len(modalities)} distinct ticket Modalities: {[m.get('label') for m in modalities]}")
+        print(f"âš ï¸ Detected {len(modalities)} distinct ticket Modalities: {[m.get('label') for m in modalities]}")
     else:
-        print("✅ Only one pricing Modality detected.")
+        print("âœ… Only one pricing Modality detected.")
     return modalities
 
 
@@ -3720,10 +3720,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -4014,15 +4014,15 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
     "departure_hint", "arrival_hint"} dicts - mirrors detect_multiple_modalities'
     contract for the existing batch/queue review UI pattern.
     """
-    print("🔎 Checking for multiple distinct transfer products (routes/classes) in this document...")
+    print("ðŸ”Ž Checking for multiple distinct transfer products (routes/classes) in this document...")
     transfers = _detect_items(TRANSFER_PRODUCT_DETECTION_PROMPT,
                               _with_hint(raw_text, human_hint), model,
                               "multiple_transfers", "transfers",
                               _directional_route_identity)
     if transfers:
-        print(f"⚠️ Detected {len(transfers)} distinct transfer product(s): {[t.get('label') for t in transfers]}")
+        print(f"âš ï¸ Detected {len(transfers)} distinct transfer product(s): {[t.get('label') for t in transfers]}")
     else:
-        print("✅ Only one distinct transfer product detected.")
+        print("âœ… Only one distinct transfer product detected.")
     return transfers
 
 
@@ -4033,10 +4033,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -4362,15 +4362,15 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
     for the existing batch/queue review UI pattern. Returns an empty list if only one is found,
     or a list of {"label", "service_name", "departure_hint", "arrival_hint"} dicts.
     """
-    print("🔎 Checking for multiple distinct transport products (routes/classes) in this document...")
+    print("ðŸ”Ž Checking for multiple distinct transport products (routes/classes) in this document...")
     transports = _detect_items(TRANSPORT_PRODUCT_DETECTION_PROMPT,
                                _with_hint(raw_text, human_hint), model,
                                "multiple_transports", "transports",
                                _directional_route_identity)
     if transports:
-        print(f"⚠️ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
+        print(f"âš ï¸ Detected {len(transports)} distinct transport product(s): {[t.get('label') for t in transports]}")
     else:
-        print("✅ Only one distinct transport product detected.")
+        print("âœ… Only one distinct transport product detected.")
     return transports
 
 
@@ -4381,10 +4381,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -4618,10 +4618,10 @@ Tables arrive as a grid with explicit column positions, because a rate sheet's m
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
   "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
+  "High Â«spans C4-C5Â»"           this cell covers columns 4 AND 5 - a merged heading
+  "$847 Â«spans C4-C5Â»"           this value belongs to columns 4 and 5, i.e. under "High"
+  "24/9/2026 Â«C2Â»"               a single cell in column 2
+  "Â·"                            a genuinely empty cell
   "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
                                  immediately above it, and its columns line up with that table's
                                  headers one for one. Use the table above to know what each
@@ -4820,6 +4820,22 @@ OTHER offers it combines with (offers have no notes/description field, only "nam
 enforce or structurally encode the combination rule. Instead, fold the combination info into that offer's own
 "name" as short descriptive text so a human still sees it (e.g. "Early Booking Discount 10% (combinable with
 Long Stay Discount only)"). This is descriptive only, for a human to read - nothing downstream enforces it.
+CONFIRMED REAL BUG (2026-09-15, HRG-H1/Steigenberger Golf Resort El Gouna - caused a live guest overcharge):
+some documents list a MEAL-PLAN UPGRADE charge (e.g. "Half board - 30", "Club Package - 50") under a table
+literally headed "Supplements", even though it is the exact same cost as that meal plan's own entry under
+MEAL PLANS above - not an independent extra charge. Extracting it a second time as a supplement is a real
+double-charge, not a harmless duplicate: a hotel supplement is ALWAYS applied to the whole booking unless its
+own travel_windows/meal_plans/room_names narrow it (see the Supplements editor's own warning - "a hotel
+supplement is never optional"), so a supplement named "Half Board Supplement" with no dates and no meal_plans
+filter charges EVERY booking that extra amount, including a guest who stayed on plain Bed & Breakfast and never
+chose Half Board at all - on top of the correct Half-Board-upgrade cost already sitting in that meal plan's own
+base_price/adult_prices/child_prices. RULE: if a document's Supplements/extra-charges section lists a per-
+person charge for adopting or upgrading to a named meal plan (Half Board, Full Board, All Inclusive, or a
+meal-inclusive package like "Club Package" here) AND that same plan is separately being extracted under MEAL
+PLANS with a matching price, do NOT also create a supplement entry for it - the MEAL PLANS entry is the
+correct and only place that cost belongs. Only extract a Supplements-section row as a genuine supplement when
+it is a distinct charge that isn't just the cost of switching meal plan (a resort fee, a compulsory gala
+dinner tied to specific dates, a genuinely separate add-on).
 
 === RATES, SEASONS, and ROOM PRICES ===
 "rates": Travel Compositor groups pricing under named "rate" containers (e.g. "Standard Rates", "Peak Season
@@ -4971,13 +4987,13 @@ Output ONLY valid JSON, no markdown fences, no explanation:
 If there is genuinely only one hotel property described in the whole document (the overwhelmingly common
 case - most documents describe just one property's rooms/rates/offers), set "multiple_hotels": false and
 "hotels": [] ."""
-    print("🔎 Checking for multiple distinct hotel properties in this document...")
+    print("ðŸ”Ž Checking for multiple distinct hotel properties in this document...")
     hotels = _detect_items(prompt, raw_text, model, "multiple_hotels", "hotels",
                            lambda h: " ".join(str(h.get("hotelname_hint") or h.get("label") or "").split()).lower())
     if hotels:
-        print(f"⚠️ Detected {len(hotels)} distinct hotel propert(ies): {[h.get('label') for h in hotels]}")
+        print(f"âš ï¸ Detected {len(hotels)} distinct hotel propert(ies): {[h.get('label') for h in hotels]}")
     else:
-        print("✅ Only one hotel property detected.")
+        print("âœ… Only one hotel property detected.")
     return hotels
 
 

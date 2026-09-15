@@ -1,5 +1,5 @@
 """
-platform_store.py — the platform's one durable key/value store.
+platform_store.py â€” the platform's one durable key/value store.
 
 WHY THIS EXISTS: everything the platform remembers between runs used to be
 written to a file sitting next to the app - transfer_match_store.json,
@@ -37,7 +37,7 @@ see state_store.py, transfer_matcher.py and transport_matcher.py.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import json
 import os
@@ -89,8 +89,8 @@ def describe() -> str:
         url = _database_url() or ""
         # Never surface credentials - show only the host.
         host = url.split("@")[-1].split("/")[0] if "@" in url else "database"
-        return f"Postgres ({host}) — survives redeploys"
-    return f"local file ({os.path.basename(_LOCAL_DB_PATH)}) — lost on redeploy"
+        return f"Postgres ({host}) â€” survives redeploys"
+    return f"local file ({os.path.basename(_LOCAL_DB_PATH)}) â€” lost on redeploy"
 
 
 def _psycopg():

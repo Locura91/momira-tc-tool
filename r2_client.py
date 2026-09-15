@@ -71,7 +71,7 @@ import uuid
 import mimetypes
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old
@@ -175,7 +175,7 @@ def stale_image_warning(urls) -> str:
         return ""
     plural = "s" if len(stale) != 1 else ""
     return (
-        f"⚠️ {len(stale)} image{plural} were uploaded more than "
+        f"âš ï¸ {len(stale)} image{plural} were uploaded more than "
         f"{int(STALE_IMAGE_WARNING_THRESHOLD_HOURS)}h ago and may have already expired from "
         f"temporary hosting - if Travel Compositor's own fetch fails at publish time, re-extract "
         f"or re-upload the affected image(s) first."

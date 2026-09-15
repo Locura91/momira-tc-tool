@@ -1,5 +1,5 @@
 """
-masterdata_matcher.py — scores candidates from the local Travel Compositor master-hotel index
+masterdata_matcher.py â€” scores candidates from the local Travel Compositor master-hotel index
 (masterdata_store.py) against a hotel name/country/geolocation typed in by a human, for the
 "Use Travel Compositor master data for this hotel?" step of the Hotel contract wizard
 (product owner request, 2026-09-06).
@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import math
 from difflib import SequenceMatcher

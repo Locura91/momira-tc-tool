@@ -1,5 +1,5 @@
 """
-outreach_scope.py — what a tour operator ought to be selling in a country, before searching.
+outreach_scope.py â€” what a tour operator ought to be selling in a country, before searching.
 
 CONFIRMED PRODUCT-OWNER REQUEST: "the first step is a complete Country search. This search is
 selecting listing first the most important touristic regions and on a second list it is listing
@@ -28,7 +28,7 @@ added by hand once and stays added.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List

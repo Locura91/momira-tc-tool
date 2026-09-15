@@ -1,5 +1,5 @@
 """
-price_validity.py — the "(YYYYMMDD)" price-validity code (product owner request, 2026-09-08).
+price_validity.py â€” the "(YYYYMMDD)" price-validity code (product owner request, 2026-09-08).
 
 CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "we will add a code like '(20271031)' to the
 services. This code would mean: The service is valid until 31. Oct. 2027, after that we have no
@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import os
 import re
@@ -349,7 +349,7 @@ def send_alert_email(flagged: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not flagged:
         return {"ok": True, "error": None}
     to_address = alert_recipient()
-    subject = f"⏰ {len(flagged)} service(s) need a price-validity check"
+    subject = f"â° {len(flagged)} service(s) need a price-validity check"
     text_body, html_body = _format_email_body(flagged)
     provider = outreach_email.get_email_provider()
     from_address = outreach_email.get_from_address()

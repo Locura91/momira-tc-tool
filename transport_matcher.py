@@ -41,7 +41,7 @@ Compositor itself (confirmed via get_transport/get_transports).
 # carried a build stamp before (2026-09-13, while consolidating name-normalization into
 # text_normalize.py) - a partial deploy that updated every other file but this one would have
 # gone undetected by app.py's own stale-module check.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import os
 import json
@@ -80,18 +80,18 @@ def _load_store() -> Dict[str, Any]:
             if legacy:
                 for supplier_key, routes in legacy.items():
                     platform_store.set(_NAMESPACE, str(supplier_key), routes)
-                print(f"📦 Migrated {len(legacy)} supplier(s) of transport match history "
+                print(f"ðŸ“¦ Migrated {len(legacy)} supplier(s) of transport match history "
                       f"from {_LEGACY_STORE_PATH} into durable storage.")
                 return legacy
         except Exception as e:
-            print(f"⚠️ Could not read the legacy transport match store ({e}) - starting fresh "
+            print(f"âš ï¸ Could not read the legacy transport match store ({e}) - starting fresh "
                   f"(falls back to name matching, nothing breaks).")
     return store
 
 
 def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
     if not platform_store.set(_NAMESPACE, str(supplier_key), routes):
-        print("⚠️ Could not save the transport match store - the id -> route mapping just "
+        print("âš ï¸ Could not save the transport match store - the id -> route mapping just "
               "learned won't persist to the next session, but nothing about this upload failed.")
 
 
@@ -117,7 +117,7 @@ def remember_transport_id(supplier_id: str, departure_name: str, arrival_name: s
     routes = platform_store.get(_NAMESPACE, supplier_key) or {}
     routes[_route_key(departure_name, arrival_name)] = transport_id
     _save_supplier(supplier_key, routes)
-    print(f"📌 Remembered TC id '{transport_id}' for route '{departure_name}' -> '{arrival_name}' "
+    print(f"ðŸ“Œ Remembered TC id '{transport_id}' for route '{departure_name}' -> '{arrival_name}' "
           f"(supplier {supplier_id}) - future updates to this route will auto-match.")
 
 

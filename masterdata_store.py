@@ -1,5 +1,5 @@
 """
-masterdata_store.py — local cache of Travel Compositor's "Web Content Accommodations" master
+masterdata_store.py â€” local cache of Travel Compositor's "Web Content Accommodations" master
 hotel database, used to let a human search/match a hotel BEFORE asking anyone to hunt for photos
 manually when creating a brand-new Hotel contract (product owner request, 2026-09-06 - mirrors
 Travel Compositor's own manual "add hotel" screen, which offers exactly this choice).
@@ -35,7 +35,7 @@ key/value write has to carry the entire ~30-50MB payload at once.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import time
 from typing import Any, Callable, Dict, List, Optional

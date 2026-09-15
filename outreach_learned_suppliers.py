@@ -1,5 +1,5 @@
 """
-outreach_learned_suppliers.py — remembers suppliers a human added BY HAND in the Outreach tool,
+outreach_learned_suppliers.py â€” remembers suppliers a human added BY HAND in the Outreach tool,
 keyed by the exact (country, theme/keyword) combination they were searching, so a supplier a
 human already found and vetted once doesn't have to be found again by the automated search, or
 re-typed in by hand, the next time the same combination is searched.
@@ -8,7 +8,7 @@ CONFIRMED PRODUCT-OWNER REQUEST (2026-08-30): "whenever the human is adding manu
 so the App can learn which suppliers are needed and to improve the search results." Two design
 decisions, both confirmed with the product owner before building this:
 
-  1. MATCH SCOPE — Country + Theme/Keyword, not Country alone. A supplier remembered for
+  1. MATCH SCOPE â€” Country + Theme/Keyword, not Country alone. A supplier remembered for
      "Nile Cruise" in Egypt only resurfaces on a future "Nile Cruise" search in Egypt, not on
      every unrelated Egypt search too (e.g. "Desert Safari"). Matching is on a NORMALIZED exact
      string (see _normalize below) - deliberately NOT fuzzy, same reasoning hotel_matcher.py's
@@ -53,7 +53,7 @@ Functions:
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import re
 from datetime import datetime, timezone
@@ -180,7 +180,7 @@ def resurface_remembered_suppliers(country: str, theme: str) -> List[Dict[str, A
         learned = entry.pop("learnedFrom", {}) or {}
         remembered_at = (learned.get("rememberedAt") or "")[:10]  # just the date
         entry["selectionReason"] = (
-            f"Remembered — added by hand for a \"{learned.get('theme') or theme}\" search in "
+            f"Remembered â€” added by hand for a \"{learned.get('theme') or theme}\" search in "
             f"{learned.get('country') or country}" + (f" on {remembered_at}" if remembered_at else "") + "."
         )
         entry["isRemembered"] = True

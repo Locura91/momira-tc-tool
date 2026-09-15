@@ -1,5 +1,5 @@
 """
-weekly_review.py — the app asks, once a week, what it should have understood by now.
+weekly_review.py â€” the app asks, once a week, what it should have understood by now.
 
 CONFIRMED PRODUCT-OWNER REQUEST: "Could we also include, that the integrated AI tool will ask me
 once a week, if it needs clarification. So we can constantly improve the included databank
@@ -23,7 +23,7 @@ Nothing here writes to Travel Compositor. It only edits the platform's own memor
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import json
 from datetime import datetime, timedelta, timezone

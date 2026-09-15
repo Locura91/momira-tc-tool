@@ -1,5 +1,5 @@
 """
-numeric_helpers.py — the one place `_safe_float`/`_safe_int` live.
+numeric_helpers.py â€” the one place `_safe_float`/`_safe_int` live.
 
 WHY THIS EXISTS (2026-09-13, product owner: "is there a chance we could merge some files... maybe
 we can find some double written codes that could be combined"): before this module existed,
@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 
 def _safe_float(value, fallback=0.0):

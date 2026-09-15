@@ -1,5 +1,5 @@
 """
-supplier_images.py — per-supplier "mass upload" images for Transfer/Transport, applied
+supplier_images.py â€” per-supplier "mass upload" images for Transfer/Transport, applied
 automatically by route DIRECTION instead of per individual product.
 
 WHY THIS EXISTS: Transfer and Transport never had any image-setting capability in this tool
@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 _NAMESPACE = "supplier_images"
 
@@ -191,7 +191,7 @@ def render_supplier_image_editor(supplier_id: str, product_type: str, key_suffix
     any_set = any(get_supplier_image(supplier_id, product_type, d) for d in DIRECTIONS)
 
     with st.expander(
-        f"🖼️ {product_type} images for this supplier" + ("  ·  currently set" if any_set else ""),
+        f"ðŸ–¼ï¸ {product_type} images for this supplier" + ("  Â·  currently set" if any_set else ""),
         expanded=any_set,
     ):
         st.caption(
@@ -209,23 +209,23 @@ def render_supplier_image_editor(supplier_id: str, product_type: str, key_suffix
                     st.image(base64.b64decode(existing["bytes_b64"]), width=160)
                 with col_actions:
                     st.caption(f"Last updated {existing.get('updated_at', '')[:16].replace('T', ' ')} UTC")
-                    if st.button("🗑️ Remove", key=f"si_remove_{supplier_id}_{product_type}_{direction}{key_suffix}"):
+                    if st.button("ðŸ—‘ï¸ Remove", key=f"si_remove_{supplier_id}_{product_type}_{direction}{key_suffix}"):
                         if delete_supplier_image(supplier_id, product_type, direction):
                             st.success("Removed.")
                             st.rerun()
                         else:
                             st.error("Could not remove this image.")
             uploaded = st.file_uploader(
-                f"Upload/replace — {DIRECTION_LABELS[direction]}", type=["jpg", "jpeg", "png", "webp"],
+                f"Upload/replace â€” {DIRECTION_LABELS[direction]}", type=["jpg", "jpeg", "png", "webp"],
                 key=f"si_upload_{supplier_id}_{product_type}_{direction}{key_suffix}",
             )
             if uploaded is not None:
                 ext = uploaded.name.rsplit(".", 1)[-1] if "." in uploaded.name else "jpg"
-                if st.button("💾 Save this image", key=f"si_save_{supplier_id}_{product_type}_{direction}{key_suffix}"):
+                if st.button("ðŸ’¾ Save this image", key=f"si_save_{supplier_id}_{product_type}_{direction}{key_suffix}"):
                     if set_supplier_image(supplier_id, product_type, direction, uploaded.getvalue(), ext):
                         st.success("Saved.")
                         st.rerun()
                     else:
                         st.error("Could not save this image - it will NOT apply to future uploads.")
         if not platform_store.is_durable():
-            st.warning("⚠️ No `DATABASE_URL` configured — an image saved here is lost on the next redeploy.")
+            st.warning("âš ï¸ No `DATABASE_URL` configured â€” an image saved here is lost on the next redeploy.")

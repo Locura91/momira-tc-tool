@@ -1,5 +1,5 @@
 """
-trip_quote_client.py — PROTOTYPE: calls Travel Compositor's real booking/Quote endpoints
+trip_quote_client.py â€” PROTOTYPE: calls Travel Compositor's real booking/Quote endpoints
 (Accommodation, Transports, Transfer, Ticket, Closed Tour) to price real, live options for the
 AI Trip Idea feature's Phase 1 selection logic. QUOTE ONLY, NEVER Confirm, Prebook, or Book.
 
@@ -10,7 +10,7 @@ is built from. Enforced by tests/test_trip_idea_never_books.py, which scans ever
 source (this one included) for anything matching a Confirm, Prebook, or Book endpoint path or
 function-call pattern.
 
-⚠️ UNVERIFIED AGAINST A LIVE CALL, 2026-08-31: this sandbox has no network route to
+âš ï¸ UNVERIFIED AGAINST A LIVE CALL, 2026-08-31: this sandbox has no network route to
 online.travelcompositor.com (egress blocked - confirmed via a direct connectivity test: a plain
 GET to the auth endpoint failed with "CONNECT tunnel failed, response 403" while a control
 request to pypi.org succeeded) and no TC credentials configured (no .env, no TRAVELC_* env vars
@@ -22,40 +22,40 @@ until that has happened - a request shape read directly off the real OpenAPI spe
 below now is) is not the same as a response actually observed from a live call.
 
 UPDATE, 2026-09-01: every request shape in this file is now CONFIRMED SHAPE, read directly off a
-real Travel Compositor OpenAPI spec — not a guess. Accommodation was confirmed first, directly off
+real Travel Compositor OpenAPI spec â€” not a guess. Accommodation was confirmed first, directly off
 Momira's own `online.travelcompositor.com` Swagger (Chris pasted the schema). The remaining four
 (Transports, Transfer, Ticket, Closed Tour) were then confirmed by Claude navigating a live browser
-session (via the Chrome extension bridge) to `dertourgroup.paquetedinamico.com/api/` — a DIFFERENT
+session (via the Chrome extension bridge) to `dertourgroup.paquetedinamico.com/api/` â€” a DIFFERENT
 Travel Compositor client on the SAME underlying platform (its own swagger.json's `servers` field
 points at `online.travelcompositor.com`, and its raw OpenAPI JSON is byte-identical in shape to
-Momira's own — same API, different operator/branding), fetched this way because both that site and
+Momira's own â€” same API, different operator/branding), fetched this way because both that site and
 Momira's own block WebFetch/robots.txt but a real logged-in browser session is not a "fetch" and
 is not blocked. This resolved every previously-UNCONFIRMED shape and found THREE separate real,
 serious mismatches beyond the Accommodation ones already fixed:
 
   1. Transports' `persons` field is a FLAT array of `{age}` (ApiBookPersonAgeRequestVO[], no
-     rooms) — quote_transports() was passing the ROOM-WRAPPED `distributions` shape
+     rooms) â€” quote_transports() was passing the ROOM-WRAPPED `distributions` shape
      (`[{persons: [{age}, ...]}, ...]`) directly into it, which would have sent a doubly-nested,
      wrong-keyed structure to a real call every time.
   2. Transfer's location fields are `{accommodationId}` or `{transportBaseID}` objects
      (ApiTransferGeolocalizableVO), not the `pickup`/`pickupType`/`dropoff`/`dropoffType` string
      pairs this file previously guessed (modeled, wrongly, on Transports' own departure/arrival
-     shape) — a completely different structure, not just different field names.
+     shape) â€” a completely different structure, not just different field names.
   3. `/booking/tickets/quote` and `/booking/tickets/{ticketId}/quote` are TWO DIFFERENT real
      operations this file had conflated into one wrong shape: the former is a destination-wide
-     SEARCH (checkIn/checkOut/persons/destinationId — like Accommodation's own quote), the latter
-     is one already-known ticket's modalities+prices (checkIn/checkOut/persons only — `ticketId`
+     SEARCH (checkIn/checkOut/persons/destinationId â€” like Accommodation's own quote), the latter
+     is one already-known ticket's modalities+prices (checkIn/checkOut/persons only â€” `ticketId`
      is a PATH parameter, never a body field, and there is no `modalityCode` request field at all;
      the response returns every modality and a caller picks one afterward).
 
 Closed Tour's shape (startDate, distributions, originCode, preNights, postNights) is now confirmed
-to have needed no fix — it already matched the real ApiClosedTourQuoteRequestVO exactly (plus one
+to have needed no fix â€” it already matched the real ApiClosedTourQuoteRequestVO exactly (plus one
 newly-discovered optional `language` field, added below).
 
 See the "client-trip-prompt-idea" project note's 2026-09-01 section for the full session log of
-how each shape was captured. Every method below is now marked CONFIRMED SHAPE — but, per the
+how each shape was captured. Every method below is now marked CONFIRMED SHAPE â€” but, per the
 warning above, still UNVERIFIED AGAINST AN ACTUAL LIVE CALL (request shape confirmed against the
-spec ≠ response shape observed from a real server) until Chris fires one from the debug panel.
+spec â‰  response shape observed from a real server) until Chris fires one from the debug panel.
 
 WHY A NEW FILE INSTEAD OF ADDING TO api_client.py: api_client.py wraps Travel Compositor's
 CONTRACT-MANAGEMENT API (uploading/updating a supplier's own inventory - closed tours, tickets,
@@ -79,7 +79,7 @@ from api_client import TravelCompositorAPI
 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): named in the audit as the newest file in
 # the repo with no MODULE_BUILD stamp - see api_client.py's matching note for why the detector
 # being blind to files like this one is worth closing.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 # CONFIRMED, 2026-08-31 (project doc, the "four booking-shape fields" the conversational flow
 # collects once the customer approves the itinerary): "number of rooms (max 4), number of
@@ -90,7 +90,7 @@ MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 MAX_ROOMS = 4
 MAX_PAX = 9
 
-# ⚠️ NOT CONFIRMED, 2026-08-31 (project doc "Next steps" #3): the exact placeholder age value the
+# âš ï¸ NOT CONFIRMED, 2026-08-31 (project doc "Next steps" #3): the exact placeholder age value the
 # real momira.travel UI sends for "an adult". CONFIRMED from a live UI capture that the UI itself
 # never asks a customer for an individual adult age - "Adults (18+ years)" is a plain COUNT, only
 # "Children (0-17 years)" gets individual per-child age dropdowns - so whatever number the UI
@@ -104,13 +104,13 @@ ADULT_PLACEHOLDER_AGE = 30
 
 def build_distributions(adults: int, children_ages: Optional[List[int]] = None,
                          rooms: int = 1) -> List[Dict[str, Any]]:
-    """Builds the ROOM-WRAPPED `distributions` array — CONFIRMED SHAPE, 2026-09-01, read directly
-    off the real OpenAPI spec — used ONLY by Accommodation's and Closed Tour's Quote requests:
+    """Builds the ROOM-WRAPPED `distributions` array â€” CONFIRMED SHAPE, 2026-09-01, read directly
+    off the real OpenAPI spec â€” used ONLY by Accommodation's and Closed Tour's Quote requests:
     ApiBookDistributionRequestVO[] = one entry per ROOM, each `{persons: [ApiBookPersonAgeRequestVO]}`
     holding one `{"age": int}` per PERSON in that room, adult or child alike (no separate "type"
     flag in the real schema - age is the only field).
 
-    ⚠️ Transports, Transfer, and Ticket do NOT use this shape - confirmed 2026-09-01 they each
+    âš ï¸ Transports, Transfer, and Ticket do NOT use this shape - confirmed 2026-09-01 they each
     take a FLAT array of `{"age": int}` instead (no rooms at all - see build_persons() below).
     Only Accommodation and Closed Tour genuinely have rooms. Passing this function's output where
     build_persons()'s is needed (or vice versa) produces a real, wrong request shape - this exact
@@ -119,7 +119,7 @@ def build_distributions(adults: int, children_ages: Optional[List[int]] = None,
     Raises ValueError if adults+len(children_ages) exceeds the CONFIRMED 9-pax cap - fail loudly
     here rather than silently sending a request already known to violate it.
 
-    ⚠️ NOT CONFIRMED: how people should be SPLIT across multiple rooms when rooms > 1 - the
+    âš ï¸ NOT CONFIRMED: how people should be SPLIT across multiple rooms when rooms > 1 - the
     product owner has only confirmed the two caps (MAX_ROOMS, MAX_PAX), not a distribution rule.
     This uses a simple, explicitly-labeled round-robin (adults distributed across rooms first -
     every room gets at least one adult where there are enough adults to do so, a common real-
@@ -152,7 +152,7 @@ def build_distributions(adults: int, children_ages: Optional[List[int]] = None,
 
 
 def build_persons(adults: int, children_ages: Optional[List[int]] = None) -> List[Dict[str, Any]]:
-    """Builds the FLAT `persons` array — CONFIRMED SHAPE, 2026-09-01, read directly off the real
+    """Builds the FLAT `persons` array â€” CONFIRMED SHAPE, 2026-09-01, read directly off the real
     OpenAPI spec for Transports (`ApiTransportQuoteRequestVO.persons`), Transfer
     (`ApiTransferQuoteRequestVO.persons`), and Ticket (`ApiTicketQuoteRequestVO.persons` /
     `ApiTicketQuoteSingleTicketRequestVO.persons`): a plain list of `ApiBookPersonAgeRequestVO`
@@ -177,7 +177,7 @@ def build_persons(adults: int, children_ages: Optional[List[int]] = None) -> Lis
 
 def build_transfer_location(accommodation_id: Optional[str] = None,
                              transport_base_id: Optional[str] = None) -> Dict[str, Any]:
-    """Builds one `from`/`to` entry of Transfer's Quote request — CONFIRMED SHAPE, 2026-09-01:
+    """Builds one `from`/`to` entry of Transfer's Quote request â€” CONFIRMED SHAPE, 2026-09-01:
     `ApiTransferGeolocalizableVO` = `{accommodationId}` OR `{transportBaseID}` - a transfer
     endpoint is always either a hotel (an already-known/selected accommodation id) or a transport
     hub (airport/port/station - the same TRANSPORT_BASE concept `api_client.py`'s
@@ -241,7 +241,7 @@ class TripQuoteClient:
         return self.api._json(res)
 
     # ------------------------------------------------------------------
-    # ACCOMMODATION — CONFIRMED shape (request + response)
+    # ACCOMMODATION â€” CONFIRMED shape (request + response)
     # ------------------------------------------------------------------
     def quote_accommodations(self, distributions: List[Dict[str, Any]], date_from: str, date_to: str,
                               destination_code: Optional[str] = None,
@@ -300,7 +300,7 @@ class TripQuoteClient:
         return self._post("/booking/accommodations/quote", payload)
 
     # ------------------------------------------------------------------
-    # TRANSPORTS (flights etc.) — CONFIRMED shape, re-verified 2026-09-01
+    # TRANSPORTS (flights etc.) â€” CONFIRMED shape, re-verified 2026-09-01
     # ------------------------------------------------------------------
     def quote_transports(self, journeys: List[Dict[str, Any]], persons: List[Dict[str, Any]],
                           trip_type: str = "MULTI",
@@ -308,13 +308,13 @@ class TripQuoteClient:
                           language: Optional[str] = None,
                           source_market: Optional[str] = None) -> Dict[str, Any]:
         """POST /booking/transports/quote. CONFIRMED SHAPE, 2026-09-01 (read directly off the real
-        OpenAPI spec, via a live browser session — see module docstring): ApiTransportQuoteRequestVO
-        = {journeys* (1-2 legs), persons* (FLAT array of {age} — build with build_persons(), NOT
-        build_distributions() — see that function's docstring for the bug this fixes), language,
+        OpenAPI spec, via a live browser session â€” see module docstring): ApiTransportQuoteRequestVO
+        = {journeys* (1-2 legs), persons* (FLAT array of {age} â€” build with build_persons(), NOT
+        build_distributions() â€” see that function's docstring for the bug this fixes), language,
         sourceMarket, tripType* (required), filter* (required) = {includeFareFamilies}}.
 
         `trip_type` default changed to "MULTI" (a real, generic value from the confirmed 26-member
-        TripType enum shared across every product) — "ROUND_TRIP" was never a confirmed real enum
+        TripType enum shared across every product) â€” "ROUND_TRIP" was never a confirmed real enum
         member, only a guess; the real enum was not fully enumerated even now (26 members, only a
         handful individually confirmed elsewhere: MULTI, ONLY_HOTEL, ONLY_TRANSFER, AI_TRIP,
         TRIP_PLANNER among them per the project doc). Revisit if a live call rejects "MULTI".
@@ -338,7 +338,7 @@ class TripQuoteClient:
         return self._post("/booking/transports/quote", payload)
 
     # ------------------------------------------------------------------
-    # TRANSFER — CONFIRMED shape, re-verified 2026-09-01 (previous shape was genuinely wrong)
+    # TRANSFER â€” CONFIRMED shape, re-verified 2026-09-01 (previous shape was genuinely wrong)
     # ------------------------------------------------------------------
     def quote_transfers(self, persons: List[Dict[str, Any]], from_location: Dict[str, Any],
                          to_location: Dict[str, Any], pickup_date_time: str,
@@ -346,9 +346,9 @@ class TripQuoteClient:
                          departure_transport_date_time: Optional[str] = None,
                          language: Optional[str] = None) -> Dict[str, Any]:
         """POST /booking/transfer/quote. CONFIRMED SHAPE, 2026-09-01 (read directly off the real
-        OpenAPI spec, via a live browser session — see module docstring, finding #2):
-        ApiTransferQuoteRequestVO = {persons* (FLAT array of {age} — build_persons(), same as
-        Transports/Ticket), language, from, to (each an ApiTransferGeolocalizableVO — build with
+        OpenAPI spec, via a live browser session â€” see module docstring, finding #2):
+        ApiTransferQuoteRequestVO = {persons* (FLAT array of {age} â€” build_persons(), same as
+        Transports/Ticket), language, from, to (each an ApiTransferGeolocalizableVO â€” build with
         build_transfer_location(), an `{accommodationId}` OR `{transportBaseID}` object, NOT the
         pickup/pickupType/dropoff/dropoffType string pairs this method sent before this date - a
         genuinely different, previously-wrong shape, not just a rename), arrivalTransportDateTime,
@@ -375,7 +375,7 @@ class TripQuoteClient:
         return self._post("/booking/transfer/quote", payload)
 
     # ------------------------------------------------------------------
-    # TICKET (Activities/Excursions) — CONFIRMED shape, re-verified 2026-09-01 (previous shape
+    # TICKET (Activities/Excursions) â€” CONFIRMED shape, re-verified 2026-09-01 (previous shape
     # conflated two different real endpoints into one wrong one - see module docstring finding #3)
     # ------------------------------------------------------------------
     def search_tickets(self, persons: List[Dict[str, Any]], check_in: str, check_out: str,
@@ -442,7 +442,7 @@ class TripQuoteClient:
         return self._post(f"/booking/tickets/{ticket_id}/quote", payload)
 
     # ------------------------------------------------------------------
-    # CLOSED TOUR — CONFIRMED shape (unchanged by the 2026-09-01 pass; one optional field added)
+    # CLOSED TOUR â€” CONFIRMED shape (unchanged by the 2026-09-01 pass; one optional field added)
     # ------------------------------------------------------------------
     def quote_closed_tour(self, closed_tour_id: str, start_date: str, distributions: List[Dict[str, Any]],
                            origin_code: str = "", pre_nights: int = 0, post_nights: int = 0,

@@ -1,5 +1,5 @@
 """
-state_store.py — tracks what's already been translated, so re-running the
+state_store.py â€” tracks what's already been translated, so re-running the
 tool is safe (idempotent) and cheap.
 
 THIS IS THE MOST EXPENSIVE THING THE PLATFORM REMEMBERS. Every entry here
@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 _NAMESPACE = "translation_state"
 
@@ -80,7 +80,7 @@ class StateStore:
             if existing:
                 return
             if not platform_store.health().get("ok"):
-                print("⚠️ Skipping legacy translation-tracker migration check - the durable "
+                print("âš ï¸ Skipping legacy translation-tracker migration check - the durable "
                       "store didn't answer a health check just now, so an empty read here can't "
                       "be trusted as genuinely empty. Will re-check on the next run.")
                 return
@@ -111,10 +111,10 @@ class StateStore:
                 )
                 migrated += 1
             if migrated:
-                print(f"📦 Migrated {migrated} translation record(s) from {self.db_path} into "
+                print(f"ðŸ“¦ Migrated {migrated} translation record(s) from {self.db_path} into "
                       f"durable storage - that work won't be re-translated or re-billed.")
         except Exception as e:
-            print(f"⚠️ Could not migrate the legacy translation tracker ({e}) - continuing with "
+            print(f"âš ï¸ Could not migrate the legacy translation tracker ({e}) - continuing with "
                   f"durable storage only. Worst case, some content gets translated once more.")
 
     def get_state(self, entity_type: str, supplier_id: str, entity_id: str,
@@ -156,7 +156,7 @@ class StateStore:
             },
         )
         if not ok:
-            print(f"🔴 [state_store] FAILED to record translation state for "
+            print(f"ðŸ”´ [state_store] FAILED to record translation state for "
                   f"{entity_type} supplier={supplier_id} entity={entity_id} "
                   f"option={option_code or '(none)'} - this content will look untranslated on "
                   f"the NEXT sync run and will be re-translated and re-billed even though "

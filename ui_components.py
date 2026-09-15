@@ -1,5 +1,5 @@
 """
-ui_components.py — the Streamlit building blocks every product-type flow shares.
+ui_components.py â€” the Streamlit building blocks every product-type flow shares.
 
 WHY THIS FILE EXISTS (product-owner request): app.py used to define these directly, and while
 they were already single functions called from all five flows (ClosedTour, Ticket, Transfer,
@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import re
 import math
@@ -136,7 +136,7 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
             st.dataframe(df, use_container_width=True, hide_index=True)
         with bcol:
             st.write("")
-            if st.button("✏️", key=f"pencil_table_{edit_key}", help=f"Edit {label}"):
+            if st.button("âœï¸", key=f"pencil_table_{edit_key}", help=f"Edit {label}"):
                 st.session_state[edit_flag_key] = True
                 st.rerun()
     else:
@@ -145,7 +145,7 @@ def editable_table(label, df, edit_key, on_save, num_rows="dynamic", column_conf
             df, num_rows=num_rows, use_container_width=True,
             key=f"editor_{edit_key}", column_config=column_config or {}
         )
-        if st.button("✅ Save", key=f"save_table_{edit_key}", type="primary"):
+        if st.button("âœ… Save", key=f"save_table_{edit_key}", type="primary"):
             on_save(edited)
             st.session_state[edit_flag_key] = False
             st.rerun()
@@ -180,7 +180,7 @@ def render_currency_check(currency, currency_options, state_key, widget_key):
     `currency_options`/`widget_key` are still accepted (unused) so existing call sites don't
     need to change their own code.
     """
-    st.caption(f"💰 Currency: **{currency}** — locked once set; every Modality of this record shares it.")
+    st.caption(f"ðŸ’° Currency: **{currency}** â€” locked once set; every Modality of this record shares it.")
     return currency
 
 
@@ -385,7 +385,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
             row["child_amount"] = _safe_float(existing_child.get(n, round(amount * child_ratio, 2)))
         data["occupancy_prices"] = data["occupancy_prices"] + [row]
 
-    with st.expander("💨 Quick-fill: same price for every row"):
+    with st.expander("ðŸ’¨ Quick-fill: same price for every row"):
         st.caption("Use this when the source gives one flat price regardless of group size - fills all "
                   "rows below with the same amount.")
         qcol1, qcol2 = st.columns([3, 1])
@@ -557,7 +557,7 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
         ]
         if choice_names:
             st.warning(
-                f"⚠️ {', '.join(choice_names)} will NOT be added to this Modality's price - "
+                f"âš ï¸ {', '.join(choice_names)} will NOT be added to this Modality's price - "
                 f"marked \"Needs own Modality?\". Ticket creation only publishes one Modality at "
                 f"a time, so set each of these up as its own Modality (base price + this extra) "
                 f"after this ticket is created."
@@ -582,7 +582,7 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
                 expired_names.append(f"{(s.get('name') or '').strip() or 'Unnamed supplement'} (ends {effective_end})")
         if expired_names:
             st.error(
-                f"🚫 These dated supplements already ended, before today: **{', '.join(expired_names)}**. "
+                f"ðŸš« These dated supplements already ended, before today: **{', '.join(expired_names)}**. "
                 f"A supplement whose End Date is in the past can never apply to a future booking - "
                 f"correct the date (e.g. move it to next year's window) or remove the row. Publishing "
                 f"will be blocked until this is fixed."
@@ -616,7 +616,7 @@ def render_cancellation_policy_editor(data, key_prefix, help_text=None):
     ClosedTour/Ticket silently never reached those three. There is now exactly one
     implementation, used by every flow.
     """
-    with st.expander(f"💰 Cancellation Policy ({len(data.get('cancellation_policy_tiers') or [])} tier(s) - leave empty for the default 30 days / no fee)"):
+    with st.expander(f"ðŸ’° Cancellation Policy ({len(data.get('cancellation_policy_tiers') or [])} tier(s) - leave empty for the default 30 days / no fee)"):
         if help_text:
             st.caption(help_text)
         st.caption("Each row: from this many days before arrival (or more), this cancellation fee % applies. "
@@ -890,7 +890,7 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 st.caption("(empty)")
         with bcol:
             st.write("")
-            if st.button("✏️", key=f"pencil_{field_key}{key_suffix}", help=f"Edit {label}"):
+            if st.button("âœï¸", key=f"pencil_{field_key}{key_suffix}", help=f"Edit {label}"):
                 st.session_state[edit_flag_key] = True
                 st.rerun()
     else:
@@ -929,7 +929,7 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 key=widget_key)
         else:
             new_value = st.text_input(label, value=current_value, key=widget_key)
-        if st.button("✅ Save", key=f"save_{field_key}{key_suffix}", type="primary"):
+        if st.button("âœ… Save", key=f"save_{field_key}{key_suffix}", type="primary"):
             if widget == "html_text_area":
                 data_dict[field_key] = _plain_to_html_for_saving(new_plain_value)
             elif widget == "html_list_area":
@@ -968,9 +968,9 @@ def render_closable_image_section(condition, header, closed_key, picker_call):
         added_n = st.session_state.get(f"{closed_key}_count", 0)
         col_a, col_b = st.columns([5, 1])
         with col_a:
-            st.success(f"✅ {header} — {added_n} image(s) added.")
+            st.success(f"âœ… {header} â€” {added_n} image(s) added.")
         with col_b:
-            if st.button("➕ Add more", key=f"{closed_key}_reopen"):
+            if st.button("âž• Add more", key=f"{closed_key}_reopen"):
                 st.session_state[closed_key] = False
                 st.rerun()
         return
@@ -1073,7 +1073,7 @@ def render_url_image_picker(image_urls, state_prefix):
             st.image(url)
             if st.checkbox("Use this image", value=False, key=f"{state_prefix}_pick_{photo_key}"):
                 selected_urls.append(url)
-    if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
+    if st.button("âž• Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
         return selected_urls
     return None
 
@@ -1108,9 +1108,9 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
             try:
                 st.image(img_bytes, caption=fname)
             except Exception:
-                st.warning(f"⚠️ '{fname}' couldn't be previewed (not a readable image format), but "
+                st.warning(f"âš ï¸ '{fname}' couldn't be previewed (not a readable image format), but "
                           f"you can still download or upload it below.")
-            if st.button("☁️ Upload & Add", key=f"{state_prefix}_upload_{photo_key}"):
+            if st.button("â˜ï¸ Upload & Add", key=f"{state_prefix}_upload_{photo_key}"):
                 # CONFIRMED REAL GAP (product owner, "I can't integrate the images from the
                 # document, I get an error" - but the generic "Upload returned no URL." gave no
                 # way to tell what actually went wrong). upload_images_with_errors (unlike
@@ -1132,7 +1132,7 @@ def render_doc_image_picker(doc_raw_images, state_prefix):
                 else:
                     st.error("Upload returned no URL, for no reason the hosting service reported - "
                              "try again, or use Download and host it manually.")
-            st.download_button("⬇️ Download", data=img_bytes, file_name=fname, key=f"{state_prefix}_dl_{photo_key}")
+            st.download_button("â¬‡ï¸ Download", data=img_bytes, file_name=fname, key=f"{state_prefix}_dl_{photo_key}")
     return newly_added_url
 
 
@@ -1145,7 +1145,7 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
     use slightly different underlying image_urls update patterns).
     """
     query = st.text_input("Search term", value=default_query, key=f"{state_prefix}_query")
-    if st.button(f"🔍 Search {source_label}", key=f"{state_prefix}_search_btn"):
+    if st.button(f"ðŸ” Search {source_label}", key=f"{state_prefix}_search_btn"):
         with st.spinner(f"Searching {source_label}..."):
             try:
                 # Clear any previous selection checkboxes before showing new
@@ -1171,7 +1171,7 @@ def render_stock_photo_picker(source_label, search_fn, default_query, state_pref
                 if st.checkbox(f"Use (by {photo['photographer']})", value=False, key=f"{state_prefix}_pick_{photo_key}"):
                     selected_urls.append(photo["url"])
 
-        if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
+        if st.button("âž• Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
             return selected_urls
     return None
 
@@ -1191,19 +1191,19 @@ def render_closedtour_supplements(data, key_prefix):
 
     So supplements live on the main tour record, edited once here, and modalityCodes is left
     empty, which is how Travel Compositor spells "applies to every Modality"."""
-    st.markdown("**Optional Add-ons / Upgrades / Excursions (Supplements) — the whole tour**")
+    st.markdown("**Optional Add-ons / Upgrades / Excursions (Supplements) â€” the whole tour**")
     st.caption("Set **once for the entire tour**: every Modality can be sold with these. TRUE "
-              "optional extras the customer only pays for if they choose them — a room upgrade, a "
-              "meal upgrade, an optional excursion — or a peak-season surcharge. Leave empty if "
+              "optional extras the customer only pays for if they choose them â€” a room upgrade, a "
+              "meal upgrade, an optional excursion â€” or a peak-season surcharge. Leave empty if "
               "this tour has none. Every row needs a clear Name.")
     st.caption("**Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per room' "
               "(e.g. 'USD 71.00 per room per night'): that flat per-room charge has to be split by "
               "how many share the room, so those four columns hold the resulting per-person amount. "
               "For a normal per-person add-on just fill 'Price (per person)' and the four occupancy "
               "columns follow it.")
-    st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+    st.caption("âš ï¸ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
               "supplement is often genuinely optional, so these two boxes are the difference between "
-              "an add-on the client chooses and a charge they cannot avoid — the AI's guess is a "
+              "an add-on the client chooses and a charge they cannot avoid â€” the AI's guess is a "
               "starting point, not a decision. House rule: ClosedTour supplements are never "
               "refundable, and the app always publishes them that way.")
 
@@ -1259,7 +1259,7 @@ def render_closedtour_supplements(data, key_prefix):
 
     editable_table("Supplements", df, f"{key_prefix}_supplements", on_save=_save)
     if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):
-        st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement "
+        st.warning("âš ï¸ A supplement row has a price but no Name - it was skipped. Every supplement "
                    "needs a clear Name.")
 
 
@@ -1297,7 +1297,7 @@ def render_duration_editor(data, key_prefix, duration_key="duration", duration_t
             "Unit", DURATION_UNIT_OPTIONS, index=DURATION_UNIT_OPTIONS.index(current_unit),
             format_func=lambda u: DURATION_UNIT_LABELS[u], key=f"{key_prefix}_duration_unit")
     if not data.get(duration_key):
-        st.caption("ℹ️ No duration stated in the document - leaving this at 0 is fine, it's not "
+        st.caption("â„¹ï¸ No duration stated in the document - leaving this at 0 is fine, it's not "
                   "a required field.")
 
 
@@ -1326,7 +1326,7 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
         min_default = int(raw_min if raw_min not in (None, "") else 2)
         clamped_min = max(0, min(min_default, 17))
         if clamped_min != min_default:
-            st.warning(f"⚠️ Min Child Age was extracted as {min_default}, outside the allowed "
+            st.warning(f"âš ï¸ Min Child Age was extracted as {min_default}, outside the allowed "
                        f"0-17 range - clamped to {clamped_min} here. Please check the document.")
         data[min_key] = st.number_input(
             "Min Child Age", min_value=0, max_value=17,
@@ -1336,7 +1336,7 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
         max_default = int(raw_max if raw_max not in (None, "") else 12)
         clamped_max = max(0, min(max_default, 17))
         if clamped_max != max_default:
-            st.warning(f"⚠️ Max Child Age was extracted as {max_default}, outside the allowed "
+            st.warning(f"âš ï¸ Max Child Age was extracted as {max_default}, outside the allowed "
                        f"0-17 range - clamped to {clamped_max} here. Please check the document.")
         data[max_key] = st.number_input(
             "Max Child Age", min_value=0, max_value=17,
@@ -1344,23 +1344,23 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
 
     low, high = data[min_key], data[max_key]
     if low > high:
-        st.error(f"⚠️ Min Child Age ({low}) is above Max Child Age ({high}) - no age counts as a "
+        st.error(f"âš ï¸ Min Child Age ({low}) is above Max Child Age ({high}) - no age counts as a "
                  f"child, so every young traveller would be priced as an infant.")
     elif low == high and low > 0:
         # Usually the AI mis-reading "children from 7" as a band of exactly 7. Occasionally a
         # document really does say it. Flagged rather than auto-corrected, because only someone
         # looking at the document can tell which.
-        st.warning(f"⚠️ Both ages are {low}, so **only {low}-year-olds** count as children - "
+        st.warning(f"âš ï¸ Both ages are {low}, so **only {low}-year-olds** count as children - "
                    f"everyone from {low + 1} up pays the adult rate, everyone below pays infant. "
                    f"If the document says \"children from {low}\", the maximum should be **12**.")
     elif low > 2:
-        st.caption(f"👶 Children are **{low}–{high}**, so anyone **under {low} is an infant** and pays "
+        st.caption(f"ðŸ‘¶ Children are **{low}â€“{high}**, so anyone **under {low} is an infant** and pays "
                    f"the infant rate. If the document means under-{low}s cannot join this tour at all, "
                    f"that is a booking restriction rather than an age band - say so in the description, "
                    f"because these two boxes cannot express it.")
     else:
-        st.caption(f"👶 Children are **{low}–{high}**; under {low} counts as an infant. Raise the "
-                   f"minimum if the document states one (e.g. \"children from 7 years\" → 7).")
+        st.caption(f"ðŸ‘¶ Children are **{low}â€“{high}**; under {low} counts as an infant. Raise the "
+                   f"minimum if the document states one (e.g. \"children from 7 years\" â†’ 7).")
 
 
 def render_extra_child_notice(data, key_prefix):
@@ -1387,7 +1387,7 @@ def render_extra_child_notice(data, key_prefix):
 
     raw_allowed = data.get("extra_child_allowed")
     data["extra_child_allowed"] = st.checkbox(
-        "👶 Extra child allowed", value=bool(raw_allowed) if raw_allowed is not None else True,
+        "ðŸ‘¶ Extra child allowed", value=bool(raw_allowed) if raw_allowed is not None else True,
         key=f"{key_prefix}_extra_child_allowed",
         help="Detected from the document/URL - untick if this Modality does not allow adding a child "
              "on top of its normal adult occupancy.")
@@ -1402,7 +1402,7 @@ def render_extra_child_notice(data, key_prefix):
         st.caption("No extra child on this Modality - nothing to enter in Travel Compositor.")
         return
     if not plan["brackets"]:
-        st.caption("👶 Extra child allowed - add at least one occupancy price above to see the "
+        st.caption("ðŸ‘¶ Extra child allowed - add at least one occupancy price above to see the "
                    "recommended numbers for each occupancy size.")
         return
 
@@ -1456,7 +1456,7 @@ def render_child_discount_editor(data, key_prefix, currency=None):
 
     sold = sold_occupancies(data.get("price_list"))
     if not ({"triplePrice", "quadruplePrice"} & sold):
-        st.caption("👶 No Triple or Quadruple occupancy priced yet - a child discount only ever "
+        st.caption("ðŸ‘¶ No Triple or Quadruple occupancy priced yet - a child discount only ever "
                    "applies to those two (Travel Compositor has no Single/Double field), so "
                    "there's nothing to set here until one of them has a price.")
         return
@@ -1474,7 +1474,7 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     # below via clamp_notes.
     current_value = max(0.0, min(current_value, 100.0))
     new_value = st.number_input(
-        "👶 Child discount % (Triple/Quadruple only)", min_value=0.0, max_value=100.0,
+        "ðŸ‘¶ Child discount % (Triple/Quadruple only)", min_value=0.0, max_value=100.0,
         value=current_value, step=1.0, key=f"{key_prefix}_child_discount_pct",
         help="Travel Compositor only supports a child discount on Triple/Quadruple occupancy - "
              "there is no Single/Double field on a ClosedTour price list, so those two never show "
@@ -1490,7 +1490,7 @@ def render_child_discount_editor(data, key_prefix, currency=None):
         data.get("price_list"), currency, fallback_child_discount_percentage=new_value,
         notes=clamp_notes)
     if clamp_notes:
-        st.warning("⚠️ " + " ".join(clamp_notes))
+        st.warning("âš ï¸ " + " ".join(clamp_notes))
     lines = []
     for row in preview_rows:
         price = row.get("price") or {}

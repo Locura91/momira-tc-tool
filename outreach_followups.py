@@ -1,5 +1,5 @@
 """
-outreach_followups.py — durable send history + reply follow-up reminders for
+outreach_followups.py â€” durable send history + reply follow-up reminders for
 Find & Contact Suppliers.
 
 CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): "is there a chance to recognize, that once an
@@ -46,7 +46,7 @@ import platform_store
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_email.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 _NAMESPACE = "outreach_sends"
 

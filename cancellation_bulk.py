@@ -1,5 +1,5 @@
 """
-cancellation_bulk.py — bulk-change the cancellation policy on every (or a chosen subset of) a
+cancellation_bulk.py â€” bulk-change the cancellation policy on every (or a chosen subset of) a
 supplier's already-live ClosedTour, Ticket, Transfer, or Hotel services, without going through
 per-item document extraction.
 
@@ -93,7 +93,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple

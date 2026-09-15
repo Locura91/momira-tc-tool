@@ -1,5 +1,5 @@
 """
-hotel_automap.py — remembers which published hotels still need "Automap with master" set by hand
+hotel_automap.py â€” remembers which published hotels still need "Automap with master" set by hand
 in Travel Compositor's back office, and the two ids a human needs to do it.
 
 WHY THIS EXISTS (product owner, 2026-09-13): "when we create a new hotel ... we are searching for
@@ -42,7 +42,7 @@ and a reminder that silently disappears on the next deploy is worse than no remi
 because by then the hotel is live and nobody is looking for it any more.
 """
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import time
 from typing import Any, Dict, List, Optional

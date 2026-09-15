@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import math
 import datetime
@@ -648,7 +648,7 @@ def _cancellation_voucher_text(cancellation_policy_text, cancellation_tiers, def
         # anywhere else cancellation_tiers is a real tier list - see this module's own docstring
         # for the current call sites). Each tier is its own line under the "Cancellation
         # Policy:" header, same as before - only the leading "- " marker is gone.
-        # parse_cancellation_tiers_from_voucher_text (below) already tolerates a leading "-"/"•"
+        # parse_cancellation_tiers_from_voucher_text (below) already tolerates a leading "-"/"â€¢"
         # or none at all on each line, so this is a safe one-way change: old bulleted text
         # already live on a record still parses correctly, and this function simply stops
         # writing new bullets from now on.
@@ -748,7 +748,7 @@ def parse_cancellation_tiers_from_voucher_text(text):
 
     tiers = []
     for line in lines:
-        line = re.sub(r"^[-•]\s*", "", line).strip()
+        line = re.sub(r"^[-â€¢]\s*", "", line).strip()
         m = _VOUCHER_FREE_RE.match(line)
         if m:
             tiers.append((int(m.group(1)), 100.0))
@@ -935,7 +935,7 @@ def _with_what_to_bring(voucher_text, extracted_data):
 
 
 _ENTRANCE_FEE_TITLE_SUFFIX = " (Entrance fees not included)"
-_ENTRANCE_FEE_VOUCHER_BULLET = "• Entrance fees are NOT included in this price."
+_ENTRANCE_FEE_VOUCHER_BULLET = "â€¢ Entrance fees are NOT included in this price."
 
 
 # Canonical ISO 639-1 code -> display name for the languages a Ticket Modality can offer at the
@@ -995,7 +995,7 @@ def _ticket_name_with_entrance_fee_notice(name, extracted_data):
 
 
 def _strip_bullet_points(text):
-    """Removes a leading bullet/list marker ("•", "-", or "*", followed by a space) from the
+    """Removes a leading bullet/list marker ("â€¢", "-", or "*", followed by a space) from the
     start of each line, without touching anything else on the line.
 
     CONFIRMED PRODUCT-OWNER RULE (2026-08-25): "please in the Remarks of Modality within Ticket,
@@ -1012,13 +1012,13 @@ def _strip_bullet_points(text):
 
     Only strips a marker that's genuinely a LIST marker - at the very start of the line (after
     any leading whitespace), followed by a space - so "3-5 people" or "2 * 3" are never touched;
-    only "- Free cancellation..." or "• Entrance fees..." are."""
+    only "- Free cancellation..." or "â€¢ Entrance fees..." are."""
     if not text:
         return text
     lines = []
     for line in text.split("\n"):
         stripped = line.lstrip()
-        match = re.match(r"^[•\-*]\s+(.*)$", stripped)
+        match = re.match(r"^[â€¢\-*]\s+(.*)$", stripped)
         if match:
             leading_ws = line[:len(line) - len(stripped)]
             lines.append(leading_ws + match.group(1))
@@ -1383,7 +1383,7 @@ def strip_unsold_supplement_occupancies(supplements, price_list):
             if has_value:
                 occupancy = field.replace("_price", "")
                 notes.append(f"'{row.get('name') or 'unnamed supplement'}' had a {occupancy} "
-                             f"amount ({value}), but this tour sells no {occupancy} rate — removed")
+                             f"amount ({value}), but this tour sells no {occupancy} rate â€” removed")
             row[field] = 0
         out.append(row)
     return out, notes
@@ -1519,10 +1519,10 @@ _SUPPLEMENT_NAME_PRICE_PATTERNS = [
     # "(+15%)", "(15%)", "+15 %", "15%" - percentage figures, with or without a leading +/-
     # sign or surrounding parens/spaces.
     re.compile(r"\(?\s*[+-]?\d+(?:[.,]\d+)?\s*%\s*\)?"),
-    # A currency symbol glued to a number in either order: "$15", "15$", "€15.50", "15 EUR",
+    # A currency symbol glued to a number in either order: "$15", "15$", "â‚¬15.50", "15 EUR",
     # "USD 15" - covers the common symbols/codes this app already uses (see CURRENCY_OPTIONS).
-    re.compile(r"\(?\s*[$€£]\s*\d+(?:[.,]\d+)?\s*\)?"),
-    re.compile(r"\(?\s*\d+(?:[.,]\d+)?\s*[$€£]\s*\)?"),
+    re.compile(r"\(?\s*[$â‚¬Â£]\s*\d+(?:[.,]\d+)?\s*\)?"),
+    re.compile(r"\(?\s*\d+(?:[.,]\d+)?\s*[$â‚¬Â£]\s*\)?"),
     re.compile(r"\(?\s*(?:USD|EUR|GBP|CHF)\s*\d+(?:[.,]\d+)?\s*\)?", re.IGNORECASE),
     re.compile(r"\(?\s*\d+(?:[.,]\d+)?\s*(?:USD|EUR|GBP|CHF)\s*\)?", re.IGNORECASE),
 ]
@@ -1696,7 +1696,7 @@ def normalize_time_hhmm(value: str) -> str:
     value = (value or "").strip()
     if not value:
         return ""
-    value = re.split(r"\s*(?:-|–|—|\bto\b)\s*", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    value = re.split(r"\s*(?:-|â€“|â€”|\bto\b)\s*", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     parts = value.split(":")
     if len(parts) >= 2:
         hour, minute = parts[0].strip(), parts[1].strip()[:2]
@@ -2733,7 +2733,7 @@ def build_ticket_payloads(
             #
             # CONFIRMED PRODUCT-OWNER RULE (2026-08-25): "please in the Remarks of Modality
             # within Ticket, no Bullet points." Same underlying text as the Voucher Remarks
-            # above, but with any "•"/"-"/"*" list markers stripped - see _strip_bullet_points'
+            # above, but with any "â€¢"/"-"/"*" list markers stripped - see _strip_bullet_points'
             # docstring for exactly what keeps its bullets (Voucher Remarks) vs. what doesn't
             # (this field).
             remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code,
@@ -3486,7 +3486,7 @@ def transport_description(service_name, departure_name, arrival_name):
     # missing s rather than leaving the word in the middle of the sentence.
     style = re.sub(r"(?i)\btra?ns?fers?\b", "", style)
     style = re.sub(r"(?i)\btransports?\b", "", style)
-    style = re.sub(r"\s{2,}", " ", style).strip(" -–—,")
+    style = re.sub(r"\s{2,}", " ", style).strip(" -â€“â€”,")
     style = style or "Transfer"
     origin = (departure_name or "").strip() or "the pick-up point"
     destination = (arrival_name or "").strip() or "your destination"
@@ -3501,7 +3501,7 @@ def transport_company_name(service_name):
     style = (service_name or "").strip()
     style = re.sub(r"(?i)\btra?ns?fers?\b", "", style)
     style = re.sub(r"(?i)\btransports?\b", "", style)
-    style = re.sub(r"\s{2,}", " ", style).strip(" -–—,") or "Private"
+    style = re.sub(r"\s{2,}", " ", style).strip(" -â€“â€”,") or "Private"
     return f"{style} from Hotel to Hotel"
 
 

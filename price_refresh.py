@@ -1,5 +1,5 @@
 """
-price_refresh.py — update the prices of transports that already exist.
+price_refresh.py â€” update the prices of transports that already exist.
 
 WHY THIS EXISTS, AND WHY IT IS THE EASIER SHAPE: the upload flow reads a document and
 constructs a product from it. That means the AI has to decide what products the document
@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
+MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 import json
 from datetime import date
@@ -591,7 +591,7 @@ def load_supplier_tickets(client, supplier_id: str,
         for modality_code in (ticket.get("modalityCodes") or []):
             done += 1
             if progress:
-                progress(done, total_modalities, f"{ticket_name} — {modality_code}")
+                progress(done, total_modalities, f"{ticket_name} â€” {modality_code}")
             try:
                 opt = client.get_ticket_option(supplier_id, ticket_code, modality_code)
             except Exception as e:
@@ -599,7 +599,7 @@ def load_supplier_tickets(client, supplier_id: str,
             if not isinstance(opt, dict) or "error" in opt:
                 out.append({"kind": KIND_TICKET, "id": f"{ticket_code}/{modality_code}",
                            "ticket_code": ticket_code, "modality_code": modality_code,
-                           "name": f"{ticket_name} — {modality_code}", "currency": currency,
+                           "name": f"{ticket_name} â€” {modality_code}", "currency": currency,
                            "price_type": None, "fetch_failed": True,
                            "options": [], "child_options": [], "raw": None})
                 continue
@@ -610,7 +610,7 @@ def load_supplier_tickets(client, supplier_id: str,
                 "id": f"{ticket_code}/{modality_code}",
                 "ticket_code": ticket_code,
                 "modality_code": modality_code,
-                "name": f"{ticket_name} — {modality_code}",
+                "name": f"{ticket_name} â€” {modality_code}",
                 "currency": currency,
                 "price_type": price_type,
                 "fetch_failed": False,
@@ -633,7 +633,7 @@ def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
     if route.get("departure_name") and route.get("arrival_name"):
         return str(route["departure_name"]).strip(), str(route["arrival_name"]).strip()
     name = str(route.get("name") or "")
-    for separator in (" - ", " – ", " to ", " > ", "->"):
+    for separator in (" - ", " â€“ ", " to ", " > ", "->"):
         if separator in name:
             left, _, right = name.partition(separator)
             if left.strip() and right.strip():
@@ -810,7 +810,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
         if cell["kind"] == "price":
             return cell["price"], None
         return None, {"train": "sold as a train journey, not a road transfer",
-                      "unavailable": "marked as no transfer available (—)",
+                      "unavailable": "marked as no transfer available (â€”)",
                       "blank": "left blank",
                       "unrecognized": f"an unrecognized entry ({cell['raw']!r})"}.get(
                           cell["kind"], cell["kind"])
@@ -829,7 +829,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
             ambiguous = [(dep, dep_match), (arr, arr_match)]
             ambiguous = [(name, m) for name, m in ambiguous if m["ambiguous"]]
             if ambiguous:
-                bits = "; ".join(f"“{name}” could be {' or '.join(m['ambiguous'])}"
+                bits = "; ".join(f"â€œ{name}â€ could be {' or '.join(m['ambiguous'])}"
                                  for name, m in ambiguous)
                 findings[i] = {
                     "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
@@ -844,7 +844,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
         hiace_price, hiace_why = _cell_price(hiace, origin_city, dest_city)
         if sedan_price is None and hiace_price is None:
             # Both endpoints resolved, so this route IS one the sheet covers - it just has no
-            # usable price in this cell. That is worth saying out loud (train-only pairs and "—"
+            # usable price in this cell. That is worth saying out loud (train-only pairs and "â€”"
             # pairs are deliberate supplier decisions, not app failures), and is precisely the
             # case the old nearest-match behaviour used to paper over with another cell's price.
             why = "; ".join(f"{label}: {reason}" for label, reason in
@@ -852,7 +852,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
             findings[i] = {
                 "found": False, "brackets": [], "confidence": "low", "minimum_pax": 1,
                 "currency": "", "matched_row": f"{origin_city} -> {dest_city} (FTS matrix)",
-                "note": (f"Matched {origin_city} → {dest_city} in the FTS matrix, but that "
+                "note": (f"Matched {origin_city} â†’ {dest_city} in the FTS matrix, but that "
                          f"cell carries no price ({why}) - left exactly as it is."),
             }
             continue
@@ -1264,7 +1264,7 @@ def modality_groups(routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out.append({"min_pax": group["min_pax"], "max_pax": group["max_pax"],
                     "codes": sorted(c for c in group["codes"] if c),
                     "route_count": group["route_count"],
-                    "label": f"{group['min_pax']}-{group['max_pax']} pax — {sample}"
+                    "label": f"{group['min_pax']}-{group['max_pax']} pax â€” {sample}"
                              if sample else f"{group['min_pax']}-{group['max_pax']} pax"})
     return out
 
@@ -2058,7 +2058,7 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
                 out["failed"].append({
                     "name": route.get("name"),
                     "detail": "the transport updated but " + "; ".join(option_errors)
-                              + " — re-run to finish it",
+                              + " â€” re-run to finish it",
                     "debug": debug})
             else:
                 out["updated"].append({"name": route.get("name"),
@@ -2266,7 +2266,7 @@ def suggest_route_for_row(row_text: str, routes: List[Dict[str, Any]], limit: in
     CONFIRMED REAL RULE (product owner): a row that matched nothing must be something the
     "human shall manually be able to match... and add the price to it". Reuses the same
     similarity scoring the upload flow already uses to recognise an existing transport."""
-    parts = [p.strip() for p in str(row_text or "").replace("→", "|").replace("->", "|").split("|")
+    parts = [p.strip() for p in str(row_text or "").replace("â†’", "|").replace("->", "|").split("|")
              if p.strip()]
     dep = parts[0] if parts else str(row_text or "")
     arr = parts[1] if len(parts) > 1 else ""
