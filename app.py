@@ -246,7 +246,7 @@ def _warn_page_image_upload_errors(errors):
     a plain, cause-agnostic wrapper that puts it on screen."""
     if not errors:
         return
-    st.warning("âš ï¸ " + errors[0] + (f" (+{len(errors) - 1} more issue(s))" if len(errors) > 1 else ""))
+    st.warning("⚠️ " + errors[0] + (f" (+{len(errors) - 1} more issue(s))" if len(errors) > 1 else ""))
 
 
 def _warn_stale_images(urls):
@@ -351,7 +351,7 @@ TICKET_ACTION_LABELS = {
 # app shall only allow 'Create new SERVICE + 1 Modality' and 'Add new Modality to existing
 # SERVICE'. Nr. 3 and 4 and 5 must be removed from this points, as this is more Updating
 # existing product. We must define between create new service and Price update to existing Products."
-# render_ticket_flow is ONLY reachable via "ðŸ“¦ Create a new product -> Ticket" - its own Step 2
+# render_ticket_flow is ONLY reachable via "📦 Create a new product -> Ticket" - its own Step 2
 # radio must offer just these two create-only actions; the update actions (3/4/5) stay defined
 # in TICKET_ACTION_LABELS above (still needed for the summary label after a pre-set action, and
 # by "Price update to existing Products", which reaches update_ticket/update_option/update_tickets_batch
@@ -570,7 +570,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
     if st.session_state.mm_phase == "gather":
         if not (url or uploaded_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect Modalities", disabled=not (url or uploaded_files)):
+        if st.button("🔎 Detect Modalities", disabled=not (url or uploaded_files)):
             with st.spinner("Gathering content and detecting distinct pricing categories..."):
                 try:
                     combined_parts = []
@@ -579,7 +579,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (uploaded_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -637,7 +637,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             with ccol3:
                 cand["hint"] = st.text_input("Focus Hint", value=cand["hint"], key=f"mm_hint_{i}")
 
-        if st.button("âž• Add another Modality manually"):
+        if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
@@ -649,7 +649,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         suspicious_codes = [c["code"] for c in candidates if c["selected"] and _modality_code_suspicious(c["code"])]
         if suspicious_codes:
             st.warning(
-                "ðŸ¤” These Modality Codes look unusually long/descriptive for a real code, which has "
+                "🤔 These Modality Codes look unusually long/descriptive for a real code, which has "
                 "caused real publish failures before (Travel Compositor rejects anything that isn't "
                 "the short category name itself, e.g. 'Standard' not 'Standard English min. 2 people') "
                 "- please shorten them to just the core category name: " + ", ".join(f"'{c}'" for c in suspicious_codes)
@@ -669,11 +669,11 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             dup_codes.setdefault(item["code"], []).append(item)
         dup_codes = {code: v for code, v in dup_codes.items() if len(v) > 1}
         if dup_codes:
-            st.error(f"ðŸš« Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
+            st.error(f"🚫 Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
 
         st.caption(f"**{len(new_queue)}** modality(ies) selected to review and publish.")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary", disabled=not new_queue or bool(dup_codes)):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue or bool(dup_codes)):
             st.session_state.mm_queue = new_queue
             st.session_state.mm_queue_index = 0
             st.session_state.mm_phase = "reviewing"
@@ -706,10 +706,10 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         data = current["data"]
 
         if data.get("schedule_notes"):
-            st.info(f"ðŸ”Ž {data['schedule_notes']}")
+            st.info(f"🔎 {data['schedule_notes']}")
 
         if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
-            st.warning(f"ðŸ”’ {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
                       f"This Modality will be published **On Request** regardless of the On Request "
                       f"setting below - this flow doesn't edit the tour's Policy remarks, so add this "
                       f"note there yourself in Travel Compositor if it isn't already stated.")
@@ -762,14 +762,14 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         render_extra_child_notice(data, f"mm_{idx}")
         render_child_discount_editor(data, f"mm_{idx}", currency)
 
-        st.subheader(f"ðŸ¤– Tell AI what to fix - {current['code']}")
+        st.subheader(f"🤖 Tell AI what to fix - {current['code']}")
         st.caption("Ask a question, or tell it to fix something (e.g. 'the price should be x3 for 3 "
                   "nights, not the per-night rate'). Applies real changes when you ask for them.")
         mm_clarify_q = st.text_input("Your message", key=f"mm_clarify_input_{idx}")
         if render_house_rule_shortcut(mm_clarify_q, "ClosedTour", f"mm_{idx}"):
             pass
         elif not mm_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
                       f"supplier instead of a one-off fix.")
         if not mm_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -794,7 +794,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         remember_memory_panel(clarify_supplier_id(), "ClosedTour", "mm")
 
         is_last = idx == len(queue) - 1
-        btn_label = "âœ… Confirm this modality & Finish Review" if is_last else "âœ… Confirm this modality & Continue â†’"
+        btn_label = "✅ Confirm this modality & Finish Review" if is_last else "✅ Confirm this modality & Continue →"
         if st.button(btn_label, type="primary", disabled=not data.get("price_list")):
             current["confirmed"] = True
             if is_last:
@@ -815,7 +815,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         for q in queue:
             st.write(f"- **{q['code']}** ({len(q['data'].get('price_list', []))} price row(s))")
 
-        if st.button("ðŸš€ Publish all (one by one)", type="primary"):
+        if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
                 with st.spinner(f"Publishing '{q['code']}'..."):
                     try:
@@ -850,14 +850,14 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                         if "error" in result:
                             show_publish_error(f"publish **{q['code']}**", result)
                         else:
-                            st.success(f"âœ… **{q['code']}**: published successfully (code `{used_code}`).")
+                            st.success(f"✅ **{q['code']}**: published successfully (code `{used_code}`).")
                     except Exception as e:
                         show_publish_error(f"publish **{q['code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         continue
 
         st.write("")
         st.divider()
-        if st.button("ðŸ†• Start a new batch"):
+        if st.button("🆕 Start a new batch"):
             for key in ["mm_phase", "mm_raw_text", "mm_candidates", "mm_queue", "mm_queue_index"]:
                 st.session_state.pop(key, None)
             # Also clear per-item widget state (see _clear_batch_widget_state) -
@@ -962,7 +962,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
     if st.session_state.mct_phase == "gather":
         if not (url or uploaded_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect ClosedTour(s)", disabled=not (url or uploaded_files)):
+        if st.button("🔎 Detect ClosedTour(s)", disabled=not (url or uploaded_files)):
             with st.spinner("Gathering content and detecting distinct ClosedTours..."):
                 try:
                     combined_parts = []
@@ -974,7 +974,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (uploaded_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -1072,7 +1072,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         distinct_nights = {c.get("nights") for c in candidates if c.get("nights") is not None}
         if len(distinct_nights) <= 1:
             st.warning(
-                "ðŸ¤” These all report the same length - that often means this is really ONE tour with "
+                "🤔 These all report the same length - that often means this is really ONE tour with "
                 "different Modalities (e.g. 'Standard' vs 'Superior' pricing/accommodation for the same "
                 "itinerary), not genuinely different tour products. If so, just pick any one below - "
                 "you'll be able to add the others as Modalities of this same tour in the next steps."
@@ -1085,13 +1085,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         choice_idx = st.radio("Which ClosedTour do you want to create?", list(range(len(candidates))),
                              format_func=lambda i: labels[i], key="mct_tour_choice")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary"):
+        if st.button("➡️ Start Reviewing", type="primary"):
             st.session_state.mct_tour = _new_mct_tour(candidates[choice_idx], default_tour_code)
             st.session_state.mct_phase = "reviewing_main"
             st.rerun()
 
         with st.expander("Not what you wanted?"):
-            if st.button("ðŸ”™ Start over", key="mct_cancel_select"):
+            if st.button("🔙 Start over", key="mct_cancel_select"):
                 _reset_mct_state()
                 st.rerun()
         return
@@ -1105,7 +1105,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.subheader(f"Tour details: {tour['label'] or tour['tour_code'] or '(new tour)'}")
         with st.expander("Not what you wanted?"):
-            if st.button("ðŸ”™ Start over", key="mct_cancel_main"):
+            if st.button("🔙 Start over", key="mct_cancel_main"):
                 _reset_mct_state()
                 st.rerun()
 
@@ -1130,8 +1130,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     tour["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
                         tour["main_data"], supplier_id, "ClosedTour")
                 except Exception as e:
-                    st.error(f"âš ï¸ Couldn't extract tour details: {friendly_error_message(e)}")
-                    if st.button("ðŸ”„ Retry extraction", key="mct_retry_main"):
+                    st.error(f"⚠️ Couldn't extract tour details: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key="mct_retry_main"):
                         st.rerun()
                     return
 
@@ -1159,7 +1159,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         # forces starting over.
         _mct_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
         if _mct_code_check and _mct_code_check["exists"]:
-            st.error(f"ðŸš« Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
+            st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
                      f"(\"{_mct_code_check.get('name') or '(unnamed)'}\") - change it above before "
                      f"publishing, or this will fail at the very last step.")
 
@@ -1176,7 +1176,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
                        widget="text_area", height=80, key_suffix="_main")
         if tour.get("_cancellation_link_scope"):
-            st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table below "
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
                       f"was filled in from {tour['_cancellation_link_scope']}. Edit or clear it if "
                       f"this tour needs different terms.")
         render_cancellation_policy_editor(data, "mct_main")
@@ -1206,7 +1206,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         st.markdown("**Images**")
         if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
-            st.caption("âš ï¸ No real image picked yet - using a generic placeholder. Pick at least one real image below.")
+            st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real image below.")
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 
@@ -1220,7 +1220,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         render_closable_image_section(
             bool(st.session_state.get("mct_hosted_image_candidates")),
-            f"ðŸ–¼ï¸ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
+            f"🖼️ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
             "mct_found_main_closed", _mct_add_url_images
         )
 
@@ -1234,7 +1234,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         render_closable_image_section(
             bool(st.session_state.get("mct_doc_raw_images")),
-            f"ðŸ“¥ Images needing hosting ({len(st.session_state.get('mct_doc_raw_images') or [])})",
+            f"📥 Images needing hosting ({len(st.session_state.get('mct_doc_raw_images') or [])})",
             "mct_doc_main_closed", _mct_add_doc_image
         )
 
@@ -1248,7 +1248,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 return len(selected)
             return 0
 
-        render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pexels)", "mct_pexels_main_closed", _mct_add_pexels)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "mct_pexels_main_closed", _mct_add_pexels)
 
         def _mct_add_pixabay():
             selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mct_default_query, "mct_pixabay_main")
@@ -1258,18 +1258,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 return len(selected)
             return 0
 
-        render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pixabay)", "mct_pixabay_main_closed", _mct_add_pixabay)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "mct_pixabay_main_closed", _mct_add_pixabay)
 
         # Supplements belong to the tour, not to a Modality - so they are set HERE, once, before
         # the Modality list. See render_closedtour_supplements.
         render_closedtour_supplements(data, "mct_main")
 
-        st.markdown("**ðŸ¤– Tell AI what to fix**")
+        st.markdown("**🤖 Tell AI what to fix**")
         mct_clarify_q = st.text_input("Your message", key="mct_clarify_input_main")
         if render_house_rule_shortcut(mct_clarify_q, "ClosedTour", "mct_main"):
             pass
         elif not mct_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
                       f"supplier instead of a one-off fix.")
         if not mct_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -1298,7 +1298,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         remember_memory_panel(clarify_supplier_id(supplier_id), "ClosedTour", "mctmain")
 
         ready = bool((data.get("tour_name") or "").strip()) and bool((tour["tour_code"] or "").strip())
-        if st.button("âœ… Confirm main tour info & Continue to Modalities", type="primary", disabled=not ready):
+        if st.button("✅ Confirm main tour info & Continue to Modalities", type="primary", disabled=not ready):
             st.session_state.mct_phase = "select_modalities"
             st.rerun()
         if not ready:
@@ -1337,7 +1337,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         suspicious_codes = [c["code"] for c in candidates if c["selected"] and _modality_code_suspicious(c["code"])]
         if suspicious_codes:
             st.warning(
-                "ðŸ¤” These Modality Codes look unusually long/descriptive for a real code, which has "
+                "🤔 These Modality Codes look unusually long/descriptive for a real code, which has "
                 "caused real publish failures before (Travel Compositor rejects anything that isn't "
                 "the short category name itself, e.g. 'Standard' not 'Standard English min. 2 people') "
                 "- please shorten them to just the core category name: " + ", ".join(f"'{c}'" for c in suspicious_codes)
@@ -1357,7 +1357,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 cand["hint"] = st.text_input("AI focus hint (optional)", value=cand["hint"], key=f"mct_modcand_hint_{i}")
             with c4:
                 st.write("")
-                if st.button("ðŸ—‘ï¸", key=f"mct_modcand_remove_{i}", help="Remove this Modality"):
+                if st.button("🗑️", key=f"mct_modcand_remove_{i}", help="Remove this Modality"):
                     candidates.pop(i)
                     # Widgets here are keyed by POSITION, so after the pop the candidate that
                     # shifts into slot i would re-render with the removed one's typed code -
@@ -1365,7 +1365,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     _clear_batch_widget_state(["mct_modcand_"])
                     st.rerun()
 
-        if st.button("âž• Add another Modality manually"):
+        if st.button("➕ Add another Modality manually"):
             candidates.append({"code": "", "hint": "", "selected": True})
             st.rerun()
 
@@ -1377,14 +1377,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         dup_codes = {code: v for code, v in seen.items() if code and len(v) > 1}
 
         if missing:
-            st.error("ðŸš« Every included Modality needs a Modality Code.")
+            st.error("🚫 Every included Modality needs a Modality Code.")
         if dup_codes:
-            st.error(f"ðŸš« Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
+            st.error(f"🚫 Duplicate Modality Codes: {list(dup_codes.keys())} - each Modality needs its own unique code.")
         if not selected:
             st.info("Include at least one Modality to continue.")
 
         ready = bool(selected) and not missing and not dup_codes
-        if st.button("âž¡ï¸ Start Reviewing Modalities", type="primary", disabled=not ready):
+        if st.button("➡️ Start Reviewing Modalities", type="primary", disabled=not ready):
             # CONFIRMED BUG FIX (full-app audit MEDIUM-HIGH, 2026-09-01): clicking "Add another
             # Modality" from final_review comes back through THIS same phase (select_modalities)
             # with the tour's existing modalities still holding real, human-corrected `data` -
@@ -1410,11 +1410,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         with st.expander("Not what you wanted?"):
             wcol1, wcol2 = st.columns(2)
             with wcol1:
-                if st.button("ðŸ”™ Back to main tour info", key="mct_back_to_main"):
+                if st.button("🔙 Back to main tour info", key="mct_back_to_main"):
                     st.session_state.mct_phase = "reviewing_main"
                     st.rerun()
             with wcol2:
-                if st.button("ðŸ”™ Start over", key="mct_cancel_modsel"):
+                if st.button("🔙 Start over", key="mct_cancel_modsel"):
                     _reset_mct_state()
                     st.rerun()
         return
@@ -1436,19 +1436,19 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         # one-line box labelled "optional", below the fold and easy to skip - on the screen that
         # does the hardest reading in the app. Given prominence, room to write, and worked
         # examples, because a good hint here is worth more than any prompt change.
-        st.markdown("#### ðŸŽ¯ Tell the AI which Modality this is")
+        st.markdown("#### 🎯 Tell the AI which Modality this is")
         st.caption("**This is the most useful thing on the screen.** The document prices several "
                   "categories and the AI has to pick the right row or column out of a rate grid. "
                   "One sentence naming where to look is worth more than any amount of correcting "
                   "afterwards.")
-        st.caption("Good hints: *â€œthe row labelled Per Junior Suite 333 â€” the rates are per suite "
-                  "per nightâ€* Â· *â€œthe Deluxe column, second price block, ignore the Standard "
-                  "table above itâ€* Â· *â€œSuperior Class â€” its dates are the three ranges under "
-                  "Normalâ€*.")
+        st.caption("Good hints: *“the row labelled Per Junior Suite 333 — the rates are per suite "
+                  "per night”* · *“the Deluxe column, second price block, ignore the Standard "
+                  "table above it”* · *“Superior Class — its dates are the three ranges under "
+                  "Normal”*.")
         mod["hint"] = st.text_area(
             f"Where in the document is '{mod['code']}' priced?",
             value=mod.get("hint", ""), key=f"mct_mod_hint_{midx}", height=90,
-            placeholder=f"e.g. the row labelled '{mod['code']}' â€” rates are per person per night",
+            placeholder=f"e.g. the row labelled '{mod['code']}' — rates are per person per night",
         )
         if not (mod.get("hint") or "").strip():
             st.info(f"No hint given, so the AI will search for **{mod['code']}** on its own. That "
@@ -1477,8 +1477,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         tour["main_data"], ("policy_remarks",),
                         mod["data"].get("min_pax_guaranteed_departure"), label=mod["code"])
                 except Exception as e:
-                    st.error(f"âš ï¸ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
-                    if st.button("ðŸ”„ Retry extraction", key=f"mct_mod_retry_{midx}"):
+                    st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mct_mod_retry_{midx}"):
                         st.rerun()
                     return
 
@@ -1493,7 +1493,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if midx > 0 and modalities[0]["data"]:
                     mod["data"]["supplements"] = copy.deepcopy(modalities[0]["data"].get("supplements", []))
 
-        if st.button("ðŸ”„ Re-extract with updated hint", key=f"mct_mod_reextract_{midx}"):
+        if st.button("🔄 Re-extract with updated hint", key=f"mct_mod_reextract_{midx}"):
             mod["data"] = None
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): re-extraction replaces
             # mod["data"] with a fresh read of the document, but two widgets below kept their
@@ -1513,10 +1513,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         data = mod["data"]
 
         if data.get("schedule_notes"):
-            st.info(f"ðŸ”Ž {data['schedule_notes']}")
+            st.info(f"🔎 {data['schedule_notes']}")
 
         if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
-            st.warning(f"ðŸ”’ {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
                       f"This Modality will be published **On Request** regardless of the On Request "
                       f"setting above - a note was also added to Policy remarks.")
 
@@ -1583,7 +1583,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         # CONFIRMED PRODUCT-OWNER CORRECTION: supplements belong to the TOUR, not to a
         # Modality - see render_closedtour_supplements. Edited once on the main tour screen.
-        st.caption("ðŸ’¡ **Supplements are not set here.** A ClosedTour's supplements are set once "
+        st.caption("💡 **Supplements are not set here.** A ClosedTour's supplements are set once "
                   "for the whole tour and apply to every Modality - they are on the main tour "
                   "screen, before the Modality list.")
         _tour_supplements = (st.session_state.get("mct_tour", {}).get("main_data", {})
@@ -1592,12 +1592,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             st.caption("In force for this tour: " +
                        ", ".join(x.get("name", "(unnamed)") for x in _tour_supplements if isinstance(x, dict)))
 
-        st.markdown(f"**ðŸ¤– Tell AI what to fix - {mod['code']}**")
+        st.markdown(f"**🤖 Tell AI what to fix - {mod['code']}**")
         mct_mod_clarify_q = st.text_input("Your message", key=f"mct_mod_clarify_input_{midx}")
         if render_house_rule_shortcut(mct_mod_clarify_q, "ClosedTour", f"mct_mod_{midx}"):
             pass
         elif not mct_mod_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
                       f"supplier instead of a one-off fix.")
         if not mct_mod_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -1627,7 +1627,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         remember_memory_panel(clarify_supplier_id(supplier_id), "ClosedTour", "mctmod")
 
         is_last = midx == len(modalities) - 1
-        btn_label = "âœ… Confirm this Modality & Finish Modalities" if is_last else "âœ… Confirm this Modality & Continue â†’"
+        btn_label = "✅ Confirm this Modality & Finish Modalities" if is_last else "✅ Confirm this Modality & Continue →"
         if st.button(btn_label, type="primary", disabled=not data.get("price_list")):
             mod["confirmed"] = True
             if is_last:
@@ -1641,15 +1641,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         with st.expander("Not what you wanted?"):
             ncol1, ncol2, ncol3 = st.columns(3)
             with ncol1:
-                if midx > 0 and st.button("â¬…ï¸ Previous Modality", key=f"mct_mod_prev_{midx}"):
+                if midx > 0 and st.button("⬅️ Previous Modality", key=f"mct_mod_prev_{midx}"):
                     tour["modality_index"] -= 1
                     st.rerun()
             with ncol2:
-                if st.button("ðŸ”™ Back to Modality selection", key=f"mct_mod_back_{midx}"):
+                if st.button("🔙 Back to Modality selection", key=f"mct_mod_back_{midx}"):
                     st.session_state.mct_phase = "select_modalities"
                     st.rerun()
             with ncol3:
-                if st.button("ðŸ”™ Start over", key=f"mct_mod_cancel_{midx}"):
+                if st.button("🔙 Start over", key=f"mct_mod_cancel_{midx}"):
                     _reset_mct_state()
                     st.rerun()
         return
@@ -1665,37 +1665,37 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         st.caption("Review everything below before publishing - click 'Edit' on any section to go back "
                   "and adjust it, your other progress is kept.")
 
-        with st.expander("ðŸ“‹ Main tour info", expanded=False):
+        with st.expander("📋 Main tour info", expanded=False):
             st.write(f"**Tour Code:** {tour['tour_code']}")
             st.write(f"**Name:** {main_data.get('tour_name')}")
             st.write(f"**Nights:** {main_data.get('nights')}")
             st.write(f"**Itinerary:** {', '.join(main_data.get('itinerary_destinations', [])) or '(none)'}")
             st.write(f"**Images:** {len([u for u in main_data.get('image_urls', []) if u != FALLBACK_IMAGE])} selected")
-        if st.button("âœï¸ Edit main tour info"):
+        if st.button("✏️ Edit main tour info"):
             st.session_state.mct_phase = "reviewing_main"
             st.rerun()
 
         for i, mod in enumerate(tour["modalities"]):
             mdata = mod["data"] or {}
-            with st.expander(f"ðŸ“‹ Modality: {mod['code']}", expanded=False):
+            with st.expander(f"📋 Modality: {mod['code']}", expanded=False):
                 st.write(f"**Price rows:** {len(mdata.get('price_list', []))}")
                 st.write(f"**Supplements:** {len(mdata.get('supplements', []))}")
                 st.write(f"**Operational Days:** {', '.join(mdata.get('operational_days', []))}")
-            if st.button(f"âœï¸ Edit Modality '{mod['code']}'", key=f"mct_final_edit_mod_{i}"):
+            if st.button(f"✏️ Edit Modality '{mod['code']}'", key=f"mct_final_edit_mod_{i}"):
                 tour["modality_index"] = i
                 st.session_state.mct_phase = "reviewing_modality"
                 st.rerun()
 
-        if st.button("âž• Add another Modality"):
+        if st.button("➕ Add another Modality"):
             st.session_state.mct_phase = "select_modalities"
             st.rerun()
 
-        if st.button("âœ… Confirm this tour & Finish Review", type="primary"):
+        if st.button("✅ Confirm this tour & Finish Review", type="primary"):
             st.session_state.mct_phase = "publishing"
             st.rerun()
 
         with st.expander("Not what you wanted?"):
-            if st.button("ðŸ”™ Start over", key="mct_cancel_final"):
+            if st.button("🔙 Start over", key="mct_cancel_final"):
                 _reset_mct_state()
                 st.rerun()
         return
@@ -1729,7 +1729,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         )
         _mct_publish_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
         if _mct_publish_code_check and _mct_publish_code_check["exists"]:
-            st.error(f"ðŸš« Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
+            st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
                      f"(\"{_mct_publish_code_check.get('name') or '(unnamed)'}\") - change it above "
                      f"before publishing.")
 
@@ -1766,7 +1766,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 # enforces that shape (see its own comment), so this message no longer assumes
                 # that's the cause - a Tour Code just needs to be non-blank and free of '/'/'\\'
                 # now, matching every other product's code field.
-                st.error(f"âš ï¸ Couldn't preview this tour's destinations for Tour Code "
+                st.error(f"⚠️ Couldn't preview this tour's destinations for Tour Code "
                         f"`{tour['tour_code']}`. Details: {str(e)[:300]}. Publishing below will also "
                         f"fail until fixed - go back and correct the Tour Code.")
             mct_has_unresolved = False
@@ -1775,7 +1775,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     if res["valid"]:
                         st.markdown(
                             f"<div style='background-color:#d4edda; color:#155724; padding:4px 10px; "
-                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>âœ… <b>{res['input']}</b> â†’ "
+                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>✅ <b>{res['input']}</b> → "
                             f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
                             unsafe_allow_html=True
                         )
@@ -1783,7 +1783,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         mct_has_unresolved = True
                         st.markdown(
                             f"<div style='background-color:#f8d7da; color:#721c24; padding:4px 10px; "
-                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>âŒ <b>{res['input']}</b> â†’ "
+                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>❌ <b>{res['input']}</b> → "
                             f"NOT FOUND in Travel Compositor</div>",
                             unsafe_allow_html=True
                         )
@@ -1795,7 +1795,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             # above (editable_table triggers a rerun on save, which rebuilds
             # combined_data/preview_payloads fresh from the updated main_data).
             if mct_has_unresolved:
-                st.warning("ðŸš« Fix the destination(s) marked NOT FOUND above before publishing - either "
+                st.warning("🚫 Fix the destination(s) marked NOT FOUND above before publishing - either "
                           "correct the spelling/name, or replace it with the exact name Travel Compositor "
                           "uses. Edit the itinerary below, then Save to re-check.")
             mct_dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(main_data.get("itinerary_destinations", []))]
@@ -1830,7 +1830,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if mct_code_taken:
             st.info("Publishing is disabled until the Tour Code above is changed to one that isn't "
                    "already taken.")
-        if st.button("ðŸš€ Publish to Travel Compositor", type="primary", disabled=mct_has_unresolved or mct_code_taken):
+        if st.button("🚀 Publish to Travel Compositor", type="primary", disabled=mct_has_unresolved or mct_code_taken):
             with st.spinner(f"Publishing '{tour['tour_code']}'..."):
                 try:
                     pre_config = HumanPreConfig(
@@ -1849,7 +1849,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     elif payloads["tour_option_error"]:
                         show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["tour_option_error"])
                     elif payloads["unresolved_destinations"]:
-                        st.error(f"âŒ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
+                        st.error(f"❌ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
                                 f"fix the itinerary destinations and try again.")
                     else:
                         # CONFIRMED ROOT CAUSE (3 real production failures, KNO-1 - traced against the
@@ -1897,7 +1897,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             if "error" in option_result:
                                 show_publish_error(f"create **{tour['tour_code']}**'s option (created as `{real_code}`)", option_result)
                             else:
-                                st.success(f"âœ… **{tour['tour_code']}**: base modality '{modalities[0]['code']}' created (option code used: `{used_code}`).")
+                                st.success(f"✅ **{tour['tour_code']}**: base modality '{modalities[0]['code']}' created (option code used: `{used_code}`).")
                                 created_modality_codes.append(modalities[0]["code"])
 
                             for m in modalities[1:]:
@@ -1921,7 +1921,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                         if "error" in mod_result:
                                             show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}'", mod_result)
                                         else:
-                                            st.success(f"âœ… **{tour['tour_code']}**: modality '{m['code']}' created (code used: `{mod_used_code}`).")
+                                            st.success(f"✅ **{tour['tour_code']}**: modality '{m['code']}' created (code used: `{mod_used_code}`).")
                                             created_modality_codes.append(m["code"])
                                     except Exception as e:
                                         show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}' (unexpected error - skipped, rest continues)", str(e))
@@ -1942,13 +1942,13 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                             if created_modality_codes:
                                 finalize_result = client.update_closed_tour(supplier_id, finalize_payload)
                                 if "error" in finalize_result:
-                                    st.warning(f"âš ï¸ **{tour['tour_code']}**: tour and option(s) were created, but the "
+                                    st.warning(f"⚠️ **{tour['tour_code']}**: tour and option(s) were created, but the "
                                               f"follow-up update (registering Modality codes/supplements and setting "
                                               f"the final active state) failed - {finalize_result}. The tour exists "
                                               f"in Travel Compositor but may need this finished manually.")
                                 else:
                                     state_label = "ACTIVE" if mct_publish_as_active else "inactive/draft"
-                                    st.success(f"âœ… **{tour['tour_code']}** published successfully as `{real_code}` ({state_label}).")
+                                    st.success(f"✅ **{tour['tour_code']}** published successfully as `{real_code}` ({state_label}).")
                                     # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "after I created a new
                                     # Closed Tour and I published it, I then want to start a new Batch...
                                     # in none of the new stage can I add the new ClosedTour Code to the new
@@ -1982,14 +1982,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                 deactivate_payload["supplements"] = []
                                 deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
                                 if "error" in deactivate_result:
-                                    st.error(f"âŒ **{tour['tour_code']}**: no Modality options were created "
+                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
                                             f"successfully, AND the tour could not be deactivated afterward "
                                             f"({deactivate_result}) - it is LIVE on Travel Compositor as "
                                             f"`{real_code}` with zero bookable Modalities. Deactivate it "
                                             f"manually in Travel Compositor, or finish it there directly. "
                                             f"Its Tour Code is now taken.")
                                 else:
-                                    st.error(f"âŒ **{tour['tour_code']}**: no Modality options were created "
+                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
                                             f"successfully. The tour was created on Travel Compositor as "
                                             f"`{real_code}` but has been deactivated since it has no "
                                             f"bookable Modality - it will not be sold. Its Tour Code is now "
@@ -2010,12 +2010,12 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                       f"(Supplier {st.session_state.just_published_supplier_id})")
             ncol1, ncol2, ncol3 = st.columns(3)
             with ncol1:
-                if st.button("ðŸ†• Start a new ClosedTour", help="Create a DIFFERENT, brand-new ClosedTour - "
+                if st.button("🆕 Start a new ClosedTour", help="Create a DIFFERENT, brand-new ClosedTour - "
                             "this code is not carried forward."):
                     _reset_mct_state()
                     st.rerun()
             with ncol2:
-                if st.button("âž• Add another Modality to this same ClosedTour"):
+                if st.button("➕ Add another Modality to this same ClosedTour"):
                     prefill_tour_code = st.session_state.just_published_tour_code
                     prefill_supplier_id = st.session_state.just_published_supplier_id
                     keep_client = st.session_state.client
@@ -2034,7 +2034,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     st.session_state.step1_confirmed = True
                     st.rerun()
             with ncol3:
-                if st.button("ðŸ”§ Do something else with this Code",
+                if st.button("🔧 Do something else with this Code",
                             help="Pick any other action at Step 1 (update this tour, or update a "
                                  "Modality's pricing) - the ClosedTour Code above will already be "
                                  "filled in for you once you reach Step 3."):
@@ -2058,7 +2058,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     st.rerun()
             return
 
-        if st.button("ðŸ†• Start a new ClosedTour"):
+        if st.button("🆕 Start a new ClosedTour"):
             _reset_mct_state()
             st.rerun()
         return
@@ -2141,7 +2141,7 @@ def _publish_error_guidance(error_text, flow=None):
     for pattern, step_key, what_to_check in _PUBLISH_ERROR_PATTERNS:
         if pattern in text:
             where = step_names[step_key] if step_names else "the relevant section above"
-            return f"ðŸ‘‰ To fix this: go back to {where} and check {what_to_check}."
+            return f"👉 To fix this: go back to {where} and check {what_to_check}."
     return None
 
 
@@ -2225,7 +2225,7 @@ def humanise_validation_error(raw_error, limit=6):
         else:
             hidden += 1       # only DISTINCT fields we didn't have room for
     if hidden:
-        out.append(f"_(â€¦and {hidden} more field(s) â€” the technical details below list every one.)_")
+        out.append(f"_(…and {hidden} more field(s) — the technical details below list every one.)_")
     return out
 
 
@@ -2297,22 +2297,22 @@ def show_publish_error(context_label, raw_error, flow=None):
     if field_lines:
         # A validation error already knows exactly which field is wrong. Say so, instead of
         # showing a pydantic path and telling the human to go and find it themselves.
-        st.error(f"âŒ Couldn't {context_label}. These fields need attention:\n\n"
+        st.error(f"❌ Couldn't {context_label}. These fields need attention:\n\n"
                  + "\n".join(f"- {line}" for line in field_lines))
     elif extracted_detail:
-        st.error(f"âŒ Couldn't {context_label}: {extracted_detail}")
+        st.error(f"❌ Couldn't {context_label}: {extracted_detail}")
     else:
-        st.error(f"âŒ Couldn't {context_label}.")
+        st.error(f"❌ Couldn't {context_label}.")
 
     guidance = _publish_error_guidance(extracted_detail or raw_error, flow)
     if not guidance:
         guidance = (
-            "ðŸ‘‰ To fix this: open the technical details below to see exactly what "
+            "👉 To fix this: open the technical details below to see exactly what "
             "was rejected, then go back and review/edit that field before trying again."
         )
     st.info(guidance)
 
-    with st.expander("ðŸ”§ Technical details"):
+    with st.expander("🔧 Technical details"):
         st.code(str(raw_error))
 
 
@@ -2334,7 +2334,7 @@ def render_memory_panel_footer():
     if not panel:
         return
     st.divider()
-    st.markdown("### ðŸ§  What the platform remembers")
+    st.markdown("### 🧠 What the platform remembers")
     st.caption("Reference: the rules being applied to this product type, and what this supplier "
                "has taught the app. Nothing here changes until you change it.")
     render_house_rules(panel["product_type"], panel["key_prefix"])
@@ -2357,7 +2357,7 @@ def render_house_rules(product_type, key_prefix):
         rules = extraction_memory.list_house_rules(product_type)
     except Exception:
         return
-    with st.expander(f"ðŸ›ï¸ House rules for every {product_type} supplier ({len(rules)})"):
+    with st.expander(f"🏛️ House rules for every {product_type} supplier ({len(rules)})"):
         st.caption("Basics that are true of the trade, not of one supplier. These go into **every** "
                    "extraction for this product type - so a rule typed once here never needs "
                    "repeating on the next supplier's document.")
@@ -2373,7 +2373,7 @@ def render_house_rules(product_type, key_prefix):
         new_rule = st.text_area("Add a house rule", key=f"{key_prefix}_house_new", height=80,
                                 placeholder="e.g. Nile Cruise prices are quoted per night - single "
                                             "price is nights x nightly rate, double is half of that.")
-        if st.button("âž• Add for every supplier", key=f"{key_prefix}_house_add",
+        if st.button("➕ Add for every supplier", key=f"{key_prefix}_house_add",
                      disabled=not new_rule.strip()):
             if extraction_memory.add_house_rule(product_type, new_rule.strip()):
                 st.success("Added. It will be applied to every future extraction of this product type.")
@@ -2405,8 +2405,8 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
         learned = extraction_memory.list_instructions(str(supplier_id), product_type)
     except Exception:
         return
-    label = (f"ðŸ§  What the app has learned from your corrections ({len(learned)})"
-             if learned else "ðŸ§  What the app has learned from your corrections")
+    label = (f"🧠 What the app has learned from your corrections ({len(learned)})"
+             if learned else "🧠 What the app has learned from your corrections")
     with st.expander(label):
         if not learned:
             st.caption("Nothing yet for this supplier and product type. A correction is remembered "
@@ -2419,11 +2419,11 @@ def render_learned_instructions(supplier_id, product_type, key_prefix):
                    "than corrupting a new rate sheet - but remove anything that is simply wrong.")
         for e in learned:
             times = int(e.get("count", 0))
-            fields = ", ".join(e.get("fields") or []) or "â€”"
+            fields = ", ".join(e.get("fields") or []) or "—"
             c1, c2 = st.columns([6, 1])
             with c1:
                 st.markdown(f"- {e.get('text', '')}")
-                st.caption(f"said {times}Ã— Â· changed: {fields}")
+                st.caption(f"said {times}× · changed: {fields}")
             with c2:
                 if st.button("Forget", key=f"{key_prefix}_forget_{e.get('key')}"):
                     extraction_memory.forget_instruction(str(supplier_id), product_type, e.get("key"))
@@ -2487,7 +2487,7 @@ def _tk_clear_geo_confirmation():
     False - a new ticket, a re-extraction, and (most importantly) the human CHANGING the
     coordinates. All seven reset the control flag only. The checkbox's own session_state entry
     survived, so on the very next render the checkbox re-asserted True and overwrote the flag.
-    A human could change the city and the "âœ… I've checked this location on the map" tick would
+    A human could change the city and the "✅ I've checked this location on the map" tick would
     stay on, having verified the PREVIOUS coordinates. That tick is the only thing standing
     between a wrong location and a published ticket, so it must be cleared, not just the flag."""
     st.session_state.tk_geo_confirmed = False
@@ -2566,13 +2566,13 @@ def render_publish_blockers(payloads):
     ok = True
     expired = (payloads or {}).get("expired_validity_error")
     if expired:
-        st.error(f"ðŸš« {expired}")
+        st.error(f"🚫 {expired}")
         ok = False
     zero_rows = (payloads or {}).get("zero_priced_occupancies") or []
     if zero_rows:
         pretty = ", ".join(str(n) for n in zero_rows)
         st.error(
-            f"ðŸš« These occupancies have no price (0.00) and would be sellable for free: **{pretty}**. "
+            f"🚫 These occupancies have no price (0.00) and would be sellable for free: **{pretty}**. "
             f"Enter a real price for each, or reduce Max Passengers so they aren't offered at all, "
             f"before publishing."
         )
@@ -2581,7 +2581,7 @@ def render_publish_blockers(payloads):
     if expired_supplements:
         pretty = ", ".join(str(n) for n in expired_supplements)
         st.error(
-            f"ðŸš« These dated supplements already ended, before today: **{pretty}**. A supplement "
+            f"🚫 These dated supplements already ended, before today: **{pretty}**. A supplement "
             f"whose End Date is in the past can never apply to a future booking - correct the "
             f"date (e.g. move it to next year's window) or remove the row before publishing."
         )
@@ -2683,21 +2683,21 @@ def render_clarify_result(result, review_hint="review above before continuing"):
     changes = result.get("changes") or {}
 
     if changes:
-        st.success(f"âœ… Applied changes to: {', '.join(changes.keys())} â€” {review_hint}.")
+        st.success(f"✅ Applied changes to: {', '.join(changes.keys())} — {review_hint}.")
         if result.get("recovered_after_empty_claim"):
             st.caption("(It first replied without actually returning the changes; it was asked "
                        "again and this time it did.)")
         # Anything the shape check could not read confidently. Shown rather than swallowed: a
         # price that quietly failed to land looks identical to one that was never sent.
         for note in result.get("shape_notes") or []:
-            st.warning(f"âš ï¸ Pricing: {note}.")
+            st.warning(f"⚠️ Pricing: {note}.")
         if summary:
             st.info(summary)
         return
 
     if result.get("claimed_but_changed_nothing"):
-        st.warning("âš ï¸ **Nothing was changed.** The AI described work it did not actually return, "
-                   "and it stood by that on a second attempt â€” so whatever it says below, your "
+        st.warning("⚠️ **Nothing was changed.** The AI described work it did not actually return, "
+                   "and it stood by that on a second attempt — so whatever it says below, your "
                    "data is exactly as it was. Try naming one specific field and value (e.g. "
                    "\"the Normal season runs 01-10-2026 to 30-11-2026 at 1450 per person double\"), "
                    "or edit the table directly.")
@@ -2706,8 +2706,8 @@ def render_clarify_result(result, review_hint="review above before continuing"):
         # order what AI did misread." So "treated as a question" was both wrong and unhelpful -
         # it blamed the wording of an instruction that was perfectly clear, when what actually
         # happened is that the AI judged nothing needed changing.
-        st.warning("âš ï¸ **Nothing was changed.** The AI judged the data was already correct, so your "
-                   "instruction had no effect. Read its reasoning below â€” if it disagrees with what "
+        st.warning("⚠️ **Nothing was changed.** The AI judged the data was already correct, so your "
+                   "instruction had no effect. Read its reasoning below — if it disagrees with what "
                    "the document actually says, name the field and the exact value it should hold "
                    "(e.g. \"the Normal season ends 30/11/2026, not 30/10/2026\"), or edit the table "
                    "directly.")
@@ -2755,7 +2755,7 @@ def render_ticket_language_options(data, key_prefix):
         "Language Options (offered at this SAME price)",
         TICKET_LANGUAGE_OPTIONS,
         default=current,
-        format_func=lambda code: f"{code} â€” {LANGUAGE_CODE_NAMES.get(code, code)}",
+        format_func=lambda code: f"{code} — {LANGUAGE_CODE_NAMES.get(code, code)}",
         key=f"{key_prefix}_languages",
         help="A language that costs MORE than the base price is a different product, not a language "
              "option here - enter it as a row under \"Supplements by dates\" below and tick "
@@ -2997,13 +2997,13 @@ def render_modality_code_availability_check(client, supplier_id, modality_code, 
     if result is None:
         return
     if result["exists"]:
-        st.error(f"ðŸš« Modality Code `{(modality_code or '').strip()}` is ALREADY USED by ticket "
+        st.error(f"🚫 Modality Code `{(modality_code or '').strip()}` is ALREADY USED by ticket "
                 f"**{result['ticket_name']}** (`{result['ticket_code']}`) for this supplier. If the "
                 f"supplier's own reference code is the same, this looks like the same product being "
                 f"added again - double-check before continuing, or use an Update/Add-modality action "
                 f"on the existing ticket instead.")
     elif result.get("incomplete"):
-        st.warning(f"âš ï¸ `{(modality_code or '').strip()}` wasn't found among this supplier's existing "
+        st.warning(f"⚠️ `{(modality_code or '').strip()}` wasn't found among this supplier's existing "
                   f"modality codes, but {result['incomplete']}")
 
 
@@ -3096,7 +3096,7 @@ def check_duplicate_tour_name(client, supplier_id, tour_name):
     names, _ = get_existing_tour_names(client, supplier_id)
     for existing in names:
         if existing["name"].strip().lower() == clean_name:
-            return (f"âš ï¸ A tour named **'{existing['name']}'** already exists for this supplier "
+            return (f"⚠️ A tour named **'{existing['name']}'** already exists for this supplier "
                     f"(code: `{existing['code']}`). Double-check this isn't a duplicate upload before publishing.")
     return None
 
@@ -3211,11 +3211,11 @@ def render_code_availability_check(client, kind, supplier_id, code, label):
     if result is None:
         return
     if result["exists"]:
-        st.error(f"ðŸš« `{(code or '').strip()}` is ALREADY TAKEN by an existing {label} "
+        st.error(f"🚫 `{(code or '').strip()}` is ALREADY TAKEN by an existing {label} "
                 f"(\"{result.get('name') or '(unnamed)'}\"). Choose a different code, or use an "
                 f"Update/Add-modality action instead if you meant to add to this existing one.")
     else:
-        st.success(f"âœ… `{(code or '').strip()}` is available.")
+        st.success(f"✅ `{(code or '').strip()}` is available.")
 
 
 def _diff_tour_price_list(old_list, new_list):
@@ -3246,7 +3246,7 @@ def _diff_tour_price_list(old_list, new_list):
     changes = []
     for key in sorted(set(old_by_key) | set(new_by_key)):
         old_row, new_row = old_by_key.get(key), new_by_key.get(key)
-        period = f"{key[0]} â†’ {key[1]}"
+        period = f"{key[0]} → {key[1]}"
         if old_row and not new_row:
             changes.append({"period": period, "status": "removed", "old": _amounts(old_row), "new": None})
         elif new_row and not old_row:
@@ -3430,14 +3430,14 @@ def render_tour_update_comparison(publish_action, data, payloads, client, suppli
     publish, since Travel Compositor's PUT is meant for genuine detail
     corrections, not restructuring the whole product.
     """
-    st.subheader("ðŸ”„ Comparing with what's already online")
+    st.subheader("🔄 Comparing with what's already online")
     blocks_publish = False
     old = st.session_state.get("fetched_tour")
     have_old_tour = isinstance(old, dict) and "error" not in old
 
     if publish_action == "Update an existing tour's details":
         if not have_old_tour:
-            st.info("â„¹ï¸ No 'what's already online' data was fetched for this tour - skipping the "
+            st.info("ℹ️ No 'what's already online' data was fetched for this tour - skipping the "
                    "before/after comparison. Go back to Step 3 and click 'Check what's already online "
                    "for this code' to compare against what's currently live before publishing this update.")
             return False
@@ -3446,7 +3446,7 @@ def render_tour_update_comparison(publish_action, data, payloads, client, suppli
         if old_nights is not None and new_nights is not None and int(old_nights) != int(new_nights):
             blocks_publish = True
             st.error(
-                f"ðŸš« **Number of nights changed: {old_nights} â†’ {new_nights}.** This is treated as a "
+                f"🚫 **Number of nights changed: {old_nights} → {new_nights}.** This is treated as a "
                 f"DIFFERENT tour, not an update of `{existing_tour_code}` - the itinerary and pricing "
                 f"structure is built around a fixed night count, so pushing this through as an update "
                 f"would corrupt the existing tour rather than genuinely revise it.\n\n"
@@ -3455,21 +3455,21 @@ def render_tour_update_comparison(publish_action, data, payloads, client, suppli
                 f"{new_nights}-night variant."
             )
         else:
-            st.caption(f"âœ… Nights unchanged ({new_nights}) - safe to update in place.")
+            st.caption(f"✅ Nights unchanged ({new_nights}) - safe to update in place.")
 
         old_name, new_name = old.get("name"), data.get("tour_name")
         if old_name and new_name and old_name.strip() != new_name.strip():
-            st.info(f"âœï¸ Name changing: **{old_name}** â†’ **{new_name}**")
+            st.info(f"✏️ Name changing: **{old_name}** → **{new_name}**")
 
         old_stops, new_stops = len(old.get("itinerary") or []), len(data.get("itinerary_destinations") or [])
         if old_stops and new_stops and old_stops != new_stops:
-            st.warning(f"ðŸ—ºï¸ Itinerary stop count changing: **{old_stops}** â†’ **{new_stops}** stops - "
+            st.warning(f"🗺️ Itinerary stop count changing: **{old_stops}** → **{new_stops}** stops - "
                       f"double-check the new itinerary reflects a genuine route change, not a misread "
                       f"source document.")
 
         old_hotels, new_hotels = old.get("hotels"), data.get("hotels_count")
         if old_hotels is not None and new_hotels is not None and old_hotels != new_hotels:
-            st.info(f"ðŸ¨ Hotel count changing: **{old_hotels}** â†’ **{new_hotels}**")
+            st.info(f"🏨 Hotel count changing: **{old_hotels}** → **{new_hotels}**")
 
     elif publish_action == "Update an existing option":
         # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this cache was keyed only on
@@ -3490,19 +3490,19 @@ def render_tour_update_comparison(publish_action, data, payloads, client, suppli
             new_price_list = (payloads.get("tour_option_payload") or {}).get("priceList", [])
             changes = _diff_tour_price_list(old_price_list, new_price_list)
             if not changes:
-                st.success("âœ… No pricing changes detected for this modality vs. what's currently live.")
+                st.success("✅ No pricing changes detected for this modality vs. what's currently live.")
             else:
                 st.write(f"**{len(changes)} price period(s) changing:**")
                 for c in changes:
                     if c["status"] == "changed":
-                        st.markdown(f"- ðŸ” **{c['period']}**: {c['old']} â†’ **{c['new']}**")
+                        st.markdown(f"- 🔁 **{c['period']}**: {c['old']} → **{c['new']}**")
                     elif c["status"] == "added":
-                        st.markdown(f"- âž• **{c['period']}** (new): **{c['new']}**")
+                        st.markdown(f"- ➕ **{c['period']}** (new): **{c['new']}**")
                     else:
-                        st.markdown(f"- âž– **{c['period']}** (removed, was {c['old']})")
+                        st.markdown(f"- ➖ **{c['period']}** (removed, was {c['old']})")
         else:
             err_detail = old_option.get("message", old_option) if isinstance(old_option, dict) else old_option
-            st.warning(f"âš ï¸ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
+            st.warning(f"⚠️ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
 
     return blocks_publish
 
@@ -3511,7 +3511,7 @@ def _diff_ticket_option_pricing(old_option, new_payload):
     """
     Compares an existing (GET) ContractTicketModalityVO dict against a
     freshly-built new one (same field names, confirmed against the real
-    GET response) - returns a list of human-readable "field: old â†’ new"
+    GET response) - returns a list of human-readable "field: old → new"
     strings for whichever priced fields actually changed. Handles all three
     pricing modes (Distribution/Occupancy/Service).
     """
@@ -3519,25 +3519,25 @@ def _diff_ticket_option_pricing(old_option, new_payload):
     old_type = old_option.get("priceType", "DISTRIBUTION")
     new_type = new_payload.get("priceType", "DISTRIBUTION")
     if old_type != new_type:
-        changes.append(f"Pricing mode: **{old_type}** â†’ **{new_type}**")
+        changes.append(f"Pricing mode: **{old_type}** → **{new_type}**")
 
     for field, label in [("baseAdultPrice", "Adult price"), ("baseChildrenPrice", "Child price"),
                          ("baseInfantPrice", "Infant price"), ("baseServicePrice", "Service price")]:
         old_val, new_val = old_option.get(field), new_payload.get(field)
         if old_val is not None and new_val is not None and float(old_val) != float(new_val):
-            changes.append(f"{label}: **{old_val}** â†’ **{new_val}**")
+            changes.append(f"{label}: **{old_val}** → **{new_val}**")
 
     old_occ = {o.get("occupancy"): o.get("amount") for o in (old_option.get("occupancyPrices") or [])}
     new_occ = {o.get("occupancy"): o.get("amount") for o in (new_payload.get("occupancyPrices") or [])}
     if old_occ != new_occ:
         for k in sorted(set(old_occ) | set(new_occ), key=lambda x: (x is None, x)):
             if old_occ.get(k) != new_occ.get(k):
-                changes.append(f"Occupancy {k} pax: **{old_occ.get(k, '-')}** â†’ **{new_occ.get(k, '-')}**")
+                changes.append(f"Occupancy {k} pax: **{old_occ.get(k, '-')}** → **{new_occ.get(k, '-')}**")
 
     old_dates = (old_option.get("startDate"), old_option.get("endDate"))
     new_dates = (new_payload.get("startDate"), new_payload.get("endDate"))
     if old_dates != new_dates:
-        changes.append(f"Validity dates: **{old_dates[0]} â†’ {old_dates[1]}** â†’ **{new_dates[0]} â†’ {new_dates[1]}**")
+        changes.append(f"Validity dates: **{old_dates[0]} → {old_dates[1]}** → **{new_dates[0]} → {new_dates[1]}**")
 
     return changes
 
@@ -3551,24 +3551,24 @@ def render_ticket_update_comparison(publish_action, data, payloads, client, supp
     before/after comparison so an update is never a silent overwrite.
     Always returns False (nothing about a Ticket update is hard-blocked).
     """
-    st.subheader("ðŸ”„ Comparing with what's already online")
+    st.subheader("🔄 Comparing with what's already online")
     old = st.session_state.get("tk_fetched_ticket")
     have_old_ticket = isinstance(old, dict) and "error" not in old
 
     if publish_action == "Update an existing ticket's details":
         if not have_old_ticket:
-            st.info("â„¹ï¸ No 'what's already online' data was fetched for this ticket - skipping the "
+            st.info("ℹ️ No 'what's already online' data was fetched for this ticket - skipping the "
                    "before/after comparison. Go back to Step 3 and click 'Check what's already online "
                    "for this code' to compare against what's currently live before publishing this update.")
             return False
 
         old_name, new_name = old.get("name"), data.get("ticket_name")
         if old_name and new_name and old_name.strip() != new_name.strip():
-            st.info(f"âœï¸ Name changing: **{old_name}** â†’ **{new_name}**")
+            st.info(f"✏️ Name changing: **{old_name}** → **{new_name}**")
 
         old_duration, new_duration = old.get("duration"), data.get("duration")
         if old_duration is not None and new_duration is not None and old_duration != new_duration:
-            st.warning(f"â±ï¸ Duration changing: **{old_duration}** â†’ **{new_duration}** "
+            st.warning(f"⏱️ Duration changing: **{old_duration}** → **{new_duration}** "
                       f"({data.get('duration_type', '')}) - double-check this is a genuine change, not a "
                       f"misread source value.")
 
@@ -3581,7 +3581,7 @@ def render_ticket_update_comparison(publish_action, data, payloads, client, supp
         if None not in (old_lat, old_lng, new_lat, new_lng):
             moved_far = abs(old_lat - new_lat) > 0.05 or abs(old_lng - new_lng) > 0.05  # roughly > ~5km
             if moved_far:
-                st.warning(f"ðŸ“ Location moved noticeably: was ({old_lat:.4f}, {old_lng:.4f}), now resolves to "
+                st.warning(f"📍 Location moved noticeably: was ({old_lat:.4f}, {old_lng:.4f}), now resolves to "
                           f"({new_lat:.4f}, {new_lng:.4f}) for city '{data.get('city', '')}' - a big location "
                           f"shift usually means a genuinely different excursion, not just a detail update. "
                           f"Double-check this is intentional.")
@@ -3598,14 +3598,14 @@ def render_ticket_update_comparison(publish_action, data, payloads, client, supp
         if isinstance(old_option, dict) and "error" not in old_option:
             changes = _diff_ticket_option_pricing(old_option, payloads.get("ticket_option_payload") or {})
             if not changes:
-                st.success("âœ… No pricing changes detected for this modality vs. what's currently live.")
+                st.success("✅ No pricing changes detected for this modality vs. what's currently live.")
             else:
                 st.write(f"**{len(changes)} change(s):**")
                 for c in changes:
-                    st.markdown(f"- ðŸ” {c}")
+                    st.markdown(f"- 🔁 {c}")
         else:
             err_detail = old_option.get("message", old_option) if isinstance(old_option, dict) else old_option
-            st.warning(f"âš ï¸ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
+            st.warning(f"⚠️ Couldn't fetch this modality's live pricing for comparison: {err_detail}")
 
     return False
 
@@ -3628,7 +3628,7 @@ def _summarize_modality_pricing(kind, data, currency):
             for p in price_list:
                 price = p.get("price", {}) or {}
                 st.caption(
-                    f"{p.get('startDate', '?')} â†’ {p.get('endDate', '?')}: "
+                    f"{p.get('startDate', '?')} → {p.get('endDate', '?')}: "
                     f"Single {price.get('singlePrice', {}).get('amount', '-')}, "
                     f"Double {price.get('doublePrice', {}).get('amount', '-')}, "
                     f"Triple {price.get('triplePrice', {}).get('amount', '-')}, "
@@ -3648,13 +3648,13 @@ def _summarize_modality_pricing(kind, data, currency):
         elif price_type == "SERVICE":
             st.write(f"**Flat service price:** {data.get('base_service_price', 0)} {currency}")
         else:
-            st.write(f"**Adult:** {data.get('base_adult_price', 0)} Â· "
-                    f"**Child:** {data.get('base_children_price', 0)} Â· "
+            st.write(f"**Adult:** {data.get('base_adult_price', 0)} · "
+                    f"**Child:** {data.get('base_children_price', 0)} · "
                     f"**Infant:** {data.get('base_infant_price', 0)} {currency}")
 
     st.caption(f"Operational days: {', '.join(data.get('operational_days', []) or []) or '(not set)'}")
     if data.get("stop_sales"):
-        st.caption(f"ðŸš« Stop sales: {len(data['stop_sales'])} date range(s) blocked")
+        st.caption(f"🚫 Stop sales: {len(data['stop_sales'])} date range(s) blocked")
 
 
 def render_modalities_review(kind, base_code, base_label, base_data, extra_modalities, currency):
@@ -3678,13 +3678,13 @@ def render_modalities_review(kind, base_code, base_label, base_data, extra_modal
     if len(all_modalities) <= 1:
         return
 
-    st.subheader(f"ðŸ“‹ Review â€” {len(all_modalities)} modalities will be created together")
+    st.subheader(f"📋 Review — {len(all_modalities)} modalities will be created together")
     st.caption("Double-check everything below before publishing - once sent, each modality is created "
               "as its own separate call to Travel Compositor.")
     for i, mod in enumerate(all_modalities):
         code_display = mod["code"] or "(code not set)"
-        icon = "ðŸŸ¢ Base" if i == 0 else f"âž• Extra {i}"
-        with st.expander(f"{icon}: `{code_display}` â€” {mod['label']}", expanded=False):
+        icon = "🟢 Base" if i == 0 else f"➕ Extra {i}"
+        with st.expander(f"{icon}: `{code_display}` — {mod['label']}", expanded=False):
             _summarize_modality_pricing(kind, mod["data"], currency)
 
 
@@ -3750,7 +3750,7 @@ def render_detection_diagnosis(noun):
     info = getattr(ai_extractor_module, "LAST_DETECTION", None) or {}
     if not info:
         return
-    with st.expander("ðŸ”¬ What the AI actually did", expanded=False):
+    with st.expander("🔬 What the AI actually did", expanded=False):
         st.caption(
             f"It read **{info.get('document_chars', 0):,} characters** of your document in "
             f"**{info.get('sections_read', 0)} pass(es)** and returned "
@@ -3778,7 +3778,7 @@ def render_empty_detection_retry(raw_text, noun, key_prefix, detect_fn, on_candi
         key=f"{key_prefix}_retry_hint", label_visibility="collapsed")
     rcol1, rcol2 = st.columns([2, 3])
     with rcol1:
-        if st.button(f"ðŸ”„ Detect {noun}s again with this instruction", type="primary",
+        if st.button(f"🔄 Detect {noun}s again with this instruction", type="primary",
                      key=f"{key_prefix}_retry_btn", use_container_width=True):
             with st.spinner(f"Reading the document again as {noun}s..."):
                 try:
@@ -3792,9 +3792,9 @@ def render_empty_detection_retry(raw_text, noun, key_prefix, detect_fn, on_candi
                 st.rerun()
             elif found is not None:
                 st.error(f"Still nothing found. This document may genuinely not contain "
-                         f"{noun}s â€” or name one route by hand in the box below.")
+                         f"{noun}s — or name one route by hand in the box below.")
     with rcol2:
-        st.caption("This re-reads the text already extracted from your document â€” nothing is "
+        st.caption("This re-reads the text already extracted from your document — nothing is "
                   "uploaded again. Edit the wording above to narrow it, e.g. *only the "
                   "Hurghada section, private transfers only*.")
 
@@ -3874,7 +3874,7 @@ def render_candidate_filter(candidates, key_prefix, noun):
     fcol1, fcol2, fcol3, fcol4 = st.columns([3, 1.4, 1.2, 1.2])
     with fcol1:
         term = st.text_input(f"Filter {noun}s", key=f"{key_prefix}_filter",
-                             placeholder="e.g. Private   Â·   Shuttle   Â·   Luxor",
+                             placeholder="e.g. Private   ·   Shuttle   ·   Luxor",
                              label_visibility="collapsed").strip().lower()
 
     def _matches(cand):
@@ -3906,7 +3906,7 @@ def render_candidate_filter(candidates, key_prefix, noun):
     # to remove. Added as candidates rather than silently doubling the queue, so the return
     # legs sit in the list and can be unticked or renamed like any other.
     ticked = [c for c in candidates if c.get("selected")]
-    if ticked and st.button(f"â†”ï¸ Add the return direction for the {len(ticked)} ticked route(s)",
+    if ticked and st.button(f"↔️ Add the return direction for the {len(ticked)} ticked route(s)",
                             key=f"{key_prefix}_returns", use_container_width=True,
                             help="Creates a mirrored candidate for each ticked route, with the "
                                  "departure and arrival swapped. Prices are read from the "
@@ -3943,7 +3943,7 @@ def render_candidate_filter(candidates, key_prefix, noun):
 
     if term:
         st.caption(f"{sum(1 for c in candidates if _matches(c))} of {total} row(s) match "
-                   f"â€œ{term}â€. **{chosen} currently ticked.**")
+                   f"“{term}”. **{chosen} currently ticked.**")
     else:
         st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
 
@@ -4028,12 +4028,12 @@ def render_house_rule_shortcut(message: str, product_type: str, key_prefix: str)
                   f"\"{HOUSE_RULE_CODEWORD} Nile Cruise prices are quoted per night - single price "
                   f"is nights x nightly rate.\"")
         return True
-    st.info(f"ðŸ§  Detected \"{HOUSE_RULE_CODEWORD}\" - this will be saved as a standing rule for "
+    st.info(f"🧠 Detected \"{HOUSE_RULE_CODEWORD}\" - this will be saved as a standing rule for "
             f"**every {product_type} supplier**, not just this document.")
-    if st.button(f"âœ… Remember this for every {product_type} supplier", key=f"{key_prefix}_house_rule_save", type="primary"):
+    if st.button(f"✅ Remember this for every {product_type} supplier", key=f"{key_prefix}_house_rule_save", type="primary"):
         if extraction_memory.add_house_rule(product_type, rule_text):
             st.success(f"Saved. Applied to every future {product_type} extraction, for every "
-                      f"supplier, from now on - see \"ðŸ›ï¸ House rules\" at the bottom of the page.")
+                      f"supplier, from now on - see \"🏛️ House rules\" at the bottom of the page.")
         else:
             st.info("That rule is already saved - no change needed.")
         st.rerun()
@@ -4108,7 +4108,7 @@ def render_batch_bulk_controls(queue, queue_key, index_key, phase_key, state_key
         return
     bcol1, bcol2, bcol3 = st.columns([2, 2, 3])
     with bcol1:
-        if st.button(f"â¬…ï¸ Back to the list of {noun}s", key=f"{key_prefix}_back_to_list",
+        if st.button(f"⬅️ Back to the list of {noun}s", key=f"{key_prefix}_back_to_list",
                      use_container_width=True,
                      help="Return to the tick boxes without re-uploading or re-reading the "
                           "document. What you have already published stays published."):
@@ -4118,7 +4118,7 @@ def render_batch_bulk_controls(queue, queue_key, index_key, phase_key, state_key
             _clear_batch_widget_state(widget_prefixes, keep=state_keys)
             st.rerun()
     with bcol2:
-        if st.button(f"ðŸ—‘ï¸ Discard the remaining {len(unpublished)}", key=f"{key_prefix}_discard_rest",
+        if st.button(f"🗑️ Discard the remaining {len(unpublished)}", key=f"{key_prefix}_discard_rest",
                      use_container_width=True, disabled=not unpublished,
                      help="Removes every one still to be reviewed, in one click."):
             remaining = [q for q in queue if q.get("publish_status") == "success"]
@@ -4151,7 +4151,7 @@ def render_skip_item_button(item_label, queue, idx, queue_session_key, index_ses
     function's docstring). Without it, a skip can otherwise show the human
     the WRONG item's stale edited data on the very next render.
     """
-    if st.button(f"âŒ Don't want this one - remove '{item_label}' from the batch", key=button_key):
+    if st.button(f"❌ Don't want this one - remove '{item_label}' from the batch", key=button_key):
         queue.pop(idx)
         if not queue:
             for key in cleanup_keys:
@@ -4259,7 +4259,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
     if st.session_state.mt_phase == "gather":
         if not (tk_url or tk_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect Excursions", disabled=not (tk_url or tk_files)):
+        if st.button("🔎 Detect Excursions", disabled=not (tk_url or tk_files)):
             with st.spinner("Gathering content and detecting distinct excursions..."):
                 try:
                     combined_parts = []
@@ -4271,7 +4271,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (tk_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -4420,7 +4420,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             st.subheader(f"{len(candidates)} excursions detected - choose which ones to create as Tickets")
             st.caption("The AI found what look like several different excursions below - each ticked row "
                       "becomes its own separate Ticket. Untick any row you don't actually want. For each "
-                      "ticked row, fill in the two code fields on the right (hover the â“˜ next to each for "
+                      "ticked row, fill in the two code fields on the right (hover the ⓘ next to each for "
                       "what it means).")
 
         for i, cand in enumerate(candidates):
@@ -4472,7 +4472,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 if cand["modality_code"].strip() != _clean_label:
                     cand["_modcode_touched"] = True
 
-        if st.button("âž• Add another excursion manually"):
+        if st.button("➕ Add another excursion manually"):
             candidates.append({"label": "", "ticket_code": "", "modality_code": "",
                               "modality_name": "Standard",
                               "selected": True, "is_genuine_variant": False})
@@ -4504,22 +4504,22 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         duplicate_modality_codes = {mc: labels for mc, labels in seen_modality_codes.items() if len(labels) > 1}
 
         if missing_codes:
-            st.error(f"ðŸš« These selected excursions are missing a Ticket Code or Modality Code and were "
+            st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
                     f"excluded - enter one for each before continuing: {missing_codes}")
         if duplicate_codes:
             for code, labels in duplicate_codes.items():
-                st.error(f"ðŸš« Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
+                st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion ({', '.join(labels)}) "
                         f"- each Ticket needs its own unique code.")
         if duplicate_modality_codes:
             for mc, labels in duplicate_modality_codes.items():
-                st.error(f"ðŸš« Modality Code `{mc}` is used by more than one selected excursion ({', '.join(labels)}) "
+                st.error(f"🚫 Modality Code `{mc}` is used by more than one selected excursion ({', '.join(labels)}) "
                         f"- this usually means the same supplier product was detected/entered twice. Give each "
                         f"a distinct Modality Code, or untick the duplicate.")
 
         for q in new_queue:
             existing_check = check_code_availability(client, "ticket", supplier_id, q["ticket_code"])
             if existing_check and existing_check["exists"]:
-                st.error(f"ðŸš« Ticket Code `{q['ticket_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
+                st.error(f"🚫 Ticket Code `{q['ticket_code']}` ({q['label'] or '(unnamed)'}) is ALREADY TAKEN "
                         f"by an existing ticket (\"{existing_check.get('name') or '(unnamed)'}\") - choose a "
                         f"different code before publishing, or this will fail.")
             # CONFIRMED REAL REQUEST (product owner, 2026-08-24): the supplier's own code is often
@@ -4527,18 +4527,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             # why this catches a duplicate the Ticket-Code check above cannot.
             mod_check = check_modality_code_availability(client, supplier_id, q["modality_code"])
             if mod_check and mod_check["exists"]:
-                st.warning(f"âš ï¸ Modality Code `{q['modality_code']}` ({q['label'] or '(unnamed)'}) is ALREADY "
+                st.warning(f"⚠️ Modality Code `{q['modality_code']}` ({q['label'] or '(unnamed)'}) is ALREADY "
                           f"USED by existing ticket **{mod_check['ticket_name']}** (`{mod_check['ticket_code']}`) "
                           f"for this supplier - if that's the same supplier product, this would create a "
                           f"duplicate. Double-check before continuing.")
             elif mod_check and mod_check.get("incomplete"):
-                st.caption(f"â„¹ï¸ Modality Code `{q['modality_code']}`: {mod_check['incomplete']}")
+                st.caption(f"ℹ️ Modality Code `{q['modality_code']}`: {mod_check['incomplete']}")
 
         ready_to_review = new_queue and not missing_codes and not duplicate_codes and not duplicate_modality_codes
         st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
                   "Fix the issues above before continuing.")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary", disabled=not ready_to_review):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not ready_to_review):
             st.session_state.mt_queue = new_queue
             st.session_state.mt_queue_index = 0
             st.session_state.mt_phase = "reviewing"
@@ -4571,7 +4571,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         st.progress(idx / len(queue))
         with st.expander("Not what you wanted?"):
-            if st.button("ðŸ”™ Cancel this batch - return to single-Ticket flow", key=f"mt_cancel_{idx}"):
+            if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mt_cancel_{idx}"):
                 for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                            "mt_doc_raw_images", "mt_hosted_image_candidates"]:
                     st.session_state.pop(key, None)
@@ -4635,8 +4635,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
                         current["data"], supplier_id, "Ticket")
                 except Exception as e:
-                    st.error(f"âš ï¸ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
-                    if st.button("ðŸ”„ Retry extraction", key=f"mt_retry_extract_{idx}"):
+                    st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mt_retry_extract_{idx}"):
                         st.rerun()
                     return
 
@@ -4656,11 +4656,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             # defense - a ticket can never publish with no name/description, so flag it plainly
             # rather than let a still-empty field slip through to publish unnoticed.
             if not (data.get("ticket_name") or "").strip():
-                st.error("ðŸš« Ticket name is empty - fill it in above before continuing.")
+                st.error("🚫 Ticket name is empty - fill it in above before continuing.")
             if not (data.get("description") or "").strip():
-                st.error("ðŸš« Description is empty - fill it in above before continuing.")
+                st.error("🚫 Description is empty - fill it in above before continuing.")
             if current.get("_cancellation_link_scope"):
-                st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table "
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
                           f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
                           f"clear it if this ticket needs different terms.")
             render_cancellation_policy_editor(data, f"mt_{idx}")
@@ -4697,7 +4697,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             # city silently fails at publish time with a raw "GeolocationVO validation
             # error" and no way to fix it from inside the batch flow.
             # ------------------------------------------------------------------
-            st.markdown(f"**ðŸ“ Location for {current['label'] or current['ticket_code']}**")
+            st.markdown(f"**📍 Location for {current['label'] or current['ticket_code']}**")
             mt_city = data.get("city", "")
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): manual coordinates (from a
             # search-pick or manual lat/lng entry, below) used to be shown with `display_name`
@@ -4727,23 +4727,23 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 mt_maps_link = f"https://www.google.com/maps?q={mt_lat},{mt_lng}"
                 st.markdown(
                     f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
-                    f"border-radius:4px;'>ðŸ“ Resolved: <strong>{mt_geo.get('display_name') or mt_city}</strong>"
-                    f"<br>Coordinates: {mt_lat:.6f}, {mt_lng:.6f} â€” "
+                    f"border-radius:4px;'>📍 Resolved: <strong>{mt_geo.get('display_name') or mt_city}</strong>"
+                    f"<br>Coordinates: {mt_lat:.6f}, {mt_lng:.6f} — "
                     f"<a href='{mt_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
                     unsafe_allow_html=True
                 )
-                st.caption("Geocoding data Â© OpenStreetMap contributors")
+                st.caption("Geocoding data © OpenStreetMap contributors")
             else:
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                    "border-radius:4px;'>âŒ Geolocation NOT resolved - the City name may not match a known "
+                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
                     "location. Search below or enter coordinates manually.</div>",
                     unsafe_allow_html=True
                 )
 
-            with st.expander("ðŸ” Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
+            with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
                 mt_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mt_city), key=f"mt_geo_query_{idx}")
-                if st.button("ðŸ”Ž Search", key=f"mt_geo_search_btn_{idx}"):
+                if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
                     with st.spinner("Searching..."):
                         current["geo_search_results"] = geocode_search(mt_geo_query, limit=5)
                 if current.get("geo_search_results"):
@@ -4765,7 +4765,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
                           "it here - the coordinates are read out of the link automatically.")
                 mt_maps_url = st.text_input("Google Maps link", key=f"mt_geo_maps_url_{idx}", placeholder="https://maps.google.com/...")
-                if st.button("ðŸ”— Use this link's coordinates", key=f"mt_geo_maps_url_btn_{idx}", disabled=not mt_maps_url.strip()):
+                if st.button("🔗 Use this link's coordinates", key=f"mt_geo_maps_url_btn_{idx}", disabled=not mt_maps_url.strip()):
                     with st.spinner("Reading coordinates from the link..."):
                         mt_url_geo = parse_google_maps_url(mt_maps_url)
                     if mt_url_geo["valid"]:
@@ -4783,7 +4783,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     mt_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mt_geo_manlat_{idx}", placeholder="e.g. 27.394900")
                 with mgcol2:
                     mt_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mt_geo_manlng_{idx}", placeholder="e.g. 33.678400")
-                if st.button("ðŸ“ Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
+                if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
                     data["manual_latitude"] = mt_man_lat
                     data["manual_longitude"] = mt_man_lng
                     data["manual_coords_for_city"] = mt_city
@@ -4791,18 +4791,18 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     st.rerun()
 
             current["geo_confirmed"] = st.checkbox(
-                "âœ… I've checked this location and it's correct for this ticket",
+                "✅ I've checked this location and it's correct for this ticket",
                 value=current.get("geo_confirmed", False), key=f"mt_geo_confirm_{idx}",
                 disabled=not mt_geo.get("valid")
             )
             if not mt_geo.get("valid"):
-                st.info("ðŸ‘† Resolve the location above before this ticket can be confirmed.")
+                st.info("👆 Resolve the location above before this ticket can be confirmed.")
             elif not current["geo_confirmed"]:
-                st.info("ðŸ‘† Please check the location above and confirm it's correct.")
+                st.info("👆 Please check the location above and confirm it's correct.")
 
             st.markdown(f"**Images for {current['label'] or current['ticket_code']}**")
             if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
-                st.caption("âš ï¸ No real image picked yet - using a generic placeholder. Pick at least one real "
+                st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
                           "image below (Travel Compositor requires at least one image per Ticket).")
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
@@ -4817,7 +4817,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
             render_closable_image_section(
                 bool(st.session_state.get("mt_hosted_image_candidates")),
-                f"ðŸ–¼ï¸ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
+                f"🖼️ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
                 f"mt_found_{idx}_closed", _mt_add_url_images
             )
 
@@ -4831,7 +4831,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
             render_closable_image_section(
                 bool(st.session_state.get("mt_doc_raw_images")),
-                f"ðŸ“¥ Images needing hosting ({len(st.session_state.get('mt_doc_raw_images') or [])})",
+                f"📥 Images needing hosting ({len(st.session_state.get('mt_doc_raw_images') or [])})",
                 f"mt_doc_{idx}_closed", _mt_add_doc_image
             )
 
@@ -4845,7 +4845,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pexels)", f"mt_pexels_{idx}_closed", _mt_add_pexels)
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mt_pexels_{idx}_closed", _mt_add_pexels)
 
             def _mt_add_pixabay():
                 selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mt_default_query, f"mt_pixabay_{idx}")
@@ -4855,7 +4855,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mt_pixabay_{idx}_closed", _mt_add_pixabay)
 
             # CONFIRMED FIX (2026-09-03, product owner): "estimated duration must be seen within
             # the app if used days, minutes or hours" - a hardcoded "(hours)" label was wrong
@@ -4886,14 +4886,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
             ready_for_modality = name_and_description_valid and mt_geo.get("valid") and current.get("geo_confirmed")
 
-            if st.button("âž¡ï¸ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mt_continue_modality_{idx}"):
+            if st.button("➡️ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mt_continue_modality_{idx}"):
                 with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''} - this is a separate AI call from the main info above..."):
                     try:
                         modality_data = extract_ticket_modality_data(
                             st.session_state.mt_raw_text, variant_hint=variant_hint,
                             human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     except Exception as e:
-                        st.error(f"âš ï¸ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
+                        st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
                     data.update(modality_data)
                     _apply_min_pax_guaranteed_departure_note(
@@ -4947,12 +4947,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # Reached only after Step A's main info is confirmed.
         # ==================================================================
         st.caption(f"**Step 2 of 2: Modality/Pricing for {current['label'] or current['ticket_code']}.**")
-        if st.button("ðŸ”™ Back to main info", key=f"mt_back_to_main_{idx}"):
+        if st.button("🔙 Back to main info", key=f"mt_back_to_main_{idx}"):
             current["step"] = "main"
             st.rerun()
 
         if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
-            st.warning(f"ðŸ”’ {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
                       f"This Ticket will be published **On Request** regardless of the On Request setting "
                       f"above - a note was also added to Condition/Voucher Remarks.")
 
@@ -4969,7 +4969,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             data["time_tables"] = _clean_time_table_rows(edf)
         editable_table("Start Time(s)", tt_df, f"mt_timetables_{idx}", on_save=_save_mt_timetables)
         if not data.get("time_tables"):
-            st.caption("â„¹ï¸ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
+            st.caption("ℹ️ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mt_op_days_{idx}"
@@ -4991,7 +4991,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         with dcol2:
             data["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mt_end_date_{idx}", value_iso=data.get("end_date", ""))
         if data.get("pricing_notes"):
-            st.warning(f"âš ï¸ {data['pricing_notes']}")
+            st.warning(f"⚠️ {data['pricing_notes']}")
 
         # CONFIRMED REAL BUG (product owner report): "Applied changes to: stop_sales" via
         # "Tell AI what to fix" reported success but the box never actually updated - the raw
@@ -5021,19 +5021,19 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if _mt_other_mods:
             _mt_other_list = "".join(f"\n- {label}" for label in _mt_other_mods)
             st.info(
-                f"â„¹ï¸ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
+                f"ℹ️ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
                 f"for {current['label'] or current['ticket_code']}:{_mt_other_list}\n\n"
                 f"This Ticket will be created with just its one Modality above. Add the other one(s) "
                 f"afterward via **Price update to existing Products -> Ticket -> \"2: Add new Modality to "
                 f"existing Ticket\"**."
             )
 
-        st.markdown(f"**ðŸ¤– Tell AI what to fix - {current['label'] or current['ticket_code']}**")
+        st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
         if render_house_rule_shortcut(mt_clarify_q, "Ticket", f"mt_{idx}"):
             pass
         elif not mt_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
                       f"supplier instead of a one-off fix.")
         if not mt_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -5099,7 +5099,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
             price_valid = bool(_occ_rows) and not _zero_occ
             if _zero_occ:
-                st.error(f"ðŸš« No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
                          f"these would be sellable for free. Enter a price for each, or remove the row.")
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
@@ -5109,7 +5109,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         can_continue = price_valid and name_and_description_valid
 
         is_last = idx == len(queue) - 1
-        btn_label = "âœ… Confirm this Ticket & Finish Review" if is_last else "âœ… Confirm this Ticket & Continue â†’"
+        btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
         if st.button(btn_label, type="primary", disabled=not can_continue):
             current["confirmed"] = True
             if is_last:
@@ -5160,7 +5160,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         )
         mt_publish_as_active = mt_activation_choice.startswith("Active")
 
-        if st.button("ðŸš€ Publish all (one by one)", type="primary"):
+        if st.button("🚀 Publish all (one by one)", type="primary"):
             for q in queue:
                 with st.spinner(f"Publishing '{q['ticket_code']}'..."):
                     # CONFIRMED PRODUCT-OWNER BUG FIX (2026-09-03): every "skip this item" path
@@ -5192,7 +5192,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             _park_for_recovery()
                             continue
                         if not payloads["geolocation_resolved"]:
-                            st.error(f"âŒ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
+                            st.error(f"❌ **{q['ticket_code']}**: geolocation not resolved - skipped. Fix the City "
                                     f"field and create this one individually via the normal Create flow instead.")
                             _park_for_recovery()
                             continue
@@ -5204,7 +5204,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         # reach a real POST here with no gate at all. Same check, same place it
                         # actually matters: right before the real API calls.
                         if not render_publish_blockers(payloads):
-                            st.error(f"ðŸš« **{q['ticket_code']}**: skipped - see the error(s) above.")
+                            st.error(f"🚫 **{q['ticket_code']}**: skipped - see the error(s) above.")
                             _park_for_recovery()
                             continue
 
@@ -5244,11 +5244,11 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             })
                             continue
                         else:
-                            st.success(f"âœ… **{q['ticket_code']}**: base modality '{q['modality_code']}' created.")
+                            st.success(f"✅ **{q['ticket_code']}**: base modality '{q['modality_code']}' created.")
 
                         for mod in q.get("extra_modalities", []):
                             if not mod.get("code") or not mod.get("data"):
-                                st.warning(f"âš ï¸ **{q['ticket_code']}**: skipped an extra modality - missing code or pricing data.")
+                                st.warning(f"⚠️ **{q['ticket_code']}**: skipped an extra modality - missing code or pricing data.")
                                 continue
                             with st.spinner(f"Creating '{q['ticket_code']}' modality '{mod['code']}'..."):
                                 try:
@@ -5264,29 +5264,29 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     # Same expired-window / zero-priced-occupancy gate as the base
                                     # modality above - see render_publish_blockers.
                                     if not render_publish_blockers(mod_payloads):
-                                        st.error(f"ðŸš« **{q['ticket_code']}** modality '{mod['code']}': skipped - see the error(s) above.")
+                                        st.error(f"🚫 **{q['ticket_code']}** modality '{mod['code']}': skipped - see the error(s) above.")
                                         continue
                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                     if "error" in mod_option_result:
                                         show_publish_error(f"create **{q['ticket_code']}** modality '{mod['code']}'", mod_option_result)
                                     else:
-                                        st.success(f"âœ… **{q['ticket_code']}**: modality '{mod['code']}' created.")
+                                        st.success(f"✅ **{q['ticket_code']}**: modality '{mod['code']}' created.")
                                 except Exception as e:
                                     show_publish_error(f"create **{q['ticket_code']}** modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e))
                                     continue
 
                         if mt_publish_as_active:
-                            st.success(f"âœ… **{q['ticket_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
+                            st.success(f"✅ **{q['ticket_code']}** published and left ACTIVE as `{real_code}` (as chosen above).")
                         else:
                             deactivate_payload = dict(creation_payload)
                             deactivate_payload["active"] = False
                             deactivate_payload["code"] = real_code
                             deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
                             if "error" in deactivate_result:
-                                st.warning(f"âš ï¸ **{q['ticket_code']}**: created and published, but switching back to "
+                                st.warning(f"⚠️ **{q['ticket_code']}**: created and published, but switching back to "
                                           f"inactive failed - {deactivate_result}")
                             else:
-                                st.success(f"âœ… **{q['ticket_code']}** published successfully as `{real_code}` (inactive/draft).")
+                                st.success(f"✅ **{q['ticket_code']}** published successfully as `{real_code}` (inactive/draft).")
                     except Exception as e:
                         show_publish_error(f"publish **{q['ticket_code']}** (unexpected error - skipped, rest of batch continues)", str(e))
                         # CONFIRMED PRODUCT-OWNER BUG FIX (2026-09-03): this is the exact spot the
@@ -5302,13 +5302,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         if st.session_state.mt_failed_items:
             st.divider()
-            st.subheader(f"âš ï¸ {len(st.session_state.mt_failed_items)} ticket(s) created but their Modality failed")
+            st.subheader(f"⚠️ {len(st.session_state.mt_failed_items)} ticket(s) created but their Modality failed")
             st.caption("These tickets themselves were created successfully (and are still ACTIVE) - only "
                       "the Modality failed, so retrying 'Publish all' would try to create duplicate "
                       "tickets. Adjust whatever needs fixing below (e.g. a start time), then retry just the "
                       "Modality for that one ticket - no need to redo the whole batch.")
             for fi_idx, fi in enumerate(list(st.session_state.mt_failed_items)):
-                with st.expander(f"ðŸ”§ {fi['ticket_code']} (created as `{fi['real_code']}`) â€” {fi['label']}", expanded=True):
+                with st.expander(f"🔧 {fi['ticket_code']} (created as `{fi['real_code']}`) — {fi['label']}", expanded=True):
                     fdata = fi["data"]
 
                     # CONFIRMED REAL BUG (product owner report, real API rejection):
@@ -5336,7 +5336,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     with fdcol2:
                         fdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtf_end_{fi_idx}", value_iso=fdata.get("end_date", ""))
 
-                    if st.button(f"ðŸ”„ Retry Modality for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
+                    if st.button(f"🔄 Retry Modality for `{fi['real_code']}`", key=f"mtf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['ticket_code']}'..."):
                             try:
                                 retry_pre_config = TicketHumanPreConfig(
@@ -5348,7 +5348,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                 if retry_payloads["ticket_option_error"]:
                                     show_publish_error(f"prepare **{fi['ticket_code']}**'s payload", retry_payloads["ticket_option_error"])
                                 elif not retry_payloads["geolocation_resolved"]:
-                                    st.error("âŒ Geolocation not resolved - fix the City field via the normal Create flow instead.")
+                                    st.error("❌ Geolocation not resolved - fix the City field via the normal Create flow instead.")
                                 elif not render_publish_blockers(retry_payloads):
                                     pass  # render_publish_blockers already showed the specific error(s)
                                 else:
@@ -5356,7 +5356,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     if "error" in retry_option_result:
                                         show_publish_error(f"retry **{fi['ticket_code']}**'s option", retry_option_result)
                                     else:
-                                        st.success(f"âœ… **{fi['ticket_code']}**: option created on retry.")
+                                        st.success(f"✅ **{fi['ticket_code']}**: option created on retry.")
                                         # Match the activation choice made above for this batch.
                                         if not mt_publish_as_active:
                                             retry_deactivate_payload = dict(retry_payloads["main_ticket_payload"])
@@ -5364,7 +5364,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                             retry_deactivate_payload["code"] = fi["real_code"]
                                             retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
                                             if "error" in retry_deactivate_result:
-                                                st.warning(f"âš ï¸ Option created, but switching back to inactive/draft "
+                                                st.warning(f"⚠️ Option created, but switching back to inactive/draft "
                                                           f"failed: {retry_deactivate_result}.")
                                         st.session_state.mt_failed_items = [
                                             x for x in st.session_state.mt_failed_items if x is not fi
@@ -5382,12 +5382,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # Ticket Name/Description/pricing/dates.
         if st.session_state.mt_precreate_failed_items:
             st.divider()
-            st.subheader(f"âš ï¸ {len(st.session_state.mt_precreate_failed_items)} ticket(s) couldn't be created")
+            st.subheader(f"⚠️ {len(st.session_state.mt_precreate_failed_items)} ticket(s) couldn't be created")
             st.caption("These never made it into Travel Compositor at all - fix whatever the error above "
                       "pointed at (often the Modality Code) and retry just this one, no need to redo the "
                       "whole batch.")
             for pf_idx, pf in enumerate(list(st.session_state.mt_precreate_failed_items)):
-                with st.expander(f"ðŸ”§ {pf['ticket_code']} â€” {pf['label']}", expanded=True):
+                with st.expander(f"🔧 {pf['ticket_code']} — {pf['label']}", expanded=True):
                     pfdata = pf["data"]
                     pf_col1, pf_col2 = st.columns(2)
                     with pf_col1:
@@ -5413,7 +5413,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     with pf_dcol2:
                         pfdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtp_end_{pf_idx}", value_iso=pfdata.get("end_date", ""))
 
-                    if st.button(f"ðŸ”„ Retry creating `{pf['ticket_code']}`", key=f"mtp_retry_{pf_idx}", type="primary"):
+                    if st.button(f"🔄 Retry creating `{pf['ticket_code']}`", key=f"mtp_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['ticket_code']}'..."):
                             try:
                                 retry_pre_config = TicketHumanPreConfig(
@@ -5427,7 +5427,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     show_publish_error(f"prepare **{pf['ticket_code']}**'s payload",
                                                       retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"])
                                 elif not retry_payloads["geolocation_resolved"]:
-                                    st.error("âŒ Geolocation not resolved - fix the City field via the normal Create flow instead.")
+                                    st.error("❌ Geolocation not resolved - fix the City field via the normal Create flow instead.")
                                 elif not render_publish_blockers(retry_payloads):
                                     pass  # render_publish_blockers already showed the specific error(s)
                                 else:
@@ -5451,19 +5451,19 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                                 "modality_code": pf["modality_code"], "data": pfdata,
                                             })
                                         else:
-                                            st.success(f"âœ… **{pf['ticket_code']}**: base modality '{pf['modality_code']}' created.")
+                                            st.success(f"✅ **{pf['ticket_code']}**: base modality '{pf['modality_code']}' created.")
                                             if not mt_publish_as_active:
                                                 retry_deactivate_payload = dict(retry_creation_payload)
                                                 retry_deactivate_payload["active"] = False
                                                 retry_deactivate_payload["code"] = retry_real_code
                                                 retry_deactivate_result = client.update_ticket(supplier_id, retry_deactivate_payload)
                                                 if "error" in retry_deactivate_result:
-                                                    st.warning(f"âš ï¸ **{pf['ticket_code']}**: created and published, but switching "
+                                                    st.warning(f"⚠️ **{pf['ticket_code']}**: created and published, but switching "
                                                               f"back to inactive failed - {retry_deactivate_result}")
                                                 else:
-                                                    st.success(f"âœ… **{pf['ticket_code']}** published successfully as `{retry_real_code}` (inactive/draft).")
+                                                    st.success(f"✅ **{pf['ticket_code']}** published successfully as `{retry_real_code}` (inactive/draft).")
                                             else:
-                                                st.success(f"âœ… **{pf['ticket_code']}** published and left ACTIVE as `{retry_real_code}` (as chosen above).")
+                                                st.success(f"✅ **{pf['ticket_code']}** published and left ACTIVE as `{retry_real_code}` (as chosen above).")
                                         st.session_state.mt_precreate_failed_items = [
                                             x for x in st.session_state.mt_precreate_failed_items if x is not pf
                                         ]
@@ -5473,7 +5473,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
 
         st.write("")
         st.divider()
-        if st.button("ðŸ†• Start a new batch"):
+        if st.button("🆕 Start a new batch"):
             for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
                        "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_failed_items",
                        "mt_precreate_failed_items"]:
@@ -5611,7 +5611,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
     if st.session_state.mtu_phase == "gather":
         if not (tk_url or tk_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect Excursions", disabled=not (tk_url or tk_files), key="mtu_detect_btn"):
+        if st.button("🔎 Detect Excursions", disabled=not (tk_url or tk_files), key="mtu_detect_btn"):
             with st.spinner("Gathering content and detecting distinct excursions..."):
                 try:
                     combined_parts = []
@@ -5623,7 +5623,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (tk_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -5745,7 +5745,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
         if list_error:
-            st.warning(f"âš ï¸ Couldn't load the existing ticket list to help pre-fill matches: {list_error}. "
+            st.warning(f"⚠️ Couldn't load the existing ticket list to help pre-fill matches: {list_error}. "
                       f"You can still type codes in manually below.")
         existing_lookup = {
             (item.get("code") or "").strip().lower(): item
@@ -5806,18 +5806,18 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 # exist" is the actual problem.
                 check = check_code_availability(client, "ticket", supplier_id, code_val)
                 if check is None:
-                    st.warning(f"âš ï¸ Couldn't confirm `{code_val}` exists yet (connectivity) - will be "
+                    st.warning(f"⚠️ Couldn't confirm `{code_val}` exists yet (connectivity) - will be "
                               f"re-checked before publishing.")
                     cand["_match_status"] = "unknown"
                 elif check["exists"]:
-                    st.success(f"âœ… Matches existing ticket **{check.get('name') or '(unnamed)'}** "
+                    st.success(f"✅ Matches existing ticket **{check.get('name') or '(unnamed)'}** "
                               f"(`{code_val}`) - will be UPDATED, not created.")
                     cand["_match_status"] = "ok"
                     live = _mtu_fetch_live_ticket(client, supplier_id, code_val)
                     if isinstance(live, dict) and "error" not in live:
                         cand["_live_modalities"] = live.get("modalityCodes") or []
                 else:
-                    st.error(f"ðŸš« No existing ticket found with code `{code_val}` for this supplier - "
+                    st.error(f"🚫 No existing ticket found with code `{code_val}` for this supplier - "
                             f"this flow only UPDATES tickets that already exist. If this is genuinely a "
                             f"brand-new excursion, use **'1: Create new Ticket + 1 Modality'** instead.")
                     cand["_match_status"] = "not_found"
@@ -5843,12 +5843,12 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 "see this ticket's known Modality Codes here)."
             )
             cand["modality_code"] = st.text_input(
-                f"Existing Modality Code to update â€” {cand['label'] or code_val or f'row {i + 1}'}",
+                f"Existing Modality Code to update — {cand['label'] or code_val or f'row {i + 1}'}",
                 value=default_mod, key=_modcode_key, help=mod_help
             )
             st.divider()
 
-        if st.button("âž• Add another excursion manually", key="mtu_add_row"):
+        if st.button("➕ Add another excursion manually", key="mtu_add_row"):
             candidates.append({"label": "", "supplier_code": "", "selected": True, "is_genuine_variant": False})
             st.rerun()
 
@@ -5884,20 +5884,20 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
         duplicate_codes = {code: labels for code, labels in seen_codes.items() if len(labels) > 1}
 
         if missing:
-            st.error(f"ðŸš« These selected excursions are missing a Ticket Code or Modality Code and were "
+            st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code and were "
                     f"excluded: {missing}")
         if not_found:
-            st.error(f"ðŸš« These selected excursions don't match any existing ticket and were excluded: {not_found}")
+            st.error(f"🚫 These selected excursions don't match any existing ticket and were excluded: {not_found}")
         if duplicate_codes:
             for code, labels in duplicate_codes.items():
-                st.error(f"ðŸš« Ticket Code `{code}` is used by more than one selected excursion "
+                st.error(f"🚫 Ticket Code `{code}` is used by more than one selected excursion "
                         f"({', '.join(labels)}) - each row must update a DIFFERENT ticket.")
 
         ready_to_review = new_queue and not missing and not not_found and not duplicate_codes
         st.caption(f"**{len(new_queue)}** ticket(s) ready to review." if ready_to_review else
                   "Fix the issues above before continuing.")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary", disabled=not ready_to_review, key="mtu_start_review"):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not ready_to_review, key="mtu_start_review"):
             st.session_state.mtu_queue = new_queue
             st.session_state.mtu_queue_index = 0
             st.session_state.mtu_phase = "reviewing"
@@ -5918,7 +5918,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         st.progress(idx / len(queue))
         with st.expander("Not what you wanted?"):
-            if st.button("ðŸ”™ Cancel this batch - return to single-Ticket flow", key=f"mtu_cancel_{idx}"):
+            if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mtu_cancel_{idx}"):
                 for key in ["mtu_phase", "mtu_raw_text", "mtu_candidates", "mtu_queue", "mtu_queue_index",
                            "mtu_doc_raw_images", "mtu_hosted_image_candidates", "mtu_live_ticket_cache"]:
                     st.session_state.pop(key, None)
@@ -5945,8 +5945,8 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
         live_ticket = current["live_ticket"]
         live_ok = isinstance(live_ticket, dict) and "error" not in live_ticket
         if not live_ok:
-            st.error(f"âŒ Couldn't fetch the live ticket `{current['target_ticket_code']}`: {live_ticket}")
-            if st.button("ðŸ”„ Retry fetch", key=f"mtu_retry_fetch_{idx}"):
+            st.error(f"❌ Couldn't fetch the live ticket `{current['target_ticket_code']}`: {live_ticket}")
+            if st.button("🔄 Retry fetch", key=f"mtu_retry_fetch_{idx}"):
                 current["live_ticket"] = None
                 st.rerun()
             return
@@ -5978,8 +5978,8 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     except Exception as e:
                         current["drift"] = {"error": friendly_error_message(e)}
                 except Exception as e:
-                    st.error(f"âš ï¸ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
-                    if st.button("ðŸ”„ Retry extraction", key=f"mtu_retry_extract_{idx}"):
+                    st.error(f"⚠️ Couldn't extract main info for this excursion: {friendly_error_message(e)}")
+                    if st.button("🔄 Retry extraction", key=f"mtu_retry_extract_{idx}"):
                         st.rerun()
                     return
 
@@ -5996,22 +5996,22 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 if _drift.get("error"):
                     st.caption(f"(Couldn't run the AI content check against the live ticket: {_drift['error']})")
                 elif _drift.get("has_changes"):
-                    st.warning("âš ï¸ The new document may describe more than a price change vs. what's "
+                    st.warning("⚠️ The new document may describe more than a price change vs. what's "
                               "currently live - double-check the fields below before publishing:")
                     for _c in _drift.get("changes") or []:
                         st.markdown(f"- {_c}")
                 else:
-                    st.caption("âœ… AI check: the new document doesn't appear to describe any content "
+                    st.caption("✅ AI check: the new document doesn't appear to describe any content "
                               "change beyond pricing.")
 
             editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
             editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
             if not (data.get("ticket_name") or "").strip():
-                st.error("ðŸš« Ticket name is empty - fill it in above before continuing.")
+                st.error("🚫 Ticket name is empty - fill it in above before continuing.")
             if not (data.get("description") or "").strip():
-                st.error("ðŸš« Description is empty - fill it in above before continuing.")
+                st.error("🚫 Description is empty - fill it in above before continuing.")
             if current.get("_cancellation_link_scope"):
-                st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table "
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
                           f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
                           f"clear it if this ticket needs different terms.")
             render_cancellation_policy_editor(data, f"mtu_{idx}")
@@ -6027,7 +6027,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                            "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
                            "price_valid_until_date", widget="text_input", key_suffix=f"_{idx}")
 
-            st.markdown(f"**ðŸ“ Location for {current['label'] or current['target_ticket_code']}**")
+            st.markdown(f"**📍 Location for {current['label'] or current['target_ticket_code']}**")
             mtu_city = data.get("city", "")
             if (data.get("manual_latitude") is not None and data.get("manual_longitude") is not None
                     and data.get("manual_coords_for_city") != mtu_city):
@@ -6046,23 +6046,23 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 mtu_maps_link = f"https://www.google.com/maps?q={mtu_lat},{mtu_lng}"
                 st.markdown(
                     f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
-                    f"border-radius:4px;'>ðŸ“ Resolved: <strong>{mtu_geo.get('display_name') or mtu_city}</strong>"
-                    f"<br>Coordinates: {mtu_lat:.6f}, {mtu_lng:.6f} â€” "
+                    f"border-radius:4px;'>📍 Resolved: <strong>{mtu_geo.get('display_name') or mtu_city}</strong>"
+                    f"<br>Coordinates: {mtu_lat:.6f}, {mtu_lng:.6f} — "
                     f"<a href='{mtu_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
                     unsafe_allow_html=True
                 )
-                st.caption("Geocoding data Â© OpenStreetMap contributors")
+                st.caption("Geocoding data © OpenStreetMap contributors")
             else:
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                    "border-radius:4px;'>âŒ Geolocation NOT resolved - the City name may not match a known "
+                    "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
                     "location. Search below or enter coordinates manually.</div>",
                     unsafe_allow_html=True
                 )
 
-            with st.expander("ðŸ” Search for a better match / fix this location", expanded=not mtu_geo.get("valid")):
+            with st.expander("🔍 Search for a better match / fix this location", expanded=not mtu_geo.get("valid")):
                 mtu_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mtu_city), key=f"mtu_geo_query_{idx}")
-                if st.button("ðŸ”Ž Search", key=f"mtu_geo_search_btn_{idx}"):
+                if st.button("🔎 Search", key=f"mtu_geo_search_btn_{idx}"):
                     with st.spinner("Searching..."):
                         current["geo_search_results"] = geocode_search(mtu_geo_query, limit=5)
                 if current.get("geo_search_results"):
@@ -6082,7 +6082,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
                 st.markdown("**Or paste a Google Maps link:**")
                 mtu_maps_url = st.text_input("Google Maps link", key=f"mtu_geo_maps_url_{idx}", placeholder="https://maps.google.com/...")
-                if st.button("ðŸ”— Use this link's coordinates", key=f"mtu_geo_maps_url_btn_{idx}", disabled=not mtu_maps_url.strip()):
+                if st.button("🔗 Use this link's coordinates", key=f"mtu_geo_maps_url_btn_{idx}", disabled=not mtu_maps_url.strip()):
                     with st.spinner("Reading coordinates from the link..."):
                         mtu_url_geo = parse_google_maps_url(mtu_maps_url)
                     if mtu_url_geo["valid"]:
@@ -6100,7 +6100,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     mtu_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mtu_geo_manlat_{idx}", placeholder="e.g. 27.394900")
                 with mgcol2:
                     mtu_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mtu_geo_manlng_{idx}", placeholder="e.g. 33.678400")
-                if st.button("ðŸ“ Use these coordinates", key=f"mtu_geo_manual_btn_{idx}", disabled=mtu_man_lat is None or mtu_man_lng is None):
+                if st.button("📍 Use these coordinates", key=f"mtu_geo_manual_btn_{idx}", disabled=mtu_man_lat is None or mtu_man_lng is None):
                     data["manual_latitude"] = mtu_man_lat
                     data["manual_longitude"] = mtu_man_lng
                     data["manual_coords_for_city"] = mtu_city
@@ -6108,18 +6108,18 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     st.rerun()
 
             current["geo_confirmed"] = st.checkbox(
-                "âœ… I've checked this location and it's correct for this ticket",
+                "✅ I've checked this location and it's correct for this ticket",
                 value=current.get("geo_confirmed", False), key=f"mtu_geo_confirm_{idx}",
                 disabled=not mtu_geo.get("valid")
             )
             if not mtu_geo.get("valid"):
-                st.info("ðŸ‘† Resolve the location above before this ticket can be confirmed.")
+                st.info("👆 Resolve the location above before this ticket can be confirmed.")
             elif not current["geo_confirmed"]:
-                st.info("ðŸ‘† Please check the location above and confirm it's correct.")
+                st.info("👆 Please check the location above and confirm it's correct.")
 
             st.markdown(f"**Images for {current['label'] or current['target_ticket_code']}**")
             if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
-                st.caption("âš ï¸ No real image on file yet - using a generic placeholder. Pick at least one "
+                st.caption("⚠️ No real image on file yet - using a generic placeholder. Pick at least one "
                           "real image below (Travel Compositor requires at least one image per Ticket).")
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected "
@@ -6135,7 +6135,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
             render_closable_image_section(
                 bool(st.session_state.get("mtu_hosted_image_candidates")),
-                f"ðŸ–¼ï¸ Images found in your document/page ({len(st.session_state.get('mtu_hosted_image_candidates') or [])})",
+                f"🖼️ Images found in your document/page ({len(st.session_state.get('mtu_hosted_image_candidates') or [])})",
                 f"mtu_found_{idx}_closed", _mtu_add_url_images
             )
 
@@ -6149,7 +6149,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
             render_closable_image_section(
                 bool(st.session_state.get("mtu_doc_raw_images")),
-                f"ðŸ“¥ Images needing hosting ({len(st.session_state.get('mtu_doc_raw_images') or [])})",
+                f"📥 Images needing hosting ({len(st.session_state.get('mtu_doc_raw_images') or [])})",
                 f"mtu_doc_{idx}_closed", _mtu_add_doc_image
             )
 
@@ -6163,7 +6163,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pexels)", f"mtu_pexels_{idx}_closed", _mtu_add_pexels)
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", f"mtu_pexels_{idx}_closed", _mtu_add_pexels)
 
             def _mtu_add_pixabay():
                 selected = render_stock_photo_picker("Pixabay", search_images_pixabay, mtu_default_query, f"mtu_pixabay_{idx}")
@@ -6173,7 +6173,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pixabay)", f"mtu_pixabay_{idx}_closed", _mtu_add_pixabay)
+            render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", f"mtu_pixabay_{idx}_closed", _mtu_add_pixabay)
 
             render_duration_editor(data, f"mtu_{idx}")
 
@@ -6199,14 +6199,14 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             name_and_description_valid = bool((data.get("ticket_name") or "").strip()) and bool((data.get("description") or "").strip())
             ready_for_modality = name_and_description_valid and mtu_geo.get("valid") and current.get("geo_confirmed")
 
-            if st.button("âž¡ï¸ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mtu_continue_modality_{idx}"):
+            if st.button("➡️ Continue to Modality/Pricing", type="primary", disabled=not ready_for_modality, key=f"mtu_continue_modality_{idx}"):
                 with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
                     try:
                         modality_data = extract_ticket_modality_data(
                             st.session_state.mtu_raw_text, variant_hint=variant_hint,
                             human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     except Exception as e:
-                        st.error(f"âš ï¸ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
+                        st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
                         return
                     data.update(modality_data)
                     _apply_min_pax_guaranteed_departure_note(
@@ -6229,12 +6229,12 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
         # STEP B: MODALITY / PRICING
         # ==================================================================
         st.caption(f"**Step 2 of 2: Modality/Pricing for {current['label'] or current['target_ticket_code']}.**")
-        if st.button("ðŸ”™ Back to main info", key=f"mtu_back_to_main_{idx}"):
+        if st.button("🔙 Back to main info", key=f"mtu_back_to_main_{idx}"):
             current["step"] = "main"
             st.rerun()
 
         if min_pax_forces_on_request(data.get("min_pax_guaranteed_departure")):
-            st.warning(f"ðŸ”’ {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
+            st.warning(f"🔒 {min_pax_guaranteed_departure_note(data.get('min_pax_guaranteed_departure'))} "
                       f"This Ticket will be published **On Request** regardless of the On Request setting "
                       f"above - a note was also added to Condition/Voucher Remarks.")
 
@@ -6247,7 +6247,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             data["time_tables"] = _clean_time_table_rows(edf)
         editable_table("Start Time(s)", tt_df, f"mtu_timetables_{idx}", on_save=_save_mtu_timetables)
         if not data.get("time_tables"):
-            st.caption("â„¹ï¸ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
+            st.caption("ℹ️ No start time set yet - optional, but add one if the excursion has a fixed departure time.")
 
         data["operational_days"] = st.multiselect(
             "Operational Days", ALL_WEEKDAYS, default=data.get("operational_days", ALL_WEEKDAYS), key=f"mtu_op_days_{idx}"
@@ -6269,18 +6269,18 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
         with dcol2:
             data["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtu_end_date_{idx}", value_iso=data.get("end_date", ""))
         if data.get("pricing_notes"):
-            st.warning(f"âš ï¸ {data['pricing_notes']}")
+            st.warning(f"⚠️ {data['pricing_notes']}")
 
         render_stop_sales_editor(data, f"mtu_{idx}")
         render_ticket_modality_supplements_editor(data, f"mtu_{idx}")
         render_ticket_language_options(data, f"mtu_{idx}")
 
-        st.markdown(f"**ðŸ¤– Tell AI what to fix - {current['label'] or current['target_ticket_code']}**")
+        st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['target_ticket_code']}**")
         mtu_clarify_q = st.text_input("Your message", key=f"mtu_clarify_input_{idx}")
         if render_house_rule_shortcut(mtu_clarify_q, "Ticket", f"mtu_{idx}"):
             pass
         elif not mtu_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
                       f"supplier instead of a one-off fix.")
         if not mtu_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -6320,7 +6320,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
             price_valid = bool(_occ_rows) and not _zero_occ
             if _zero_occ:
-                st.error(f"ðŸš« No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
                          f"these would be sellable for free. Enter a price for each, or remove the row.")
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
@@ -6328,7 +6328,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
         can_continue = price_valid and name_and_description_valid
 
         is_last = idx == len(queue) - 1
-        btn_label = "âœ… Confirm this Ticket & Finish Review" if is_last else "âœ… Confirm this Ticket & Continue â†’"
+        btn_label = "✅ Confirm this Ticket & Finish Review" if is_last else "✅ Confirm this Ticket & Continue →"
         if st.button(btn_label, type="primary", disabled=not can_continue, key=f"mtu_confirm_{idx}"):
             current["confirmed"] = True
             current["_currency"] = item_currency
@@ -6363,7 +6363,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         _warn_stale_images([u for q in queue for u in (q.get("data", {}).get("image_urls") or [])])
 
-        if st.button("ðŸš€ Publish all updates (one by one)", type="primary", key="mtu_publish_all"):
+        if st.button("🚀 Publish all updates (one by one)", type="primary", key="mtu_publish_all"):
             for q in queue:
                 with st.spinner(f"Updating '{q['target_ticket_code']}'..."):
                     def _park_update_failure(q=q):
@@ -6401,11 +6401,11 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                             _park_update_failure()
                             continue
                         if not payloads["geolocation_resolved"]:
-                            st.error(f"âŒ **{q['target_ticket_code']}**: geolocation not resolved - skipped.")
+                            st.error(f"❌ **{q['target_ticket_code']}**: geolocation not resolved - skipped.")
                             _park_update_failure()
                             continue
                         if not render_publish_blockers(payloads):
-                            st.error(f"ðŸš« **{q['target_ticket_code']}**: skipped - see the error(s) above.")
+                            st.error(f"🚫 **{q['target_ticket_code']}**: skipped - see the error(s) above.")
                             _park_update_failure()
                             continue
 
@@ -6426,7 +6426,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                             _park_update_failure()
                             continue
                         _ticket_was_updated = True
-                        st.success(f"âœ… **{q['target_ticket_code']}**: ticket details updated.")
+                        st.success(f"✅ **{q['target_ticket_code']}**: ticket details updated.")
 
                         mtu_update_option_payload = dict(payloads["ticket_option_payload"])
                         mtu_update_option_payload["code"] = q["modality_code"]
@@ -6440,7 +6440,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                 "data": q["data"], "live_ticket": q.get("live_ticket"),
                             })
                             continue
-                        st.success(f"âœ… **{q['target_ticket_code']}**: Modality '{q['modality_code']}' pricing/schedule updated.")
+                        st.success(f"✅ **{q['target_ticket_code']}**: Modality '{q['modality_code']}' pricing/schedule updated.")
                     except Exception as e:
                         show_publish_error(f"update **{q['target_ticket_code']}** (unexpected error - "
                                           f"skipped, rest of batch continues)", str(e))
@@ -6450,12 +6450,12 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         if st.session_state.mtu_option_failed_items:
             st.divider()
-            st.subheader(f"âš ï¸ {len(st.session_state.mtu_option_failed_items)} ticket(s) updated but their Modality failed")
+            st.subheader(f"⚠️ {len(st.session_state.mtu_option_failed_items)} ticket(s) updated but their Modality failed")
             st.caption("The ticket's own details WERE updated successfully - only the Modality's pricing/"
                       "schedule failed. Adjust below and retry just the Modality - no need to redo the "
                       "whole batch.")
             for fi_idx, fi in enumerate(list(st.session_state.mtu_option_failed_items)):
-                with st.expander(f"ðŸ”§ {fi['target_ticket_code']} â€” {fi['label']}", expanded=True):
+                with st.expander(f"🔧 {fi['target_ticket_code']} — {fi['label']}", expanded=True):
                     fdata = fi["data"]
                     fi_currency = (fi.get("live_ticket") or {}).get("currency") or "EUR"
                     fi_currency = render_currency_check(fi_currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtuf_currency_{fi_idx}")
@@ -6472,7 +6472,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     with fdcol2:
                         fdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtuf_end_{fi_idx}", value_iso=fdata.get("end_date", ""))
 
-                    if st.button(f"ðŸ”„ Retry Modality for `{fi['target_ticket_code']}`", key=f"mtuf_retry_{fi_idx}", type="primary"):
+                    if st.button(f"🔄 Retry Modality for `{fi['target_ticket_code']}`", key=f"mtuf_retry_{fi_idx}", type="primary"):
                         with st.spinner(f"Retrying '{fi['target_ticket_code']}'..."):
                             try:
                                 _fi_release_days = (fi.get("live_ticket") or {}).get("daysAvailableBeforeRelease")
@@ -6490,7 +6490,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                 if retry_payloads["ticket_option_error"]:
                                     show_publish_error(f"prepare **{fi['target_ticket_code']}**'s payload", retry_payloads["ticket_option_error"])
                                 elif not retry_payloads["geolocation_resolved"]:
-                                    st.error("âŒ Geolocation not resolved.")
+                                    st.error("❌ Geolocation not resolved.")
                                 elif not render_publish_blockers(retry_payloads):
                                     pass
                                 else:
@@ -6499,7 +6499,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                     if "error" in retry_option_result:
                                         show_publish_error(f"retry **{fi['target_ticket_code']}**'s Modality", retry_option_result)
                                     else:
-                                        st.success(f"âœ… **{fi['target_ticket_code']}**: Modality updated on retry.")
+                                        st.success(f"✅ **{fi['target_ticket_code']}**: Modality updated on retry.")
                                         st.session_state.mtu_option_failed_items = [
                                             x for x in st.session_state.mtu_option_failed_items if x is not fi
                                         ]
@@ -6509,11 +6509,11 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         if st.session_state.mtu_update_failed_items:
             st.divider()
-            st.subheader(f"âš ï¸ {len(st.session_state.mtu_update_failed_items)} ticket(s) couldn't be updated")
+            st.subheader(f"⚠️ {len(st.session_state.mtu_update_failed_items)} ticket(s) couldn't be updated")
             st.caption("Nothing was changed for these on Travel Compositor yet - fix whatever the error "
                       "above pointed at and retry just this one.")
             for pf_idx, pf in enumerate(list(st.session_state.mtu_update_failed_items)):
-                with st.expander(f"ðŸ”§ {pf['target_ticket_code']} â€” {pf['label']}", expanded=True):
+                with st.expander(f"🔧 {pf['target_ticket_code']} — {pf['label']}", expanded=True):
                     pfdata = pf["data"]
                     pf_currency = (pf.get("live_ticket") or {}).get("currency") or "EUR"
                     pf_currency = render_currency_check(pf_currency, CURRENCY_OPTIONS, "tk_cfg_currency", f"mtup_currency_{pf_idx}")
@@ -6530,7 +6530,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                     with pf_dcol2:
                         pfdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtup_end_{pf_idx}", value_iso=pfdata.get("end_date", ""))
 
-                    if st.button(f"ðŸ”„ Retry updating `{pf['target_ticket_code']}`", key=f"mtup_retry_{pf_idx}", type="primary"):
+                    if st.button(f"🔄 Retry updating `{pf['target_ticket_code']}`", key=f"mtup_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['target_ticket_code']}'..."):
                             try:
                                 _pf_release_days = (pf.get("live_ticket") or {}).get("daysAvailableBeforeRelease")
@@ -6549,7 +6549,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                     show_publish_error(f"prepare **{pf['target_ticket_code']}**'s payload",
                                                       retry_payloads["main_ticket_error"] or retry_payloads["ticket_option_error"])
                                 elif not retry_payloads["geolocation_resolved"]:
-                                    st.error("âŒ Geolocation not resolved.")
+                                    st.error("❌ Geolocation not resolved.")
                                 elif not render_publish_blockers(retry_payloads):
                                     pass
                                 else:
@@ -6562,7 +6562,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                     if "error" in retry_result:
                                         show_publish_error(f"update **{pf['target_ticket_code']}**", retry_result)
                                     else:
-                                        st.success(f"âœ… **{pf['target_ticket_code']}**: ticket details updated on retry.")
+                                        st.success(f"✅ **{pf['target_ticket_code']}**: ticket details updated on retry.")
                                         retry_option_result = client.update_ticket_option(
                                             supplier_id, pf["target_ticket_code"],
                                             {**retry_payloads["ticket_option_payload"], "code": pf["modality_code"]})
@@ -6574,7 +6574,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                                                 "data": pfdata, "live_ticket": pf.get("live_ticket"),
                                             })
                                         else:
-                                            st.success(f"âœ… **{pf['target_ticket_code']}**: Modality '{pf['modality_code']}' updated too.")
+                                            st.success(f"✅ **{pf['target_ticket_code']}**: Modality '{pf['modality_code']}' updated too.")
                                         st.session_state.mtu_update_failed_items = [
                                             x for x in st.session_state.mtu_update_failed_items if x is not pf
                                         ]
@@ -6584,7 +6584,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
 
         st.write("")
         st.divider()
-        if st.button("ðŸ†• Start a new batch update", key="mtu_new_batch"):
+        if st.button("🆕 Start a new batch update", key="mtu_new_batch"):
             for key in ["mtu_phase", "mtu_raw_text", "mtu_candidates", "mtu_queue", "mtu_queue_index",
                        "mtu_doc_raw_images", "mtu_hosted_image_candidates", "mtu_update_failed_items",
                        "mtu_option_failed_items", "mtu_live_ticket_cache"]:
@@ -6612,12 +6612,12 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     # TICKET STEP 2: Action + Supplier
     # ------------------------------------------------------------------
-    st.header("Ticket â€” Step 2: What do you want to do?")
+    st.header("Ticket — Step 2: What do you want to do?")
 
     if st.session_state.tk_step1_confirmed:
-        st.success(f"âœ… Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
+        st.success(f"✅ Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
                    f"Supplier ID: **{st.session_state.tk_cfg_supplier_id}**")
-        if st.button("ðŸ”„ Change action / supplier", key="tk_change_action"):
+        if st.button("🔄 Change action / supplier", key="tk_change_action"):
             st.session_state.tk_step1_confirmed = False
             st.session_state.tk_step2_confirmed = False
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating
@@ -6644,7 +6644,7 @@ def render_ticket_flow(client):
                     # This is the very first real network call in the flow -
                     # a transient connection issue here used to crash the
                     # whole app before the human could even pick a supplier.
-                    st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                     st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
@@ -6657,26 +6657,26 @@ def render_ticket_flow(client):
                 if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
-                st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue. "
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
                         "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")
             else:
                 supplier_options = {
-                    f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                     for s in momira_suppliers
                 }
                 selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tk_supplier_select")
                 supplier_id_choice = str(supplier_options[selected_label])
-            if st.button("ðŸ”„ Refresh supplier list", key="tk_refresh_suppliers"):
+            if st.button("🔄 Refresh supplier list", key="tk_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
                 st.rerun()
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
-            with st.expander("âš ï¸ Emergency manual entry"):
+            with st.expander("⚠️ Emergency manual entry"):
                 st.caption("Bypasses the Momira_ check above - only use this if you've already confirmed the "
                           "numeric ID belongs to a real Momira_ supplier.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tk_supplier_manual")
 
-        if st.button("âž¡ï¸ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tk_continue1"):
             st.session_state.tk_cfg_action = action_key
             st.session_state.tk_cfg_supplier_id = supplier_id_choice
             st.session_state.tk_step1_confirmed = True
@@ -6688,14 +6688,14 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     # TICKET STEP 3: Action-specific details
     # ------------------------------------------------------------------
-    st.header("Ticket â€” Step 3: Details for this action")
+    st.header("Ticket — Step 3: Details for this action")
     action = st.session_state.tk_cfg_action
     needed = TICKET_ACTION_FIELDS[action]
     supplier_id = st.session_state.tk_cfg_supplier_id
 
     if st.session_state.tk_step2_confirmed:
-        st.success("âœ… Step 3 details confirmed.")
-        if st.button("ðŸ”„ Change details", key="tk_change_details"):
+        st.success("✅ Step 3 details confirmed.")
+        if st.button("🔄 Change details", key="tk_change_details"):
             st.session_state.tk_step2_confirmed = False
             st.rerun()
     else:
@@ -6709,7 +6709,7 @@ def render_ticket_flow(client):
                 "Existing Ticket Code", value=tk_prefill, placeholder="e.g. JAP-T1", key="tk_existing_code"
             ).strip()
 
-            if st.button("ðŸ” Check what's already online for this code", disabled=not existing_ticket_code_in, key="tk_check_online"):
+            if st.button("🔍 Check what's already online for this code", disabled=not existing_ticket_code_in, key="tk_check_online"):
                 with st.spinner("Fetching from Travel Compositor..."):
                     fetched = client.get_ticket(supplier_id, existing_ticket_code_in)
                     st.session_state.tk_fetched_ticket = fetched
@@ -6839,7 +6839,7 @@ def render_ticket_flow(client):
             st.info("Click 'Check what's already online for this code' above first - this fetches the "
                    "existing Currency so you don't have to re-enter it.")
 
-        if st.button("âž¡ï¸ Continue to Step 4", type="primary", disabled=not required_ok, key="tk_continue2"):
+        if st.button("➡️ Continue to Step 4", type="primary", disabled=not required_ok, key="tk_continue2"):
             if action in ("add_option", "update_ticket"):
                 currency_in = st.session_state.get("tk_fetched_currency") or ""
             st.session_state.tk_cfg_ticket_code = ticket_code_in or ""
@@ -6907,7 +6907,7 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     # TICKET STEP 4: Input Source
     # ------------------------------------------------------------------
-    st.header("Ticket â€” Step 4: Input Source")
+    st.header("Ticket — Step 4: Input Source")
     tk_url = st.text_input("Product page URL (optional)", key="tk_url")
     tk_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                                 accept_multiple_files=True, key="tk_files")
@@ -6935,7 +6935,7 @@ def render_ticket_flow(client):
                                        max_passengers=max_passengers)
         return
 
-    if st.button("ðŸ”Ž Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
+    if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
         with st.spinner("Gathering content..."):
             try:
                 combined_parts = []
@@ -6947,7 +6947,7 @@ def render_ticket_flow(client):
                     if page_text is not None:
                         combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
                     else:
-                        st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                        st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                 for uploaded in (tk_files or []):
                     suffix = os.path.splitext(uploaded.name)[1]
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -7069,7 +7069,7 @@ def render_ticket_flow(client):
 
     if st.session_state.get("tk_pending_variants"):
         excursions = st.session_state.tk_pending_variants
-        st.warning(f"âš ï¸ This content describes {len(excursions)} distinct excursions â€” which one(s) do you want to add?")
+        st.warning(f"⚠️ This content describes {len(excursions)} distinct excursions — which one(s) do you want to add?")
         st.caption("Tick just one to continue in the normal single-Ticket flow below, or tick several to create "
                   "them all as separate Tickets in one batch (you'll assign each its own Code next).")
 
@@ -7108,11 +7108,11 @@ def render_ticket_flow(client):
                     continue
                 tkpvcol1, tkpvcol2 = st.columns(2)
                 with tkpvcol1:
-                    sel["ticket_code"] = st.text_input(f"Ticket Code â€” {sel['label']}", value=sel["ticket_code"], key=f"tkpv_code_{i}", placeholder="e.g. BALI-T1")
+                    sel["ticket_code"] = st.text_input(f"Ticket Code — {sel['label']}", value=sel["ticket_code"], key=f"tkpv_code_{i}", placeholder="e.g. BALI-T1")
                 with tkpvcol2:
-                    sel["modality_code"] = st.text_input(f"Modality Code â€” {sel['label']}", value=sel["modality_code"], key=f"tkpv_modcode_{i}")
+                    sel["modality_code"] = st.text_input(f"Modality Code — {sel['label']}", value=sel["modality_code"], key=f"tkpv_modcode_{i}")
 
-        tkpv_btn_label = "âœ… Confirm and Extract Full Details" if tkpv_num_selected <= 1 else f"âœ… Confirm and Start Batch Review ({tkpv_num_selected} tickets)"
+        tkpv_btn_label = "✅ Confirm and Extract Full Details" if tkpv_num_selected <= 1 else f"✅ Confirm and Start Batch Review ({tkpv_num_selected} tickets)"
         if st.button(tkpv_btn_label, key="tk_confirm_variant", disabled=tkpv_num_selected == 0):
             if tkpv_num_selected <= 1:
                 with st.spinner("Extracting full details for the selected excursion..."):
@@ -7180,18 +7180,18 @@ def render_ticket_flow(client):
                                 f"{s['modality_code'].strip()} (already on ticket {mod_check['ticket_code']})")
 
                 if tkpv_missing:
-                    st.error(f"ðŸš« These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
+                    st.error(f"🚫 These selected excursions are missing a Ticket Code or Modality Code: {tkpv_missing}")
                 elif tkpv_dupes:
-                    st.error(f"ðŸš« These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
+                    st.error(f"🚫 These Ticket Codes are used by more than one selected excursion: {list(tkpv_dupes.keys())}")
                 elif tkpv_mod_dupes:
-                    st.error(f"ðŸš« These Modality Codes are used by more than one selected excursion - give each "
+                    st.error(f"🚫 These Modality Codes are used by more than one selected excursion - give each "
                             f"a distinct one: {list(tkpv_mod_dupes.keys())}")
                 elif tkpv_existing:
-                    st.error(f"ðŸš« These Ticket Codes are ALREADY TAKEN by existing tickets - choose different "
+                    st.error(f"🚫 These Ticket Codes are ALREADY TAKEN by existing tickets - choose different "
                             f"ones: {tkpv_existing}")
                 else:
                     if tkpv_mod_existing:
-                        st.warning(f"âš ï¸ These Modality Codes are already used by an existing ticket for this "
+                        st.warning(f"⚠️ These Modality Codes are already used by an existing ticket for this "
                                   f"supplier - double-check these aren't the same product added again: "
                                   f"{tkpv_mod_existing}")
                     tk_pending_url = st.session_state.get("tk_pending_url")
@@ -7219,7 +7219,7 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     if st.session_state.get("tk_extracted"):
         data = st.session_state.tk_extracted
-        st.header("Ticket â€” Step 5: Review & Edit")
+        st.header("Ticket — Step 5: Review & Edit")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -7239,27 +7239,27 @@ def render_ticket_flow(client):
                         st.caption(f"(Couldn't run the AI content check against the new document: "
                                   f"{_tk_drift['error']})")
                     elif _tk_drift.get("has_changes"):
-                        st.warning("âš ï¸ The new document may describe more than a price change - "
+                        st.warning("⚠️ The new document may describe more than a price change - "
                                   "double-check before publishing:")
                         for _c in _tk_drift.get("changes") or []:
                             st.markdown(f"- {_c}")
                     else:
-                        st.caption("âœ… AI check: the new document doesn't appear to describe any "
+                        st.caption("✅ AI check: the new document doesn't appear to describe any "
                                   "content change beyond pricing.")
                 editable_field("Prices confirmed valid until (optional - the app adds the "
                                "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
                                "price_valid_until_date", widget="text_input")
             else:
-                st.subheader("Extracted Data (click âœï¸ to edit)")
+                st.subheader("Extracted Data (click ✏️ to edit)")
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
                 editable_field("Description", data, "description", widget="html_text_area", height=150)
                 # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes
                 # back blank (see extract_ticket_data's safety net), but this is the last line
                 # of defense - a ticket can never publish with no name/description.
                 if not (data.get("ticket_name") or "").strip():
-                    st.error("ðŸš« Ticket name is empty - fill it in above before continuing.")
+                    st.error("🚫 Ticket name is empty - fill it in above before continuing.")
                 if not (data.get("description") or "").strip():
-                    st.error("ðŸš« Description is empty - fill it in above before continuing.")
+                    st.error("🚫 Description is empty - fill it in above before continuing.")
                 editable_field("City", data, "city", widget="text_input")
                 render_cancellation_policy_editor(data, "legacy_ticket")
                 editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
@@ -7278,7 +7278,7 @@ def render_ticket_flow(client):
                 # reasoning as the batch flow above - every field is directly editable now.
 
                 if data.get("is_private") and "private" not in (modality_code or "").lower():
-                    st.info(f"ðŸ’¡ This excursion is described as **PRIVATE** in the source - a genuine "
+                    st.info(f"💡 This excursion is described as **PRIVATE** in the source - a genuine "
                            f"selling point. Your current Modality Code is `{modality_code}` - consider "
                            f"going back to Step 3 (Details) and adding \"Private\" to it if you'd like "
                            f"this reflected there.")
@@ -7353,7 +7353,7 @@ def render_ticket_flow(client):
                         return len(selected)
                     return 0
 
-                render_closable_image_section(True, "ðŸ–¼ï¸ Or search free stock photos (Pexels)", "tk_pexels_closed", _tk_add_pexels)
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "tk_pexels_closed", _tk_add_pexels)
 
                 def _tk_add_pixabay():
                     selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_tk_img_query, "tk_pixabay")
@@ -7365,7 +7365,7 @@ def render_ticket_flow(client):
                         return len(selected)
                     return 0
 
-                render_closable_image_section(True, "ðŸ–¼ï¸ Or search free stock photos (Pixabay)", "tk_pixabay_closed", _tk_add_pixabay)
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "tk_pixabay_closed", _tk_add_pixabay)
 
                 def _tk_add_url_images():
                     selected = render_url_image_picker(st.session_state.tk_hosted_image_candidates, "tk_found_images")
@@ -7379,7 +7379,7 @@ def render_ticket_flow(client):
 
                 render_closable_image_section(
                     bool(st.session_state.get("tk_hosted_image_candidates")),
-                    f"ðŸ–¼ï¸ Images found ({len(st.session_state.get('tk_hosted_image_candidates') or [])}) - from the page/document",
+                    f"🖼️ Images found ({len(st.session_state.get('tk_hosted_image_candidates') or [])}) - from the page/document",
                     "tk_found_images_closed", _tk_add_url_images
                 )
 
@@ -7395,16 +7395,16 @@ def render_ticket_flow(client):
 
                 render_closable_image_section(
                     bool(st.session_state.get("tk_doc_raw_images")),
-                    f"ðŸ“¥ Images extracted from your document(s) ({len(st.session_state.get('tk_doc_raw_images') or [])}) - need hosting",
+                    f"📥 Images extracted from your document(s) ({len(st.session_state.get('tk_doc_raw_images') or [])}) - need hosting",
                     "tk_doc_images_closed", _tk_add_doc_image
                 )
 
-        st.subheader("ðŸ¤– Tell AI what to fix or clarify (optional)")
+        st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         tk_clarify_q = st.text_input("Your message", key="tk_clarify_input")
         if render_house_rule_shortcut(tk_clarify_q, "Ticket", "tk_main"):
             pass
         elif not tk_clarify_q.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
                       f"supplier instead of a one-off fix.")
         if not tk_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -7455,11 +7455,11 @@ def render_ticket_flow(client):
             data["time_tables"] = _clean_time_table_rows(edf)
         editable_table("Start Time(s)", tt_df, flow_widget_key("tk", "timetables"), on_save=_save_tk_timetables)
         if not data.get("time_tables"):
-            st.caption("â„¹ï¸ No start time set yet - optional, but add one if the ticket has a fixed departure time.")
+            st.caption("ℹ️ No start time set yet - optional, but add one if the ticket has a fixed departure time.")
 
         st.subheader("Departure Schedule")
         if data.get("schedule_notes"):
-            st.info(f"ðŸ”Ž {data['schedule_notes']}")
+            st.info(f"🔎 {data['schedule_notes']}")
         data["operational_days"] = st.multiselect("Operational Days", ALL_WEEKDAYS,
                                                    default=data.get("operational_days", ALL_WEEKDAYS), key=flow_widget_key("tk", "op_days"))
 
@@ -7492,17 +7492,17 @@ def render_ticket_flow(client):
         num_days = len(data.get("operational_days", []))
         num_stops = len(data.get("stop_sales", []))
         if num_days == 0:
-            sched_label, sched_bg, sched_fg = "âš ï¸ No Operational Days selected", "#f8d7da", "#721c24"
+            sched_label, sched_bg, sched_fg = "⚠️ No Operational Days selected", "#f8d7da", "#721c24"
         elif num_days == 7 and num_stops == 0:
-            sched_label, sched_bg, sched_fg = "ðŸŸ¢ DAILY departure - runs every day", "#d4edda", "#155724"
+            sched_label, sched_bg, sched_fg = "🟢 DAILY departure - runs every day", "#d4edda", "#155724"
         elif num_stops > 0:
             sched_label, sched_bg, sched_fg = (
-                f"ðŸŸ  SPECIFIC DATE departure - {num_days} weekday(s) minus {num_stops} blocked range(s)",
+                f"🟠 SPECIFIC DATE departure - {num_days} weekday(s) minus {num_stops} blocked range(s)",
                 "#fff3cd", "#856404"
             )
         else:
             sched_label, sched_bg, sched_fg = (
-                f"ðŸ”µ WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
+                f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
                 "#d1ecf1", "#0c5460"
             )
         st.markdown(
@@ -7519,7 +7519,7 @@ def render_ticket_flow(client):
         # Supplements by dates editors, which both depend on data["start_date"]/data["end_date"] being
         # fresh for THIS render) - see the "CONFIRMED REAL BUG" comment there. Kept out of this spot.
         if data.get("pricing_notes"):
-            st.warning(f"âš ï¸ {data['pricing_notes']}")
+            st.warning(f"⚠️ {data['pricing_notes']}")
 
         if action == "create":
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-13): a new Ticket must only ever be
@@ -7529,7 +7529,7 @@ def render_ticket_flow(client):
             # added afterward via "2: Add new Modality to existing Ticket".
             if "tk_extra_modalities" not in st.session_state:
                 st.session_state.tk_extra_modalities = []
-            st.info("â„¹ï¸ This Ticket will be created with just this one Modality. If your document "
+            st.info("ℹ️ This Ticket will be created with just this one Modality. If your document "
                     "describes other variants (e.g. a different guide language or vehicle class), "
                     "add them afterward via **Price update to existing Products -> Ticket -> \"2: Add "
                     "new Modality to existing Ticket\"**.")
@@ -7546,7 +7546,7 @@ def render_ticket_flow(client):
             _zero_occ = [o.get("occupancy") for o in _occ_rows if not _safe_float(o.get("amount"), fallback=0.0)]
             price_valid = bool(_occ_rows) and not _zero_occ
             if _zero_occ:
-                st.error(f"ðŸš« No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
+                st.error(f"🚫 No price for occupancy: **{', '.join(str(o) for o in _zero_occ)}** - "
                          f"these would be sellable for free. Enter a price for each, or remove the row.")
         else:
             price_valid = any([data.get("base_adult_price", 0), data.get("base_children_price", 0), data.get("base_infant_price", 0)])
@@ -7555,7 +7555,7 @@ def render_ticket_flow(client):
 
         can_build = price_valid
 
-        st.subheader("ðŸ¤– Tell AI what to fix or clarify (optional)")
+        st.subheader("🤖 Tell AI what to fix or clarify (optional)")
         st.caption("Ask a question, or tell it to fix something about the pricing/schedule above (e.g. 'the "
                   "adult price should be 89 not 79'). It applies real changes when you ask for them - always "
                   "shows exactly what changed so you can double-check.")
@@ -7564,7 +7564,7 @@ def render_ticket_flow(client):
         if render_house_rule_shortcut(tk_clarify_q2, "Ticket", "tk_pricing"):
             pass
         elif not tk_clarify_q2.strip():
-            st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+            st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                       f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Ticket "
                       f"supplier instead of a one-off fix.")
         if not tk_clarify_q2.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -7603,7 +7603,7 @@ def render_ticket_flow(client):
             render_clarify_result(r)
         remember_memory_panel(clarify_supplier_id(supplier_id), "Ticket", "tkp")
 
-        if st.button("ðŸ”Ž Check Locations & Continue", disabled=not can_build, key="tk_build_payload"):
+        if st.button("🔎 Check Locations & Continue", disabled=not can_build, key="tk_build_payload"):
             pre_config = TicketHumanPreConfig(
                 supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
                 currency=currency, modality_code=modality_code, on_request=on_request,
@@ -7620,15 +7620,15 @@ def render_ticket_flow(client):
         # no longer matches what it was built from, forcing an explicit rebuild.
         if st.session_state.get("tk_payloads") and _data_fingerprint(data) != st.session_state.get("tk_payloads_data_fingerprint"):
             st.session_state.tk_payloads = None
-            st.warning("âœï¸ You edited the data above after building the payload - click "
-                      "**ðŸ”Ž Check Locations & Continue** again to refresh it before publishing.")
+            st.warning("✏️ You edited the data above after building the payload - click "
+                      "**🔎 Check Locations & Continue** again to refresh it before publishing.")
 
         # ------------------------------------------------------------------
         # TICKET STEP 6: Geolocation & Payload Preview
         # ------------------------------------------------------------------
         if st.session_state.get("tk_payloads"):
             payloads = st.session_state.tk_payloads
-            st.header("Ticket â€” Step 6: Geolocation & Payload Preview")
+            st.header("Ticket — Step 6: Geolocation & Payload Preview")
 
             render_modalities_review(
                 "ticket", modality_code, "Base Modality", data,
@@ -7641,21 +7641,21 @@ def render_ticket_flow(client):
                     maps_link = f"https://www.google.com/maps?q={lat},{lng}"
                     st.markdown(
                         f"<div style='background-color:#d4edda; color:#155724; padding:10px 14px; "
-                        f"border-radius:4px;'>ðŸ“ Resolved location: <strong>{payloads['geolocation_name'] or '(no name)'}</strong>"
+                        f"border-radius:4px;'>📍 Resolved location: <strong>{payloads['geolocation_name'] or '(no name)'}</strong>"
                         f"<br>Coordinates: {lat:.6f}, {lng:.6f} (source: {payloads['geolocation_source']})</div>",
                         unsafe_allow_html=True
                     )
-                    st.markdown(f"[ðŸ—ºï¸ Open in Google Maps to verify]({maps_link})")
+                    st.markdown(f"[🗺️ Open in Google Maps to verify]({maps_link})")
                     if payloads['geolocation_source'] not in ("manual override", "not_found", None):
-                        st.caption("Geocoding data Â© OpenStreetMap contributors")
+                        st.caption("Geocoding data © OpenStreetMap contributors")
 
-                    with st.expander("ðŸ” This looks wrong or too imprecise? Search for a better match"):
+                    with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
                         st.caption("Broad place names (e.g. 'Bali') often resolve to the centroid of a whole "
                                   "region, which can be far from the actual location. Try something more "
                                   "specific - a landmark, neighborhood, or meeting point name - and pick the "
                                   "correct result below.")
                         tk_geo_search_query = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key=flow_widget_key("tk", "geo_search_query"))
-                        if st.button("ðŸ”Ž Search", key="tk_geo_search_btn"):
+                        if st.button("🔎 Search", key="tk_geo_search_btn"):
                             with st.spinner("Searching..."):
                                 st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
                         if st.session_state.get("tk_geo_search_results"):
@@ -7683,7 +7683,7 @@ def render_ticket_flow(client):
                         st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), "
                                   "and paste it here - the coordinates are read out of the link automatically.")
                         tk_maps_url = st.text_input("Google Maps link", key="tk_geo_maps_url", placeholder="https://maps.google.com/...")
-                        if st.button("ðŸ”— Use this link's coordinates", key="tk_geo_maps_url_btn", disabled=not tk_maps_url.strip()):
+                        if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn", disabled=not tk_maps_url.strip()):
                             with st.spinner("Reading coordinates from the link..."):
                                 tk_url_geo = parse_google_maps_url(tk_maps_url)
                             if tk_url_geo["valid"]:
@@ -7702,14 +7702,14 @@ def render_ticket_flow(client):
                                 st.error(tk_url_geo["error"])
 
                     if payloads.get("is_indonesia"):
-                        st.info(f"ðŸ‡®ðŸ‡© Indonesia detected â€” Vesak Day and Nyepi are automatically blocked as "
+                        st.info(f"🇮🇩 Indonesia detected — Vesak Day and Nyepi are automatically blocked as "
                                 f"stop-sale dates, no excursion may start on either day. "
                                 f"{payloads.get('indonesia_holiday_note', '')}")
 
                     if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
                         _tk_tet = payloads["tet_overlap"]
-                        st.warning(f"ðŸ‡»ðŸ‡³ This Ticket's validity dates overlap **Tet Holiday {_tk_tet['year']}** "
-                                  f"({_tk_tet['start']} to {_tk_tet['end']}) â€” check whether the source "
+                        st.warning(f"🇻🇳 This Ticket's validity dates overlap **Tet Holiday {_tk_tet['year']}** "
+                                  f"({_tk_tet['start']} to {_tk_tet['end']}) — check whether the source "
                                   f"document/contract needs a Tet surcharge added as a dated Supplement. "
                                   f"{payloads.get('tet_holiday_note', '')}")
 
@@ -7720,7 +7720,7 @@ def render_ticket_flow(client):
                                 f"(safer) one was used.")
 
                     st.session_state.tk_geo_confirmed = st.checkbox(
-                        "âœ… I've checked this location on the map and it's correct for this ticket",
+                        "✅ I've checked this location on the map and it's correct for this ticket",
                         value=st.session_state.get("tk_geo_confirmed", False),
                         # CONFIRMED REAL BUG (audit, 2026-08-24): every place that sets
                         # tk_geo_confirmed=False (a new ticket, changed coordinates) reset the
@@ -7732,11 +7732,11 @@ def render_ticket_flow(client):
                         key=flow_widget_key("tk", "geo_confirm_checkbox")
                     )
                     if not st.session_state.tk_geo_confirmed:
-                        st.info("ðŸ‘† Please verify the location above before publishing.")
+                        st.info("👆 Please verify the location above before publishing.")
                 else:
                     st.markdown(
                         "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                        "border-radius:4px;'>âŒ Geolocation NOT resolved - the City name may not match a known "
+                        "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
                         "destination.</div>",
                         unsafe_allow_html=True
                     )
@@ -7744,7 +7744,7 @@ def render_ticket_flow(client):
                               "coordinates), or enter coordinates manually if you already have them.")
 
                     tk_geo_search_query2 = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key="tk_geo_search_query2")
-                    if st.button("ðŸ”Ž Search", key="tk_geo_search_btn2"):
+                    if st.button("🔎 Search", key="tk_geo_search_btn2"):
                         with st.spinner("Searching..."):
                             st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
                     if st.session_state.get("tk_geo_search_results2"):
@@ -7772,7 +7772,7 @@ def render_ticket_flow(client):
                     st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and "
                               "paste it here - the coordinates are read out of the link automatically.")
                     tk_maps_url2 = st.text_input("Google Maps link", key="tk_geo_maps_url2", placeholder="https://maps.google.com/...")
-                    if st.button("ðŸ”— Use this link's coordinates", key="tk_geo_maps_url_btn2", disabled=not tk_maps_url2.strip()):
+                    if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn2", disabled=not tk_maps_url2.strip()):
                         with st.spinner("Reading coordinates from the link..."):
                             tk_url_geo2 = parse_google_maps_url(tk_maps_url2)
                         if tk_url_geo2["valid"]:
@@ -7798,8 +7798,8 @@ def render_ticket_flow(client):
                         manual_lng = st.number_input("Longitude", value=None, format="%.6f", key=flow_widget_key("tk", "manual_lng"), placeholder="e.g. 33.678400")
                     manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
                     if manual_lat == 0 and manual_lng == 0:
-                        st.caption("âš ï¸ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
-                    if st.button("ðŸ“ Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
+                        st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
+                    if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
                         data["manual_latitude"] = manual_lat
                         data["manual_longitude"] = manual_lng
                         pre_config = TicketHumanPreConfig(
@@ -7812,7 +7812,7 @@ def render_ticket_flow(client):
                         _tk_clear_geo_confirmation()
                         st.rerun()
             else:
-                st.info("â„¹ï¸ This action only affects a ticket Option/Modality, which has no geolocation "
+                st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "
                         "of its own (geolocation lives on the main ticket only) - nothing to confirm here.")
 
             if publish_action in ("Update an existing ticket's details", "Update an existing ticket option"):
@@ -7820,12 +7820,12 @@ def render_ticket_flow(client):
                     publish_action, data, payloads, client, supplier_id, existing_ticket_code, modality_code
                 )
 
-            with st.expander("ðŸ”§ Main Ticket Payload", expanded=False):
+            with st.expander("🔧 Main Ticket Payload", expanded=False):
                 if payloads["main_ticket_error"]:
                     st.error(f"Invalid: {payloads['main_ticket_error']}")
                 else:
                     st.json(payloads["main_ticket_payload"])
-            with st.expander("ðŸ”§ Ticket Option Payload", expanded=False):
+            with st.expander("🔧 Ticket Option Payload", expanded=False):
                 if payloads["ticket_option_error"]:
                     st.error(f"Invalid: {payloads['ticket_option_error']}")
                 else:
@@ -7834,7 +7834,7 @@ def render_ticket_flow(client):
             # ------------------------------------------------------------------
             # TICKET STEP 7: Publish
             # ------------------------------------------------------------------
-            st.header("Ticket â€” Step 7: Publish")
+            st.header("Ticket — Step 7: Publish")
             creating_new = publish_action == "Create a brand-new ticket (+ first option)"
             target_ticket_code = payloads["main_ticket_code"] if creating_new else existing_ticket_code
             # Geolocation only lives on the MAIN ticket - "Add option"/"Update option" only
@@ -7856,7 +7856,7 @@ def render_ticket_flow(client):
             if not tk_is_option_only:
                 can_publish = can_publish and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
                 if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
-                    st.warning("âš ï¸ Confirm the location above (checkbox in Step 6) before you can publish.")
+                    st.warning("⚠️ Confirm the location above (checkbox in Step 6) before you can publish.")
 
             _warn_stale_images(data.get("image_urls"))
 
@@ -7878,7 +7878,7 @@ def render_ticket_flow(client):
                 )
                 tk_publish_as_active = tk_activation_choice.startswith("Active")
 
-            if st.button("ðŸš€ Publish to Travel Compositor", disabled=not can_publish, type="primary", key="tk_publish_btn"):
+            if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary", key="tk_publish_btn"):
                 with st.spinner("Publishing..."):
                     try:
                         if publish_action == "Create a brand-new ticket (+ first option)":
@@ -7894,7 +7894,7 @@ def render_ticket_flow(client):
                                 mark_code_as_taken("ticket", supplier_id, payloads["main_ticket_code"], result.get("name"))
                                 if real_code and real_code != payloads["main_ticket_code"]:
                                     mark_code_as_taken("ticket", supplier_id, real_code, result.get("name"))
-                                st.success(f"âœ… Ticket created (active) with real Code: **{real_code}** â€” save this exact value.")
+                                st.success(f"✅ Ticket created (active) with real Code: **{real_code}** — save this exact value.")
 
                                 # api_client.py's _request() already retries every write call
                                 # (incl. this POST) up to 6 times internally now.
@@ -7902,7 +7902,7 @@ def render_ticket_flow(client):
 
                                 if "error" in option_result:
                                     show_publish_error("create the ticket option after retrying", option_result, flow="ticket_legacy")
-                                    st.info("ðŸ’¡ Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
+                                    st.info("💡 Adjustments to a Ticket require it to be ACTIVE - inactive tickets aren't visible via the API.")
                                     # The ticket itself WAS created successfully (real_code) and is still
                                     # ACTIVE - only the option failed. Don't leave the human stuck on this
                                     # page with no way forward: surface the same "what next" block used on
@@ -7916,14 +7916,14 @@ def render_ticket_flow(client):
                                     st.session_state.tk_publish_partial_failure = True
                                     st.session_state.tk_partial_failure_kind = "create"
                                 else:
-                                    st.success("âœ… Ticket option created.")
+                                    st.success("✅ Ticket option created.")
 
                                     tk_extra_modalities = st.session_state.get("tk_extra_modalities", [])
                                     if tk_extra_modalities:
                                         st.markdown("**Creating additional modalities...**")
                                         for mod in tk_extra_modalities:
                                             if not mod.get("code") or not mod.get("data"):
-                                                st.warning("âš ï¸ Skipped a modality - missing code or pricing data.")
+                                                st.warning("⚠️ Skipped a modality - missing code or pricing data.")
                                                 continue
                                             with st.spinner(f"Creating modality '{mod['code']}'..."):
                                                 try:
@@ -7943,13 +7943,13 @@ def render_ticket_flow(client):
                                                     if "error" in mod_option_result:
                                                         show_publish_error(f"create modality '{mod['code']}'", mod_option_result, flow="ticket_legacy")
                                                     else:
-                                                        st.success(f"âœ… Modality '{mod['code']}' created.")
+                                                        st.success(f"✅ Modality '{mod['code']}' created.")
                                                 except Exception as e:
                                                     show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e), flow="ticket_legacy")
                                                     continue
 
                                     if tk_publish_as_active:
-                                        st.success(f"âœ… Ticket `{real_code}` left ACTIVE, as chosen above - it's live now.")
+                                        st.success(f"✅ Ticket `{real_code}` left ACTIVE, as chosen above - it's live now.")
                                         st.session_state.tk_just_published_code = real_code
                                         st.session_state.tk_extra_modalities = []
                                         st.session_state.tk_just_published_supplier_id = supplier_id
@@ -7961,11 +7961,11 @@ def render_ticket_flow(client):
                                         deactivate_payload["code"] = real_code
                                         deactivate_result = client.update_ticket(supplier_id, deactivate_payload)
                                         if "error" in deactivate_result:
-                                            st.warning(f"âš ï¸ Ticket and option created successfully, but switching back "
+                                            st.warning(f"⚠️ Ticket and option created successfully, but switching back "
                                                       f"to inactive/draft failed: {deactivate_result}.")
                                         else:
-                                            st.success(f"âœ… Ticket `{real_code}` switched back to inactive/draft. "
-                                                      f"Ready for human review â€” activate it inside Travel Compositor when ready.")
+                                            st.success(f"✅ Ticket `{real_code}` switched back to inactive/draft. "
+                                                      f"Ready for human review — activate it inside Travel Compositor when ready.")
                                             st.session_state.tk_just_published_code = real_code
                                             st.session_state.tk_extra_modalities = []
                                             st.session_state.tk_just_published_supplier_id = supplier_id
@@ -7976,9 +7976,9 @@ def render_ticket_flow(client):
                             result = client.create_ticket_option(supplier_id, target_ticket_code, payloads["ticket_option_payload"])
                             if "error" in result:
                                 show_publish_error("add the option", result, flow="ticket_legacy")
-                                st.info(f"ðŸ’¡ Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
-                                st.success(f"âœ… New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
+                                st.success(f"✅ New option added to ticket `{target_ticket_code}`. Verify inside Travel Compositor.")
                                 st.session_state.tk_just_published_code = target_ticket_code
                                 st.session_state.tk_just_published_supplier_id = supplier_id
                                 st.session_state.tk_just_published_is_inactive = False
@@ -8013,16 +8013,16 @@ def render_ticket_flow(client):
                             result = client.update_ticket(supplier_id, update_payload)
                             if "error" in result:
                                 show_publish_error("update the ticket", result, flow="ticket_legacy")
-                                st.info(f"ðŸ’¡ Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
-                                st.success(f"âœ… Ticket `{target_ticket_code}` updated.")
+                                st.success(f"✅ Ticket `{target_ticket_code}` updated.")
 
                                 update_option_payload = dict(payloads["ticket_option_payload"])
                                 update_option_payload["code"] = modality_code
                                 option_result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
                                 if "error" in option_result:
                                     show_publish_error("update the ticket's pricing/modality after retrying", option_result, flow="ticket_legacy")
-                                    st.info(f"ðŸ’¡ The ticket's own details ARE saved. Only the Modality `{modality_code}`'s "
+                                    st.info(f"💡 The ticket's own details ARE saved. Only the Modality `{modality_code}`'s "
                                            f"pricing/schedule failed - fix and retry with **'Update existing Ticket "
                                            f"Modality'** against `{target_ticket_code}` / `{modality_code}`, no need to "
                                            f"redo the ticket details.")
@@ -8032,7 +8032,7 @@ def render_ticket_flow(client):
                                     st.session_state.tk_publish_partial_failure = True
                                     st.session_state.tk_partial_failure_kind = "update_ticket"
                                 else:
-                                    st.success(f"âœ… Modality `{modality_code}` pricing/schedule updated.")
+                                    st.success(f"✅ Modality `{modality_code}` pricing/schedule updated.")
                                     st.session_state.tk_just_published_code = target_ticket_code
                                     st.session_state.tk_just_published_supplier_id = supplier_id
                                     st.session_state.tk_just_published_is_inactive = False
@@ -8044,9 +8044,9 @@ def render_ticket_flow(client):
                             result = client.update_ticket_option(supplier_id, target_ticket_code, update_option_payload)
                             if "error" in result:
                                 show_publish_error("update the option", result, flow="ticket_legacy")
-                                st.info(f"ðŸ’¡ Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
+                                st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
-                                st.success(f"âœ… Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
+                                st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
                                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "we must exchange
                                 # the code with the correct date" - this is the price-only path
                                 # (see build_ticket_voucher_remarks_only_update's own docstring for
@@ -8069,11 +8069,11 @@ def render_ticket_flow(client):
                                             _tk_live_for_voucher, data.get("price_valid_until_date"))
                                         _tk_voucher_result = client.update_ticket(supplier_id, _tk_voucher_payload)
                                         if "error" in _tk_voucher_result:
-                                            st.warning(f"âš ï¸ Pricing was updated, but the price-validity "
+                                            st.warning(f"⚠️ Pricing was updated, but the price-validity "
                                                       f"code in Voucher Remarks couldn't be saved: "
                                                       f"{_tk_voucher_result.get('message', _tk_voucher_result)}")
                                         else:
-                                            st.caption("âœ… Price-validity code in Voucher Remarks updated too.")
+                                            st.caption("✅ Price-validity code in Voucher Remarks updated too.")
                                 st.session_state.tk_just_published_code = target_ticket_code
                                 st.session_state.tk_just_published_supplier_id = supplier_id
                                 st.session_state.tk_just_published_is_inactive = False
@@ -8088,14 +8088,14 @@ def render_ticket_flow(client):
         st.divider()
         if st.session_state.get("tk_publish_partial_failure"):
             if st.session_state.get("tk_partial_failure_kind") == "update_ticket":
-                st.subheader("âš ï¸ Ticket details updated, but the pricing/modality failed â€” here's how to continue")
+                st.subheader("⚠️ Ticket details updated, but the pricing/modality failed — here's how to continue")
                 st.write(f"The ticket's own details (**{st.session_state.tk_just_published_code}**, Supplier "
                         f"{st.session_state.tk_just_published_supplier_id}) were updated successfully - see the "
                         f"error above for what went wrong with the Modality's pricing/schedule. Don't redo the "
                         f"ticket details. Instead, use **'Update existing Ticket Modality'** below to retry just "
                         f"the pricing/schedule against the Modality code shown in the error.")
             else:
-                st.subheader("âš ï¸ Ticket created, but the option failed â€” here's how to continue")
+                st.subheader("⚠️ Ticket created, but the option failed — here's how to continue")
                 st.write(f"The ticket itself (**{st.session_state.tk_just_published_code}**, Supplier "
                         f"{st.session_state.tk_just_published_supplier_id}) was created successfully and is "
                         f"still **ACTIVE**, but its first option/modality failed - see the error above. Don't "
@@ -8103,16 +8103,16 @@ def render_ticket_flow(client):
                         f"use **'Add another Modality to this same Ticket'** below to retry just the option "
                         f"against the ticket that already exists, or start a completely fresh import.")
         else:
-            st.subheader("âœ… Ticket published â€” what would you like to do next?")
+            st.subheader("✅ Ticket published — what would you like to do next?")
             st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
                     f"(Supplier {st.session_state.tk_just_published_supplier_id})")
 
         if st.session_state.get("tk_just_published_is_inactive"):
-            st.warning("âš ï¸ **This Ticket is now INACTIVE.** It was created, given its first Modality, then "
-                      "switched back to draft/inactive for your review â€” this is expected. To add more "
+            st.warning("⚠️ **This Ticket is now INACTIVE.** It was created, given its first Modality, then "
+                      "switched back to draft/inactive for your review — this is expected. To add more "
                       "Modalities or make further changes, first **activate it manually inside Travel "
                       "Compositor**, then come back and use 'Add new Modality to existing Ticket'.")
-            if st.button("ðŸ†• Start a new Ticket", type="primary", key="tk_new_import_inactive"):
+            if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_inactive"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
@@ -8126,7 +8126,7 @@ def render_ticket_flow(client):
         else:
             fcol1, fcol2 = st.columns(2)
             with fcol1:
-                if st.button("ðŸ†• Start a new Ticket", type="primary", key="tk_new_import_active"):
+                if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_active"):
                     keep_client = st.session_state.client
                     keep_suppliers = st.session_state.suppliers_cache
                     keep_product_type = st.session_state.product_type
@@ -8138,7 +8138,7 @@ def render_ticket_flow(client):
                     st.session_state.active_tool = keep_tool
                     st.rerun()
             with fcol2:
-                if st.button("âž• Add another Modality to this same Ticket", key="tk_add_modality_followup"):
+                if st.button("➕ Add another Modality to this same Ticket", key="tk_add_modality_followup"):
                     prefill_ticket_code = st.session_state.tk_just_published_code
                     prefill_supplier_id = st.session_state.tk_just_published_supplier_id
                     keep_client = st.session_state.client
@@ -8198,7 +8198,7 @@ def render_direction_image_section(current, data, product_type, widget_key):
 
     if direction is None:
         st.warning(
-            "âš ï¸ Couldn't tell whether this route goes Airport/Harbor â†’ Hotel or Hotel â†’ "
+            "⚠️ Couldn't tell whether this route goes Airport/Harbor → Hotel or Hotel → "
             "Airport/Harbor - \"Airport\"/\"Harbor\" needs to appear in exactly ONE of the "
             "two location names, and it appears in both or neither here. No image was "
             "auto-picked - paste one below by hand, or fix the route names above."
@@ -8216,14 +8216,14 @@ def render_direction_image_section(current, data, product_type, widget_key):
         # underlying R2 problem needs fixing (or the operator can still paste a URL by hand
         # below as a workaround for this one item).
         st.error(
-            f"ðŸ”´ An image IS saved for this supplier's **{supplier_images.DIRECTION_LABELS[direction]}** "
+            f"🔴 An image IS saved for this supplier's **{supplier_images.DIRECTION_LABELS[direction]}** "
             f"{product_type} direction, but hosting it just failed: {current['_image_upload_error']}. "
             f"Re-uploading it in Setup won't fix this - it's an R2 connection/credentials problem, not "
             f"a missing image. Paste a URL below by hand for just this one, or fix R2 and re-open this item."
         )
     else:
         st.info(
-            f"â„¹ï¸ Detected direction: **{supplier_images.DIRECTION_LABELS[direction]}** - but no "
+            f"ℹ️ Detected direction: **{supplier_images.DIRECTION_LABELS[direction]}** - but no "
             f"image is saved yet for this supplier/direction. Upload one in Step 2's setup "
             f"section above, or paste a URL below by hand for just this one."
         )
@@ -8247,12 +8247,12 @@ def render_transfer_flow(client):
     if "tf_step1_confirmed" not in st.session_state:
         st.session_state.tf_step1_confirmed = False
 
-    st.header("Transfer â€” Step 2: Supplier & defaults")
+    st.header("Transfer — Step 2: Supplier & defaults")
 
     if st.session_state.tf_step1_confirmed:
-        st.success(f"âœ… Supplier ID: **{st.session_state.tf_cfg_supplier_id}** | "
+        st.success(f"✅ Supplier ID: **{st.session_state.tf_cfg_supplier_id}** | "
                    f"Currency: **{st.session_state.tf_cfg_currency}**")
-        if st.button("ðŸ”„ Change supplier / defaults", key="tf_change_action"):
+        if st.button("🔄 Change supplier / defaults", key="tf_change_action"):
             st.session_state.tf_step1_confirmed = False
             st.rerun()
     else:
@@ -8261,7 +8261,7 @@ def render_transfer_flow(client):
                 try:
                     st.session_state.suppliers_cache = client.get_all_suppliers()
                 except Exception as e:
-                    st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                     st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
@@ -8271,32 +8271,32 @@ def render_transfer_flow(client):
                 if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
-                st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue.")
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
             else:
                 supplier_options = {
-                    f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                     for s in momira_suppliers
                 }
                 selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tf_supplier_select")
                 supplier_id_choice = str(supplier_options[selected_label])
-            if st.button("ðŸ”„ Refresh supplier list", key="tf_refresh_suppliers"):
+            if st.button("🔄 Refresh supplier list", key="tf_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
                 st.rerun()
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
-            with st.expander("âš ï¸ Emergency manual entry"):
+            with st.expander("⚠️ Emergency manual entry"):
                 st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tf_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tf_currency")
-        st.caption("Only used when CREATING a new transfer. Updating an existing one keeps the currency it already has â€” a rate sheet changes prices, not the currency a live contract is denominated in.")
+        st.caption("Only used when CREATING a new transfer. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
         release_days_in = st.number_input(
             "Release Contract (days before arrival this transfer becomes bookable)",
             min_value=0, value=5, key="tf_release_days",
             help="Confirmed real field name is releaseContract - confirmed real value seen in live data = 5."
         )
 
-        if st.button("âž¡ï¸ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tf_continue1"):
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tf_continue1"):
             st.session_state.tf_cfg_supplier_id = supplier_id_choice
             st.session_state.tf_cfg_currency = currency_in
             st.session_state.tf_cfg_release_days = release_days_in
@@ -8315,7 +8315,7 @@ def render_transfer_flow(client):
     cancellation_links.render_cancellation_link_editor(supplier_id, "Transfer", key_suffix="_setup")
     supplier_images.render_supplier_image_editor(supplier_id, "Transfer", key_suffix="_setup")
 
-    st.header("Transfer â€” Step 3: Input Source")
+    st.header("Transfer — Step 3: Input Source")
     st.caption("Rate sheets commonly describe MANY distinct transfer products at once (per route, per "
               "vehicle class, sometimes repeated per guide language) - all of them get detected and "
               "queued for review below, same as multi-excursion Ticket documents.")
@@ -8350,7 +8350,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
     if st.session_state.xtf_phase == "gather":
         if not (tf_url or tf_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect Transfer Products", disabled=not (tf_url or tf_files)):
+        if st.button("🔎 Detect Transfer Products", disabled=not (tf_url or tf_files)):
             with st.spinner("Gathering content and detecting distinct transfer products..."):
                 try:
                     combined_parts = []
@@ -8359,7 +8359,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({tf_url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (tf_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -8433,7 +8433,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 render_empty_detection_retry(st.session_state.xtf_raw_text, "transfer", "xtf",
                                              detect_transfer_products, _tf_accept)
                 st.markdown("---")
-                st.caption("Or name one route by hand below â€” the closer to the document's own "
+                st.caption("Or name one route by hand below — the closer to the document's own "
                           "wording, the better.")
         else:
             st.subheader(f"{len(candidates)} distinct transfer products detected - choose which to review")
@@ -8441,8 +8441,8 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                       "Guide-language variants are already folded into each row, not listed separately.")
 
         if st.session_state.get("xtf_auto_returns"):
-            st.info(f"â†”ï¸ {st.session_state['xtf_auto_returns']} return direction(s) were added "
-                    f"automatically â€” every route is created both ways. Untick any you don't sell.")
+            st.info(f"↔️ {st.session_state['xtf_auto_returns']} return direction(s) were added "
+                    f"automatically — every route is created both ways. Untick any you don't sell.")
         render_candidate_filter(candidates, "xtf", "transfer")
 
         for i, cand in enumerate(candidates):
@@ -8453,12 +8453,12 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 cand["label"] = st.text_input(
                     "Which route?", value=cand["label"], key=f"xtf_label_{i}",
                     placeholder="e.g. Private Transfer: HRG Airport to Sahl Hashish",
-                    help="Name ONE route the way the document writes it â€” the service or class, "
+                    help="Name ONE route the way the document writes it — the service or class, "
                          "then where it goes from and to. This is what the AI is told to look for "
                          "when it reads the document for this row, so the closer it is to the "
                          "document's own wording the better.")
 
-        if st.button("âž• Add another transfer product manually"):
+        if st.button("➕ Add another transfer product manually"):
             candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
                               "selected": True, "is_genuine_multiple": False})
             st.rerun()
@@ -8472,7 +8472,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         st.caption(f"**{len(new_queue)}** transfer(s) ready to review." if new_queue else
                   "Select at least one transfer product to continue.")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary", disabled=not new_queue):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
             st.session_state.xtf_queue = new_queue
             st.session_state.xtf_queue_index = 0
             st.session_state.xtf_phase = "reviewing"
@@ -8494,7 +8494,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                                     "xtf_queue_index"],
                                    ["xtf_"] + SHARED_WIDGET_STATE_PREFIXES, "transfer", "xtf")
 
-        if st.button("ðŸ”™ Start over - upload a different document", key=f"xtf_cancel_{idx}"):
+        if st.button("🔙 Start over - upload a different document", key=f"xtf_cancel_{idx}"):
             for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
                 st.session_state.pop(key, None)
             _clear_batch_widget_state(["xtf_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -8567,7 +8567,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
             current["match_result"] = None
             current["match_route_fingerprint"] = current_route_fingerprint
 
-        if st.button("ðŸ”Ž Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
+        if st.button("🔎 Check for a matching existing transfer", key=f"xtf_checkmatch_{idx}"):
             with st.spinner("Checking..."):
                 current["match_result"] = transfer_matcher.resolve_transfer_match(
                     client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
@@ -8578,7 +8578,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         chosen_existing_id = None
         if match_result:
             if match_result.get("fetch_error"):
-                st.warning(f"âš ï¸ Couldn't fetch this supplier's existing transfers to check for a match: "
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transfers to check for a match: "
                           f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
                           f"Will create as new unless you already know the id below.")
             if match_result.get("tracked_id"):
@@ -8596,7 +8596,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                     current["_tracked_snapshot_id"] = tracked_id
                 tracked_snapshot = current.get("_tracked_snapshot")
                 if isinstance(tracked_snapshot, dict) and "error" not in tracked_snapshot:
-                    st.success(f"âœ… This app has already created/confirmed a match for this exact route before: "
+                    st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
                               f"**{tracked_id}**.")
                     st.caption(f"Existing record: departure **{(tracked_snapshot.get('departure') or {}).get('name', '?')}**, "
                               f"arrival **{(tracked_snapshot.get('arrival') or {}).get('name', '?')}**, "
@@ -8606,12 +8606,12 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                                               key=f"xtf_usetracked_{idx}")
                     chosen_existing_id = tracked_id if use_tracked else None
                 else:
-                    st.warning(f"âš ï¸ This app remembers a match for this route (**{tracked_id}**) but couldn't "
+                    st.warning(f"⚠️ This app remembers a match for this route (**{tracked_id}**) but couldn't "
                               f"fetch it just now to confirm it still exists - won't auto-apply it blind. "
                               f"Click Check again, or enter/confirm manually if you know it's still correct.")
             elif match_result.get("fallback_candidates"):
                 options = ["Create as a NEW transfer"] + [
-                    f"Update: {c['name'] or '(unnamed)'} â€” {c['transfer_id']} "
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transfer_id']} "
                     f"(departure: {c['departure_name']!r}, arrival: {c['arrival_name']!r}, match score {c['score']})"
                     for c in match_result["fallback_candidates"]
                 ]
@@ -8637,7 +8637,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 with st.spinner(f"Fetching existing transfer {chosen_existing_id} to merge into..."):
                     snapshot_result = client.get_transfer(supplier_id, chosen_existing_id)
                 if isinstance(snapshot_result, dict) and "error" in snapshot_result:
-                    st.warning(f"âš ï¸ Couldn't fetch existing transfer {chosen_existing_id} to merge into "
+                    st.warning(f"⚠️ Couldn't fetch existing transfer {chosen_existing_id} to merge into "
                               f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
                               f"document's own dates/images/properties instead of preserving the existing ones.")
                     current["existing_snapshot"] = None
@@ -8750,14 +8750,14 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 })
             data["occupancy_price_tiers"] = rows
             if dropped_incomplete:
-                st.warning(f"âš ï¸ Dropped {dropped_incomplete} occupancy row(s) that had only an occupancy OR "
+                st.warning(f"⚠️ Dropped {dropped_incomplete} occupancy row(s) that had only an occupancy OR "
                           f"only a price filled in, not both - fill in both fields to keep a row.")
 
         editable_table("Occupancy price tiers", occ_df, f"xtf_occ_{idx}", on_save=_save_occ_tiers)
         editable_field("Blanket child/infant rule (if the document states one instead of per-row prices)",
                        data, "child_infant_rule_text", key_suffix=key_suffix)
 
-        st.markdown("#### Optional extras (additionalServices) â€” child seats, non-default guide languages, etc.")
+        st.markdown("#### Optional extras (additionalServices) — child seats, non-default guide languages, etc.")
         add_svc_df = pd.DataFrame(data.get("additional_services") or [{"name": "", "price": 0.0, "currency": currency, "max_quantity": 1, "on_request": False}])
         for col in ["name", "price", "currency", "max_quantity", "on_request"]:
             if col not in add_svc_df.columns:
@@ -8779,7 +8779,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         editable_table("Optional / on-request extras", add_svc_df, f"xtf_addsvc_{idx}", on_save=_save_add_svc)
 
-        st.markdown("#### Guide-language surcharges (driver-only is always the base â€” no guide by default)")
+        st.markdown("#### Guide-language surcharges (driver-only is always the base — no guide by default)")
         lang_df = pd.DataFrame(data.get("guide_language_surcharges") or [{"language": "", "surcharge_estimate": 0.0}])
         for col in ["language", "surcharge_estimate"]:
             if col not in lang_df.columns:
@@ -8799,14 +8799,14 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         editable_table("Other guide languages (each becomes its own optional extra)", lang_df,
                        f"xtf_langsurcharge_{idx}", on_save=_save_lang_surcharges)
 
-        st.markdown("#### Mandatory supplements â€” genuinely unconditional charges only")
+        st.markdown("#### Mandatory supplements — genuinely unconditional charges only")
         st.caption("Never put a location-conditional cost here (e.g. a harbor-only pickup fee on a route "
                   "that also serves airport pickups) - that belongs in the location note below instead, "
                   "since this schema can't apply a charge conditionally by pickup point.")
         st.caption("**type** is PERCENT or ABSOLUTE. For a percentage, put the percentage itself in "
                   "**amount** (50 for a 50% night surcharge) - Travel Compositor applies it to the base "
                   "price, so it must never be converted into a currency figure here. **start_time / "
-                  "end_time** are 24-hour and may cross midnight (22:00 â†’ 08:00 is correct as written). "
+                  "end_time** are 24-hour and may cross midnight (22:00 → 08:00 is correct as written). "
                   "Leave **start_date / end_date** empty unless the surcharge itself is seasonal - empty "
                   "means it inherits this transfer's own validity window.")
         _supp_cols = ["name", "amount", "type", "start_time", "end_time", "start_date", "end_date", "notes"]
@@ -8844,12 +8844,12 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
 
         editable_table("Mandatory supplements", supp_df, f"xtf_supp_{idx}", on_save=_save_supplements)
         if st.session_state.get(f"_xtf_supp_bad_type_{idx}"):
-            st.warning("âš ï¸ A supplement row was skipped because its **type** wasn't PERCENT or ABSOLUTE. "
+            st.warning("⚠️ A supplement row was skipped because its **type** wasn't PERCENT or ABSOLUTE. "
                       "It was left out rather than guessed - a 50% surcharge saved as ABSOLUTE would "
                       "charge 50 in currency instead of half the fare.")
 
         st.markdown("#### Notes, validity & cancellation")
-        editable_field("Location note (e.g. a harbor-only pickup fee) â€” goes to Voucher Remarks, never applied to price",
+        editable_field("Location note (e.g. a harbor-only pickup fee) — goes to Voucher Remarks, never applied to price",
                        data, "location_notes", key_suffix=key_suffix)
         editable_field("Description", data, "description", key_suffix=key_suffix)
         editable_field("Pickup information", data, "pickup_information", key_suffix=key_suffix)
@@ -8869,7 +8869,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         render_direction_image_section(current, data, "Transfer", f"xtf_image_manual_{idx}")
 
         if current.get("_cancellation_link_scope"):
-            st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table below "
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
                       f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
                       f"this product needs different terms.")
         render_cancellation_policy_editor(data, f"xtf_cancel_{idx}")
@@ -8897,7 +8897,7 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
         geoloc_ok = bool(build_result.get("departure_geolocation_resolved")) and bool(build_result.get("arrival_geolocation_resolved"))
 
         if build_result.get("transfer_error"):
-            st.error(f"âš ï¸ This transfer can't be built yet: {build_result['transfer_error']}")
+            st.error(f"⚠️ This transfer can't be built yet: {build_result['transfer_error']}")
         else:
             # CONFIRMED REAL RULE (product owner): "when the document says min. 2 Pax, we can
             # offer this for 1 Pax by simply increasing the cost" - a 1-pax bracket the document
@@ -8908,27 +8908,27 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                 _solo_entry = next((e for e in (build_result["transfer_payload"].get("pricesByOccupancy") or [])
                                     if e.get("occupancy") == 1), None)
                 _solo_amount = (_solo_entry or {}).get("basePrice", {}).get("amount")
-                st.info(f"â„¹ï¸ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
+                st.info(f"ℹ️ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
                         f"up, so a **1-pax bracket at {_solo_amount} {data.get('currency', '')}** was "
                         f"synthesized automatically (the minimum-party rate, charged to one person) - the "
                         f"document itself doesn't state this number. Check it before publishing.")
-            with st.expander("ðŸ”Ž Preview payload"):
+            with st.expander("🔎 Preview payload"):
                 st.json(build_result["transfer_payload"])
             if not geoloc_ok:
-                st.warning("âš ï¸ Departure and/or arrival location couldn't be resolved to real coordinates/zone - "
+                st.warning("⚠️ Departure and/or arrival location couldn't be resolved to real coordinates/zone - "
                           "fix the names above before publishing.")
             if not dates_ok:
-                st.warning("âš ï¸ Start date and/or end date is blank - enter the document's real season validity "
+                st.warning("⚠️ Start date and/or end date is blank - enter the document's real season validity "
                           "(or your own default) before publishing; Travel Compositor requires both.")
             if not match_checked:
-                st.warning("âš ï¸ Click **Check for a matching existing transfer** above before publishing - this "
+                st.warning("⚠️ Click **Check for a matching existing transfer** above before publishing - this "
                           "is the only safeguard against accidentally creating a duplicate of a transfer that "
                           "already exists in Travel Compositor.")
 
             _warn_stale_images(data.get("image_urls"))
 
-            publish_label = (f"ðŸš€ Publish â€” UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
-                             else "ðŸš€ Publish â€” CREATE new transfer")
+            publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
+                             else "🚀 Publish — CREATE new transfer")
             # CONFIRMED RULE (product owner, 2026-08-24): an expired document blocks publish
             # rather than silently producing an inverted date window - see render_publish_blockers.
             publish_disabled = (bool(build_result.get("transfer_error")) or not match_checked
@@ -8950,34 +8950,34 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                                 transfer_matcher.remember_transfer_id(
                                     supplier_id, data.get("departure_name", ""), data.get("arrival_name", ""), final_id
                                 )
-                            st.success(f"âœ… Published successfully (id: {final_id or 'unknown'}).")
+                            st.success(f"✅ Published successfully (id: {final_id or 'unknown'}).")
                             current["publish_status"] = "success"
                             # Learn only from what was actually published. A correction made
                             # and then abandoned is not a decision anyone stood behind.
                             _learned = extraction_memory.commit(
                                 supplier_id, "Transfer", current, current.get("label") or "")
                             if _learned:
-                                st.caption(f"ðŸ§  Remembered {len(_learned)} correction(s) for this "
-                                           f"supplier â€” see â€œWhat the platform remembersâ€.")
+                                st.caption(f"🧠 Remembered {len(_learned)} correction(s) for this "
+                                           f"supplier — see “What the platform remembers”.")
                     except Exception as e:
                         show_publish_error(f"publish transfer **{current['label'] or '(unnamed)'}**", str(e))
 
         nav_col1, nav_col2 = st.columns(2)
         with nav_col1:
-            if idx > 0 and st.button("â¬…ï¸ Previous", key=f"xtf_prev_{idx}"):
+            if idx > 0 and st.button("⬅️ Previous", key=f"xtf_prev_{idx}"):
                 st.session_state.xtf_queue_index -= 1
                 st.rerun()
         with nav_col2:
-            if idx < len(queue) - 1 and st.button("âž¡ï¸ Next", key=f"xtf_next_{idx}"):
+            if idx < len(queue) - 1 and st.button("➡️ Next", key=f"xtf_next_{idx}"):
                 st.session_state.xtf_queue_index += 1
                 st.rerun()
 
         if all(q.get("publish_status") == "success" for q in queue):
             st.balloons()
-            st.success(f"ðŸŽ‰ All {len(queue)} transfer(s) in this batch published.")
+            st.success(f"🎉 All {len(queue)} transfer(s) in this batch published.")
             st.write("")
             st.divider()
-            if st.button("ðŸ†• Start a new batch", key="xtf_new_batch"):
+            if st.button("🆕 Start a new batch", key="xtf_new_batch"):
                 for key in ["xtf_phase", "xtf_raw_text", "xtf_candidates", "xtf_queue", "xtf_queue_index"]:
                     st.session_state.pop(key, None)
                 _clear_batch_widget_state(["xtf_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -9021,7 +9021,7 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
     if "ftsm_phase" not in st.session_state:
         st.session_state.ftsm_phase = "upload"
 
-    with st.expander("ðŸ“Š Bulk import: FTS Transfer Matrix (Sedan + Hiace CSVs)",
+    with st.expander("📊 Bulk import: FTS Transfer Matrix (Sedan + Hiace CSVs)",
                      expanded=st.session_state.ftsm_phase != "upload"):
         st.caption(
             "For FTS's own city-to-city price-grid export ONLY (two CSVs, one per vehicle "
@@ -9038,7 +9038,7 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
             with fc2:
                 hiace_file = st.file_uploader("Hiace matrix CSV", type=["csv"], key="ftsm_hiace_file")
 
-            if st.button("ðŸ”Ž Parse Matrix", disabled=not (sedan_file and hiace_file), key="ftsm_parse_btn"):
+            if st.button("🔎 Parse Matrix", disabled=not (sedan_file and hiace_file), key="ftsm_parse_btn"):
                 with st.spinner("Parsing both CSVs..."):
                     tmp_paths = []
                     try:
@@ -9055,9 +9055,9 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
                                 pass
 
                 if parsed["format_error"]:
-                    st.error(f"âŒ Couldn't read these as an FTS transfer matrix: {parsed['format_error']}")
+                    st.error(f"❌ Couldn't read these as an FTS transfer matrix: {parsed['format_error']}")
                 elif not parsed["candidates"]:
-                    st.warning("âš ï¸ No usable routes found in these two files - check they're the right CSVs.")
+                    st.warning("⚠️ No usable routes found in these two files - check they're the right CSVs.")
                 else:
                     with st.spinner("Checking for already-existing Transports on this supplier "
                                     "to auto-suggest matches..."):
@@ -9066,7 +9066,7 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
                             existing_transports = (existing_result.get("transport", [])
                                                    if isinstance(existing_result, dict) else (existing_result or []))
                         except Exception as e:
-                            st.warning(f"âš ï¸ Couldn't fetch existing transports ({friendly_error_message(e)}) - "
+                            st.warning(f"⚠️ Couldn't fetch existing transports ({friendly_error_message(e)}) - "
                                       f"every route will default to CREATE instead of an auto-suggested update.")
                             existing_transports = []
                     matched = match_fts_candidates_to_existing(parsed["candidates"], existing_transports)
@@ -9105,17 +9105,17 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
 
             if updates:
                 st.markdown(f"#### {len(updates)} route(s) auto-matched to an existing Transport")
-                st.warning("âš ï¸ Nothing here publishes as an UPDATE until you tick **Verified** for "
+                st.warning("⚠️ Nothing here publishes as an UPDATE until you tick **Verified** for "
                           "that row - this overwrites a live record's price, so an auto-match "
                           "alone is only a suggestion, never applied blind.")
                 for i, c in enumerate(updates):
                     ucol1, ucol2 = st.columns([4, 1])
                     with ucol1:
                         st.caption(
-                            f"**{c['departure_name']} â†’ {c['arrival_name']}** "
+                            f"**{c['departure_name']} → {c['arrival_name']}** "
                             f"(Sedan ${c['sedan_price']:.2f} / Hiace ${c['hiace_price']:.2f}) "
-                            f"â†’ matches **{c['matched_transport_name'] or '(unnamed)'}** "
-                            f"â€” `{c['matched_transport_id']}` (score {c['match_score']})"
+                            f"→ matches **{c['matched_transport_name'] or '(unnamed)'}** "
+                            f"— `{c['matched_transport_id']}` (score {c['match_score']})"
                         )
                     with ucol2:
                         c["verified"] = st.checkbox("Verified", value=c["verified"], key=f"ftsm_verify_{i}")
@@ -9140,7 +9140,7 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
 
             bcol1, bcol2 = st.columns(2)
             with bcol1:
-                if st.button("ðŸš€ Publish", type="primary", disabled=not to_publish, key="ftsm_publish_btn"):
+                if st.button("🚀 Publish", type="primary", disabled=not to_publish, key="ftsm_publish_btn"):
                     pre_config = TransportHumanPreConfig(supplier_id=supplier_id, currency=currency,
                                                           days_available_before_release=release_days)
                     progress_bar = st.progress(0.0)
@@ -9148,16 +9148,16 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
                     results = []
                     for i, c in enumerate(to_publish):
                         status_line.caption(f"Publishing {i + 1} / {len(to_publish)}: "
-                                            f"{c['departure_name']} â†’ {c['arrival_name']}...")
+                                            f"{c['departure_name']} → {c['arrival_name']}...")
                         outcome = publish_fts_candidate(client, supplier_id, pre_config, c)
-                        results.append({"route": f"{c['departure_name']} â†’ {c['arrival_name']}",
+                        results.append({"route": f"{c['departure_name']} → {c['arrival_name']}",
                                        "action": c["action"], **outcome})
                         progress_bar.progress((i + 1) / len(to_publish))
                     st.session_state.ftsm_results = results
                     st.session_state.ftsm_phase = "done"
                     st.rerun()
             with bcol2:
-                if st.button("ðŸ”„ Start over", key="ftsm_restart_from_review"):
+                if st.button("🔄 Start over", key="ftsm_restart_from_review"):
                     for key in ("ftsm_phase", "ftsm_candidates", "ftsm_skipped", "ftsm_currency"):
                         st.session_state.pop(key, None)
                     st.rerun()
@@ -9168,19 +9168,19 @@ def render_fts_matrix_import_flow(client, supplier_id, currency, release_days):
             ok_count = sum(1 for r in results if r["ok"])
             fail_count = len(results) - ok_count
             if fail_count == 0:
-                st.success(f"âœ… Published all {ok_count} route(s) successfully.")
+                st.success(f"✅ Published all {ok_count} route(s) successfully.")
             else:
-                st.warning(f"âš ï¸ Published {ok_count} route(s) successfully; {fail_count} failed - "
+                st.warning(f"⚠️ Published {ok_count} route(s) successfully; {fail_count} failed - "
                           f"see below. Re-running this same import is safe (matched routes update "
                           f"in place rather than duplicating).")
             st.dataframe(
                 [{"Route": r["route"], "Action": r["action"],
-                  "Result": "âœ… OK" if r["ok"] else "âŒ Failed",
+                  "Result": "✅ OK" if r["ok"] else "❌ Failed",
                   "Transport ID": r.get("transport_id") or "",
                   "Errors": "; ".join(r.get("errors") or [])} for r in results],
                 use_container_width=True, hide_index=True,
             )
-            if st.button("ðŸ”„ Import another matrix", key="ftsm_restart_from_done"):
+            if st.button("🔄 Import another matrix", key="ftsm_restart_from_done"):
                 for key in ("ftsm_phase", "ftsm_candidates", "ftsm_skipped", "ftsm_currency", "ftsm_results"):
                     st.session_state.pop(key, None)
                 st.rerun()
@@ -9193,12 +9193,12 @@ def render_transport_flow(client):
     if "tp_step1_confirmed" not in st.session_state:
         st.session_state.tp_step1_confirmed = False
 
-    st.header("Transport â€” Step 2: Supplier & defaults")
+    st.header("Transport — Step 2: Supplier & defaults")
 
     if st.session_state.tp_step1_confirmed:
-        st.success(f"âœ… Supplier ID: **{st.session_state.tp_cfg_supplier_id}** | "
+        st.success(f"✅ Supplier ID: **{st.session_state.tp_cfg_supplier_id}** | "
                    f"Currency: **{st.session_state.tp_cfg_currency}**")
-        if st.button("ðŸ”„ Change supplier / defaults", key="tp_change_action"):
+        if st.button("🔄 Change supplier / defaults", key="tp_change_action"):
             st.session_state.tp_step1_confirmed = False
             st.rerun()
     else:
@@ -9207,7 +9207,7 @@ def render_transport_flow(client):
                 try:
                     st.session_state.suppliers_cache = client.get_all_suppliers()
                 except Exception as e:
-                    st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                     st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
@@ -9217,32 +9217,32 @@ def render_transport_flow(client):
                 if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
-                st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue.")
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
             else:
                 supplier_options = {
-                    f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                     for s in momira_suppliers
                 }
                 selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="tp_supplier_select")
                 supplier_id_choice = str(supplier_options[selected_label])
-            if st.button("ðŸ”„ Refresh supplier list", key="tp_refresh_suppliers"):
+            if st.button("🔄 Refresh supplier list", key="tp_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
                 st.rerun()
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
-            with st.expander("âš ï¸ Emergency manual entry"):
+            with st.expander("⚠️ Emergency manual entry"):
                 st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="tp_supplier_manual")
 
         currency_in = st.selectbox("Currency", CURRENCY_OPTIONS, key="tp_currency")
-        st.caption("Only used when CREATING a new transport. Updating an existing one keeps the currency it already has â€” a rate sheet changes prices, not the currency a live contract is denominated in.")
+        st.caption("Only used when CREATING a new transport. Updating an existing one keeps the currency it already has — a rate sheet changes prices, not the currency a live contract is denominated in.")
         release_days_in = st.number_input(
             "Release Contract (days before departure this transport becomes bookable)",
             min_value=0, value=5, key="tp_release_days",
             help="Confirmed real field name is releaseContract - real values seen in live data range 5-14."
         )
 
-        if st.button("âž¡ï¸ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tp_continue1"):
+        if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice, key="tp_continue1"):
             st.session_state.tp_cfg_supplier_id = supplier_id_choice
             st.session_state.tp_cfg_currency = currency_in
             st.session_state.tp_cfg_release_days = release_days_in
@@ -9260,9 +9260,9 @@ def render_transport_flow(client):
 
     render_fts_matrix_import_flow(client, supplier_id, currency, release_days)
 
-    st.header("Transport â€” Step 3: Input Source")
-    st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan â†’ Hurghada, "
-              "Praslin â†’ La Digue), priced per occupancy bracket. Rate sheets are usually the same style as "
+    st.header("Transport — Step 3: Input Source")
+    st.caption("Transport = a connection between two Travel Compositor destinations (e.g. Aswan → Hurghada, "
+              "Praslin → La Digue), priced per occupancy bracket. Rate sheets are usually the same style as "
               "Transfer documents and often describe several routes at once - all get detected and queued below.")
     tp_url = st.text_input("Product page URL (optional)", key="tp_url")
     tp_files = st.file_uploader("Upload document(s) (optional)", type=["pdf", "docx", "xlsx", "pptx", "csv"],
@@ -9271,7 +9271,7 @@ def render_transport_flow(client):
         "Instruction (optional)", key="tp_hint",
         placeholder="e.g. only the Hurghada section, private transfers only",
         help="Plain English, and it now steers BOTH steps: which products get detected, and "
-             "how each one is read. It overrides the tool's own judgement â€” say 'all of them, "
+             "how each one is read. It overrides the tool's own judgement — say 'all of them, "
              "including the local airport routes' and it will list them all.")
 
     render_multi_transport_flow(client, supplier_id, currency, release_days, tp_url, tp_files, tp_hint)
@@ -9289,7 +9289,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
     if st.session_state.xtp_phase == "gather":
         if not (tp_url or tp_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Detect Transport Products", disabled=not (tp_url or tp_files)):
+        if st.button("🔎 Detect Transport Products", disabled=not (tp_url or tp_files)):
             with st.spinner("Gathering content and detecting distinct transport products..."):
                 try:
                     combined_parts = []
@@ -9298,7 +9298,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({tp_url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
                     for uploaded in (tp_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -9358,10 +9358,10 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 # is a local airport-to-resort transfer, i.e. genuinely not a Transport.
                 st.warning("**No transport products were detected in this document.** That usually "
                            "means every route in it is a local airport-to-hotel journey, which is a "
-                           "**Transfer**, not a Transport â€” Travel Compositor treats those as different "
+                           "**Transfer**, not a Transport — Travel Compositor treats those as different "
                            "products. If that is the case, switch to the Transfer flow.")
-                st.caption("If these ARE the products you want â€” you may be selling these routes as "
-                          "Transports deliberately â€” say so below and it will list them all.")
+                st.caption("If these ARE the products you want — you may be selling these routes as "
+                          "Transports deliberately — say so below and it will list them all.")
 
                 def _tp_accept(found):
                     st.session_state.xtp_candidates = [
@@ -9384,8 +9384,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             st.caption("Each ticked row becomes its own separate Transport, reviewed one at a time next.")
 
         if st.session_state.get("xtp_auto_returns"):
-            st.info(f"â†”ï¸ {st.session_state['xtp_auto_returns']} return direction(s) were added "
-                    f"automatically â€” every route is created both ways. Untick any you don't sell.")
+            st.info(f"↔️ {st.session_state['xtp_auto_returns']} return direction(s) were added "
+                    f"automatically — every route is created both ways. Untick any you don't sell.")
         render_candidate_filter(candidates, "xtp", "transport")
 
         for i, cand in enumerate(candidates):
@@ -9396,13 +9396,13 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 cand["label"] = st.text_input(
                     "Which route?", value=cand["label"], key=f"xtp_label_{i}",
                     placeholder="e.g. Private Transfer: HRG Airport to Luxor",
-                    help="Name ONE route the way the document writes it â€” the service or class, "
+                    help="Name ONE route the way the document writes it — the service or class, "
                          "then where it goes from and to. This is what the AI is told to look for "
                          "when it reads the document for this row, so the closer it is to the "
                          "document's own wording the better. It is not the product name in Travel "
                          "Compositor; that comes from the extraction and you can edit it next.")
 
-        if st.button("âž• Add another transport product manually"):
+        if st.button("➕ Add another transport product manually"):
             candidates.append({"label": "", "service_name": "", "departure_hint": "", "arrival_hint": "",
                               "selected": True})
             st.rerun()
@@ -9416,7 +9416,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         st.caption(f"**{len(new_queue)}** transport(s) ready to review." if new_queue else
                   "Select at least one transport product to continue.")
 
-        if st.button("âž¡ï¸ Start Reviewing", type="primary", disabled=not new_queue):
+        if st.button("➡️ Start Reviewing", type="primary", disabled=not new_queue):
             st.session_state.xtp_queue = new_queue
             st.session_state.xtp_queue_index = 0
             st.session_state.xtp_phase = "reviewing"
@@ -9438,7 +9438,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                                    XTP_STATE_KEYS, ["xtp_"] + SHARED_WIDGET_STATE_PREFIXES,
                                    "transport", "xtp")
 
-        if st.button("ðŸ”™ Start over - upload a different document", key=f"xtp_cancel_{idx}"):
+        if st.button("🔙 Start over - upload a different document", key=f"xtp_cancel_{idx}"):
             for key in XTP_STATE_KEYS:
                 st.session_state.pop(key, None)
             _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -9488,15 +9488,15 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # screen came from the route you picked and your Step 2 settings, so say which -
             # a seeded value that looks extracted is worse than an empty one.
             st.error(
-                "ðŸ”´ **No prices were read from the document for this route.** The fields below "
-                "were filled in from the route you selected and your Step 2 settings â€” they are "
+                "🔴 **No prices were read from the document for this route.** The fields below "
+                "were filled in from the route you selected and your Step 2 settings — they are "
                 "NOT from the document. Add the occupancy brackets by hand, or try reading this "
                 "route again."
             )
             if current.get("_seeded_fields"):
                 st.caption("Filled in by the app, not read from the document: "
                            + ", ".join(f"`{f}`" for f in current["_seeded_fields"]))
-        if st.button("ðŸ” Read this route from the document again", key=f"xtp_reextract_{idx}",
+        if st.button("🔁 Read this route from the document again", key=f"xtp_reextract_{idx}",
                      help="Re-runs the extraction for this one route only. The rest of the batch "
                           "is untouched."):
             current["data"] = None
@@ -9525,7 +9525,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             current["match_result"] = None
             current["match_route_fingerprint"] = current_route_fingerprint
 
-        if st.button("ðŸ”Ž Check for a matching existing transport", key=f"xtp_checkmatch_{idx}"):
+        if st.button("🔎 Check for a matching existing transport", key=f"xtp_checkmatch_{idx}"):
             with st.spinner("Checking..."):
                 current["match_result"] = transport_matcher.resolve_transport_match(
                     client, supplier_id, data.get("departure_name", ""), data.get("arrival_name", "")
@@ -9536,7 +9536,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         chosen_existing_id = None
         if match_result:
             if match_result.get("fetch_error"):
-                st.warning(f"âš ï¸ Couldn't fetch this supplier's existing transports to check for a match: "
+                st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a match: "
                           f"{match_result['fetch_error'].get('message', match_result['fetch_error'])}. "
                           f"Will create as new.")
             if match_result.get("tracked_id"):
@@ -9551,7 +9551,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                     current["_tracked_snapshot_id"] = tracked_id
                 tracked_snapshot = current.get("_tracked_snapshot")
                 if isinstance(tracked_snapshot, dict) and "error" not in tracked_snapshot:
-                    st.success(f"âœ… This app has already created/confirmed a match for this exact route before: "
+                    st.success(f"✅ This app has already created/confirmed a match for this exact route before: "
                               f"**{tracked_id}**.")
                     st.caption(f"Existing record: **{tracked_snapshot.get('name', '?')}**, "
                               f"currency **{tracked_snapshot.get('currency', '?')}**, "
@@ -9560,12 +9560,12 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                                               key=f"xtp_usetracked_{idx}")
                     chosen_existing_id = tracked_id if use_tracked else None
                 else:
-                    st.warning(f"âš ï¸ This app remembers a match for this route (**{tracked_id}**) but couldn't "
+                    st.warning(f"⚠️ This app remembers a match for this route (**{tracked_id}**) but couldn't "
                               f"fetch it just now to confirm it still exists - won't auto-apply it blind. "
                               f"Click Check again, or enter/confirm manually if you know it's still correct.")
             elif match_result.get("fallback_candidates"):
                 options = ["Create as a NEW transport"] + [
-                    f"Update: {c['name'] or '(unnamed)'} â€” {c['transport_id']} (match score {c['score']})"
+                    f"Update: {c['name'] or '(unnamed)'} — {c['transport_id']} (match score {c['score']})"
                     for c in match_result["fallback_candidates"]
                 ]
                 picked = st.radio("Pick one - nothing publishes until you explicitly confirm a match:",
@@ -9588,7 +9588,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 with st.spinner(f"Fetching existing transport {chosen_existing_id} and its options to merge into..."):
                     snapshot_result = client.get_transport(supplier_id, chosen_existing_id)
                     if isinstance(snapshot_result, dict) and "error" in snapshot_result:
-                        st.warning(f"âš ï¸ Couldn't fetch existing transport {chosen_existing_id} "
+                        st.warning(f"⚠️ Couldn't fetch existing transport {chosen_existing_id} "
                                   f"({snapshot_result.get('message', snapshot_result)}) - this update will use the "
                                   f"document's own dates/images instead of preserving the existing ones.")
                         current["existing_snapshot"] = None
@@ -9632,8 +9632,8 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         # silently to CAR. Now flagged so it can be corrected before publish.
         if not transport_type_is_confirmed_match(data.get("transport_type_hint"),
                                                   data.get("service_name")):
-            st.warning("âš ï¸ Couldn't confidently match this to a known transport type (car/"
-                      "combined/plane) â€” it will be sent as **CAR** unless you correct the "
+            st.warning("⚠️ Couldn't confidently match this to a known transport type (car/"
+                      "combined/plane) — it will be sent as **CAR** unless you correct the "
                       "hint above. Double-check this is actually a car service before publishing.")
 
         vcol1, vcol2, vcol3 = st.columns(3)
@@ -9682,7 +9682,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 "Journey duration", value=str(data.get("duration_time") or ""),
                 key=f"xtp_dur_{idx}", placeholder="HH:MM:SS",
                 help="How long the journey actually takes. Read from the document when it says, "
-                     "otherwise estimated by the AI from the real route â€” check it.")
+                     "otherwise estimated by the AI from the real route — check it.")
         with ccol4:
             _arr, _pd = derive_arrival_from_duration(data.get("departure_time"),
                                                      data.get("duration_time"))
@@ -9691,16 +9691,16 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 data["plus_days"] = _pd
                 st.metric("Arrival (calculated)", _arr + (f"  +{_pd}d" if _pd else ""))
             else:
-                st.metric("Arrival (calculated)", "â€”")
+                st.metric("Arrival (calculated)", "—")
                 st.caption("Enter a duration to calculate it.")
 
         if data.get("duration_estimated") and (data.get("duration_time") or "").strip():
-            st.caption(f"â±ï¸ The document didn't state a duration, so **{data['duration_time']}** is the "
-                      f"AI's estimate for {data.get('departure_name') or 'A'} â†’ "
-                      f"{data.get('arrival_name') or 'B'}. Correct it if you know better â€” arrival "
+            st.caption(f"⏱️ The document didn't state a duration, so **{data['duration_time']}** is the "
+                      f"AI's estimate for {data.get('departure_name') or 'A'} → "
+                      f"{data.get('arrival_name') or 'B'}. Correct it if you know better — arrival "
                       f"recalculates.")
         if not (data.get("duration_time") or "").strip():
-            st.warning("âš ï¸ No journey duration, so arrival will be published equal to departure â€” a "
+            st.warning("⚠️ No journey duration, so arrival will be published equal to departure — a "
                        "journey that appears to take no time. Enter one before publishing.")
 
         st.markdown("#### Pricing by occupancy bracket")
@@ -9747,7 +9747,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 })
             data["occupancy_brackets"] = rows
             if dropped_incomplete:
-                st.warning(f"âš ï¸ Dropped {dropped_incomplete} bracket row(s) missing a min, max or price - "
+                st.warning(f"⚠️ Dropped {dropped_incomplete} bracket row(s) missing a min, max or price - "
                           f"all three are required to keep a row.")
 
         editable_table("Occupancy brackets", br_df, f"xtp_brackets_{idx}", on_save=_save_brackets)
@@ -9779,7 +9779,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         render_direction_image_section(current, data, "Transport", f"xtp_image_manual_{idx}")
 
         if current.get("_cancellation_link_scope"):
-            st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table below "
+            st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
                       f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
                       f"this product needs different terms.")
         render_cancellation_policy_editor(data, f"xtp_cancel_{idx}")
@@ -9807,7 +9807,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
         option_errors = [a for a in option_actions if a.get("option_error")]
 
         if build_result.get("transport_error"):
-            st.error(f"âš ï¸ This transport can't be built yet: {build_result['transport_error']}")
+            st.error(f"⚠️ This transport can't be built yet: {build_result['transport_error']}")
         else:
             # CONFIRMED REAL RULE (product owner): "one transport can have more than one
             # modality - one for 1 pax and one for 2 to 9 pax." Each occupancy bracket IS a
@@ -9822,11 +9822,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # modality, and the edit is what gets published. EN only: every other language is
             # filled in by Travel Compositor's own translation tooling, never by this tool.
             data.setdefault("modality_names", {})
-            with st.expander("âœï¸ Modality names (English only â€” edit before publishing)",
+            with st.expander("✏️ Modality names (English only — edit before publishing)",
                              expanded=False):
                 st.caption("This is the name a person sees against each passenger range. The "
                           "suggestion follows your house pattern; change any of it. Only "
-                          "English is sent â€” other languages come from Travel Compositor.")
+                          "English is sent — other languages come from Travel Compositor.")
                 for _a in option_actions:
                     _key = f"{_a.get('min_occupancy')}-{_a.get('max_occupancy')}"
                     _suggested = ((_a.get("option_payload") or {}).get("translations") or {}) \
@@ -9844,7 +9844,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                     # so this comparison is stable.
                     _auto = _a.get("auto_generated_name") or _suggested
                     _typed = st.text_input(
-                        f"{_key} pax  Â·  code `{_a.get('code')}`",
+                        f"{_key} pax  ·  code `{_a.get('code')}`",
                         value=data["modality_names"].get(_key, _suggested),
                         key=f"xtp_modname_{idx}_{_key}")
                     if _typed.strip() and _typed.strip() != _auto:
@@ -9866,7 +9866,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         if isinstance(_pr, dict):
                             _solo_sup = _safe_float(_pr.get("adultPriceSupplement"), fallback=0.0)
                     _solo_price = round(_base + _solo_sup, 2)
-                    st.info(f"â„¹ï¸ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
+                    st.info(f"ℹ️ The document only prices this from **{data.get('min_billable_pax') or '2+'} pax** "
                             f"up, so a **1-pax bracket at {_solo_price} {currency}** was synthesized "
                             f"automatically (the minimum-party rate, charged to one person) - the document "
                             f"itself doesn't state this number. Check it before publishing.")
@@ -9880,7 +9880,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 _lo = _safe_int(a.get("min_occupancy", 1), fallback=1)
                 _rows.append({
                     "Modality code": a.get("code"),
-                    "Passengers": f"{a.get('min_occupancy')}â€“{a.get('max_occupancy')}",
+                    "Passengers": f"{a.get('min_occupancy')}–{a.get('max_occupancy')}",
                     ("Price per person" if _per_pax else "Price per vehicle"): _unit,
                     f"Total at {_lo} pax": round(_unit * _lo, 2) if _per_pax else _unit,
                     "New or update": a.get("action", "").upper(),
@@ -9898,24 +9898,24 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
             # keystroke becomes noise people scroll past.
             acol1, acol2 = st.columns([2, 5])
             with acol1:
-                if st.button("ðŸ§  Ask for a second opinion", key=f"xtp_advice_{idx}",
+                if st.button("🧠 Ask for a second opinion", key=f"xtp_advice_{idx}",
                              use_container_width=True):
-                    with st.spinner("Reading it backâ€¦"):
+                    with st.spinner("Reading it back…"):
                         current["advice"] = publish_advisor.advise_transport(data, build_result)
                     st.rerun()
             with acol2:
                 st.caption("Checks the price against the route, the duration against the real "
-                          "journey, and the wording against your house style. Advice only â€” it "
+                          "journey, and the wording against your house style. Advice only — it "
                           "never blocks publishing.")
             if current.get("advice"):
                 publish_advisor.render_advice(current["advice"])
 
-            with st.expander("ðŸ”Ž Preview payloads"):
+            with st.expander("🔎 Preview payloads"):
                 st.markdown("**Transport (parent record)**")
                 st.json(build_result["transport_payload"])
                 st.markdown(f"**Options ({len(option_actions)} occupancy bracket(s))**")
                 for a in option_actions:
-                    st.caption(f"{a['action'].upper()} â€” `{a['code']}` "
+                    st.caption(f"{a['action'].upper()} — `{a['code']}` "
                               f"({a['min_occupancy']}-{a['max_occupancy']} pax)")
                     st.json(a.get("option_payload"))
                 if build_result.get("options_to_deactivate"):
@@ -9923,7 +9923,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                     st.json(build_result["options_to_deactivate"])
 
             if not bases_ok:
-                st.warning(f"âš ï¸ Departure and/or arrival couldn't be resolved to a real Travel Compositor "
+                st.warning(f"⚠️ Departure and/or arrival couldn't be resolved to a real Travel Compositor "
                           f"Transport Base (departure: {build_result.get('departure_base_match_type')}, "
                           f"arrival: {build_result.get('arrival_base_match_type')}) - fix the names above "
                           f"before publishing. Transport Bases are named after PLACES, so an airport code "
@@ -9935,26 +9935,26 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                 for _side in ("departure", "arrival"):
                     _via = build_result.get(f"{_side}_base_resolved_via")
                     if _via:
-                        st.info(f"â„¹ï¸ The {_side} was read as an airport and matched on the city it "
-                                f"serves â€” **{_via}** â†’ Transport Base "
+                        st.info(f"ℹ️ The {_side} was read as an airport and matched on the city it "
+                                f"serves — **{_via}** → Transport Base "
                                 f"**{build_result.get(f'{_side}_base_name')}**. Check that is the right "
                                 f"place before publishing.")
             if not dates_ok:
-                st.warning("âš ï¸ Start date and/or end date is blank - enter the document's real validity range "
+                st.warning("⚠️ Start date and/or end date is blank - enter the document's real validity range "
                           "before publishing; Travel Compositor requires both.")
             if not option_actions:
-                st.warning("âš ï¸ No occupancy brackets - add at least one priced bracket above before publishing.")
+                st.warning("⚠️ No occupancy brackets - add at least one priced bracket above before publishing.")
             if option_errors:
-                st.error(f"âš ï¸ {len(option_errors)} occupancy bracket(s) couldn't be built: "
+                st.error(f"⚠️ {len(option_errors)} occupancy bracket(s) couldn't be built: "
                         f"{option_errors[0].get('option_error')}")
             if not match_checked:
-                st.warning("âš ï¸ Click **Check for a matching existing transport** above before publishing - this "
+                st.warning("⚠️ Click **Check for a matching existing transport** above before publishing - this "
                           "is the only safeguard against accidentally creating a duplicate.")
 
             _warn_stale_images(data.get("image_urls"))
 
-            publish_label = (f"ðŸš€ Publish â€” UPDATE existing transport {chosen_existing_id}" if chosen_existing_id
-                             else "ðŸš€ Publish â€” CREATE new transport")
+            publish_label = (f"🚀 Publish — UPDATE existing transport {chosen_existing_id}" if chosen_existing_id
+                             else "🚀 Publish — CREATE new transport")
             # CONFIRMED RULE (product owner, 2026-08-24) - see render_publish_blockers.
             publish_disabled = (bool(build_result.get("transport_error")) or not match_checked or not dates_ok
                                 or not bases_ok or not option_actions or bool(option_errors)
@@ -9974,7 +9974,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                             new_id = result.get("id") if isinstance(result, dict) else None
                             final_id = chosen_existing_id or new_id
                             if not final_id:
-                                st.error("âŒ Travel Compositor didn't return a transport id, so the occupancy "
+                                st.error("❌ Travel Compositor didn't return a transport id, so the occupancy "
                                         "brackets can't be attached. Nothing further was sent - check the "
                                         "transport in Travel Compositor before retrying.")
                             else:
@@ -10000,38 +10000,38 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                                 )
 
                                 if option_failures:
-                                    st.error(f"âš ï¸ The transport itself published (id: {final_id}), but "
+                                    st.error(f"⚠️ The transport itself published (id: {final_id}), but "
                                             f"{len(option_failures)} occupancy bracket(s) failed: "
                                             f"{', '.join(str(c) for c, _ in option_failures)}. Fix and re-publish - "
                                             f"re-running is safe, brackets are matched and updated in place.")
                                 else:
-                                    st.success(f"âœ… Published successfully (id: {final_id}) with "
+                                    st.success(f"✅ Published successfully (id: {final_id}) with "
                                               f"{len(option_actions)} occupancy bracket(s).")
                                     current["publish_status"] = "success"
                                     _learned = extraction_memory.commit(
                                         supplier_id, "Transport", current, current.get("label") or "")
                                     if _learned:
-                                        st.caption(f"ðŸ§  Remembered {len(_learned)} correction(s) for "
+                                        st.caption(f"🧠 Remembered {len(_learned)} correction(s) for "
                                                    f"this supplier.")
                     except Exception as e:
                         show_publish_error(f"publish transport **{current['label'] or '(unnamed)'}**", str(e))
 
         nav_col1, nav_col2 = st.columns(2)
         with nav_col1:
-            if idx > 0 and st.button("â¬…ï¸ Previous", key=f"xtp_prev_{idx}"):
+            if idx > 0 and st.button("⬅️ Previous", key=f"xtp_prev_{idx}"):
                 st.session_state.xtp_queue_index -= 1
                 st.rerun()
         with nav_col2:
-            if idx < len(queue) - 1 and st.button("âž¡ï¸ Next", key=f"xtp_next_{idx}"):
+            if idx < len(queue) - 1 and st.button("➡️ Next", key=f"xtp_next_{idx}"):
                 st.session_state.xtp_queue_index += 1
                 st.rerun()
 
         if all(q.get("publish_status") == "success" for q in queue):
             st.balloons()
-            st.success(f"ðŸŽ‰ All {len(queue)} transport(s) in this batch published.")
+            st.success(f"🎉 All {len(queue)} transport(s) in this batch published.")
             st.write("")
             st.divider()
-            if st.button("ðŸ†• Start a new batch", key="xtp_new_batch"):
+            if st.button("🆕 Start a new batch", key="xtp_new_batch"):
                 for key in XTP_STATE_KEYS:
                     st.session_state.pop(key, None)
                 _clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES)
@@ -10143,7 +10143,7 @@ def _render_hotel_masterdata_step(client):
     either one an alternative path into the same candidate-confirmation list below, never a
     silent auto-match.
     """
-    st.header("Hotel â€” Step 3: Use Travel Compositor master data?")
+    st.header("Hotel — Step 3: Use Travel Compositor master data?")
     st.caption(
         "Travel Compositor keeps its own master database of hotel content (images, description, "
         "facilities) for hotels worldwide - the same one it offers when a human manually adds a "
@@ -10154,10 +10154,10 @@ def _render_hotel_masterdata_step(client):
     meta = masterdata_store.index_meta()
     if not masterdata_store.index_is_usable():
         if meta and not meta.get("complete"):
-            st.warning("âš ï¸ A previous sync of Travel Compositor's master data didn't finish - the local copy isn't usable yet.")
+            st.warning("⚠️ A previous sync of Travel Compositor's master data didn't finish - the local copy isn't usable yet.")
         else:
             st.info("No local copy of Travel Compositor's master hotel data has been synced yet - this is a one-time setup step (then an occasional refresh).")
-        if st.button("ðŸ”„ Sync master data now (one-time, several minutes)", key="hp_md_sync_btn"):
+        if st.button("🔄 Sync master data now (one-time, several minutes)", key="hp_md_sync_btn"):
             progress_bar = st.progress(0.0)
             status_line = st.empty()
 
@@ -10169,11 +10169,11 @@ def _render_hotel_masterdata_step(client):
             with st.spinner("Syncing Travel Compositor's master hotel data - this can take several minutes..."):
                 sync_result = masterdata_store.sync_accommodation_index(client, progress_callback=_hp_md_progress)
             if sync_result["ok"]:
-                st.success(f"âœ… Synced {sync_result['total_records']:,} accommodations.")
+                st.success(f"✅ Synced {sync_result['total_records']:,} accommodations.")
                 st.session_state.pop("hp_md_index_cache", None)
                 st.rerun()
             else:
-                st.error(f"âŒ Sync failed: {sync_result['error']}")
+                st.error(f"❌ Sync failed: {sync_result['error']}")
         # Skipping here means creating a hotel without ever having CHECKED master data - the
         # local index isn't usable, so no search can run at all. That is the single most likely
         # way to end up with a duplicate property in Travel Compositor, so it needs a stated
@@ -10182,7 +10182,7 @@ def _render_hotel_masterdata_step(client):
         # the automap review screen, so a decision made in a hurry is still reviewable.
         st.markdown("---")
         st.warning(
-            "âš ï¸ Master data can't be searched until the sync above has run, so this hotel would be "
+            "⚠️ Master data can't be searched until the sync above has run, so this hotel would be "
             "created **without checking whether Travel Compositor already has it**. That's how a "
             "duplicate property appears on the Travel Compositor surface."
         )
@@ -10204,7 +10204,7 @@ def _render_hotel_masterdata_step(client):
     if synced_at:
         synced_caption += f", synced {datetime.fromtimestamp(synced_at).strftime('%Y-%m-%d %H:%M')}"
     st.caption(f"Local master-data copy: {synced_caption}.")
-    if st.button("ðŸ”„ Refresh master data", key="hp_md_resync_btn"):
+    if st.button("🔄 Refresh master data", key="hp_md_resync_btn"):
         st.session_state.hp_md_resync_requested = True
     if st.session_state.get("hp_md_resync_requested"):
         progress_bar = st.progress(0.0)
@@ -10219,10 +10219,10 @@ def _render_hotel_masterdata_step(client):
             sync_result = masterdata_store.sync_accommodation_index(client, progress_callback=_hp_md_progress)
         st.session_state.hp_md_resync_requested = False
         if sync_result["ok"]:
-            st.success(f"âœ… Synced {sync_result['total_records']:,} accommodations.")
+            st.success(f"✅ Synced {sync_result['total_records']:,} accommodations.")
             st.session_state.pop("hp_md_index_cache", None)
         else:
-            st.error(f"âŒ Sync failed: {sync_result['error']}")
+            st.error(f"❌ Sync failed: {sync_result['error']}")
 
     # CONFIRMED REAL REQUEST (product owner, 2026-09-11, showing Travel Compositor's own "New
     # hotel using master data" screen as the model to match): "Could we search it with
@@ -10238,7 +10238,7 @@ def _render_hotel_masterdata_step(client):
     # is authoritative (never needs human confirmation between candidates) even though contracts
     # themselves never carry one.
     giata_query = st.text_input(
-        "GIATA code (optional, exact match â€” skips name search entirely if filled in)",
+        "GIATA code (optional, exact match — skips name search entirely if filled in)",
         value="", key="hp_md_search_giata",
         help="If you already know this hotel's GIATA id, this is the fastest and most reliable "
              "way to find it - an exact id match, not a name guess.")
@@ -10254,7 +10254,7 @@ def _render_hotel_masterdata_step(client):
     with col_c:
         search_country = st.text_input("Country code (optional, e.g. EG)", value="", key="hp_md_search_country", max_chars=2)
 
-    if st.button("ðŸ”Ž Search master data", key="hp_md_search_btn",
+    if st.button("🔎 Search master data", key="hp_md_search_btn",
                  disabled=not (giata_query.strip() or search_name.strip())):
         if "hp_md_index_cache" not in st.session_state:
             with st.spinner("Loading local master-data index..."):
@@ -10277,7 +10277,7 @@ def _render_hotel_masterdata_step(client):
                 if geo.get("valid"):
                     geo_lat, geo_lon = geo["latitude"], geo["longitude"]
                 else:
-                    st.warning(f"âš ï¸ Couldn't find \"{search_destination.strip()}\" on the map - "
+                    st.warning(f"⚠️ Couldn't find \"{search_destination.strip()}\" on the map - "
                                f"searching by name and country only.")
             st.session_state.hp_md_candidates = masterdata_matcher.find_candidates(
                 search_name, st.session_state.hp_md_index_cache, country_code=search_country or None,
@@ -10289,17 +10289,17 @@ def _render_hotel_masterdata_step(client):
             st.warning("No close matches found in the local master data. Adjust the search above, "
                        "refresh the sync if this hotel might be very new, or skip below.")
         else:
-            st.write(f"Found {len(candidates)} possible match(es) â€” confirm one, or skip if none are right:")
+            st.write(f"Found {len(candidates)} possible match(es) — confirm one, or skip if none are right:")
             for i, cand in enumerate(candidates):
                 with st.container(border=True):
                     cols = st.columns([4, 1])
                     with cols[0]:
-                        geo_note = f" Â· {cand['geo_km']} km from the location you provided" if cand.get("geo_km") is not None else ""
-                        giata_note = f" Â· GIATA {cand['giataId']}" if cand.get("giataId") else ""
+                        geo_note = f" · {cand['geo_km']} km from the location you provided" if cand.get("geo_km") is not None else ""
+                        giata_note = f" · GIATA {cand['giataId']}" if cand.get("giataId") else ""
                         confidence = "exact GIATA match" if cand.get("name_score") is None \
                             else f"{cand['score']*100:.0f}%"
                         st.markdown(f"**{cand.get('name') or '(unnamed)'}**  \n"
-                                    f"Country: {cand.get('countryCode') or 'â€”'}{giata_note} Â· "
+                                    f"Country: {cand.get('countryCode') or '—'}{giata_note} · "
                                     f"Match confidence: {confidence}{geo_note}")
                     with cols[1]:
                         if st.button("Use this hotel", key=f"hp_md_pick_{i}"):
@@ -10323,7 +10323,7 @@ def _render_hotel_masterdata_step(client):
                                 st.session_state.hp_masterdata_skip_reason = None
                                 st.rerun()
                             else:
-                                st.error(f"âŒ Couldn't fetch this hotel's content: "
+                                st.error(f"❌ Couldn't fetch this hotel's content: "
                                           f"{datasheet.get('message') if isinstance(datasheet, dict) else datasheet}")
 
     # CONFIRMED PRODUCT-OWNER RULE (2026-09-13): moving past this step without picking a master
@@ -10346,21 +10346,21 @@ def _render_hotel_masterdata_step(client):
 
     if _hp_md_had_candidates:
         st.warning(
-            f"âš ï¸ {len(candidates)} possible match(es) are listed above. If one of them IS this "
-            f"hotel, use it â€” that's what lets this contract be mapped to Travel Compositor's "
+            f"⚠️ {len(candidates)} possible match(es) are listed above. If one of them IS this "
+            f"hotel, use it — that's what lets this contract be mapped to Travel Compositor's "
             f"existing property instead of appearing as a duplicate."
         )
         _hp_md_reason_needed = True
     elif not _hp_md_searched:
         st.warning(
-            "âš ï¸ No master-data search has been run yet for this hotel. Creating it without "
+            "⚠️ No master-data search has been run yet for this hotel. Creating it without "
             "checking is how a duplicate property appears on the Travel Compositor surface."
         )
         _hp_md_reason_needed = True
     else:
         st.info(
             "The master-data search found nothing matching this hotel, so there's nothing to map "
-            "it to. Continuing is fine â€” this will be noted on the automap review screen so it "
+            "it to. Continuing is fine — this will be noted on the automap review screen so it "
             "can be double-checked in Travel Compositor later."
         )
         _hp_md_reason_needed = False
@@ -10377,7 +10377,7 @@ def _render_hotel_masterdata_step(client):
         _hp_md_can_skip = True
         _hp_md_stored_reason = "Master-data search ran and returned no candidates."
 
-    if st.button("Continue without master data â€” I'll provide photos manually",
+    if st.button("Continue without master data — I'll provide photos manually",
                  key="hp_md_skip", disabled=not _hp_md_can_skip):
         st.session_state.hp_masterdata_decided = True
         st.session_state.hp_masterdata_seed = None
@@ -10399,7 +10399,7 @@ def render_hotel_automap_review():
 
     Nothing here writes to Travel Compositor. Ticking an entry off records that a HUMAN did the
     mapping in the back office; it cannot verify it, and deliberately doesn't pretend to."""
-    st.header("ðŸ”— Hotels awaiting automap")
+    st.header("🔗 Hotels awaiting automap")
     st.caption(
         "Travel Compositor's API can't set \"Automap with master\" - it's only available in the "
         "back office. These hotels were created here and still need that step, or they may show "
@@ -10408,7 +10408,7 @@ def render_hotel_automap_review():
 
     pending = hotel_automap.list_pending()
     if not pending:
-        st.success("âœ… Nothing outstanding â€” every hotel created here has been mapped or checked.")
+        st.success("✅ Nothing outstanding — every hotel created here has been mapped or checked.")
     else:
         st.warning(f"{len(pending)} hotel(s) still need attention.")
 
@@ -10417,20 +10417,20 @@ def render_hotel_automap_review():
             cols = st.columns([4, 1])
             with cols[0]:
                 recorded = entry.get("recorded_at")
-                when = datetime.fromtimestamp(recorded).strftime("%Y-%m-%d %H:%M") if recorded else "â€”"
-                st.markdown(f"**{entry.get('provider_code')}** â€” {entry.get('hotel_name') or '(no name)'}  \n"
-                            f"Supplier {entry.get('supplier_id')} Â· published {when}")
+                when = datetime.fromtimestamp(recorded).strftime("%Y-%m-%d %H:%M") if recorded else "—"
+                st.markdown(f"**{entry.get('provider_code')}** — {entry.get('hotel_name') or '(no name)'}  \n"
+                            f"Supplier {entry.get('supplier_id')} · published {when}")
                 if entry.get("status") == hotel_automap.STATUS_LINKED:
                     st.markdown(
                         f"Map this to master accommodation **{entry.get('accommodation_id')}**"
-                        + (f" Â· GIATA **{entry.get('giata_id')}**" if entry.get("giata_id") else "")
+                        + (f" · GIATA **{entry.get('giata_id')}**" if entry.get("giata_id") else "")
                         + (f"  \nMaster record: {entry.get('master_name')}" if entry.get("master_name") else "")
                     )
                 else:
                     # No id to map to - so the useful thing to show is the judgement call that was
                     # made at the time, which is the thing most worth a second look.
                     st.markdown(
-                        "âš ï¸ **No master record was linked when this was created.** Worth confirming "
+                        "⚠️ **No master record was linked when this was created.** Worth confirming "
                         "the property really isn't already in Travel Compositor's master data."
                         + (f"  \nReason given at the time: _{entry.get('skip_reason')}_"
                            if entry.get("skip_reason") else "")
@@ -10447,8 +10447,8 @@ def render_hotel_automap_review():
                        "this is what says whether that hotel was mapped, and when.")
             for entry in mapped:
                 done = entry.get("mapped_at")
-                when = datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M") if done else "â€”"
-                st.markdown(f"- **{entry.get('provider_code')}** â€” {entry.get('hotel_name') or ''} "
+                when = datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M") if done else "—"
+                st.markdown(f"- **{entry.get('provider_code')}** — {entry.get('hotel_name') or ''} "
                             f"(marked done {when})")
 
 
@@ -10470,18 +10470,18 @@ def _render_hotel_price_audit_section(data, primary):
     reaches this function - see render_hotel_flow's contract-purpose question, only asked for an
     EXISTING hotel). `primary` only changes the heading/copy, not the underlying behaviour."""
     if primary:
-        st.markdown("#### ðŸ” Price audit â€” check this contract against what's already live")
+        st.markdown("#### 🔍 Price audit — check this contract against what's already live")
         st.caption("You said this contract is for CHECKING the current period. Runs a SECOND, independent "
                    "read of the contract focused only on prices - room rates, meal plan supplements, "
                    "offers/early-birds, other supplements - and flags anything that doesn't match the "
                    "extraction below. Review this before deciding whether anything needs fixing.")
     else:
-        st.markdown("#### ðŸ’° Price audit (temporary â€” cross-checks numbers against the contract)")
+        st.markdown("#### 💰 Price audit (temporary — cross-checks numbers against the contract)")
         st.caption("Runs a SECOND, independent read of the contract focused only on prices - room rates, meal "
                    "plan supplements, offers/early-birds, other supplements - and flags anything that doesn't "
                    "match what's above. This is a temporary safety net while the app is still learning how "
                    "different suppliers structure their contracts; it costs one extra AI call per run.")
-    if st.button("ðŸ” Run price audit", key="hp_price_audit_run"):
+    if st.button("🔍 Run price audit", key="hp_price_audit_run"):
         with st.spinner("Re-reading the contract for prices only..."):
             try:
                 _hp_audit_result = run_hotel_price_audit(st.session_state.get("hp_raw_text") or "")
@@ -10495,26 +10495,26 @@ def _render_hotel_price_audit_section(data, primary):
         _hp_audit_findings = compare_price_audit_to_extraction(_hp_audit_facts, data)
         _hp_audit_summary = summarize_findings(_hp_audit_findings)
         if _hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"]:
-            st.warning(f"âš ï¸ Price audit found **{_hp_audit_summary['mismatch']} mismatch(es)** and "
+            st.warning(f"⚠️ Price audit found **{_hp_audit_summary['mismatch']} mismatch(es)** and "
                        f"**{_hp_audit_summary['not_found']} item(s) not found** in the extraction above "
                        f"(**{_hp_audit_summary['match']}** verified OK). Review before publishing.")
         elif _hp_audit_findings:
-            st.success(f"âœ… Price audit: all **{_hp_audit_summary['match']}** priced item(s) it found in "
+            st.success(f"✅ Price audit: all **{_hp_audit_summary['match']}** priced item(s) it found in "
                        f"the contract match what's above.")
         else:
             st.info("Price audit ran but found no price-bearing numbers to check.")
 
         if _hp_audit_findings:
-            with st.expander(f"ðŸ” Price audit details ({len(_hp_audit_findings)} item(s) checked)",
+            with st.expander(f"🔍 Price audit details ({len(_hp_audit_findings)} item(s) checked)",
                               expanded=bool(_hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"])):
-                _status_icon = {"match": "âœ…", "mismatch": "âŒ", "not_found": "â“"}
+                _status_icon = {"match": "✅", "mismatch": "❌", "not_found": "❓"}
                 # Worst-first ordering so a human scanning the list sees the money-affecting
                 # problems (mismatch) before the merely-unmatched ones, and both before the OK's.
                 _status_order = {"mismatch": 0, "not_found": 1, "match": 2}
                 for _finding in sorted(_hp_audit_findings, key=lambda f: _status_order.get(f.get("status"), 3)):
-                    st.markdown(f"{_status_icon.get(_finding.get('status'), 'â€¢')} {_finding.get('message')}")
+                    st.markdown(f"{_status_icon.get(_finding.get('status'), '•')} {_finding.get('message')}")
                     if _finding.get("quote"):
-                        st.caption(f"Contract: â€œ{_finding['quote']}â€")
+                        st.caption(f"Contract: “{_finding['quote']}”")
 
 
 def render_hotel_flow(client):
@@ -10523,13 +10523,13 @@ def render_hotel_flow(client):
     if "hp_step1_confirmed" not in st.session_state:
         st.session_state.hp_step1_confirmed = False
 
-    st.header("Hotel â€” Step 2: Supplier & hotel code")
+    st.header("Hotel — Step 2: Supplier & hotel code")
 
     if st.session_state.hp_step1_confirmed:
-        st.success(f"âœ… Supplier ID: **{st.session_state.hp_cfg_supplier_id}** | "
+        st.success(f"✅ Supplier ID: **{st.session_state.hp_cfg_supplier_id}** | "
                    f"Hotel code: **{st.session_state.hp_cfg_provider_code}** | "
                    f"Currency: **{st.session_state.hp_cfg_currency}**")
-        if st.button("ðŸ”„ Change supplier / hotel code", key="hp_change_action"):
+        if st.button("🔄 Change supplier / hotel code", key="hp_change_action"):
             st.session_state.hp_step1_confirmed = False
             st.rerun()
     else:
@@ -10538,7 +10538,7 @@ def render_hotel_flow(client):
                 try:
                     st.session_state.suppliers_cache = client.get_all_suppliers()
                 except Exception as e:
-                    st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                    st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                     st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
@@ -10548,20 +10548,20 @@ def render_hotel_flow(client):
                 if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
             ]
             if not momira_suppliers:
-                st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue.")
+                st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
             else:
                 supplier_options = {
-                    f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+                    f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                     for s in momira_suppliers
                 }
                 selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key="hp_supplier_select")
                 supplier_id_choice = str(supplier_options[selected_label])
-            if st.button("ðŸ”„ Refresh supplier list", key="hp_refresh_suppliers"):
+            if st.button("🔄 Refresh supplier list", key="hp_refresh_suppliers"):
                 st.session_state.suppliers_cache = None
                 st.rerun()
         else:
             st.error("Could not load the supplier list from Travel Compositor.")
-            with st.expander("âš ï¸ Emergency manual entry"):
+            with st.expander("⚠️ Emergency manual entry"):
                 st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="hp_supplier_manual")
 
@@ -10596,8 +10596,8 @@ def render_hotel_flow(client):
 
         if _hp_precheck_snapshot:
             currency_in = _hp_precheck_snapshot.get("currency")
-            st.info(f"ðŸ“Œ Hotel code **{_hp_precheck_code}** already exists "
-                    f"(â€œ{_hp_precheck_snapshot.get('hotelname')}â€) - publishing will UPDATE it, so the "
+            st.info(f"📌 Hotel code **{_hp_precheck_code}** already exists "
+                    f"(“{_hp_precheck_snapshot.get('hotelname')}”) - publishing will UPDATE it, so the "
                     f"currency it's already denominated in (**{currency_in}**) is used automatically; "
                     f"no need to ask again.")
         else:
@@ -10611,7 +10611,7 @@ def render_hotel_flow(client):
             help="Confirmed real field name is releaseDays - real value seen in live data = 7."
         )
 
-        if st.button("âž¡ï¸ Continue to Step 3", type="primary",
+        if st.button("➡️ Continue to Step 3", type="primary",
                      disabled=not (supplier_id_choice and provider_code_in.strip()), key="hp_continue1"):
             st.session_state.hp_cfg_supplier_id = supplier_id_choice
             st.session_state.hp_cfg_provider_code = provider_code_in.strip()
@@ -10672,7 +10672,7 @@ def render_hotel_flow(client):
             _render_hotel_masterdata_step(client)
             return
 
-        st.header("Hotel â€” Step 3: Input Source")
+        st.header("Hotel — Step 3: Input Source")
         st.caption("A hotel contract normally covers ONE property: its rooms and allowed occupancy "
                   "combinations, meal plans, any offers/supplements, and the rate seasons with a price per "
                   "occupancy combination per room.")
@@ -10683,7 +10683,7 @@ def render_hotel_flow(client):
 
         if not (hp_url or hp_files):
             st.info("Provide a URL and/or upload document(s) above, then click below.")
-        if st.button("ðŸ”Ž Extract Hotel Contract", type="primary", disabled=not (hp_url or hp_files)):
+        if st.button("🔎 Extract Hotel Contract", type="primary", disabled=not (hp_url or hp_files)):
             with st.spinner("Gathering content and extracting the hotel contract..."):
                 try:
                     combined_parts = []
@@ -10716,7 +10716,7 @@ def render_hotel_flow(client):
                         if page_text is not None:
                             combined_parts.append(f"--- SOURCE: WEB PAGE ({hp_url}) ---\n{page_text}")
                         else:
-                            st.warning(f"âš ï¸ Couldn't fetch the hotel page URL: {page_text_err}.")
+                            st.warning(f"⚠️ Couldn't fetch the hotel page URL: {page_text_err}.")
                     for uploaded in (hp_files or []):
                         suffix = os.path.splitext(uploaded.name)[1]
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -10768,7 +10768,7 @@ def render_hotel_flow(client):
                     detected = detect_hotel_products(raw_text)
                     hotel_hint = None
                     if len(detected) > 1:
-                        st.warning(f"âš ï¸ This document appears to describe {len(detected)} different hotel "
+                        st.warning(f"⚠️ This document appears to describe {len(detected)} different hotel "
                                   f"properties: {', '.join(h.get('label', '?') for h in detected)}. Only the "
                                   f"FIRST is being extracted - run this flow again with a different hotel code "
                                   f"for each of the others.")
@@ -10827,28 +10827,28 @@ def render_hotel_flow(client):
     HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked",
                      "hp_cancellation_link_scope", "hp_price_audit_facts", "hp_contract_purpose"]
 
-    st.header(f"Hotel â€” Step 4: Review â€œ{data.get('hotelname') or '(unnamed)'}â€")
+    st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
     _hp_md_seed_used = st.session_state.get("hp_masterdata_seed")
     if _hp_md_seed_used:
         _hp_md_img_count = len(_hp_md_seed_used.get("image_urls") or [])
-        st.info(f"ðŸ“š Seeded from Travel Compositor master data: **{_hp_md_seed_used.get('name') or '(unnamed)'}** "
-                f"â€” its description was folded into extraction below, and its "
+        st.info(f"📚 Seeded from Travel Compositor master data: **{_hp_md_seed_used.get('name') or '(unnamed)'}** "
+                f"— its description was folded into extraction below, and its "
                 f"**{_hp_md_img_count} image(s) were already added** to Image URLs below (no manual "
-                f"selection needed) â€” double-check they're right for this property before publishing.")
+                f"selection needed) — double-check they're right for this property before publishing.")
         # Flagged here as well as after publishing, because this is the last screen where someone
         # can still change their mind about which master record this is - and the mapping itself
         # can only be done by hand in Travel Compositor afterwards (see hotel_automap.py).
         # Reads hp_existing_snapshot from session state rather than the `existing_snapshot` local,
         # which isn't bound until further down this function.
         if _hp_md_seed_used.get("accommodation_id") and not st.session_state.get("hp_existing_snapshot"):
-            st.caption(f"ðŸ”— After publishing, this still needs **Automap with master** set by hand in "
+            st.caption(f"🔗 After publishing, this still needs **Automap with master** set by hand in "
                        f"Travel Compositor (accommodation id **{_hp_md_seed_used['accommodation_id']}**"
                        + (f", GIATA {_hp_md_seed_used['giata_id']}" if _hp_md_seed_used.get("giata_id") else "")
-                       + ") â€” the API has no field for it. It'll be added to the automap checklist "
+                       + ") — the API has no field for it. It'll be added to the automap checklist "
                          "automatically so it isn't forgotten.")
 
-    if st.button("ðŸ”™ Start over with a different document", key="hp_cancel"):
+    if st.button("🔙 Start over with a different document", key="hp_cancel"):
         for key in HP_STATE_KEYS:
             st.session_state.pop(key, None)
         # keep the supplier/hotel-code setup: the button says "a different DOCUMENT", so
@@ -10866,8 +10866,8 @@ def render_hotel_flow(client):
     # `existing_snapshot` as a local name.
     existing_snapshot = st.session_state.get("hp_existing_snapshot")
     if existing_snapshot:
-        st.info(f"ðŸ“Œ Hotel code **{provider_code}** already exists in Travel Compositor "
-                f"(â€œ{existing_snapshot.get('hotelname')}â€, contract {existing_snapshot.get('contractId')}). "
+        st.info(f"📌 Hotel code **{provider_code}** already exists in Travel Compositor "
+                f"(“{existing_snapshot.get('hotelname')}”, contract {existing_snapshot.get('contractId')}). "
                 f"Publishing will UPDATE it. Rooms and meal plans already there that this document doesn't "
                 f"mention are preserved, not dropped.")
         # CONFIRMED REAL RULE (product owner): same "look before you update" safety bar just
@@ -10879,7 +10879,7 @@ def render_hotel_flow(client):
         # the right existing room/rate instead of accidentally creating a near-duplicate.
         existing_rooms = existing_snapshot.get("rooms") or []
         existing_rates = existing_snapshot.get("rates") or []
-        with st.expander(f"ðŸ“‹ What's already there ({len(existing_rooms)} room(s), {len(existing_rates)} rate(s)) "
+        with st.expander(f"📋 What's already there ({len(existing_rooms)} room(s), {len(existing_rates)} rate(s)) "
                          f"- reuse these exact names below to update rather than duplicate", expanded=True):
             if existing_rooms:
                 st.markdown("**Existing rooms:** " + ", ".join(
@@ -10892,8 +10892,8 @@ def render_hotel_flow(client):
             else:
                 st.caption("No rates on the existing record yet.")
     else:
-        st.info(f"ðŸ†• Hotel code **{provider_code}** isn't in Travel Compositor yet - publishing will CREATE it.")
-    if st.button("ðŸ”„ Re-check", key="hp_recheck"):
+        st.info(f"🆕 Hotel code **{provider_code}** isn't in Travel Compositor yet - publishing will CREATE it.")
+    if st.button("🔄 Re-check", key="hp_recheck"):
         st.session_state.hp_existing_checked = False
         st.rerun()
 
@@ -10912,8 +10912,8 @@ def render_hotel_flow(client):
             "What is this contract for?",
             ["new_period", "check_current"],
             format_func=lambda v: {
-                "new_period": "ðŸ“ˆ A NEW price period - add/extend rates, offers or rooms for a season not yet live",
-                "check_current": "ðŸ” CHECKING the CURRENT period - verify what's already live against this contract",
+                "new_period": "📈 A NEW price period - add/extend rates, offers or rooms for a season not yet live",
+                "check_current": "🔍 CHECKING the CURRENT period - verify what's already live against this contract",
             }[v],
             index=["new_period", "check_current"].index(st.session_state.get("hp_contract_purpose") or "new_period"),
             key="hp_contract_purpose_radio",
@@ -11006,7 +11006,7 @@ def render_hotel_flow(client):
             return len(selected)
         return 0
 
-    render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pexels)", "hp_pexels_closed", _hp_add_pexels)
+    render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "hp_pexels_closed", _hp_add_pexels)
 
     def _hp_add_pixabay():
         selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_hp_img_query, "hp_pixabay")
@@ -11015,7 +11015,7 @@ def render_hotel_flow(client):
             return len(selected)
         return 0
 
-    render_closable_image_section(True, "ðŸ–¼ï¸ Search free stock photos (Pixabay)", "hp_pixabay_closed", _hp_add_pixabay)
+    render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "hp_pixabay_closed", _hp_add_pixabay)
 
     def _hp_add_url_images():
         selected = render_url_image_picker(st.session_state.get("hp_hosted_image_candidates"), "hp_found_images")
@@ -11026,7 +11026,7 @@ def render_hotel_flow(client):
 
     render_closable_image_section(
         bool(st.session_state.get("hp_hosted_image_candidates")),
-        f"ðŸ–¼ï¸ Images found ({len(st.session_state.get('hp_hosted_image_candidates') or [])}) - from the page/document",
+        f"🖼️ Images found ({len(st.session_state.get('hp_hosted_image_candidates') or [])}) - from the page/document",
         "hp_found_images_closed", _hp_add_url_images
     )
 
@@ -11039,13 +11039,13 @@ def render_hotel_flow(client):
 
     render_closable_image_section(
         bool(st.session_state.get("hp_doc_raw_images")),
-        f"ðŸ“¥ Images extracted from your document(s) ({len(st.session_state.get('hp_doc_raw_images') or [])}) - need hosting",
+        f"📥 Images extracted from your document(s) ({len(st.session_state.get('hp_doc_raw_images') or [])}) - need hosting",
         "hp_doc_images_closed", _hp_add_doc_image
     )
 
     # ---- Rooms ----
     st.markdown("#### Rooms")
-    st.caption("â€œAllowed distributionsâ€ uses Travel Compositor's own Adult+child shorthand, e.g. "
+    st.caption("“Allowed distributions” uses Travel Compositor's own Adult+child shorthand, e.g. "
               "`1+0, 2+0, 2+1` means 1 adult; 2 adults; 2 adults + 1 child. Any combination totalling more "
               "than 9 people is dropped automatically (system cap).")
     rooms_df = pd.DataFrame([
@@ -11093,10 +11093,10 @@ def render_hotel_flow(client):
     editable_table("Room types", rooms_df, "hp_rooms", on_save=_hp_save_rooms)
     room_names = [r.get("name") for r in (data.get("rooms") or []) if r.get("name")]
     if not room_names:
-        st.warning("âš ï¸ At least one room is required - Travel Compositor rejects a hotel contract with none.")
+        st.warning("⚠️ At least one room is required - Travel Compositor rejects a hotel contract with none.")
     rooms_missing_dist = [r.get("name") for r in (data.get("rooms") or []) if not r.get("distributions")]
     if rooms_missing_dist:
-        st.warning(f"âš ï¸ These rooms have no allowed distributions and can't publish: {', '.join(rooms_missing_dist)}")
+        st.warning(f"⚠️ These rooms have no allowed distributions and can't publish: {', '.join(rooms_missing_dist)}")
 
     # ---- Meal plans ----
     st.markdown("#### Meal plans")
@@ -11171,12 +11171,12 @@ def render_hotel_flow(client):
     st.markdown("#### Supplements (extra charges)")
     st.caption("Same shape as Offers, but type is only PERCENT or ABSOLUTE. A hotel supplement is never "
               "optional - it is always an extra charge the client pays.")
-    st.caption("âš ï¸ **Keep the name plain.** Travel Compositor only ever shows the client the supplement's "
+    st.caption("⚠️ **Keep the name plain.** Travel Compositor only ever shows the client the supplement's "
               "one total price, never a per-night breakdown - so a name with a date, a night count, or "
               "\"per night\"/\"per stay\" in it reads as confusing next to that total. Write \"Resort Fee\", "
-              "not \"Resort Fee (per night, 1 Decâ€“31 Jan)\" - the date and basis are already captured by "
+              "not \"Resort Fee (per night, 1 Dec–31 Jan)\" - the date and basis are already captured by "
               "travel_start/travel_end and apply below.")
-    st.caption("âš ï¸ **apply must be filled in by you.** The AI leaves it blank whenever the document doesn't "
+    st.caption("⚠️ **apply must be filled in by you.** The AI leaves it blank whenever the document doesn't "
               "state the basis outright, because 'per person' can mean once for the whole stay "
               "(PER_STAY_PERSON) or once per person per night (PER_NIGHT_PERSON) - on a 7-night stay those "
               "differ sevenfold. One of: "
@@ -11215,7 +11215,7 @@ def render_hotel_flow(client):
     _missing_apply = [s.get("name") or "(unnamed)" for s in (data.get("supplements") or [])
                       if str(s.get("apply") or "").strip().upper() not in HOTEL_APPLY_VALUES]
     if _missing_apply:
-        st.warning("âš ï¸ These supplements still have no **apply** basis and will not publish until one is "
+        st.warning("⚠️ These supplements still have no **apply** basis and will not publish until one is "
                   "chosen: " + ", ".join(_missing_apply) + ". Pick from: " + ", ".join(HOTEL_APPLY_VALUES) + ".")
 
     # ---- Rates / seasons / prices ----
@@ -11237,8 +11237,8 @@ def render_hotel_flow(client):
                 value=_hp_names_to_str(rate.get("supplement_names")), key=f"hp_rate_supps_{r_idx}"))
 
             if not rate.get("seasons"):
-                st.warning("âš ï¸ This rate has no seasons - add at least one with dates and prices below.")
-                if st.button("âž• Add a season", key=f"hp_addseason_{r_idx}"):
+                st.warning("⚠️ This rate has no seasons - add at least one with dates and prices below.")
+                if st.button("➕ Add a season", key=f"hp_addseason_{r_idx}"):
                     rate.setdefault("seasons", []).append(
                         {"name": "Season 1", "date_ranges": [], "price_type": "DISTRIBUTION",
                          "minimum_stay": 1, "room_prices": [], "meal_plans": []})
@@ -11284,13 +11284,13 @@ def render_hotel_flow(client):
                     qcol1, qcol2 = st.columns(2)
                     with qcol1:
                         rp["units_quota"] = st.number_input(
-                            f"{rm_name} â€” quota (rooms allotted)", min_value=0,
+                            f"{rm_name} — quota (rooms allotted)", min_value=0,
                             value=_safe_int(rp.get("units_quota"), fallback=20),
                             key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
                             help="Defaults to 20 when the contract doesn't state an allotment.")
                     with qcol2:
                         rp["units_on_request"] = st.number_input(
-                            f"{rm_name} â€” on request", min_value=0,
+                            f"{rm_name} — on request", min_value=0,
                             value=_safe_int(rp.get("units_on_request"), fallback=0),
                             key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
                             help="Defaults to 0 when the contract doesn't state one.")
@@ -11312,13 +11312,13 @@ def render_hotel_flow(client):
                             })
                         _rp["distribution_prices"] = rows
 
-                    editable_table(f"{rm_name} â€” price per occupancy combination", dp_df,
+                    editable_table(f"{rm_name} — price per occupancy combination", dp_df,
                                    f"hp_dp_{r_idx}_{s_idx}_{rm_name}", on_save=_hp_save_dist_prices)
 
                 season["room_prices"] = [existing_room_prices[n] for n in room_names if n in existing_room_prices]
                 st.divider()
 
-            if st.button("âž• Add another season", key=f"hp_addseason2_{r_idx}"):
+            if st.button("➕ Add another season", key=f"hp_addseason2_{r_idx}"):
                 rate.setdefault("seasons", []).append(
                     {"name": f"Season {len(rate.get('seasons') or []) + 1}", "date_ranges": [],
                      "price_type": "DISTRIBUTION", "minimum_stay": 1, "room_prices": [], "meal_plans": []})
@@ -11326,7 +11326,7 @@ def render_hotel_flow(client):
 
             # ---- Stop sales ----
             st.markdown("**Stop sales (blackout dates per room)**")
-            st.caption("âš ï¸ Submitted by room NAME only - Travel Compositor's API never exposes the numeric "
+            st.caption("⚠️ Submitted by room NAME only - Travel Compositor's API never exposes the numeric "
                       "room id these normally reference, so this relies on the server matching by name. Not "
                       "yet confirmed against a live upload; check the result in Travel Compositor afterwards.")
             ss_df = pd.DataFrame([
@@ -11352,7 +11352,7 @@ def render_hotel_flow(client):
     st.caption("Hotel has no structured cancellation field at all, so this text is what actually reaches "
               "Voucher Remarks - the only place the policy is visible to staff and customers.")
     if st.session_state.get("hp_cancellation_link_scope"):
-        st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table below "
+        st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table below "
                   f"was filled in from {st.session_state['hp_cancellation_link_scope']}. Edit or "
                   f"clear it if this hotel needs different terms.")
     render_cancellation_policy_editor(data, "hp_cancel")
@@ -11367,7 +11367,7 @@ def render_hotel_flow(client):
     contract_result = build_hotel_contract_payload(pre_config, data, existing_hotel_snapshot=existing_snapshot)
 
     if contract_result.get("hotel_error"):
-        st.error(f"âš ï¸ This hotel can't be built yet: {contract_result['hotel_error']}")
+        st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")
         return
 
     # ---- Geolocation (product owner, 2026-09-06): CONFIRMED REAL PUBLISH FAILURE - Travel
@@ -11384,25 +11384,25 @@ def render_hotel_flow(client):
         hp_maps_link = f"https://www.google.com/maps?q={hp_lat},{hp_lng}"
         st.markdown(
             f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
-            f"border-radius:4px;'>ðŸ“ Resolved: <strong>{data.get('hotelname') or provider_code}</strong>"
-            f"<br>Coordinates: {hp_lat:.6f}, {hp_lng:.6f} (source: {hp_geo.get('source')}) â€” "
+            f"border-radius:4px;'>📍 Resolved: <strong>{data.get('hotelname') or provider_code}</strong>"
+            f"<br>Coordinates: {hp_lat:.6f}, {hp_lng:.6f} (source: {hp_geo.get('source')}) — "
             f"<a href='{hp_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
             unsafe_allow_html=True
         )
         if hp_geo.get("source") not in ("manual override", "document", "existing hotel record", None):
-            st.caption("Geocoding data Â© OpenStreetMap contributors")
+            st.caption("Geocoding data © OpenStreetMap contributors")
     else:
         st.markdown(
             "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-            "border-radius:4px;'>âŒ Geolocation NOT resolved - Travel Compositor will reject this hotel "
+            "border-radius:4px;'>❌ Geolocation NOT resolved - Travel Compositor will reject this hotel "
             "without valid coordinates. Search below or enter coordinates manually.</div>",
             unsafe_allow_html=True
         )
 
-    with st.expander("ðŸ” Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
+    with st.expander("🔍 Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
         hp_geo_default_query = (data.get("address") or {}).get("location_name") or data.get("hotelname") or ""
         hp_geo_query = st.text_input("Search for a location", value=hp_geo_default_query, key="hp_geo_query")
-        if st.button("ðŸ”Ž Search", key="hp_geo_search_btn"):
+        if st.button("🔎 Search", key="hp_geo_search_btn"):
             with st.spinner("Searching..."):
                 st.session_state.hp_geo_search_results = geocode_search(hp_geo_query, limit=5)
         if st.session_state.get("hp_geo_search_results"):
@@ -11423,7 +11423,7 @@ def render_hotel_flow(client):
         st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
                   "it here - the coordinates are read out of the link automatically.")
         hp_maps_url = st.text_input("Google Maps link", key="hp_geo_maps_url", placeholder="https://maps.google.com/...")
-        if st.button("ðŸ”— Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
+        if st.button("🔗 Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
             with st.spinner("Reading coordinates from the link..."):
                 hp_url_geo = parse_google_maps_url(hp_maps_url)
             if hp_url_geo["valid"]:
@@ -11440,7 +11440,7 @@ def render_hotel_flow(client):
             hp_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key="hp_geo_manlat", placeholder="e.g. 27.394900")
         with hgmcol2:
             hp_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key="hp_geo_manlng", placeholder="e.g. 33.678400")
-        if st.button("ðŸ“ Use these coordinates", key="hp_geo_manual_btn", disabled=hp_man_lat is None or hp_man_lng is None):
+        if st.button("📍 Use these coordinates", key="hp_geo_manual_btn", disabled=hp_man_lat is None or hp_man_lng is None):
             data["manual_latitude"] = hp_man_lat
             data["manual_longitude"] = hp_man_lng
             st.session_state.hp_geo_confirmed = False
@@ -11453,7 +11453,7 @@ def render_hotel_flow(client):
     # Matching Ticket's exact pattern: no key on the widget itself, read/write the confirmed
     # flag through session_state explicitly instead.
     st.session_state.hp_geo_confirmed = st.checkbox(
-        "âœ… I've checked this location on the map and it's correct for this hotel",
+        "✅ I've checked this location on the map and it's correct for this hotel",
         value=st.session_state.get("hp_geo_confirmed", False),
         disabled=not hp_geo.get("valid"),
     )
@@ -11473,7 +11473,7 @@ def render_hotel_flow(client):
     # ------------------------------------------------------------------
     st.markdown("#### Publish")
 
-    with st.expander("ðŸ”Ž Preview hotel contract payload (phase 1)"):
+    with st.expander("🔎 Preview hotel contract payload (phase 1)"):
         st.json(contract_result["hotel_payload"])
 
     seasons_total = sum(len(r.get("seasons") or []) for r in (data.get("rates") or []))
@@ -11493,7 +11493,7 @@ def render_hotel_flow(client):
     # five publish flows that let a record go live with zero priced rooms - just a warning, not
     # a blocked button, unlike Transfer's hard match/dates/geoloc gates. Now blocked to match.
     if not priced_rooms:
-        st.error("âš ï¸ No room in any season has prices yet - publishing is blocked until at least "
+        st.error("⚠️ No room in any season has prices yet - publishing is blocked until at least "
                  "one room has a price, so nothing unsellable goes live.")
 
     # CONFIRMED BUG FIX (reported 2026-09-02): Travel Compositor's createHotel/updateHotel
@@ -11503,7 +11503,7 @@ def render_hotel_flow(client):
     # the API call, not after" pattern as the priced_rooms gate right above: caught here with a
     # clear, actionable message instead of letting it reach Travel Compositor at all.
     if not images_ok:
-        st.error("âš ï¸ No image has been added yet - Travel Compositor requires at least one image to "
+        st.error("⚠️ No image has been added yet - Travel Compositor requires at least one image to "
                  "publish a hotel. Use the Images section above (search stock photos, or pick one found "
                  "on the hotel's page/document) before publishing.")
     else:
@@ -11516,17 +11516,17 @@ def render_hotel_flow(client):
         # original pick.
         _hp_dropped_images = contract_result.get("images_dropped_too_small") or []
         if _hp_dropped_images:
-            st.warning(f"âš ï¸ {len(_hp_dropped_images)} image(s) were skipped for being smaller than "
+            st.warning(f"⚠️ {len(_hp_dropped_images)} image(s) were skipped for being smaller than "
                       f"Travel Compositor's required 500x400 minimum, so publishing isn't blocked: "
                       f"{', '.join(_hp_dropped_images)}")
 
     geo_ok = bool(hp_geo.get("valid")) and hp_geo_confirmed
     if not geo_ok:
-        st.error("âš ï¸ Geolocation isn't confirmed yet - Travel Compositor rejects a hotel whose "
+        st.error("⚠️ Geolocation isn't confirmed yet - Travel Compositor rejects a hotel whose "
                  "coordinates don't fall inside any of its known destinations, so a human must "
                  "check the map above and tick the confirmation box before publishing.")
 
-    if st.button(f"ðŸš€ Publish â€” {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
+    if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
                  type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok):
         st.session_state.hp_publish_succeeded = False
         progress = st.container()
@@ -11612,7 +11612,7 @@ def render_hotel_flow(client):
             # so a handful of bad picks can't loop forever.
             _hp_image_retries_left = len(phase1_payload.get("images") or [])
             while True:
-                with st.spinner("Phase 1 of 2 â€” publishing the hotel contract, rooms and meal plans..."):
+                with st.spinner("Phase 1 of 2 — publishing the hotel contract, rooms and meal plans..."):
                     if existing_snapshot:
                         hotel_response = client.update_hotel(supplier_id, phase1_payload)
                     else:
@@ -11638,7 +11638,7 @@ def render_hotel_flow(client):
                         return
                     phase1_payload["images"] = _hp_new_images
                     _hp_image_retries_left -= 1
-                    progress.warning(f"âš ï¸ Travel Compositor rejected this image at publish time, so it's "
+                    progress.warning(f"⚠️ Travel Compositor rejected this image at publish time, so it's "
                                      f"being skipped and publishing retried: {_hp_bad_image}")
                     continue
 
@@ -11650,12 +11650,12 @@ def render_hotel_flow(client):
                     _hp_room_candidate_idx += 1
                     phase1_payload["rooms"] = _hp_room_candidates[_hp_room_candidate_idx]
                     if _hp_room_candidate_idx == 1:
-                        progress.warning("âš ï¸ Travel Compositor rejected the attempt that included "
+                        progress.warning("⚠️ Travel Compositor rejected the attempt that included "
                                          "every room type with a generated code, so publishing is "
                                          "being retried with no new rooms attached yet (only rooms "
                                          "that already have a real Travel Compositor code).")
                     else:
-                        progress.warning("âš ï¸ Travel Compositor rejected the hotel with no new rooms "
+                        progress.warning("⚠️ Travel Compositor rejected the hotel with no new rooms "
                                          "attached yet, so publishing is being retried with one new "
                                          "room included. Note: that fallback room still has no "
                                          "providerCode either (Travel Compositor only assigns one "
@@ -11663,18 +11663,18 @@ def render_hotel_flow(client):
                                          "known dead end this app cannot currently work around alone - "
                                          "see the debug expander below.")
                     # 2026-09-08: surface the rejected attempt's raw error (was discarded).
-                    with progress.expander(f"Technical details â€” attempt {_hp_room_candidate_idx} rejected"):
+                    with progress.expander(f"Technical details — attempt {_hp_room_candidate_idx} rejected"):
                         st.code(_hp_error_text or "(no detail)")
                     continue
 
-                with progress.expander("ðŸ” Raw request/response per attempt (debug)"):
+                with progress.expander("🔍 Raw request/response per attempt (debug)"):
                     for _i, _att in enumerate(_hp_phase1_attempts, start=1):
-                        st.markdown(f"**Attempt {_i}** â€” rooms sent: `{_att['rooms_sent']}`")
+                        st.markdown(f"**Attempt {_i}** — rooms sent: `{_att['rooms_sent']}`")
                         st.code(str(_att["response"]))
                 show_publish_error(f"publish hotel **{provider_code}**", hotel_response)
                 return
 
-            progress.success("âœ… Phase 1 â€” hotel contract, rooms and meal plans published.")
+            progress.success("✅ Phase 1 — hotel contract, rooms and meal plans published.")
 
             # AUTOMAP REMINDER (product owner, 2026-09-13: "we must make sure that Automap with
             # master is also set, so the hotel is not a duplicate in the travel compositor
@@ -11702,11 +11702,11 @@ def render_hotel_flow(client):
                 )
                 if _hp_accommodation_id:
                     progress.warning(
-                        f"ðŸ”— **One manual step left in Travel Compositor.** This hotel was seeded "
+                        f"🔗 **One manual step left in Travel Compositor.** This hotel was seeded "
                         f"from master data, but Travel Compositor's API has no way to set "
-                        f"**Automap with master** â€” it can only be done in the back office. Until "
+                        f"**Automap with master** — it can only be done in the back office. Until "
                         f"it is, this contract can show up as a duplicate property.\n\n"
-                        f"- Hotel: **{provider_code}** â€” {phase1_payload.get('hotelname') or ''}\n"
+                        f"- Hotel: **{provider_code}** — {phase1_payload.get('hotelname') or ''}\n"
                         f"- Map it to accommodation id: **{_hp_accommodation_id}**"
                         + (f"\n- GIATA code: **{_hp_giata_id}**" if _hp_giata_id else "")
                         + (f"\n- Master record name: {_hp_md_seed_final.get('master_name') or _hp_md_seed_final.get('name')}"
@@ -11716,7 +11716,7 @@ def render_hotel_flow(client):
                     )
                 else:
                     progress.warning(
-                        f"ðŸ”— **Check this one in Travel Compositor.** No master record was linked "
+                        f"🔗 **Check this one in Travel Compositor.** No master record was linked "
                         f"to **{provider_code}**"
                         + (f" (reason given: _{st.session_state.get('hp_masterdata_skip_reason')}_)"
                            if st.session_state.get("hp_masterdata_skip_reason") else "")
@@ -11725,9 +11725,9 @@ def render_hotel_flow(client):
                           "what creates a duplicate. Saved under **Hotels awaiting automap**."
                     )
             if len(_hp_phase1_attempts) > 1:
-                with progress.expander("ðŸ” Raw request/response per attempt (debug)"):
+                with progress.expander("🔍 Raw request/response per attempt (debug)"):
                     for _i, _att in enumerate(_hp_phase1_attempts, start=1):
-                        st.markdown(f"**Attempt {_i}** â€” rooms sent: `{_att['rooms_sent']}`")
+                        st.markdown(f"**Attempt {_i}** — rooms sent: `{_att['rooms_sent']}`")
                         st.code(str(_att["response"]))
 
             # Every brand-new room NOT included inline in whichever shape actually succeeded above
@@ -11751,15 +11751,15 @@ def render_hotel_flow(client):
                             all_room_responses.append(room_resp)
                 added_ok = len(extra_new_rooms) - len(room_add_failures)
                 if added_ok:
-                    progress.success(f"âœ… Added {added_ok} more room(s).")
+                    progress.success(f"✅ Added {added_ok} more room(s).")
                 for name, msg in room_add_failures:
-                    progress.error(f"âš ï¸ Couldn't add room **{name}**: {msg}")
+                    progress.error(f"⚠️ Couldn't add room **{name}**: {msg}")
 
             # Travel Compositor assigns each room its providerCode here - phase 2 can't run without them.
             room_map = resolve_room_provider_codes(all_room_responses)
             unresolved = [n for n in room_names if not room_map.get(n)]
             if unresolved:
-                progress.warning(f"âš ï¸ Travel Compositor didn't return a code for these room(s): "
+                progress.warning(f"⚠️ Travel Compositor didn't return a code for these room(s): "
                                 f"{', '.join(unresolved)}. Their prices will be skipped in phase 2.")
 
             # CONFIRMED REAL BUG (2026-09-11, HRG-H1): an offer/supplement that names no specific
@@ -11781,7 +11781,7 @@ def render_hotel_flow(client):
                                                         hotel_meal_plan_types=hotel_meal_plan_types,
                                                         hotel_provider_code=provider_code)
             offer_failures = []
-            with st.spinner("Phase 2 of 2 â€” publishing offers..."):
+            with st.spinner("Phase 2 of 2 — publishing offers..."):
                 for offer_data, res in zip(data.get("offers") or [], offer_results):
                     name = offer_data.get("name")
                     if res["action"] == "skip_duplicate":
@@ -11809,7 +11809,7 @@ def render_hotel_flow(client):
                                                             hotel_meal_plan_types=hotel_meal_plan_types,
                                                             hotel_provider_code=provider_code)
             supp_failures = []
-            with st.spinner("Phase 2 of 2 â€” publishing supplements..."):
+            with st.spinner("Phase 2 of 2 — publishing supplements..."):
                 for supp_data, res in zip(data.get("supplements") or [], supp_results):
                     name = supp_data.get("name")
                     if res["action"] == "skip_duplicate":
@@ -11842,7 +11842,7 @@ def render_hotel_flow(client):
                                                       room_name_to_distributions=room_name_to_distributions)
             rate_failures = []
             rate_warnings_all = []
-            with st.spinner("Phase 2 of 2 â€” publishing rates and seasons..."):
+            with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
                 for res in rate_results:
                     rate_warnings_all.extend(res.get("rate_warnings") or [])
                     if res.get("rate_error") or not res.get("rate_payload"):
@@ -11868,7 +11868,7 @@ def render_hotel_flow(client):
                 # price already given for the same total occupancy (see
                 # builder._fill_missing_distribution_prices, 2026-09-11 HRG-H1 fix). Surfaced so
                 # a human can double-check the filled figure is actually right for that combo.
-                progress.info("â„¹ï¸ Filled in some missing room prices by reusing the price already "
+                progress.info("ℹ️ Filled in some missing room prices by reusing the price already "
                               "given for the same number of guests:\n\n" +
                               "\n".join(f"- {note}" for note in rate_warnings_all))
 
@@ -11894,16 +11894,16 @@ def render_hotel_flow(client):
 
             all_failures = offer_failures + supp_failures + rate_failures
             if all_failures:
-                st.error("âš ï¸ The hotel contract published, but some parts failed:\n\n" + "\n".join(
+                st.error("⚠️ The hotel contract published, but some parts failed:\n\n" + "\n".join(
                     f"- **{name or '(unnamed)'}**: {err}" for name, err in all_failures
                 ) + "\n\nFix the details above and publish again - re-running is safe: rooms, rates and "
                     "seasons are matched and updated in place rather than duplicated.")
             else:
                 st.balloons()
-                st.success(f"ðŸŽ‰ Hotel **{provider_code}** published in full â€” contract, rooms, meal plans, "
+                st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
                           f"offers, supplements and {seasons_total} season(s) of prices.")
                 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): "Start a new Hotel" used
-                # to be a button nested inside `if st.button("ðŸš€ Publish...")` - that outer
+                # to be a button nested inside `if st.button("🚀 Publish...")` - that outer
                 # button's own value is only True on the EXACT render where it was clicked, so on
                 # the very next rerun (the one clicking "Start a new Hotel" itself triggers), the
                 # outer button is False again, this whole branch never re-executes, and the inner
@@ -11919,15 +11919,15 @@ def render_hotel_flow(client):
             # ALREADY live. Say so, so the operator doesn't assume nothing happened and re-run
             # from scratch expecting a clean slate.
             show_publish_error(
-                f"finish publishing hotel **{provider_code}** â€” note: the contract, rooms and "
+                f"finish publishing hotel **{provider_code}** — note: the contract, rooms and "
                 f"meal plans (Phase 1 above) may already be live even though this failed",
                 str(e))
 
     # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): rendered here, OUTSIDE the outer
-    # "ðŸš€ Publish" button's `if` block, so it actually survives the rerun its own click causes -
+    # "🚀 Publish" button's `if` block, so it actually survives the rerun its own click causes -
     # see the note where hp_publish_succeeded is set, above.
     if st.session_state.get("hp_publish_succeeded"):
-        if st.button("ðŸ†• Start a new Hotel", key="hp_new"):
+        if st.button("🆕 Start a new Hotel", key="hp_new"):
             for key in HP_STATE_KEYS:
                 st.session_state.pop(key, None)
             st.session_state.hp_publish_succeeded = False
@@ -11947,7 +11947,7 @@ def render_hotel_flow(client):
 # ======================================================================
 def render_manual_information_flow(client):
     st.header("Adding manual information to Product")
-    st.caption("Information a person knows that the supplier's documents don't say â€” a moved "
+    st.caption("Information a person knows that the supplier's documents don't say — a moved "
               "pickup point, revised cancellation terms, a temporary closure. Saved against a "
               "supplier and a product type, and **added automatically to the Voucher Remarks of "
               "every service of that type you upload from then on**, including uploads done by "
@@ -11955,7 +11955,7 @@ def render_manual_information_flow(client):
               "document said; they never replace the cancellation policy or anything extracted.")
 
     if not platform_store.is_durable():
-        st.warning("âš ï¸ No `DATABASE_URL` is configured, so a note saved here is lost on the next "
+        st.warning("⚠️ No `DATABASE_URL` is configured, so a note saved here is lost on the next "
                    "redeploy and will not reach future uploads.")
 
     if st.session_state.suppliers_cache is None:
@@ -11963,7 +11963,7 @@ def render_manual_information_flow(client):
             try:
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception as e:
-                st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
 
     supplier_id = None
@@ -11972,16 +11972,16 @@ def render_manual_information_flow(client):
         if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
     ]
     if momira_suppliers:
-        options = {f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+        options = {f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                    for s in momira_suppliers}
         chosen = st.selectbox("Which supplier?", list(options.keys()), key="mi_supplier_select")
         supplier_id = str(options[chosen])
-        if st.button("ðŸ”„ Refresh supplier list", key="mi_refresh_suppliers"):
+        if st.button("🔄 Refresh supplier list", key="mi_refresh_suppliers"):
             st.session_state.suppliers_cache = None
             st.rerun()
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
-        with st.expander("âš ï¸ Emergency manual entry"):
+        with st.expander("⚠️ Emergency manual entry"):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", value="", key="mi_supplier_manual")
 
@@ -12064,7 +12064,7 @@ def render_manual_information_flow(client):
                 value=True, key="mi_s_compute_from_price",
                 help="ON (recommended for a seasonal surcharge): the app reads each transfer's "
                      "own live base price plus whatever mandatory surcharge is already active "
-                     "today, and writes a single â‚¬ amount = (price + existing supplement) * "
+                     "today, and writes a single € amount = (price + existing supplement) * "
                      "your % - or your flat amount, unchanged. OFF: your amount/type is sent "
                      "to Travel Compositor exactly as entered (its own PERCENT semantics apply "
                      "only to the base price, same as before this option existed).")
@@ -12100,7 +12100,7 @@ def render_manual_information_flow(client):
                       "Sedan, Hiace, ...) of EVERY Transport of this supplier - e.g. a Christmas/"
                       "New Year's Eve/Easter surcharge. Travel Compositor has no percent-type "
                       "surcharge for Transport (unlike Transfer), so the app always computes and "
-                      "writes a plain â‚¬ amount, worked out separately per bracket (each modality "
+                      "writes a plain € amount, worked out separately per bracket (each modality "
                       "has its own base price and its own existing supplement).")
             c1, c2 = st.columns(2)
             with c1:
@@ -12192,7 +12192,7 @@ def render_manual_information_flow(client):
         codes = None
         if bulk_notes.needs_manual_codes(product_type):
             st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
-                    "found automatically â€” paste the tour codes, one per line.")
+                    "found automatically — paste the tour codes, one per line.")
             raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
                                      placeholder="ASW-CT1\nCAI-CT2")
             codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
@@ -12227,7 +12227,7 @@ def render_manual_information_flow(client):
             # Naming what ISN'T possible, and why, stops someone hunting for an option that
             # was never there - which is exactly what happened with the first Hotel note.
             st.caption("Not available on " + product_type + ": "
-                       + "  Â·  ".join(f"**{k}** â€” {v}" for k, v in missing.items()))
+                       + "  ·  ".join(f"**{k}** — {v}" for k, v in missing.items()))
 
         # ---- 2. The text ------------------------------------------------
         st.markdown("### 2. What should it say?" if not structured_labels else "### 3. What should it say?")
@@ -12244,14 +12244,14 @@ def render_manual_information_flow(client):
         )
         mode = (bulk_notes.MODE_REPLACE if mode_label.startswith("Replace") else bulk_notes.MODE_APPEND)
         if mode == bulk_notes.MODE_REPLACE:
-            st.warning("âš ï¸ Replace deletes whatever is currently in that field â€” including text "
+            st.warning("⚠️ Replace deletes whatever is currently in that field — including text "
                        "extracted from the supplier's own contract. There is no undo in Travel "
                        "Compositor. Use it only when the old wording is genuinely superseded.")
 
         codes = None
         if bulk_notes.needs_manual_codes(product_type):
             st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
-                    "found automatically â€” paste the tour codes, one per line.")
+                    "found automatically — paste the tour codes, one per line.")
             raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
                                      placeholder="ASW-CT1\nCAI-CT2")
             codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
@@ -12283,7 +12283,7 @@ def render_manual_information_flow(client):
 
     pcol1, pcol2 = st.columns([1, 3])
     with pcol1:
-        if st.button("ðŸ” Preview", key="mi_preview", disabled=preview_disabled):
+        if st.button("🔍 Preview", key="mi_preview", disabled=preview_disabled):
             bar = st.progress(0.0, text="Reading Travel Compositor...")
 
             def _tick(done, total, name):
@@ -12314,7 +12314,7 @@ def render_manual_information_flow(client):
     # A plan is only valid for the exact inputs it was built from. Editing the text after
     # previewing and then pressing Send would otherwise publish the OLD text.
     if planned and st.session_state.get("mi_plan_sig") != current_sig:
-        st.info("You changed something after previewing â€” press Preview again to see the new result.")
+        st.info("You changed something after previewing — press Preview again to see the new result.")
         planned = None
 
     if planned:
@@ -12357,9 +12357,9 @@ def render_manual_information_flow(client):
                     st.rerun()
 
         for it in planned["items"]:
-            icon = {"will_change": "âœï¸", "unchanged": "âž–", "failed": "âŒ"}[it["status"]]
+            icon = {"will_change": "✏️", "unchanged": "➖", "failed": "❌"}[it["status"]]
             with st.expander(f"{icon} {it['name']}"
-                             + (f" â€” {it.get('reason') or it.get('detail','')}"
+                             + (f" — {it.get('reason') or it.get('detail','')}"
                                 if it["status"] != "will_change" else ""),
                              expanded=False):
                 if it["status"] == "will_change":
@@ -12370,9 +12370,9 @@ def render_manual_information_flow(client):
                         "Include this service", value=it.get("_include", True),
                         key=f"mi_include_{it.get('id')}")
                     for lang, (before, after) in sorted(it["changes"].items()):
-                        st.caption(f"{lang} â€” before")
+                        st.caption(f"{lang} — before")
                         st.code(before or "(empty)")
-                        st.caption(f"{lang} â€” after")
+                        st.caption(f"{lang} — after")
                         st.code(after)
                 else:
                     st.caption(it.get("reason") or it.get("detail") or "")
@@ -12381,11 +12381,11 @@ def render_manual_information_flow(client):
                              if it["status"] == "will_change" and it.get("_include", True))
         if planned["will_change"]:
             if included_count < planned["will_change"]:
-                st.caption(f"{planned['will_change'] - included_count} deselected above â€” "
+                st.caption(f"{planned['will_change'] - included_count} deselected above — "
                           f"those will be left untouched.")
             st.warning(f"This writes to **{included_count} live service(s)** for supplier "
                        f"{supplier_id}. Travel Compositor has no undo.")
-            if st.button(f"ðŸš€ Send to {included_count} service(s)", type="primary",
+            if st.button(f"🚀 Send to {included_count} service(s)", type="primary",
                          key="mi_send", disabled=not included_count):
                 bar = st.progress(0.0, text="Sending...")
 
@@ -12414,19 +12414,19 @@ def render_manual_information_flow(client):
                     st.session_state.pop(_k, None)
                 st.rerun()
         else:
-            st.info("Nothing to send â€” every live service already has this "
+            st.info("Nothing to send — every live service already has this "
                     + ("entry." if add_structured else "text."))
-            if also_future and st.button("ðŸ’¾ Save it for future uploads anyway",
+            if also_future and st.button("💾 Save it for future uploads anyway",
                                          key="mi_save_future_only"):
                 if service_notes.set_standing_note(supplier_id, product_type, text):
                     st.success("Saved. It will be added to every future upload of this type.")
                 else:
-                    st.error("Could not save it â€” it will NOT apply to future uploads.")
+                    st.error("Could not save it — it will NOT apply to future uploads.")
 
     result = st.session_state.get("mi_result")
     if result:
         if result["updated"]:
-            st.success(f"âœ… Sent. {len(result['updated'])} service(s) updated.")
+            st.success(f"✅ Sent. {len(result['updated'])} service(s) updated.")
             for u in result["updated"]:
                 st.write(f"- {u['name']} ({', '.join(u['languages'])})")
                 # CONFIRMED REAL NEED (product owner, 2026-09-11): a real Transport bulk write
@@ -12436,20 +12436,20 @@ def render_manual_information_flow(client):
                 # checked directly instead of guessed at.
                 _mi_dbg = u.get("debug")
                 if _mi_dbg:
-                    with st.expander(f"ðŸ” Raw request/response for {u['name']} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
                         st.caption("Request body sent:")
                         st.json(_mi_dbg.get("request"))
                         st.caption("Response received:")
                         st.json(_mi_dbg.get("response"))
         if st.session_state.get("mi_future_saved") is False:
-            st.error("âš ï¸ The live services were updated, but the note could NOT be saved for "
-                     "future uploads â€” check the database banner at the top of the page.")
+            st.error("⚠️ The live services were updated, but the note could NOT be saved for "
+                     "future uploads — check the database banner at the top of the page.")
         if result["failed"]:
-            st.error(f"âŒ {len(result['failed'])} service(s) failed â€” nothing was changed on these:")
+            st.error(f"❌ {len(result['failed'])} service(s) failed — nothing was changed on these:")
             for f in result["failed"]:
                 st.write(f"- {f.get('name')}: {f.get('detail')}")
                 if f.get("debug"):
-                    with st.expander(f"ðŸ” Raw request/response for {f.get('name')} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
             st.caption("Re-running is safe: services already updated are detected and skipped.")
         if st.button("Clear this result", key="mi_clear_result"):
@@ -12458,7 +12458,7 @@ def render_manual_information_flow(client):
             st.rerun()
 
     st.markdown("---")
-    st.subheader("ðŸ“Œ All standing notes currently in force")
+    st.subheader("📌 All standing notes currently in force")
     existing = service_notes.list_standing_notes()
     if not existing:
         st.caption("None yet. Anything saved above appears here, and applies to every future "
@@ -12473,13 +12473,13 @@ def render_manual_information_flow(client):
             cols = st.columns([6, 1])
             with cols[0]:
                 who = name_by_id.get(note["supplier_id"], "")
-                st.markdown(f"**{note['product_type']} Â· {who or 'supplier'} "
+                st.markdown(f"**{note['product_type']} · {who or 'supplier'} "
                             f"(ID {note['supplier_id']})**")
                 st.info(note["text"])
                 if note.get("updated_at"):
                     st.caption(f"Last updated {note['updated_at'][:16].replace('T', ' ')} UTC")
             with cols[1]:
-                if st.button("ðŸ—‘ï¸", key=f"mi_clear_{note['supplier_id']}_{note['product_type']}",
+                if st.button("🗑️", key=f"mi_clear_{note['supplier_id']}_{note['product_type']}",
                              help="Clear this note"):
                     service_notes.set_standing_note(note["supplier_id"], note["product_type"], "")
                     st.rerun()
@@ -12520,8 +12520,8 @@ def render_update_refresh_flow(client):
         "create") the classic per-type flows already use, then handing off into that same
         already-proven Step 3 code with everything pre-filled, so none of the actual
         extraction/review/publish logic is duplicated here."""
-    st.header("ðŸ”„ Price update to existing Products")
-    if st.button("ðŸ”™ Back to Step 1", key="ur_back"):
+    st.header("🔄 Price update to existing Products")
+    if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()
 
@@ -12573,7 +12573,7 @@ def render_update_refresh_flow(client):
             supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
             if not supplier_id:
                 return
-            if st.button("âž¡ï¸ Continue", type="primary", key="ur_ticket_batch_continue"):
+            if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
                 # Hands off into render_ticket_flow's own already-proven Step 3/4 for this
                 # action - TICKET_ACTION_FIELDS["update_tickets_batch"] == [] so Step 3 asks
                 # nothing extra, and Step 4 routes straight into render_multi_ticket_update_flow
@@ -12605,12 +12605,12 @@ def _ur_pick_momira_supplier(client, key_prefix):
             try:
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception as e:
-                st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
 
     if not st.session_state.suppliers_cache:
         st.error("Could not load the supplier list from Travel Compositor.")
-        with st.expander("âš ï¸ Emergency manual entry"):
+        with st.expander("⚠️ Emergency manual entry"):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             return st.text_input("Supplier ID (numeric)", value="", key=f"{key_prefix}_supplier_manual").strip() or None
 
@@ -12619,14 +12619,14 @@ def _ur_pick_momira_supplier(client, key_prefix):
         if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
     ]
     if not momira_suppliers:
-        st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue.")
+        st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
         return None
     supplier_options = {
-        f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+        f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
         for s in momira_suppliers
     }
     selected_label = st.selectbox("Select Supplier", list(supplier_options.keys()), key=f"{key_prefix}_supplier_select")
-    if st.button("ðŸ”„ Refresh supplier list", key=f"{key_prefix}_refresh_suppliers"):
+    if st.button("🔄 Refresh supplier list", key=f"{key_prefix}_refresh_suppliers"):
         st.session_state.suppliers_cache = None
         st.rerun()
     return str(supplier_options[selected_label])
@@ -12696,16 +12696,16 @@ def render_supplier_migration_flow(client):
         ok = [r for r in results if r["ok"] is True]
         partial = [r for r in results if r["ok"] == "partial"]
         failed = [r for r in results if r["ok"] is False]
-        st.caption(f"{len(ok)} moved cleanly Â· {len(partial)} partially done (needs a "
-                  f"look) Â· {len(failed)} failed outright.")
+        st.caption(f"{len(ok)} moved cleanly · {len(partial)} partially done (needs a "
+                  f"look) · {len(failed)} failed outright.")
         for r in ok:
-            st.success(f"âœ… **{r['name']}** â€” now `{r.get('new_id')}` under the new supplier; "
+            st.success(f"✅ **{r['name']}** — now `{r.get('new_id')}` under the new supplier; "
                       f"original retired.")
         for r in partial:
-            st.warning(f"âš ï¸ **{r['name']}** â€” {r['detail']}")
+            st.warning(f"⚠️ **{r['name']}** — {r['detail']}")
         for r in failed:
-            st.error(f"ðŸš« **{r['name']}** â€” failed at the {r['stage']} step: {r['detail']}")
-        if st.button("â†©ï¸ Move more / start over", key="sm_reset"):
+            st.error(f"🚫 **{r['name']}** — failed at the {r['stage']} step: {r['detail']}")
+        if st.button("↩️ Move more / start over", key="sm_reset"):
             for key in ("sm_records", "sm_selected", "sm_results", "sm_source_id", "sm_dest_id"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -12715,7 +12715,7 @@ def render_supplier_migration_flow(client):
         st.info("Choose both suppliers to continue.")
         return
     if source_id == dest_id:
-        st.error("ðŸš« Source and destination are the same supplier - nothing to move.")
+        st.error("🚫 Source and destination are the same supplier - nothing to move.")
         return
 
     codes = None
@@ -12726,15 +12726,15 @@ def render_supplier_migration_flow(client):
         codes = [c.strip() for c in codes_text.splitlines() if c.strip()]
 
     load_disabled = product_type == "ClosedTour" and not codes
-    if st.button(f"ðŸ“¥ Load {product_type}(s) from the source supplier", key="sm_load",
+    if st.button(f"📥 Load {product_type}(s) from the source supplier", key="sm_load",
                 disabled=load_disabled):
         with st.spinner(f"Loading {product_type}(s)..."):
             records, err = bulk_notes.list_services(client, source_id, product_type, codes=codes)
             if err and not records:
-                st.error(f"âŒ Couldn't load {product_type}(s): {err}")
+                st.error(f"❌ Couldn't load {product_type}(s): {err}")
             else:
                 if err:
-                    st.warning(f"âš ï¸ Some couldn't be loaded: {err}")
+                    st.warning(f"⚠️ Some couldn't be loaded: {err}")
                 st.session_state.sm_records = records
                 st.session_state.sm_selected = {i: True for i in range(len(records))}
                 st.session_state.sm_source_id = source_id
@@ -12745,7 +12745,7 @@ def render_supplier_migration_flow(client):
     if records is None:
         return
     if st.session_state.get("sm_source_id") != source_id or st.session_state.get("sm_dest_id") != dest_id:
-        st.warning(f"âš ï¸ The supplier selection changed since these were loaded - click 'Load "
+        st.warning(f"⚠️ The supplier selection changed since these were loaded - click 'Load "
                   f"{product_type}(s)' again to refresh the list before moving anything.")
         return
     if not records:
@@ -12753,7 +12753,7 @@ def render_supplier_migration_flow(client):
         return
 
     id_field = bulk_notes.PRODUCTS[product_type]["id_field"]
-    st.subheader(f"2 â€” Choose which of {len(records)} {product_type}(s) to move")
+    st.subheader(f"2 — Choose which of {len(records)} {product_type}(s) to move")
 
     bcol1, bcol2 = st.columns(2)
     with bcol1:
@@ -12776,13 +12776,13 @@ def render_supplier_migration_flow(client):
     for i, record in enumerate(records):
         name = bulk_notes.label_for(record, product_type)
         ident = record.get(id_field)
-        label = f"**{name}**  Â·  id `{ident}`"
+        label = f"**{name}**  ·  id `{ident}`"
         st.session_state.sm_selected[i] = st.checkbox(
             label, value=st.session_state.sm_selected.get(i, True), key=f"sm_pick_{i}")
         if product_type == "Transfer":
             is_zoned = bool(record.get("departureLocationId") or record.get("arrivalLocationId"))
             if is_zoned:
-                st.caption("âš ï¸ Zone-based routing (departureLocationId/arrivalLocationId) - this zone id "
+                st.caption("⚠️ Zone-based routing (departureLocationId/arrivalLocationId) - this zone id "
                           "is specific to the SOURCE supplier and may not exist, or may mean something "
                           "different, under the destination. Check the destination supplier's zones in "
                           "Travel Compositor after moving this one, before trusting it live.")
@@ -12792,7 +12792,7 @@ def render_supplier_migration_flow(client):
     if not selected_indices:
         return
 
-    st.subheader("3 â€” Move")
+    st.subheader("3 — Move")
     _SM_RETIRE_NOTE = {
         "Transfer": "switches the same number OFF (active = False) under the source supplier",
         "Transport": "switches the same number OFF (active = False) under the source supplier",
@@ -12802,7 +12802,7 @@ def render_supplier_migration_flow(client):
                  "active flag or delete endpoint for Hotel at all, so this is the only way to "
                  "stop it being booked (see supplier_migration.py's migrate_hotel docstring)",
     }
-    st.warning(f"âš ï¸ This creates {len(selected_indices)} new {product_type}(s) under the "
+    st.warning(f"⚠️ This creates {len(selected_indices)} new {product_type}(s) under the "
               f"destination supplier, and {_SM_RETIRE_NOTE[product_type]}. The new records get "
               f"brand-new Travel Compositor identities - the old ones cannot be reused.")
     if product_type == "Hotel":
@@ -12811,7 +12811,7 @@ def render_supplier_migration_flow(client):
                   "are remapped to the new codes automatically) - this can be a lot of API calls "
                   "for a hotel with many rate seasons, so it may take a while.")
 
-    if st.button(f"ðŸš€ Move {len(selected_indices)} {product_type.lower()}(s)", key="sm_confirm",
+    if st.button(f"🚀 Move {len(selected_indices)} {product_type.lower()}(s)", key="sm_confirm",
                 type="primary"):
         results = []
         progress_bar = st.progress(0.0)
@@ -12881,21 +12881,21 @@ def render_transport_cancellation_bulk_flow(client):
         skipped = [r for r in results if r.get("skipped")]
         ok = [r for r in results if r["ok"] and not r.get("skipped")]
         failed = [r for r in results if not r["ok"]]
-        st.caption(f"{len(ok)} updated Â· {len(skipped)} left unchanged (existing policy already "
-                  f"as strict) Â· {len(failed)} failed.")
+        st.caption(f"{len(ok)} updated · {len(skipped)} left unchanged (existing policy already "
+                  f"as strict) · {len(failed)} failed.")
         for r in ok:
-            st.success(f"âœ… **{r['name']}** updated.")
+            st.success(f"✅ **{r['name']}** updated.")
         for r in skipped:
-            st.info(f"ðŸ›¡ï¸ **{r['name']}** â€” {r['detail']}.")
+            st.info(f"🛡️ **{r['name']}** — {r['detail']}.")
         for r in failed:
-            st.error(f"ðŸš« **{r['name']}** â€” {r['detail']}")
-        if st.button("â†©ï¸ Run again / start over", key="ctb_reset"):
+            st.error(f"🚫 **{r['name']}** — {r['detail']}")
+        if st.button("↩️ Run again / start over", key="ctb_reset"):
             for key in ("ctb_rows", "ctb_new_tiers", "ctb_default_scope", "ctb_selected", "ctb_results"):
                 st.session_state.pop(key, None)
             st.rerun()
         return
 
-    if st.button("ðŸ“¥ Load this supplier's live Transports", key="ctb_load"):
+    if st.button("📥 Load this supplier's live Transports", key="ctb_load"):
         progress_bar = st.progress(0.0)
         status_line = st.empty()
 
@@ -12909,7 +12909,7 @@ def render_transport_cancellation_bulk_flow(client):
         progress_bar.empty()
         status_line.empty()
         if err:
-            st.error(f"âŒ Couldn't load Transports: {err}")
+            st.error(f"❌ Couldn't load Transports: {err}")
         else:
             st.session_state.ctb_rows = rows
             st.session_state.ctb_selected = {r["id"]: True for r in rows}
@@ -12922,13 +12922,13 @@ def render_transport_cancellation_bulk_flow(client):
         st.info("This supplier has no live Transports.")
         return
 
-    st.subheader(f"2 â€” New cancellation policy (will apply to up to {len(rows)} Transport(s))")
+    st.subheader(f"2 — New cancellation policy (will apply to up to {len(rows)} Transport(s))")
 
     if "ctb_new_tiers" not in st.session_state:
         default_tiers, scope_label = cancellation_bulk_transport.default_new_tiers(supplier_id)
         st.session_state.ctb_new_tiers = default_tiers
         st.session_state.ctb_default_scope = scope_label
-    st.caption(f"Pre-filled from {st.session_state.get('ctb_default_scope', 'the house default')} â€” "
+    st.caption(f"Pre-filled from {st.session_state.get('ctb_default_scope', 'the house default')} — "
               f"edit below if this run needs something different. This does NOT change the "
               f"saved Cancellation Link itself, only what gets applied this run.")
 
@@ -12980,14 +12980,14 @@ def render_transport_cancellation_bulk_flow(client):
 
     def _ctb_fmt_tiers(tiers):
         if not tiers:
-            return "(system default â€” 30 days, 100% refund)"
+            return "(system default — 30 days, 100% refund)"
         return "; ".join(f"{t['days']}+ days: {100.0 - t['fee_percentage']:.0f}% refund"
                          for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
 
     proposals = cancellation_bulk_transport.build_proposals(rows, st.session_state.ctb_new_tiers)
     proposals_by_id = {p["id"]: p for p in proposals}
 
-    st.subheader("3 â€” Review and choose which to update")
+    st.subheader("3 — Review and choose which to update")
     bcol1, bcol2 = st.columns(2)
     with bcol1:
         if st.button("Select all", key="ctb_select_all"):
@@ -13005,11 +13005,11 @@ def render_transport_cancellation_bulk_flow(client):
             st.rerun()
 
     for p in proposals:
-        route = f"  Â·  {p['departure_code']} â†’ {p['arrival_code']}" if (p["departure_code"] or p["arrival_code"]) else ""
-        label = f"**{p['name']}**{route}  Â·  id `{p['id']}`"
+        route = f"  ·  {p['departure_code']} → {p['arrival_code']}" if (p["departure_code"] or p["arrival_code"]) else ""
+        label = f"**{p['name']}**{route}  ·  id `{p['id']}`"
         if p["unchanged"]:
             st.session_state.ctb_selected[p["id"]] = False
-            st.checkbox(f"{label}  Â·  âœ… already matches â€” nothing to do", value=False, disabled=True,
+            st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
                        key=f"ctb_pick_{p['id']}")
         elif p.get("existing_stricter"):
             # CONFIRMED REAL RULE (product owner, 2026-09-11): never overwrite a live policy
@@ -13018,7 +13018,7 @@ def render_transport_cancellation_bulk_flow(client):
             # unchecked by default like an exact match, but with its own explanation so it's
             # not confused with "already identical".
             st.session_state.ctb_selected[p["id"]] = False
-            st.checkbox(f"{label}  Â·  ðŸ›¡ï¸ existing policy is already at least as strict â€” left alone",
+            st.checkbox(f"{label}  ·  🛡️ existing policy is already at least as strict — left alone",
                        value=False, disabled=True, key=f"ctb_pick_{p['id']}")
         else:
             st.session_state.ctb_selected[p["id"]] = st.checkbox(
@@ -13030,15 +13030,15 @@ def render_transport_cancellation_bulk_flow(client):
                 st.text(_ctb_fmt_tiers(p["current_fee_tiers"]))
                 st.caption(p["current_cancellation_snippet"] or "*(no cancellation text found)*")
             with dcol2:
-                st.caption("**New**  Â·  goes into Description")
+                st.caption("**New**  ·  goes into Description")
                 st.text(_ctb_fmt_tiers(p["new_fee_tiers"]))
                 st.caption(p["new_cancellation_text"])
             if not p["existing_paragraph_found"]:
-                st.warning("âš ï¸ No existing cancellation paragraph was found in Description â€” a "
+                st.warning("⚠️ No existing cancellation paragraph was found in Description — a "
                           "new one will be INSERTED into Description rather than replacing one. "
                           "Double-check the result afterward inside Travel Compositor.")
             if p.get("full_fetch_failed"):
-                st.warning("âš ï¸ Couldn't re-fetch this Transport's own full record (only the "
+                st.warning("⚠️ Couldn't re-fetch this Transport's own full record (only the "
                           "shorter list entry was available) - some rarely-used fields may be "
                           "filled in with a blank default rather than their real existing value. "
                           "Safe to include, but worth a quick check in Travel Compositor "
@@ -13049,8 +13049,8 @@ def render_transport_cancellation_bulk_flow(client):
     if not selected_ids:
         return
 
-    st.subheader("4 â€” Apply")
-    st.warning(f"âš ï¸ This will PUT (update) {len(selected_ids)} Transport(s) â€” both the structured "
+    st.subheader("4 — Apply")
+    st.warning(f"⚠️ This will PUT (update) {len(selected_ids)} Transport(s) — both the structured "
               f"cancellation field and the matching sentence in each one's description. Everything "
               f"else on each record (pricing, segments, images, dates) is left exactly as it is.")
     # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the "New policy" table above is a
@@ -13062,9 +13062,9 @@ def render_transport_cancellation_bulk_flow(client):
     # displayed the new, not-yet-saved numbers right above it. Disabled until the table is saved.
     ctb_table_being_edited = bool(st.session_state.get("_editing_table_ctb_new_policy"))
     if ctb_table_being_edited:
-        st.error("ðŸš« The New Policy table above has unsaved edits â€” click its own Save button "
+        st.error("🚫 The New Policy table above has unsaved edits — click its own Save button "
                  "first, or this button would apply the OLD numbers while the screen shows new ones.")
-    if st.button(f"ðŸš€ Update {len(selected_ids)} Transport(s)", key="ctb_confirm", type="primary",
+    if st.button(f"🚀 Update {len(selected_ids)} Transport(s)", key="ctb_confirm", type="primary",
                  disabled=ctb_table_being_edited):
         to_apply = [proposals_by_id[pid] for pid in selected_ids]
         with st.spinner("Updating..."):
@@ -13074,7 +13074,7 @@ def render_transport_cancellation_bulk_flow(client):
 
 
 def render_cancellation_bulk_flow(client):
-    """Bulk-update Cancellation Policy â€” top-level dispatcher across all 5 product types.
+    """Bulk-update Cancellation Policy — top-level dispatcher across all 5 product types.
 
     CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "bulk update cancellation policy --> this
     must be usable for all Services: Hotel; Transfer, Transport, Ticket and ClosedTour - so
@@ -13147,7 +13147,7 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             # after being set. So "updated" below is 100% true for the voucher text - it is
             # NOT a partial/silent-failure caveat - there is simply no structured field on
             # this product type's API for anything to write.
-            st.info(f"â„¹ï¸ {product_type} has no structured cancellation field in Travel "
+            st.info(f"ℹ️ {product_type} has no structured cancellation field in Travel "
                     f"Compositor's API at all (confirmed via a live GET before/after diff, "
                     f"2026-09-11) - only the customer-facing voucher text below was changed. "
                     f"If {product_type}'s own \"Cancellation\" tab in Travel Compositor shows "
@@ -13155,15 +13155,15 @@ def render_generic_cancellation_bulk_flow(client, product_type):
                     f"change when set directly there either. Worth asking Travel Compositor "
                     f"support whether {product_type} cancellation policies are settable via "
                     f"API at all.")
-        st.caption(f"{len(ok)} updated Â· {len(skipped)} left unchanged (existing policy already "
-                  f"as strict) Â· {len(failed)} failed.")
+        st.caption(f"{len(ok)} updated · {len(skipped)} left unchanged (existing policy already "
+                  f"as strict) · {len(failed)} failed.")
         for r in ok:
-            st.success(f"âœ… **{r['name']}** updated.")
+            st.success(f"✅ **{r['name']}** updated.")
         for r in skipped:
-            st.info(f"ðŸ›¡ï¸ **{r['name']}** â€” {r['detail']}.")
+            st.info(f"🛡️ **{r['name']}** — {r['detail']}.")
         for r in failed:
-            st.error(f"ðŸš« **{r['name']}** â€” {r['detail']}")
-        if st.button("â†©ï¸ Run again / start over", key="cb_reset"):
+            st.error(f"🚫 **{r['name']}** — {r['detail']}")
+        if st.button("↩️ Run again / start over", key="cb_reset"):
             for key in ("cb_rows", "cb_new_tiers", "cb_default_scope", "cb_selected", "cb_results"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -13177,15 +13177,15 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         codes = [c.strip() for c in codes_text.splitlines() if c.strip()]
 
     load_disabled = product_type == "ClosedTour" and not codes
-    if st.button(f"ðŸ“¥ Load this supplier's live {product_type}(s)", key="cb_load", disabled=load_disabled):
+    if st.button(f"📥 Load this supplier's live {product_type}(s)", key="cb_load", disabled=load_disabled):
         with st.spinner("Loading..."):
             rows, err = cancellation_bulk.load_supplier_services_for_cancellation(
                 client, supplier_id, product_type, codes=codes)
             if err and not rows:
-                st.error(f"âŒ Couldn't load {product_type}(s): {err}")
+                st.error(f"❌ Couldn't load {product_type}(s): {err}")
             else:
                 if err:
-                    st.warning(f"âš ï¸ Some couldn't be loaded: {err}")
+                    st.warning(f"⚠️ Some couldn't be loaded: {err}")
                 st.session_state.cb_rows = rows
                 st.session_state.cb_selected = {r["id"]: True for r in rows}
                 st.rerun()
@@ -13198,7 +13198,7 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         return
 
     has_structured = product_type in ("ClosedTour", "Ticket")
-    st.subheader(f"2 â€” New cancellation policy (will apply to up to {len(rows)} {product_type}(s))")
+    st.subheader(f"2 — New cancellation policy (will apply to up to {len(rows)} {product_type}(s))")
     if not has_structured:
         st.caption(f"{product_type} has no separate structured cancellation field in Travel "
                   f"Compositor - only the customer-facing Voucher remarks text is rewritten.")
@@ -13207,7 +13207,7 @@ def render_generic_cancellation_bulk_flow(client, product_type):
         default_tiers, scope_label = cancellation_bulk.default_new_tiers(supplier_id, product_type)
         st.session_state.cb_new_tiers = default_tiers
         st.session_state.cb_default_scope = scope_label
-    st.caption(f"Pre-filled from {st.session_state.get('cb_default_scope', 'the house default')} â€” "
+    st.caption(f"Pre-filled from {st.session_state.get('cb_default_scope', 'the house default')} — "
               f"edit below if this run needs something different. This does NOT change the "
               f"saved Cancellation Link itself, only what gets applied this run.")
 
@@ -13254,14 +13254,14 @@ def render_generic_cancellation_bulk_flow(client, product_type):
 
     def _cb_fmt_tiers(tiers):
         if not tiers:
-            return "(system default â€” 30 days, 100% refund)"
+            return "(system default — 30 days, 100% refund)"
         return "; ".join(f"{t['days']}+ days: {100.0 - t['fee_percentage']:.0f}% refund"
                          for t in sorted(tiers, key=lambda t: t["days"], reverse=True))
 
     proposals = cancellation_bulk.build_proposals(rows, st.session_state.cb_new_tiers, product_type)
     proposals_by_id = {p["id"]: p for p in proposals}
 
-    st.subheader("3 â€” Review and choose which to update")
+    st.subheader("3 — Review and choose which to update")
     bcol1, bcol2 = st.columns(2)
     with bcol1:
         if st.button("Select all", key="cb_select_all"):
@@ -13279,10 +13279,10 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             st.rerun()
 
     for p in proposals:
-        label = f"**{p['name']}**  Â·  id `{p['id']}`"
+        label = f"**{p['name']}**  ·  id `{p['id']}`"
         if p["unchanged"]:
             st.session_state.cb_selected[p["id"]] = False
-            st.checkbox(f"{label}  Â·  âœ… already matches â€” nothing to do", value=False, disabled=True,
+            st.checkbox(f"{label}  ·  ✅ already matches — nothing to do", value=False, disabled=True,
                        key=f"cb_pick_{p['id']}")
         elif p.get("existing_stricter"):
             # CONFIRMED REAL RULE (product owner, 2026-09-11): never overwrite a live policy
@@ -13292,7 +13292,7 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             # field at all) it compares tiers PARSED from the current voucher text - only when
             # that parse succeeded, see the existing_unparseable branch below for when it can't.
             st.session_state.cb_selected[p["id"]] = False
-            st.checkbox(f"{label}  Â·  ðŸ›¡ï¸ existing policy is already at least as strict â€” left alone",
+            st.checkbox(f"{label}  ·  🛡️ existing policy is already at least as strict — left alone",
                        value=False, disabled=True, key=f"cb_pick_{p['id']}")
         elif p.get("existing_unparseable"):
             # Transfer/Hotel only: the current voucher text states SOME policy but doesn't match
@@ -13303,7 +13303,7 @@ def render_generic_cancellation_bulk_flow(client, product_type):
             # disabled - a human who reads the current text in the expander below and decides
             # it's safe to replace can still tick it.
             st.session_state.cb_selected[p["id"]] = st.checkbox(
-                f"{label}  Â·  âš ï¸ current policy text couldn't be read automatically â€” check the "
+                f"{label}  ·  ⚠️ current policy text couldn't be read automatically — check the "
                 f"Details below before including this one",
                 value=st.session_state.cb_selected.get(p["id"], False), key=f"cb_pick_{p['id']}")
         else:
@@ -13322,11 +13322,11 @@ def render_generic_cancellation_bulk_flow(client, product_type):
                     st.text(_cb_fmt_tiers(p["new_fee_tiers"]))
                 st.caption(p["new_cancellation_text"])
             if not p["existing_paragraph_found"]:
-                st.warning("âš ï¸ No existing cancellation sentence was found in this service's text â€” "
+                st.warning("⚠️ No existing cancellation sentence was found in this service's text — "
                           "a new one will be INSERTED rather than replacing one. Double-check the "
                           "result afterward inside Travel Compositor.")
             if p.get("existing_unparseable"):
-                st.warning("âš ï¸ The current text above states SOME policy, but doesn't match a "
+                st.warning("⚠️ The current text above states SOME policy, but doesn't match a "
                           "wording this app itself would have written, so it can't be "
                           "automatically compared to the new policy for strictness. Read it "
                           "yourself - if it already requires equal or more notice than the new "
@@ -13337,17 +13337,17 @@ def render_generic_cancellation_bulk_flow(client, product_type):
     if not selected_ids:
         return
 
-    st.subheader("4 â€” Apply")
+    st.subheader("4 — Apply")
     field_note = ("both the structured cancellation field and the matching sentence in each "
                   "one's Voucher remarks" if has_structured else "the matching sentence in "
                   "each one's Voucher remarks")
-    st.warning(f"âš ï¸ This will PUT (update) {len(selected_ids)} {product_type}(s) â€” {field_note}. "
+    st.warning(f"⚠️ This will PUT (update) {len(selected_ids)} {product_type}(s) — {field_note}. "
               f"Everything else on each record is left exactly as it is.")
     cb_table_being_edited = bool(st.session_state.get("_editing_table_cb_new_policy"))
     if cb_table_being_edited:
-        st.error("ðŸš« The New Policy table above has unsaved edits â€” click its own Save button "
+        st.error("🚫 The New Policy table above has unsaved edits — click its own Save button "
                  "first, or this button would apply the OLD numbers while the screen shows new ones.")
-    if st.button(f"ðŸš€ Update {len(selected_ids)} {product_type}(s)", key="cb_confirm", type="primary",
+    if st.button(f"🚀 Update {len(selected_ids)} {product_type}(s)", key="cb_confirm", type="primary",
                  disabled=cb_table_being_edited):
         to_apply = [proposals_by_id[pid] for pid in selected_ids]
         with st.spinner("Updating..."):
@@ -13371,7 +13371,7 @@ def _ur_gather_text_optional(key_prefix):
         if page_text is not None:
             combined_parts.append(page_text)
         else:
-            st.warning(f"âš ï¸ Couldn't fetch the URL: {page_text_err}.")
+            st.warning(f"⚠️ Couldn't fetch the URL: {page_text_err}.")
     for uploaded in (files or []):
         suffix = os.path.splitext(uploaded.name)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -13449,7 +13449,7 @@ def _render_update_refresh_coded_service(client, service):
         kind_key, action_labels = "hotel", None
 
     if list_error:
-        st.warning(f"âš ï¸ Couldn't load the existing {service} list ({list_error}) - you can still type "
+        st.warning(f"⚠️ Couldn't load the existing {service} list ({list_error}) - you can still type "
                   f"the code manually below.")
 
     # CONFIRMED PRODUCT-OWNER REQUEST (follow-up round): "automatically matching existing
@@ -13458,7 +13458,7 @@ def _render_update_refresh_coded_service(client, service):
     # screen either way). Suggestions only RANK candidates; the human always explicitly picks
     # below, same rule transfer_matcher.py already follows for Transfers.
     suggested_code = None
-    with st.expander(f"ðŸ”Ž Have a document/URL for this {service} already? Get a suggested match"):
+    with st.expander(f"🔎 Have a document/URL for this {service} already? Get a suggested match"):
         st.caption("This is only used to suggest which existing one this is - you'll still provide "
                   "the source again on the next screen for the actual extraction.")
         match_text = _ur_gather_text_optional("ur_coded_match")
@@ -13469,10 +13469,10 @@ def _render_update_refresh_coded_service(client, service):
             for s in suggestions:
                 scol1, scol2 = st.columns([4, 1])
                 with scol1:
-                    st.write(f"**{s['code']}** â€” {s['name']}")
+                    st.write(f"**{s['code']}** — {s['name']}")
                     st.caption(f"match confidence: {s['score']:.0%}")
                 with scol2:
-                    if st.button("âœ… Use this", key=f"ur_coded_use_{s['code']}"):
+                    if st.button("✅ Use this", key=f"ur_coded_use_{s['code']}"):
                         st.session_state.ur_coded_suggested_code = s["code"]
                         # Same fixed-key staleness rule as every editable_field/editable_table
                         # in this app (see reset_stale_editable_field_widgets' docstring): the
@@ -13493,7 +13493,7 @@ def _render_update_refresh_coded_service(client, service):
     manual_entry = not ordered_items
     chosen_code = ""
     if not manual_entry:
-        options = {f"{it['code']} â€” {it['name']}" + (" â­ recently used" if it["code"] in recent_codes else ""): it
+        options = {f"{it['code']} — {it['name']}" + (" ⭐ recently used" if it["code"] in recent_codes else ""): it
                    for it in ordered_items}
         option_labels = list(options.keys())
         default_index = 0
@@ -13523,7 +13523,7 @@ def _render_update_refresh_coded_service(client, service):
         )
 
     ready = bool(chosen_code) and (action_labels is None or action_key is not None)
-    if st.button("âž¡ï¸ Continue", type="primary", disabled=not ready, key="ur_coded_continue"):
+    if st.button("➡️ Continue", type="primary", disabled=not ready, key="ur_coded_continue"):
         _remember_update_refresh_pick(kind_key, supplier_id, chosen_code, chosen_name)
         if service == "Ticket":
             st.session_state.tk_cfg_action = action_key
@@ -13567,9 +13567,9 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
     touches. Reuses price_refresh.load_supplier_products (kind=Transport) for the route list, so
     the list of transports is exactly the same live-from-Travel-Compositor fact the document flow
     already trusts."""
-    st.subheader("1 â€” Load this supplier's transports")
-    if st.button("ðŸ” Load transports", type="primary", key="pma_load"):
-        bar = st.progress(0.0, text="Loading transports from Travel Compositorâ€¦")
+    st.subheader("1 — Load this supplier's transports")
+    if st.button("🔍 Load transports", type="primary", key="pma_load"):
+        bar = st.progress(0.0, text="Loading transports from Travel Compositor…")
 
         def _tick(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
@@ -13591,13 +13591,13 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
         return
 
     st.success(f"{len(routes)} transport(s) loaded for supplier {supplier_id}.")
-    st.subheader("2 â€” Pick the adjustment")
+    st.subheader("2 — Pick the adjustment")
     mode_label = st.radio("Adjustment type", ["Percentage (%)", "Absolute amount"],
                           horizontal=True, key="pma_mode_pick")
     mode = "percentage" if mode_label == "Percentage (%)" else "absolute"
     value = st.number_input(
-        "Value (positive to raise, negative to lower)" + (" â€” e.g. 10 = +10%" if mode == "percentage"
-                                                           else " â€” e.g. 12 = +12, -5 = -5"),
+        "Value (positive to raise, negative to lower)" + (" — e.g. 10 = +10%" if mode == "percentage"
+                                                           else " — e.g. 12 = +12, -5 = -5"),
         value=0.0, step=1.0, format="%.2f", key="pma_value")
     _names = [r.get("name") or r.get("id") for r in routes]
     _chosen_names = st.multiselect("Which transports does this apply to?", _names,
@@ -13613,25 +13613,25 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
 
     accepted = [p for p in proposals if p.get("accepted")]
     blocked = [p for p in proposals if p.get("blocked")]
-    st.caption(f"{len(accepted)} route(s) would change Â· "
-              f"{len(proposals) - len(accepted) - len(blocked)} unaffected (already zero-value change) Â· "
+    st.caption(f"{len(accepted)} route(s) would change · "
+              f"{len(proposals) - len(accepted) - len(blocked)} unaffected (already zero-value change) · "
               f"{len(blocked)} blocked.")
     if blocked:
-        st.error(f"âŒ {len(blocked)} blocked:")
+        st.error(f"❌ {len(blocked)} blocked:")
         for p in blocked:
             st.write(f"- **{p['name']}**: {p['blocked']}")
     if accepted:
-        with st.expander(f"âœ… {len(accepted)} route(s) â€” preview old â†’ new", expanded=True):
+        with st.expander(f"✅ {len(accepted)} route(s) — preview old → new", expanded=True):
             for p in accepted:
-                st.write(f"- **{p['name']}**: {p['old']} â†’ {p['new']}")
+                st.write(f"- **{p['name']}**: {p['old']} → {p['new']}")
 
-    st.subheader("3 â€” Apply")
+    st.subheader("3 — Apply")
     st.warning(f"This changes the vehicle/base price on **{len(accepted)} live transport(s)** for "
-              f"supplier {supplier_id}. Nothing else is touched â€” no option, no supplement, no "
+              f"supplier {supplier_id}. Nothing else is touched — no option, no supplement, no "
               f"modality, no validity date.")
-    if st.button(f"ðŸš€ Update {len(accepted)} transport(s)", type="primary",
+    if st.button(f"🚀 Update {len(accepted)} transport(s)", type="primary",
                  disabled=not accepted, key="pma_apply"):
-        bar = st.progress(0.0, text="Updatingâ€¦")
+        bar = st.progress(0.0, text="Updating…")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
@@ -13644,24 +13644,24 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
     result = st.session_state.get("pma_result")
     if result:
         if result["updated"]:
-            st.success(f"âœ… {len(result['updated'])} transport(s) repriced.")
+            st.success(f"✅ {len(result['updated'])} transport(s) repriced.")
             for u in result["updated"]:
-                st.write(f"- {u['name']}: {u['old']} â†’ {u['new']}")
+                st.write(f"- {u['name']}: {u['old']} → {u['new']}")
                 _dbg = u.get("debug")
                 if _dbg:
-                    with st.expander(f"ðŸ” Raw request/response for {u['name']} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
                         st.caption("Transport (parent) request body:")
                         st.json(_dbg["transport_request"])
                         st.caption("Transport (parent) response:")
                         st.json(_dbg["transport_response"])
         if result["failed"]:
-            st.error(f"âŒ {len(result['failed'])} failed:")
+            st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
                 if f.get("debug"):
-                    with st.expander(f"ðŸ” Raw request/response for {f.get('name')} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
-        if st.button("ðŸ†• Start again", key="pma_new"):
+        if st.button("🆕 Start again", key="pma_new"):
             for key in ("pma_routes", "pma_proposals", "pma_result"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -13680,10 +13680,10 @@ def render_transport_price_consistency_flow(client, supplier_id):
     wrong directly in Travel Compositor (or with the manual adjustment / rate-sheet flows above)."""
     st.caption("Loads this supplier's live transports and compares each modality's price "
               "supplement against what this SAME supplier's OTHER routes usually charge for that "
-              "same passenger bracket. Nothing is written â€” this only helps you spot a route "
+              "same passenger bracket. Nothing is written — this only helps you spot a route "
               "whose numbers look out of line before your yearly review.")
-    if st.button("ðŸ” Load transports", type="primary", key="pcc_load"):
-        bar = st.progress(0.0, text="Loading transports from Travel Compositorâ€¦")
+    if st.button("🔍 Load transports", type="primary", key="pcc_load"):
+        bar = st.progress(0.0, text="Loading transports from Travel Compositor…")
 
         def _tick(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
@@ -13706,8 +13706,8 @@ def render_transport_price_consistency_flow(client, supplier_id):
 
     report = price_refresh.transport_price_consistency_report(routes)
     if not report:
-        st.info("Nothing to compare â€” either every transport here has only one passenger "
-                "bracket, or no bracket signature (e.g. \"1â€“8 pax\") appears on more than one "
+        st.info("Nothing to compare — either every transport here has only one passenger "
+                "bracket, or no bracket signature (e.g. \"1–8 pax\") appears on more than one "
                 "route for this supplier.")
         return
 
@@ -13722,11 +13722,11 @@ def render_transport_price_consistency_flow(client, supplier_id):
         "Sample size": r["sample_size"],
     } for r in report])
     st.caption(f"{len(df)} route/modality combination(s) had another route on the same "
-              f"passenger bracket to compare against â€” ranked by |deviation|, biggest first. "
+              f"passenger bracket to compare against — ranked by |deviation|, biggest first. "
               f"No hard cutoff: a year of real distance/fuel variation is normal, so use judgement.")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    if st.button("ðŸ†• Start again", key="pcc_new"):
+    if st.button("🆕 Start again", key="pcc_new"):
         st.session_state.pop("pcc_routes", None)
         st.rerun()
 
@@ -13750,10 +13750,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
     radio's default selection, not skip rendering the radio itself - the same question appeared
     twice in a row. Only asked fresh when this is None (no caller currently does that, but kept
     as the honest fallback rather than assuming there's always a preselection)."""
-    st.header("ðŸ’¶ Refresh prices from a rate sheet")
+    st.header("💶 Refresh prices from a rate sheet")
     st.caption("For a rate sheet covering products that already exist. The list of routes comes "
-              "from Travel Compositor, not from the document â€” the document is only asked what "
-              "each one now costs. Nothing is created, and **nothing but prices changes** â€” "
+              "from Travel Compositor, not from the document — the document is only asked what "
+              "each one now costs. Nothing is created, and **nothing but prices changes** — "
               "validity dates, times, names and modality structure are left exactly as they are.")
     if preselected_kind:
         kind = preselected_kind
@@ -13763,7 +13763,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         horizontal=True, key="pr_kind")
 
     if st.session_state.suppliers_cache is None:
-        with st.spinner("Loading supplier listâ€¦"):
+        with st.spinner("Loading supplier list…"):
             try:
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception as e:
@@ -13773,12 +13773,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
               if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
     supplier_id = None
     if momira:
-        options = {f"{x.get('commercialName') or x.get('legalName')} â€” ID {x.get('id')}": str(x.get("id"))
+        options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
                    for x in momira}
         supplier_id = options[st.selectbox("Supplier", list(options.keys()), key="pr_supplier")]
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
-        with st.expander("âš ï¸ Emergency manual entry"):
+        with st.expander("⚠️ Emergency manual entry"):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", key="pr_supplier_manual").strip()
 
@@ -13795,17 +13795,17 @@ def render_price_refresh_flow(client, preselected_kind=None):
     if kind == price_refresh.KIND_TRANSPORT and supplier_id:
         pr_mode = st.radio(
             "How do you want to set the new price?",
-            ["ðŸ“„ From a rate sheet document", "ðŸ”¢ Manual %/absolute adjustment",
-             "ðŸ”Ž Yearly price consistency check (read-only)"],
+            ["📄 From a rate sheet document", "🔢 Manual %/absolute adjustment",
+             "🔎 Yearly price consistency check (read-only)"],
             horizontal=True, key="pr_source_mode")
-        if pr_mode == "ðŸ”¢ Manual %/absolute adjustment":
+        if pr_mode == "🔢 Manual %/absolute adjustment":
             render_transport_manual_adjustment_flow(client, supplier_id)
             return
-        if pr_mode == "ðŸ”Ž Yearly price consistency check (read-only)":
+        if pr_mode == "🔎 Yearly price consistency check (read-only)":
             render_transport_price_consistency_flow(client, supplier_id)
             return
 
-    st.subheader("1 â€” The new rate sheet")
+    st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
     files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                              accept_multiple_files=True, key="pr_files")
@@ -13845,16 +13845,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # the proposals it builds.
             vehicles = " + ".join(sorted(fts_csv_tmp_paths))
             with st.spinner(f"Reading {len(routes)} route(s) directly from the FTS rate "
-                            f"matrix ({vehicles}, no AI needed, so it can't be cut off)â€¦"):
+                            f"matrix ({vehicles}, no AI needed, so it can't be cut off)…"):
                 findings, fts_err = price_refresh.lookup_prices_from_fts_matrix(
                     routes, sedan_csv_path=fts_csv_tmp_paths.get("sedan"),
                     hiace_csv_path=fts_csv_tmp_paths.get("hiace"))
             if fts_err:
-                st.warning(f"âš ï¸ This looked like an FTS rate-matrix CSV but couldn't be "
-                           f"read ({fts_err}) â€” falling back to the normal reading.")
+                st.warning(f"⚠️ This looked like an FTS rate-matrix CSV but couldn't be "
+                           f"read ({fts_err}) — falling back to the normal reading.")
                 findings = None
         if findings is None and (raw_text or "").strip():
-            with st.spinner(f"Looking up prices for {len(routes)} route(s) in the documentâ€¦"):
+            with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
                 try:
                     findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
                 except Exception as e:
@@ -13879,7 +13879,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
             return True
         return False
 
-    if st.button(f"ðŸ” Read prices for this supplier's {kind.lower()}s", type="primary",
+    if st.button(f"🔍 Read prices for this supplier's {kind.lower()}s", type="primary",
                  disabled=not supplier_id, key="pr_read"):
         st.session_state.pop("pr_scope_answered", None)
         raw_parts = []
@@ -13897,7 +13897,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
             if page_text is not None:
                 raw_parts.append(page_text)
             else:
-                st.warning(f"âš ï¸ Couldn't fetch that URL: {page_err}.")
+                st.warning(f"⚠️ Couldn't fetch that URL: {page_err}.")
         for uploaded in (files or []):
             suffix = os.path.splitext(uploaded.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -13911,10 +13911,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 raw_parts.append(extract_raw_text(tmp_path))
                 os.remove(tmp_path)
         if not raw_parts and not fts_csv_tmp_paths:
-            st.error("No document to read â€” upload a rate sheet or give a URL.")
+            st.error("No document to read — upload a rate sheet or give a URL.")
         else:
             raw_text = "\n\n".join(raw_parts)
-            bar = st.progress(0.0, text=f"Reading this supplier's {kind.lower()}s from Travel Compositorâ€¦")
+            bar = st.progress(0.0, text=f"Reading this supplier's {kind.lower()}s from Travel Compositor…")
 
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
@@ -13926,7 +13926,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.error(f"Couldn't read this supplier's {kind.lower()}s: {err}")
             elif not routes:
                 st.warning(f"This supplier has no {kind.lower()}s yet. Create them with "
-                           f"**Create & Update Products â†’ {kind}** first; this flow only updates "
+                           f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
                 # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
@@ -13954,15 +13954,15 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # The modality confirmation step itself. Rendered only while a read is paused waiting for it.
     _pending = st.session_state.get("pr_pending")
     if _pending:
-        st.subheader("2 â€” Which modality does this rate sheet price?")
+        st.subheader("2 — Which modality does this rate sheet price?")
         st.caption("Every modality is selected, which reprices exactly as before. Untick the ones "
-                   "this document says nothing about â€” a rate sheet that only prices the Sedan "
+                   "this document says nothing about — a rate sheet that only prices the Sedan "
                    "line must not be allowed to move the Hiace price with it.")
         _labels = [g["label"] for g in _pending["groups"]]
         _chosen = st.multiselect(
             "Modalities this document prices", _labels, default=_labels, key="pr_scope_pick",
             help="Grouped by passenger range, because that is the one thing that means the same "
-                 "on every transport â€” modality codes differ from supplier to supplier.")
+                 "on every transport — modality codes differ from supplier to supplier.")
 
         # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11, full
         # 8-question Q&A): "if the selected modality we want to update in this exact update
@@ -13970,7 +13970,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # price on top? Sedan Modality would be base price and if I would update the Hiace the
         # price difference must be calculated and the price must then be added to the price
         # supplement." An auto-detect fallback used to exist here and picked whichever option
-        # currently carries no live supplement â€” REMOVED entirely, because that is exactly the
+        # currently carries no live supplement — REMOVED entirely, because that is exactly the
         # read that can be wrong: Travel Compositor's own API is confirmed to under-report a real
         # supplement as 0.0 (see claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.
         # md), and this app's own prior update run is confirmed to have zeroed out real
@@ -13978,9 +13978,9 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # required human decision every round, with no silent fallback if it's left unanswered.
         st.caption("Every modality on a transport shares one base (vehicle) price; every other "
                    "modality is stored as its own price supplement, in its own separate round. "
-                   "This choice is required â€” pick whichever modality this round's document "
+                   "This choice is required — pick whichever modality this round's document "
                    "prices as the vehicle rate.")
-        _base_placeholder = "â€” choose the vehicle/base-price modality (required) â€”"
+        _base_placeholder = "— choose the vehicle/base-price modality (required) —"
         _base_label_options = [_base_placeholder] + _labels
         _base_pick = st.selectbox("Which modality is the VEHICLE/BASE price this round?",
                                   _base_label_options, index=0, key="pr_base_pick")
@@ -14056,22 +14056,22 @@ def render_price_refresh_flow(client, preselected_kind=None):
     needs_base = [p for p in proposals if p["status"] == "blocked_needs_base_designation"]
     zero_supplement = [p for p in proposals if p["status"] == "blocked_zero_supplement"]
 
-    st.subheader("2 â€” Check the new prices")
-    st.caption(f"{len(changed)} route(s) would change Â· {len(unchanged)} already match the document Â· "
+    st.subheader("2 — Check the new prices")
+    st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
               f"{len(absent)} not found in it."
-              + (f" Â· {len(blocked)} could not be read" if blocked else "")
-              + (f" Â· {len(needs_base)} need a base modality designated" if needs_base else "")
-              + (f" Â· {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
+              + (f" · {len(blocked)} could not be read" if blocked else "")
+              + (f" · {len(needs_base)} need a base modality designated" if needs_base else "")
+              + (f" · {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
     _scope = st.session_state.get("pr_scope")
     if _scope:
-        st.info("ðŸŽ¯ This round is scoped to the "
+        st.info("🎯 This round is scoped to the "
                 + " and ".join(f"**{lo}-{hi} pax**" for lo, hi in _scope)
-                + " modality only. Every other modality is left exactly as it is â€” its price is "
+                + " modality only. Every other modality is left exactly as it is — its price is "
                   "not read, not compared, and not written.")
     _base_override = st.session_state.get("pr_base_override")
     if _base_override:
         lo, hi = _base_override
-        st.info(f"ðŸ§® **{lo}-{hi} pax** is set as the base price modality for this round. Every "
+        st.info(f"🧮 **{lo}-{hi} pax** is set as the base price modality for this round. Every "
                 f"other modality's price is being stored as base + a price difference (a price "
                 f"supplement), rather than auto-detected from which one currently reads with no "
                 f"supplement.")
@@ -14085,11 +14085,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # next to the route so a human can find the exact record in Travel Compositor without
         # having to search by name.
         rid = route.get("id")
-        return f"  Â·  `{rid}`" if rid else ""
+        return f"  ·  `{rid}`" if rid else ""
 
     if blocked:
         st.error(
-            f"ðŸš« **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
+            f"🚫 **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
             f"been left untouched. This is usually a temporary API hiccup - re-run the price refresh "
             f"for this supplier and they should load. They are not repriced, because the base price "
             f"is shared across a transport's modalities: repricing the ones that did load would "
@@ -14097,7 +14097,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
         )
         for p in blocked:
             names = ", ".join(str(c) for c in (p.get("unreadable_options") or []) if c) or "unknown option(s)"
-            st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}** â€” couldn't read: `{names}`")
+            st.markdown(f"- **{p['route'].get('name') or '(unnamed route)'}** — couldn't read: `{names}`")
 
     # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): a route with
     # two or more live modalities has no auto-detect fallback any more - the human must have
@@ -14106,7 +14106,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # here if its live modality structure changed between the choice and this screen.
     if needs_base:
         st.error(
-            f"ðŸš« **{len(needs_base)} route(s) have two or more modalities and no vehicle/base "
+            f"🚫 **{len(needs_base)} route(s) have two or more modalities and no vehicle/base "
             f"price was designated for them** - re-run this refresh and pick the vehicle/base "
             f"modality in Step 2. Nothing here is proposed or writable until that's answered; "
             f"there is no fallback guess."
@@ -14120,7 +14120,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # wrong, not that nothing needs to change here.
     if zero_supplement:
         st.error(
-            f"ðŸš« **{len(zero_supplement)} route(s) would compute a price supplement of exactly 0** "
+            f"🚫 **{len(zero_supplement)} route(s) would compute a price supplement of exactly 0** "
             f"for a modality that isn't the vehicle/base price - that can never be right, so "
             f"nothing on these routes is writable until it's resolved. Check whether the vehicle/"
             f"base modality was designated correctly, or use the AI text field in Step 2 to "
@@ -14129,11 +14129,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
         for p in zero_supplement:
             route = p["route"]
             for err in p.get("zero_supplement_errors") or []:
-                period = (f" ({err['start_date']} â†’ {err['end_date']})"
+                period = (f" ({err['start_date']} → {err['end_date']})"
                          if err.get("start_date") or err.get("end_date") else "")
-                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} Â· "
+                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
                            f"**{err.get('name') or err.get('code')}**{period}: would be "
-                           f"{err.get('would_be_price')} {route.get('currency') or ''} â€” exactly "
+                           f"{err.get('would_be_price')} {route.get('currency') or ''} — exactly "
                            f"the vehicle/base price")
 
     # CONFIRMED REAL RULE (product owner, 2026-09-11): "if a transport has 2 or more modalities,
@@ -14146,12 +14146,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # already caught once on real TRANSPORT-423015).
     _flat = [p for p in proposals if p.get("flat_price_codes")]
     if _flat:
-        with st.expander(f"âš ï¸ {len(_flat)} route(s) show identical prices across modalities â€” "
+        with st.expander(f"⚠️ {len(_flat)} route(s) show identical prices across modalities — "
                          f"likely a live-data read issue, not a document mismatch", expanded=True):
             st.caption("Two different vehicle classes should never legitimately cost the same. "
                       "When this app sees that, the more likely explanation is that Travel "
                       "Compositor's API returned 0.0 for a real supplement its own admin Prices "
-                      "tab shows as nonzero â€” this app has no other field to read instead, so it "
+                      "tab shows as nonzero — this app has no other field to read instead, so it "
                       "cannot tell the difference between 'genuinely no supplement' and 'the API "
                       "isn't disclosing one'. Check the Prices tab for these directly before "
                       "trusting this round's numbers for them.")
@@ -14160,15 +14160,15 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 price_bits = ", ".join(f"{o['min_pax']}-{o['max_pax']} pax ({o['code']}): {o['unit_price']}"
                                        for o in route.get("options") or []
                                        if o["code"] in p["flat_price_codes"])
-                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} Â· "
-                           f"{price_bits} {route.get('currency') or ''} Â· status: *{p['status']}*")
+                st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
+                           f"{price_bits} {route.get('currency') or ''} · status: *{p['status']}*")
 
     # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
     # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a
     # single click, which is the one way "accept all" could do damage.
     acol1, acol2 = st.columns([1, 4])
     with acol1:
-        if st.button("âœ… Accept all", key="pr_accept_all", use_container_width=True):
+        if st.button("✅ Accept all", key="pr_accept_all", use_container_width=True):
             for p in proposals:
                 p["accepted"] = p["status"] == "changed"
             st.rerun()
@@ -14203,7 +14203,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 # filled out the actual prices" - a single modality can carry several changes in
                 # one round now, one per season the document states, each labelled with its own
                 # date range so a human can tell them apart.
-                _period_label = (f" ({c['start_date']} â†’ {c['end_date']})"
+                _period_label = (f" ({c['start_date']} → {c['end_date']})"
                                  if c.get("start_date") or c.get("end_date") else "")
                 with pcol2:
                     c["new"] = st.number_input(
@@ -14231,26 +14231,26 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     _basis = "per person" if route.get("price_per_pax", True) else "per vehicle"
                     _kind_label = " *(vehicle price)*" if c.get("write_kind") == "vehicle" \
                         else " *(price supplement)*" if c.get("write_kind") == "supplement" else ""
-                    _new_period_label = "  Â·  *new period*" if c.get("is_new_period") else ""
+                    _new_period_label = "  ·  *new period*" if c.get("is_new_period") else ""
                     if abs(c["new"] - c["old"]) < 0.005:
-                        st.markdown(f"{c['min_pax']}â€“{c['max_pax']} pax{_period_label}: {c['old']} â†’ "
-                                   f":green[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}  Â·  "
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
+                                   f":green[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}  ·  "
                                    f"*matches the live price*")
                     else:
-                        st.markdown(f"{c['min_pax']}â€“{c['max_pax']} pax{_period_label}: {c['old']} â†’ "
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *â€œ{finding['matched_row']}â€*")
+                bits.append(f"from the row *“{finding['matched_row']}”*")
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
                 bits.append(finding["note"])
             if p.get("currency_changed"):
-                bits.append(f"âš ï¸ the document says **{finding['currency']}** but this transport is "
-                            f"**{route.get('currency')}** â€” the price is applied as-is, not converted")
+                bits.append(f"⚠️ the document says **{finding['currency']}** but this transport is "
+                            f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
-                st.caption("  Â·  ".join(bits))
+                st.caption("  ·  ".join(bits))
             # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11): "but
             # if we only update the Sedan price whey should the app touches even the Hiace price
             # supplement?" - the untouched-modality preview that used to run here was DELETED
@@ -14265,25 +14265,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # price" number above is reflected immediately. One line per changed PERIOD, not per
             # modality - see supplement_calculation_examples' own docstring.
             for _ex in price_refresh.supplement_calculation_examples(route, p["changes"]):
-                _sign = "+" if _ex["supplement"] >= 0 else "âˆ’"
-                _ex_period = (f" ({_ex['start_date']} â†’ {_ex['end_date']})"
+                _sign = "+" if _ex["supplement"] >= 0 else "−"
+                _ex_period = (f" ({_ex['start_date']} → {_ex['end_date']})"
                              if _ex.get("start_date") or _ex.get("end_date") else "")
                 st.caption(
-                    f"ðŸ§® **{_ex['name']}**'s new price{_ex_period} will be stored as base "
+                    f"🧮 **{_ex['name']}**'s new price{_ex_period} will be stored as base "
                     f"({_ex['base_name']}: {_ex['base_price']}) {_sign} a price supplement of "
-                    f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} â€” this is "
+                    f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} — this is "
                     f"exactly what gets written to the price supplement field on Publish.")
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
             # route, with the extra instruction folded in, and replaces its proposal in place -
             # every other route in the batch is untouched.
-            with st.expander("ðŸ¤– Not right? Tell the AI more about this route", expanded=False):
+            with st.expander("🤖 Not right? Tell the AI more about this route", expanded=False):
                 route_hint = st.text_input(
                     "Extra instruction for this route only",
                     key=f"pr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
                     placeholder="e.g. use the Port Ghalib price, not Marsa Allam")
-                if st.button("ðŸ” Re-read this route", key=f"pr_reread_{p['index']}",
+                if st.button("🔁 Re-read this route", key=f"pr_reread_{p['index']}",
                              disabled=not route_hint.strip()):
                     with st.spinner("Re-reading this route..."):
                         combined_hint = "\n".join(
@@ -14305,16 +14305,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                   "instruction - the current price is left as it was.")
 
     if unchanged:
-        with st.expander(f"âž– {len(unchanged)} already at the document's price"):
+        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
             for p in unchanged:
                 route = p["route"]
                 price_bits = ", ".join(
                     f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
                     for o in (route.get("options") or []) if not o.get("fetch_failed"))
-                st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  Â·  "
+                st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  ·  "
                            f":green[{price_bits}] {route.get('currency') or ''}")
     if absent:
-        with st.expander(f"â“ {len(absent)} not found in the document â€” match by hand if you want"):
+        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
             st.caption("The document may price these under a wording nobody matched, or the supplier "
                       "may have dropped them. Pick the row's price yourself to update one anyway.")
             for p in absent:
@@ -14333,8 +14333,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     # matched_row is ""), so its presence is what makes this a visible diagnostic
                     # instead of a silent drop.
                     if p["finding"].get("matched_row"):
-                        st.warning(f"âš ï¸ {p['finding'].get('note') or 'Matched the document but could not be applied.'}")
-                    st.caption(", ".join(f"{o['min_pax']}â€“{o['max_pax']} pax now {o['unit_price']}"
+                        st.warning(f"⚠️ {p['finding'].get('note') or 'Matched the document but could not be applied.'}")
+                    st.caption(", ".join(f"{o['min_pax']}–{o['max_pax']} pax now {o['unit_price']}"
                                          for o in route["options"] if not o.get("fetch_failed")))
                 with mcol2:
                     typed = st.number_input(
@@ -14371,14 +14371,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                     "Compositor, so there's nothing to price by hand yet. "
                                     "Re-run the price refresh and try again.")
 
-    st.subheader("3 â€” Apply")
+    st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
     st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
-               f"{supplier_id}. Nothing else is touched â€” validity dates stay as they are, even "
+               f"{supplier_id}. Nothing else is touched — validity dates stay as they are, even "
                f"where they run to 2049 or 2099.")
-    if st.button(f"ðŸš€ Update {len(accepted)} {kind.lower()}(s)", type="primary",
+    if st.button(f"🚀 Update {len(accepted)} {kind.lower()}(s)", type="primary",
                  disabled=not accepted, key="pr_apply"):
-        bar = st.progress(0.0, text="Updatingâ€¦")
+        bar = st.progress(0.0, text="Updating…")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
@@ -14391,10 +14391,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
     result = st.session_state.get("pr_result")
     if result:
         if result["updated"]:
-            st.success(f"âœ… {len(result['updated'])} {kind.lower()}(s) repriced.")
+            st.success(f"✅ {len(result['updated'])} {kind.lower()}(s) repriced.")
             for u in result["updated"]:
                 st.write(f"- {u['name']}: " + ", ".join(
-                    f"{c['min_pax']}â€“{c['max_pax']} pax {c['old']} â†’ {c['new']}" for c in u["changes"]))
+                    f"{c['min_pax']}–{c['max_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
                 # CONFIRMED REAL DIAGNOSTIC NEED (product owner, 2026-09-11): a "repriced" success
                 # here has been reported to NOT show up in Travel Compositor's own admin Prices
                 # tab afterwards. Rather than guess again, this shows the EXACT request body we
@@ -14403,7 +14403,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 # from "we wrote the wrong option" is right here, no Postman round-trip needed.
                 _dbg = u.get("debug")
                 if _dbg:
-                    with st.expander(f"ðŸ” Raw request/response for {u['name']} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
                         st.write(f"write_kind: `{_dbg.get('write_kind')}`")
                         if _dbg.get("transport_request") is not None:
                             st.caption("Transport (parent) request body:")
@@ -14417,13 +14417,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             st.caption(f"Option {resp['code']} response:")
                             st.json(resp["response"])
         if result["failed"]:
-            st.error(f"âŒ {len(result['failed'])} failed:")
+            st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
                 if f.get("debug"):
-                    with st.expander(f"ðŸ” Raw request/response for {f.get('name')} (debug)"):
+                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
-        if st.button("ðŸ†• Start again", key="pr_new"):
+        if st.button("🆕 Start again", key="pr_new"):
             for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -14442,16 +14442,16 @@ def render_ticket_price_refresh_flow(client):
     Tickets/Modalities comes from Travel Compositor, the document is only asked what each known
     CODE now costs, and nothing but occupancyPrices ever changes - dates, languages, supplements
     and modality structure are left exactly as they are."""
-    st.header("ðŸŽŸï¸ Refresh Ticket prices from a rate sheet")
+    st.header("🎟️ Refresh Ticket prices from a rate sheet")
     st.caption("For a rate sheet covering Tickets that already exist. The list of Tickets/"
-              "Modalities comes from Travel Compositor, not from the document â€” the document is "
+              "Modalities comes from Travel Compositor, not from the document — the document is "
               "only asked what each known CODE now costs. Nothing is created, and **only the "
-              "occupancy prices change** â€” dates, languages, supplements and modality structure "
+              "occupancy prices change** — dates, languages, supplements and modality structure "
               "are left exactly as they are. Phase 1 only: Peak Season supplements and "
               "language-choice supplement prices are not touched by this screen yet.")
 
     if st.session_state.suppliers_cache is None:
-        with st.spinner("Loading supplier listâ€¦"):
+        with st.spinner("Loading supplier list…"):
             try:
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception as e:
@@ -14461,23 +14461,23 @@ def render_ticket_price_refresh_flow(client):
               if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
     supplier_id = None
     if momira:
-        options = {f"{x.get('commercialName') or x.get('legalName')} â€” ID {x.get('id')}": str(x.get("id"))
+        options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
                    for x in momira}
         supplier_id = options[st.selectbox("Supplier", list(options.keys()), key="tpr_supplier")]
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
-        with st.expander("âš ï¸ Emergency manual entry"):
+        with st.expander("⚠️ Emergency manual entry"):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             supplier_id = st.text_input("Supplier ID (numeric)", key="tpr_supplier_manual").strip()
 
-    st.subheader("1 â€” The new rate sheet")
+    st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="tpr_url")
     files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
                              accept_multiple_files=True, key="tpr_files")
     hint = st.text_input("Instruction (optional)", key="tpr_hint",
                          placeholder="e.g. only the Alexandria tours section")
 
-    if st.button("ðŸ” Read prices for this supplier's Tickets", type="primary",
+    if st.button("🔍 Read prices for this supplier's Tickets", type="primary",
                  disabled=not supplier_id, key="tpr_read"):
         raw_parts = []
         if url:
@@ -14485,7 +14485,7 @@ def render_ticket_price_refresh_flow(client):
             if page_text is not None:
                 raw_parts.append(page_text)
             else:
-                st.warning(f"âš ï¸ Couldn't fetch that URL: {page_err}.")
+                st.warning(f"⚠️ Couldn't fetch that URL: {page_err}.")
         for uploaded in (files or []):
             suffix = os.path.splitext(uploaded.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -14494,10 +14494,10 @@ def render_ticket_price_refresh_flow(client):
             raw_parts.append(extract_raw_text(tmp_path))
             os.remove(tmp_path)
         if not raw_parts:
-            st.error("No document to read â€” upload a rate sheet or give a URL.")
+            st.error("No document to read — upload a rate sheet or give a URL.")
         else:
             raw_text = "\n\n".join(raw_parts)
-            bar = st.progress(0.0, text="Reading this supplier's Tickets from Travel Compositorâ€¦")
+            bar = st.progress(0.0, text="Reading this supplier's Tickets from Travel Compositor…")
 
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
@@ -14508,10 +14508,10 @@ def render_ticket_price_refresh_flow(client):
                 st.error(f"Couldn't read this supplier's Tickets: {err}")
             elif not routes:
                 st.warning("This supplier has no Tickets yet. Create them with "
-                           "**Create & Update Products â†’ Ticket** first; this flow only updates "
+                           "**Create & Update Products → Ticket** first; this flow only updates "
                            "what already exists.")
             else:
-                with st.spinner(f"Looking up prices for {len(routes)} Modality(ies) in the documentâ€¦"):
+                with st.spinner(f"Looking up prices for {len(routes)} Modality(ies) in the document…"):
                     try:
                         findings = price_refresh.lookup_ticket_prices(routes, raw_text, human_hint=hint)
                     except Exception as e:
@@ -14541,34 +14541,34 @@ def render_ticket_price_refresh_flow(client):
     blocked = [p for p in proposals if p["status"] == "blocked_unreadable"]
     unsupported = [p for p in proposals if p["status"] == "unsupported_price_type"]
 
-    st.subheader("2 â€” Check the new prices")
-    st.caption(f"{len(changed)} Modality(ies) would change Â· {len(unchanged)} already match the "
-              f"document Â· {len(absent)} not found in it."
-              + (f" Â· {len(blocked)} could not be read" if blocked else "")
-              + (f" Â· {len(unsupported)} not OCCUPANCY-priced (unsupported)" if unsupported else ""))
+    st.subheader("2 — Check the new prices")
+    st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
+              f"document · {len(absent)} not found in it."
+              + (f" · {len(blocked)} could not be read" if blocked else "")
+              + (f" · {len(unsupported)} not OCCUPANCY-priced (unsupported)" if unsupported else ""))
 
     if blocked:
-        st.error(f"ðŸš« **{len(blocked)} Modality(ies) could not be fully read from Travel "
+        st.error(f"🚫 **{len(blocked)} Modality(ies) could not be fully read from Travel "
                 f"Compositor** and have been left untouched. Re-run the price refresh and they "
                 f"should load.")
         for p in blocked:
             st.markdown(f"- **{p['route'].get('name') or '(unnamed)'}**")
 
     if unsupported:
-        with st.expander(f"âš ï¸ {len(unsupported)} Modality(ies) not supported yet "
+        with st.expander(f"⚠️ {len(unsupported)} Modality(ies) not supported yet "
                          f"(DISTRIBUTION/SERVICE pricing)"):
             st.caption("This screen only refreshes OCCUPANCY-priced Modalities (a per-headcount "
                       "table) so far. A DISTRIBUTION (flat per-adult/child) or SERVICE (one flat "
-                      "total) Modality is listed here rather than guessed at â€” update it by hand "
+                      "total) Modality is listed here rather than guessed at — update it by hand "
                       "for now.")
             for p in unsupported:
                 route = p["route"]
-                st.markdown(f"- **{route.get('name') or '(unnamed)'}** â€” priceType "
+                st.markdown(f"- **{route.get('name') or '(unnamed)'}** — priceType "
                            f"`{route.get('price_type') or '?'}`")
 
     acol1, acol2 = st.columns([1, 4])
     with acol1:
-        if st.button("âœ… Accept all", key="tpr_accept_all", use_container_width=True):
+        if st.button("✅ Accept all", key="tpr_accept_all", use_container_width=True):
             for p in proposals:
                 p["accepted"] = p["status"] == "changed"
             st.rerun()
@@ -14581,7 +14581,7 @@ def render_ticket_price_refresh_flow(client):
     for p in changed:
         route = p["route"]
         finding = p["finding"]
-        head = f"**{route.get('name')}**  Â·  `{route.get('ticket_code')}/{route.get('modality_code')}`"
+        head = f"**{route.get('name')}**  ·  `{route.get('ticket_code')}/{route.get('modality_code')}`"
         cols = st.columns([1, 6])
         with cols[0]:
             p["accepted"] = st.checkbox("Yes", value=p["accepted"],
@@ -14599,35 +14599,35 @@ def render_ticket_price_refresh_flow(client):
                 with pcol1:
                     _ccy = route.get('currency') or ''
                     if abs(c["new"] - c["old"]) < 0.005:
-                        st.markdown(f"{c['min_pax']} pax: {c['old']} â†’ :green[**{c['new']}**] {_ccy}  Â·  "
+                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :green[**{c['new']}**] {_ccy}  ·  "
                                    f"*matches the live price*")
                     else:
-                        st.markdown(f"{c['min_pax']} pax: {c['old']} â†’ :red[**{c['new']}**] {_ccy}")
+                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :red[**{c['new']}**] {_ccy}")
                     if c.get("child_new") is not None:
                         st.caption(f"child at {c['min_pax']} pax: "
-                                  f"{c.get('child_old') if c.get('child_old') is not None else '?'} â†’ "
+                                  f"{c.get('child_old') if c.get('child_old') is not None else '?'} → "
                                   f"{c['child_new']} {_ccy} (from the document)")
                     elif c.get("child_old") is not None:
                         st.caption(f"child at {c['min_pax']} pax moves with the adult price "
                                   f"(document gave no separate child price)")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *â€œ{finding['matched_row']}â€*")
+                bits.append(f"from the row *“{finding['matched_row']}”*")
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
                 bits.append(finding["note"])
             if p.get("currency_changed"):
-                bits.append(f"âš ï¸ the document says **{finding['currency']}** but this Ticket is "
-                            f"**{route.get('currency')}** â€” the price is applied as-is, not converted")
+                bits.append(f"⚠️ the document says **{finding['currency']}** but this Ticket is "
+                            f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
-                st.caption("  Â·  ".join(bits))
-            with st.expander("ðŸ¤– Not right? Tell the AI more about this Ticket", expanded=False):
+                st.caption("  ·  ".join(bits))
+            with st.expander("🤖 Not right? Tell the AI more about this Ticket", expanded=False):
                 route_hint = st.text_input(
                     "Extra instruction for this Ticket only",
                     key=f"tpr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
                     placeholder="e.g. use the half-day price, not the full-day one")
-                if st.button("ðŸ” Re-read this Ticket", key=f"tpr_reread_{p['index']}",
+                if st.button("🔁 Re-read this Ticket", key=f"tpr_reread_{p['index']}",
                              disabled=not route_hint.strip()):
                     with st.spinner("Re-reading this Ticket..."):
                         combined_hint = "\n".join(
@@ -14649,12 +14649,12 @@ def render_ticket_price_refresh_flow(client):
                                   "extra instruction - the current price is left as it was.")
 
     if unchanged:
-        with st.expander(f"âž– {len(unchanged)} already at the document's price"):
+        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
             for p in unchanged:
                 route = p["route"]
                 price_bits = ", ".join(f"{o['min_pax']} pax: {o['unit_price']}"
                                        for o in (route.get("options") or []))
-                st.markdown(f"- **{route.get('name')}**  Â·  :green[{price_bits}] "
+                st.markdown(f"- **{route.get('name')}**  ·  :green[{price_bits}] "
                            f"{route.get('currency') or ''}")
     if absent:
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "the human shall review if the matched
@@ -14663,7 +14663,7 @@ def render_ticket_price_refresh_flow(client):
         # "not found" section: a ticket the AI didn't match still gets a manual price + "Use"
         # button here, exactly like a transfer/transport route does, instead of being a
         # dead-end read-only list.
-        with st.expander(f"â“ {len(absent)} not found in the document â€” match by hand if you want"):
+        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
             st.caption("The document may price these under a code nobody matched, or the "
                       "supplier may have dropped them. Pick the Modality's price yourself to "
                       "update one anyway.")
@@ -14671,7 +14671,7 @@ def render_ticket_price_refresh_flow(client):
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
                 with mcol1:
-                    st.write(f"**{route.get('name')}**  Â·  `{route.get('ticket_code')}/"
+                    st.write(f"**{route.get('name')}**  ·  `{route.get('ticket_code')}/"
                             f"{route.get('modality_code')}`")
                     st.caption(", ".join(f"{o['min_pax']} pax now {o['unit_price']}"
                                          for o in (route.get("options") or [])))
@@ -14708,13 +14708,13 @@ def render_ticket_price_refresh_flow(client):
                             st.error("This Modality has no occupancy bracket to price by hand. "
                                     "Re-run the price refresh and try again.")
 
-    st.subheader("3 â€” Apply")
+    st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
     st.warning(f"This changes prices on **{len(accepted)} live Ticket Modality(ies)** for "
                f"supplier {supplier_id}. Nothing else is touched.")
-    if st.button(f"ðŸš€ Update {len(accepted)} Modality(ies)", type="primary",
+    if st.button(f"🚀 Update {len(accepted)} Modality(ies)", type="primary",
                  disabled=not accepted, key="tpr_apply"):
-        bar = st.progress(0.0, text="Updatingâ€¦")
+        bar = st.progress(0.0, text="Updating…")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
@@ -14727,15 +14727,15 @@ def render_ticket_price_refresh_flow(client):
     result = st.session_state.get("tpr_result")
     if result:
         if result["updated"]:
-            st.success(f"âœ… {len(result['updated'])} Modality(ies) repriced.")
+            st.success(f"✅ {len(result['updated'])} Modality(ies) repriced.")
             for u in result["updated"]:
                 st.write(f"- {u['name']}: " + ", ".join(
-                    f"{c['min_pax']} pax {c['old']} â†’ {c['new']}" for c in u["changes"]))
+                    f"{c['min_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
         if result["failed"]:
-            st.error(f"âŒ {len(result['failed'])} failed:")
+            st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
-        if st.button("ðŸ†• Start again", key="tpr_new"):
+        if st.button("🆕 Start again", key="tpr_new"):
             for key in ("tpr_proposals", "tpr_routes", "tpr_raw_text", "tpr_result"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -14815,12 +14815,12 @@ def _module_build_mismatches():
 
 
 st.title("Momira Travel Platform")
-st.caption(f"Build version: {BUILD_VERSION} â€” bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 
 _stale_modules, _module_import_failures = _module_build_mismatches()
 if _stale_modules:
     st.error(
-        "ðŸš¨ **Partial deploy â€” some files on the server are older than this one.** Errors from "
+        "🚨 **Partial deploy — some files on the server are older than this one.** Errors from "
         "these will point at the wrong lines, because the traceback is drawn against whatever is "
         "on disk now:\n\n"
         + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
@@ -14832,7 +14832,7 @@ if _module_import_failures:
     # docstring - a module that fails to import can't be build-checked at all, which used to be
     # silently indistinguishable from "everything's fine."
     st.error(
-        "ðŸš¨ **Some modules failed to import and could not be build-checked:**\n\n"
+        "🚨 **Some modules failed to import and could not be build-checked:**\n\n"
         + "\n".join(f"- `{name}.py`: {err}" for name, err in _module_import_failures)
         + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
           "trusting anything this module is used for.")
@@ -14841,7 +14841,7 @@ if _module_import_failures:
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
 # been handed a blank page. See document_reader.scanned_document_warning.
 for _scan_msg in st.session_state.get("_scanned_doc_warnings", []) or []:
-    st.error("ðŸ–¼ï¸ " + _scan_msg)
+    st.error("🖼️ " + _scan_msg)
 st.session_state["_scanned_doc_warnings"] = []
 
 st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
@@ -14859,20 +14859,20 @@ if weekly_review.is_due():
         weekly_review.mark_reviewed()          # nothing to ask; quietly reset the clock
     else:
         with st.container(border=True):
-            st.markdown("### ðŸ—“ï¸ Weekly check-in â€” a few things I keep needing to be told")
+            st.markdown("### 🗓️ Weekly check-in — a few things I keep needing to be told")
             st.caption("Each of these is something you have corrected more than once. Saying **Yes** "
                        "turns it into a house rule, applied to every future document of that type "
-                       "for every supplier â€” so you stop having to repeat it.")
+                       "for every supplier — so you stop having to repeat it.")
             for _q in _review_questions:
-                st.markdown(f"**{_q['product_type']}** â€” {_q['text']}")
+                st.markdown(f"**{_q['product_type']}** — {_q['text']}")
                 st.caption(_q["why"])
                 _c1, _c2, _c3 = st.columns([1, 1, 4])
                 with _c1:
-                    if st.button("âœ… Yes, always", key=f"wr_yes_{_q['id']}"):
+                    if st.button("✅ Yes, always", key=f"wr_yes_{_q['id']}"):
                         weekly_review.accept(_q)
                         st.rerun()
                 with _c2:
-                    if st.button("âœ–ï¸ No", key=f"wr_no_{_q['id']}"):
+                    if st.button("✖️ No", key=f"wr_no_{_q['id']}"):
                         weekly_review.dismiss(_q["id"])
                         st.rerun()
             _d1, _d2 = st.columns([1, 5])
@@ -14881,8 +14881,8 @@ if weekly_review.is_due():
                     weekly_review.mark_reviewed()
                     st.rerun()
             with _d2:
-                st.caption("â€œNot nowâ€ hides this for another week. Nothing here touches Travel "
-                           "Compositor â€” it only edits what the AI is told next time.")
+                st.caption("“Not now” hides this for another week. Nothing here touches Travel "
+                           "Compositor — it only edits what the AI is told next time.")
 
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): a "(YYYYMMDD)" code in a Ticket/Transfer/
 # Transport's Voucher Remarks (Transport: Description) states how long a supplier's prices are
@@ -14908,18 +14908,18 @@ if price_validity.is_due():
 
     if _pv_flagged:
         with st.container(border=True):
-            st.markdown("### â° Weekly price-validity check")
+            st.markdown("### ⏰ Weekly price-validity check")
             st.caption("Each of these services has a \"(YYYYMMDD)\" price-validity code (in Voucher "
                       "Remarks, or Description for Transport) that's already past or due within 60 "
                       "days - go back to the supplier for confirmed pricing and update the service.")
             for _f in _pv_flagged:
-                _status = (f"âš ï¸ expired {abs(_f['days_remaining'])} day(s) ago" if _f["days_remaining"] < 0
+                _status = (f"⚠️ expired {abs(_f['days_remaining'])} day(s) ago" if _f["days_remaining"] < 0
                            else f"expires in {_f['days_remaining']} day(s)")
                 st.markdown(f"- **[{_f['product_type']}] {_f['supplier_name']} / {_f['code']}** "
-                           f"â€œ{_f['label']}â€ â€” valid until {_f['valid_until'].strftime('%d/%m/%Y')} ({_status})")
+                           f"“{_f['label']}” — valid until {_f['valid_until'].strftime('%d/%m/%Y')} ({_status})")
             if not _pv_email_result["ok"]:
                 st.caption(f"(Email digest to {price_validity.alert_recipient()} failed to send: "
-                          f"{_pv_email_result['error']} â€” the list above is still accurate.)")
+                          f"{_pv_email_result['error']} — the list above is still accurate.)")
             else:
                 st.caption(f"Also emailed to {price_validity.alert_recipient()}.")
 
@@ -14935,10 +14935,10 @@ if price_validity.is_due():
 # indistinguishable from success.
 _storage = platform_store.health()
 if _storage["ok"] and _storage["durable"]:
-    st.caption(f"ðŸ’¾ Memory: {_storage['detail']} â€” connection verified.")
+    st.caption(f"💾 Memory: {_storage['detail']} — connection verified.")
 elif _storage["mode"] == "postgres":
     st.error(
-        "ðŸš¨ **`DATABASE_URL` is set, but the database is not answering â€” so nothing is being "
+        "🚨 **`DATABASE_URL` is set, but the database is not answering — so nothing is being "
         "remembered.** This is the dangerous case: the setting looks correct, and the platform "
         "keeps working, but every translation will be paid for again and every confirmed route "
         "match will be lost.\n\n"
@@ -14950,7 +14950,7 @@ elif _storage["mode"] == "postgres":
     )
 else:
     st.warning(
-        "âš ï¸ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
+        "⚠️ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
         "so what has already been translated and which routes map to which Travel Compositor id "
         "sit in a local file this host wipes on every redeploy. In practice that means paying to "
         "translate the same content again, and re-confirming route matches. Add a `DATABASE_URL` "
@@ -14959,14 +14959,14 @@ else:
     if _storage["error"]:
         st.caption(f"Detail: {_storage['error']}")
 
-with st.expander("ðŸ’¾ What the platform remembers", expanded=False):
+with st.expander("💾 What the platform remembers", expanded=False):
     st.caption(f"Storage: {_storage['detail']}")
-    if st.button("ðŸ”Œ Test the database connection now", key="storage_health_btn"):
+    if st.button("🔌 Test the database connection now", key="storage_health_btn"):
         _fresh = platform_store.health(force=True)
         if _fresh["ok"] and _fresh["durable"]:
             st.success(f"Connected. Wrote a row and read it back from {_fresh['detail']}.")
         elif _fresh["mode"] == "local":
-            st.warning("Running on a local file â€” nothing here survives a redeploy.")
+            st.warning("Running on a local file — nothing here survives a redeploy.")
         else:
             st.error(f"Could not reach the database: {_fresh['error']}")
     _counts = platform_store.stats()
@@ -14990,23 +14990,23 @@ with st.expander("ðŸ’¾ What the platform remembers", expanded=False):
     # nobody can inspect or overrule is one you have to take on trust; this is the page that
     # makes it answerable instead.
     st.markdown("---")
-    st.markdown("##### ðŸ§  What it has learned from your corrections")
+    st.markdown("##### 🧠 What it has learned from your corrections")
     extraction_memory.render_memory_panel()
     _instr = extraction_memory.list_all_instructions()
     if _instr:
-        st.markdown("##### ðŸ’¬ What it has learned from â€œTell AI what to fixâ€")
+        st.markdown("##### 💬 What it has learned from “Tell AI what to fix”")
         st.caption("Instructions you typed while reviewing, now given to the AI before it reads "
                   "the next document from that supplier. The document always wins over these.")
         for _row in _instr:
             _c1, _c2 = st.columns([6, 1])
             with _c1:
                 _times = int(_row.get("count", 0))
-                st.markdown(f"**{_row['product_type']} Â· supplier {_row['supplier_id']}** â€” "
-                            f"{_row['text']}" + (f"  Â·  *said {_times}Ã—*" if _times > 1 else ""))
+                st.markdown(f"**{_row['product_type']} · supplier {_row['supplier_id']}** — "
+                            f"{_row['text']}" + (f"  ·  *said {_times}×*" if _times > 1 else ""))
                 if _row.get("fields"):
                     st.caption("changed: " + ", ".join(f"`{f}`" for f in _row["fields"]))
             with _c2:
-                if st.button("ðŸ—‘ï¸", key=f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_row['key']}",
+                if st.button("🗑️", key=f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_row['key']}",
                              help="Forget this"):
                     extraction_memory.forget_instruction(_row["supplier_id"], _row["product_type"],
                                                          _row["key"])
@@ -15039,26 +15039,26 @@ with st.expander("ðŸ’¾ What the platform remembers", expanded=False):
 # inside Travel Compositor from products we upload), which is why that
 # entity appears on one side only.
 # ======================================================================
-TOOL_UPLOAD = "ðŸ“¤ Create & Update Products"
-TOOL_TRANSLATE = "ðŸŒ Translate Products"
-TOOL_OUTREACH = "ðŸ¤ Find & Contact Suppliers"
+TOOL_UPLOAD = "📤 Create & Update Products"
+TOOL_TRANSLATE = "🌐 Translate Products"
+TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
 # product type, because the source of truth is an EMAIL, not a contract and not Travel
 # Compositor - and because it changes availability on products that are already live.
-TOOL_STOPSALES = "ðŸ“§ Stop Sales Email Reader"
+TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 # PROTOTYPE (2026-08-19): free-text customer trip idea -> structured search criteria. Doesn't
 # touch Travel Compositor at all yet - see trip_idea_tool.py's module docstring for why.
-TOOL_TRIPIDEA = "ðŸ’¡ AI Trip Idea (prototype)"
+TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # PROTOTYPE (2026-08-19): human enters a Holiday Package ID, tool proposes a replacement
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
-TOOL_PACKAGEROLLOVER = "ðŸ” Package Rollover (prototype)"
+TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
 # conditional block further down), because a checklist that shows "0 items" every day is one
 # people stop reading. See hotel_automap.py for why this can't be automated away.
-TOOL_HOTEL_AUTOMAP = "ðŸ”— Hotels awaiting automap"
+TOOL_HOTEL_AUTOMAP = "🔗 Hotels awaiting automap"
 
 # A Step 1 destination that is not a product type. It sits in the same list because that is
 # where a person looks when they have something to record about a supplier, even though
@@ -15109,12 +15109,12 @@ def _reset_to_tool_chooser():
 if st.session_state.active_tool is not None:
     crumb = st.session_state.active_tool
     if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type:
-        crumb = f"{crumb}  â€º  **{st.session_state.product_type}**"
+        crumb = f"{crumb}  ›  **{st.session_state.product_type}**"
     bcol1, bcol2 = st.columns([5, 1])
     with bcol1:
         st.success(f"You are in: {crumb}")
     with bcol2:
-        if st.button("ðŸ”„ Switch tool"):
+        if st.button("🔄 Switch tool"):
             _reset_to_tool_chooser()
             st.rerun()
 
@@ -15141,18 +15141,18 @@ if st.session_state.active_tool is None:
         (TOOL_UPLOAD, "tool_btn_upload",
          "Turn a supplier contract into a live Travel Compositor product.",
          "You give it a document or a URL; it extracts the details, you review and correct "
-         "them, then it publishes â€” for a new product or to refresh one when new rates arrive.",
-         "Closed Tours Â· Tickets Â· Transfers Â· Transports Â· Hotels"),
+         "them, then it publishes — for a new product or to refresh one when new rates arrive.",
+         "Closed Tours · Tickets · Transfers · Transports · Hotels"),
         (TOOL_TRANSLATE, "tool_btn_translate",
          "Fill in other-language content for products already live in Travel Compositor.",
          "It reads the English content, translates it into 19 languages, and writes it back. "
          "It never changes prices or product data.",
-         "Holiday Packages Â· Tickets Â· Transfers Â· Transports Â· Hotels Â· Closed Tours"),
+         "Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours"),
         (TOOL_STOPSALES, "tool_btn_stopsales",
          "Block dates a supplier has closed, from their email.",
          "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
          "would change, and blocks them only after you confirm. Existing blocks are kept.",
-         "Closed Tours Â· Hotels"),
+         "Closed Tours · Hotels"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -15180,7 +15180,7 @@ if st.session_state.active_tool is None:
     _automap_pending = hotel_automap.pending_count()
     if _automap_pending:
         st.write("")
-        st.warning(f"ðŸ”— **{_automap_pending} hotel(s) still need \"Automap with master\" set in "
+        st.warning(f"🔗 **{_automap_pending} hotel(s) still need \"Automap with master\" set in "
                    f"Travel Compositor.** Until that's done they can show up as duplicate properties.")
         if st.button(f"Review {_automap_pending} hotel(s) awaiting automap",
                      key="tool_btn_automap", use_container_width=True):
@@ -15188,7 +15188,7 @@ if st.session_state.active_tool is None:
             st.rerun()
 
     st.write("")
-    with st.expander("ðŸ§ª Prototypes â€” not part of the regular workflow yet"):
+    with st.expander("🧪 Prototypes — not part of the regular workflow yet"):
         st.caption("Early, not-yet-finished tools. Safe to try - see each one's own warning "
                   "for exactly what it does and doesn't do.")
         if st.button(TOOL_TRIPIDEA, key="tool_btn_tripidea", use_container_width=True):
@@ -15196,12 +15196,12 @@ if st.session_state.active_tool is None:
             st.rerun()
         st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
                   "beach in Spain\") into structured destination/dates/party/theme fields. "
-                  "Doesn't touch Travel Compositor â€” not a real search yet.")
+                  "Doesn't touch Travel Compositor — not a real search yet.")
         if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
             st.session_state.active_tool = TOOL_PACKAGEROLLOVER
             st.rerun()
         st.caption("Look up a Holiday Package by ID and see a proposed replacement departure "
-                  "(14-day trigger, ~4 months out, rating 8+, price within +3.5%). Read-only â€” "
+                  "(14-day trigger, ~4 months out, rating 8+, price within +3.5%). Read-only — "
                   "real GET calls, never writes anything.")
     st.stop()
 
@@ -15254,8 +15254,8 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # intuitive for humans."
 # ======================================================================
 if st.session_state.product_type is None:
-    st.header("Step 1 â€” Which product are you uploading or updating?")
-    st.caption("Click a section below to open it, then pick where you want to go â€” like "
+    st.header("Step 1 — Which product are you uploading or updating?")
+    st.caption("Click a section below to open it, then pick where you want to go — like "
               "Travel Compositor's own \"Contracts\" menu.")
 
     # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-19): "can we make the menu in the App more
@@ -15267,7 +15267,7 @@ if st.session_state.product_type is None:
     # accordion). Clicking an option inside a section selects it immediately and moves on,
     # the same one-click navigation as clicking a leaf item in Travel Compositor's sidebar -
     # there's no separate "Continue" button to click afterwards anymore.
-    with st.expander("ðŸ“¦ Create a new product", expanded=False):
+    with st.expander("📦 Create a new product", expanded=False):
         st.caption("Each of these CREATES something new: either a brand-new product with its "
                   "first Modality, or a new Modality added to one that already exists.")
         if st.button("ClosedTour", key="pt_choice_closedtour", use_container_width=True):
@@ -15284,12 +15284,12 @@ if st.session_state.product_type is None:
         st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
                   "rate seasons.")
 
-    with st.expander("ðŸ”§ Manage an existing product", expanded=False):
+    with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
             st.session_state.product_type = MANUAL_INFO_CHOICE
             st.rerun()
-        st.caption("No document at all: write something you know about a supplier â€” a moved "
-                  "pickup point, changed cancellation terms â€” and it is attached automatically "
+        st.caption("No document at all: write something you know about a supplier — a moved "
+                  "pickup point, changed cancellation terms — and it is attached automatically "
                   "to every future upload of that product type.")
         if st.button(UPDATE_REFRESH_CHOICE, key="pt_choice_updaterefresh", use_container_width=True):
             st.session_state.product_type = UPDATE_REFRESH_CHOICE
@@ -15303,14 +15303,14 @@ if st.session_state.product_type is None:
             st.rerun()
         st.caption("Recreates a supplier's services under a different supplier and retires the "
                   "originals - for when a supplier relationship itself changes, not a single "
-                  "product's details. ClosedTour Â· Ticket Â· Transfer Â· Transport Â· Hotel.")
+                  "product's details. ClosedTour · Ticket · Transfer · Transport · Hotel.")
         if st.button(CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
             st.session_state.product_type = CANCELLATION_BULK_CHOICE
             st.rerun()
         st.caption("Applies one cancellation policy to every (or a chosen subset of) one "
                   "supplier's live services of one type at once - for when the supplier's "
                   "terms themselves changed, not a single product's details. "
-                  "ClosedTour Â· Ticket Â· Transfer Â· Transport Â· Hotel.")
+                  "ClosedTour · Ticket · Transfer · Transport · Hotel.")
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
@@ -15343,12 +15343,12 @@ if st.session_state.product_type == "Hotel":
 # ----------------------------------------------------------------------
 
 
-st.header("Step 2 â€” What do you want to do?")
+st.header("Step 2 — What do you want to do?")
 
 if st.session_state.step1_confirmed:
-    st.success(f"âœ… Action: **{ACTION_LABELS[st.session_state.cfg_action]}** | "
+    st.success(f"✅ Action: **{ACTION_LABELS[st.session_state.cfg_action]}** | "
                f"Supplier ID: **{st.session_state.cfg_supplier_id}**")
-    if st.button("ðŸ”„ Change action / supplier"):
+    if st.button("🔄 Change action / supplier"):
         st.session_state.step1_confirmed = False
         st.session_state.step2_confirmed = False
         # The Existing Tour Code box now persists via a stable widget key (see the
@@ -15380,7 +15380,7 @@ else:
             try:
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception as e:
-                st.error(f"âŒ Couldn't load the supplier list: {friendly_error_message(e)}")
+                st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
 
     supplier_id_choice = None
@@ -15393,11 +15393,11 @@ else:
             if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
         ]
         if not momira_suppliers:
-            st.error("ðŸš« No suppliers starting with 'Momira_' were found in this account - can't continue. "
+            st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
                     "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")
         else:
             supplier_options = {
-                f"{s.get('commercialName') or s.get('legalName')} â€” ID {s.get('id')}": s.get("id")
+                f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                 for s in momira_suppliers
             }
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): carried over from the "Do something
@@ -15415,19 +15415,19 @@ else:
                     default_index = matches[0]
             selected_label = st.selectbox("Select Supplier", option_labels, index=default_index)
             supplier_id_choice = str(supplier_options[selected_label])
-        if st.button("ðŸ”„ Refresh supplier list"):
+        if st.button("🔄 Refresh supplier list"):
             st.session_state.suppliers_cache = None
             st.rerun()
     else:
         st.error("Could not load the supplier list from Travel Compositor.")
-        if st.button("ðŸ”„ Try again"):
+        if st.button("🔄 Try again"):
             st.rerun()
-        with st.expander("âš ï¸ Emergency manual entry (only if the list keeps failing to load)"):
+        with st.expander("⚠️ Emergency manual entry (only if the list keeps failing to load)"):
             st.caption("Bypasses the Momira_ check above - only use this if you've already confirmed the "
                       "numeric ID belongs to a real Momira_ supplier.")
             supplier_id_choice = st.text_input("Supplier ID (numeric)", value="")
 
-    if st.button("âž¡ï¸ Continue to Step 3", type="primary", disabled=not supplier_id_choice):
+    if st.button("➡️ Continue to Step 3", type="primary", disabled=not supplier_id_choice):
         st.session_state.cfg_action = action_key
         st.session_state.cfg_supplier_id = supplier_id_choice
         st.session_state.step1_confirmed = True
@@ -15439,7 +15439,7 @@ else:
 # ----------------------------------------------------------------------
 # STEP 3: Action-specific details
 # ----------------------------------------------------------------------
-st.header("Step 3 â€” Details for this action")
+st.header("Step 3 — Details for this action")
 action = st.session_state.cfg_action
 needed = ACTION_FIELDS[action]
 supplier_id = st.session_state.cfg_supplier_id
@@ -15447,8 +15447,8 @@ supplier_id = st.session_state.cfg_supplier_id
 cancellation_links.render_cancellation_link_editor(supplier_id, "ClosedTour", key_suffix="_setup")
 
 if st.session_state.step2_confirmed:
-    st.success("âœ… Step 3 details confirmed.")
-    if st.button("ðŸ”„ Change details"):
+    st.success("✅ Step 3 details confirmed.")
+    if st.button("🔄 Change details"):
         st.session_state.step2_confirmed = False
         st.rerun()
 else:
@@ -15484,7 +15484,7 @@ else:
             "if the first attempt doesn't work."
         )
 
-        if st.button("ðŸ” Check what's already online for this code", disabled=not existing_tour_code_in):
+        if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
             with st.spinner("Fetching from Travel Compositor..."):
                 fetched, working_code = try_code_variants(
                     lambda c: client.get_closed_tour(supplier_id, c), existing_tour_code_in
@@ -15535,7 +15535,7 @@ else:
                 st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
                 if existing_modalities and "modality_code" in needed:
                     check_modality = st.selectbox("Check pricing for modality:", existing_modalities, key="check_modality_pick")
-                    if st.button("ðŸ” Fetch this modality's live pricing"):
+                    if st.button("🔍 Fetch this modality's live pricing"):
                         with st.spinner("Fetching option..."):
                             st.session_state.fetched_option = client.get_closed_tour_option(
                                 supplier_id, working_code, check_modality
@@ -15548,7 +15548,7 @@ else:
                             with st.expander("Live pricing for this modality", expanded=True):
                                 for row in opt.get("priceList", []):
                                     label = row.get("name") or ""
-                                    st.write(f"**{row.get('startDate')} â†’ {row.get('endDate')}** {label}")
+                                    st.write(f"**{row.get('startDate')} → {row.get('endDate')}** {label}")
                                     st.json(row.get("price", {}))
 
     ct_update_scope_in = "whole_tour"
@@ -15657,7 +15657,7 @@ else:
                "changed the code) - this fetches the existing tour's Currency (and for updates, "
                "Min/Max Pax too) so you don't have to re-enter them.")
 
-    if st.button("âž¡ï¸ Continue to Step 4", type="primary", disabled=not required_ok):
+    if st.button("➡️ Continue to Step 4", type="primary", disabled=not required_ok):
         if action == "update_tour":
             min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
             max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
@@ -15705,7 +15705,7 @@ existing_tour_code = st.session_state.cfg_existing_tour_code
 # (cfg_existing_tour_code). Otherwise a stale fetch left over from a previous tour (or one that
 # failed silently) keeps being blended in on every single render of this tour's own screens.
 if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code):
-    st.warning("âš ï¸ The tour data fetched by 'Check what's already online' doesn't match this "
+    st.warning("⚠️ The tour data fetched by 'Check what's already online' doesn't match this "
               "tour's code (or was never fetched / failed) - go back to Step 3 and re-check "
               "before continuing, to avoid publishing with another tour's currency, pax limits, "
               "or code.")
@@ -15746,7 +15746,7 @@ is_option_only = action in ("add_option", "update_option") or ct_price_only_via_
 # ----------------------------------------------------------------------
 # STEP 4: Input source
 # ----------------------------------------------------------------------
-st.header("Step 4 â€” Input Source")
+st.header("Step 4 — Input Source")
 st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
            "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
@@ -15765,7 +15765,7 @@ extraction_hint = st.text_input(
 multi_modality_mode = False
 if action == "add_option":
     multi_modality_mode = st.checkbox(
-        "ðŸ“¦ I'm adding MULTIPLE modalities from this same source",
+        "📦 I'm adding MULTIPLE modalities from this same source",
         help="The app will detect distinct pricing categories (e.g. Standard/Deluxe cabin) from one "
              "shared document/URL, and let you review + publish each one individually, one at a time."
     )
@@ -15788,7 +15788,7 @@ if action == "create":
                           extraction_hint=extraction_hint or None)
     st.stop()
 
-if st.button("ðŸ”Ž Extract", disabled=not (url or uploaded_files)):
+if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     spinner_msg = "Gathering pricing/schedule content..." if is_option_only else "Gathering content and checking for multiple tour variants..."
     with st.spinner(spinner_msg):
         try:
@@ -15799,7 +15799,7 @@ if st.button("ðŸ”Ž Extract", disabled=not (url or uploaded_files)):
                 if page_text is not None:
                     combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
                 else:
-                    st.warning(f"âš ï¸ Couldn't fetch the product page URL: {page_text_err}.")
+                    st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
             doc_image_urls = []
             doc_raw_images = []  # [(filename, bytes), ...] - always kept as a guaranteed fallback
             seen_image_hashes = set()  # shared across all documents in this batch, so a logo repeated across files is only extracted once
@@ -15827,11 +15827,11 @@ if st.button("ðŸ”Ž Extract", disabled=not (url or uploaded_files)):
                             new_urls = upload_images_r2(embedded_images)
                             doc_image_urls.extend(new_urls)
                             if new_urls:
-                                st.caption(f"âœ… Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
+                                st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
                             if len(new_urls) < len(embedded_images):
-                                st.caption(f"â„¹ï¸ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 5).")
+                                st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 5).")
                         except Exception as e:
-                            st.caption(f"â„¹ï¸ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
+                            st.caption(f"ℹ️ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
                                       f"{uploaded.name} will be available to download instead (see Step 5).")
 
                 os.remove(tmp_path)
@@ -15915,7 +15915,7 @@ if st.button("ðŸ”Ž Extract", disabled=not (url or uploaded_files)):
 
 if st.session_state.get("pending_variants") and not is_option_only:
     variants = st.session_state.pending_variants
-    st.warning(f"âš ï¸ This content describes {len(variants)} distinct tour variants â€” which one do you want to use?")
+    st.warning(f"⚠️ This content describes {len(variants)} distinct tour variants — which one do you want to use?")
     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was a "tick several to create them all
     # as a batch" option here): this block is only ever reached for action == "update_tour" -
     # "create" always routes through render_multi_tour_flow above and st.stop()s first, so the
@@ -15950,9 +15950,9 @@ if st.session_state.get("pending_variants") and not is_option_only:
     if pv_num_selected > 1:
         # Guards the one release-to-release gap where two boxes can appear checked in the same
         # run (the uncheck above only takes effect next rerun) - never publish against that.
-        st.error("ðŸš« Please tick only one variant.")
+        st.error("🚫 Please tick only one variant.")
 
-    if st.button("âœ… Confirm and Extract Full Details", disabled=pv_num_selected != 1):
+    if st.button("✅ Confirm and Extract Full Details", disabled=pv_num_selected != 1):
         with st.spinner("Extracting full details for the selected variant..."):
             try:
                 chosen = next(s for s in pv_selection if s["selected"])
@@ -15999,7 +15999,7 @@ if st.session_state.get("pending_variants") and not is_option_only:
 if st.session_state.extracted:
     data = st.session_state.extracted
 
-    st.header("Step 5 â€” Review & Edit")
+    st.header("Step 5 — Review & Edit")
     col1, col2 = st.columns(2)
 
     with col1:
@@ -16013,7 +16013,7 @@ if st.session_state.extracted:
                       "entirely - they belong to the existing tour and aren't touched by adding/updating "
                       "a Modality. Scroll down for Departure Schedule and Pricing.")
         else:
-            st.subheader("Extracted Data (click âœï¸ to edit each field)")
+            st.subheader("Extracted Data (click ✏️ to edit each field)")
             DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                                      "tour's starting city, in your hotel lobby.")
             if not data.get("meeting_point"):
@@ -16030,7 +16030,7 @@ if st.session_state.extracted:
             editable_field("What to bring (added to voucher remarks)", data, "what_to_bring",
                            widget="text_area", height=80)
             if st.session_state.get("ct_cancellation_link_scope"):
-                st.caption(f"â„¹ï¸ This document didn't state its own cancellation terms - the table "
+                st.caption(f"ℹ️ This document didn't state its own cancellation terms - the table "
                           f"below was filled in from {st.session_state['ct_cancellation_link_scope']}. "
                           f"Edit or clear it if this tour needs different terms.")
             render_cancellation_policy_editor(data, "legacy_tour")
@@ -16072,7 +16072,7 @@ if st.session_state.extracted:
             )
             data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
             if data["image_urls"] == [FALLBACK_IMAGE]:
-                st.caption(f"âš ï¸ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+                st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
 
             def _ct_add_url_images():
                 selected = render_url_image_picker(st.session_state.hosted_image_candidates, "found_images")
@@ -16086,7 +16086,7 @@ if st.session_state.extracted:
 
             render_closable_image_section(
                 bool(st.session_state.get("hosted_image_candidates")),
-                f"ðŸ–¼ï¸ Images found ({len(st.session_state.get('hosted_image_candidates') or [])}) - from the page/document",
+                f"🖼️ Images found ({len(st.session_state.get('hosted_image_candidates') or [])}) - from the page/document",
                 "found_images_closed", _ct_add_url_images
             )
 
@@ -16102,7 +16102,7 @@ if st.session_state.extracted:
 
             render_closable_image_section(
                 bool(st.session_state.get("doc_raw_images")),
-                f"ðŸ“¥ Images extracted from your document(s) ({len(st.session_state.get('doc_raw_images') or [])}) - need hosting",
+                f"📥 Images extracted from your document(s) ({len(st.session_state.get('doc_raw_images') or [])}) - need hosting",
                 "doc_images_closed", _ct_add_doc_image
             )
 
@@ -16118,7 +16118,7 @@ if st.session_state.extracted:
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Or search free stock photos (Pexels)", "pexels_closed", _ct_add_pexels)
+            render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "pexels_closed", _ct_add_pexels)
 
             def _ct_add_pixabay():
                 selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
@@ -16130,12 +16130,12 @@ if st.session_state.extracted:
                     return len(selected)
                 return 0
 
-            render_closable_image_section(True, "ðŸ–¼ï¸ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
+            render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
 
     st.subheader("Departure Schedule")
     if data.get("schedule_notes"):
-        st.info(f"ðŸ”Ž AI detected this note about departure timing in the source: \"{data['schedule_notes']}\" "
-                f"â€” use this to help set Operational Days and Stop Sales below correctly. "
+        st.info(f"🔎 AI detected this note about departure timing in the source: \"{data['schedule_notes']}\" "
+                f"— use this to help set Operational Days and Stop Sales below correctly. "
                 f"This is NOT applied automatically - please verify and set the fields yourself.")
 
     data["operational_days"] = st.multiselect(
@@ -16155,17 +16155,17 @@ if st.session_state.extracted:
     num_days = len(data.get("operational_days", []))
     num_stop_sales = len(data.get("stop_sales", []))
     if num_days == 0:
-        schedule_summary = ("âš ï¸ No Operational Days selected", "#f8d7da", "#721c24")
+        schedule_summary = ("⚠️ No Operational Days selected", "#f8d7da", "#721c24")
     elif num_days == 7 and num_stop_sales == 0:
-        schedule_summary = ("ðŸŸ¢ DAILY departure - runs every day", "#d4edda", "#155724")
+        schedule_summary = ("🟢 DAILY departure - runs every day", "#d4edda", "#155724")
     elif num_stop_sales > 0:
         schedule_summary = (
-            f"ðŸŸ  SPECIFIC DATE departure - runs on {num_days} weekday(s) MINUS {num_stop_sales} "
+            f"🟠 SPECIFIC DATE departure - runs on {num_days} weekday(s) MINUS {num_stop_sales} "
             f"blocked date range(s) (irregular/custom schedule)", "#fff3cd", "#856404"
         )
     else:
         schedule_summary = (
-            f"ðŸ”µ WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
+            f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
             "#d1ecf1", "#0c5460"
         )
     label, bg, fg = schedule_summary
@@ -16177,7 +16177,7 @@ if st.session_state.extracted:
 
     st.subheader("Pricing (required by Travel Compositor to publish)")
     if data.get("pricing_notes"):
-        st.warning(f"âš ï¸ **Pricing had to be approximated to fit the 4-slot Distribution schema:**\n\n"
+        st.warning(f"⚠️ **Pricing had to be approximated to fit the 4-slot Distribution schema:**\n\n"
                   f"{data['pricing_notes']}\n\n"
                   f"Review the priceList below carefully - some information may have been "
                   f"simplified or dropped.")
@@ -16271,7 +16271,7 @@ if st.session_state.extracted:
     if overlaps_found:
         price_list_valid = False
         st.error(
-            f"ðŸš« **Overlapping date ranges detected in {len(overlaps_found)} row pair(s) of the pricing "
+            f"🚫 **Overlapping date ranges detected in {len(overlaps_found)} row pair(s) of the pricing "
             f"table above.** Travel Compositor ADDS TOGETHER prices from rows with overlapping dates "
             f"within one Modality - this would silently create a wrong, inflated price. Each date range "
             f"in the table should be unique/non-overlapping. If you meant to set different prices for "
@@ -16279,11 +16279,11 @@ if st.session_state.extracted:
             f"in ONE row, not separate rows."
         )
 
-    with st.expander("ðŸ”§ Advanced: view raw priceList JSON (for reference/copying)"):
+    with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
         st.json(data["price_list"])
 
     if action == "create":
-        st.subheader("âž• Add more Modalities to create right away (optional)")
+        st.subheader("➕ Add more Modalities to create right away (optional)")
         st.caption("Add more room/cabin/product types now - all get created together with a SINGLE "
                   "deactivation at the end, so you don't need to manually reactivate the tour in Travel "
                   "Compositor between each one.")
@@ -16299,7 +16299,7 @@ if st.session_state.extracted:
                 mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"extramod_hint_{i}")
             with mcol3:
                 st.write("")
-                if st.button("ðŸ—‘ï¸ Remove", key=f"extramod_remove_{i}"):
+                if st.button("🗑️ Remove", key=f"extramod_remove_{i}"):
                     st.session_state.extra_modalities.pop(i)
                     # CONFIRMED REAL BUG (internal audit): every widget here is
                     # keyed off this positional slot i (e.g. f"extramod_code_{i}")
@@ -16314,7 +16314,7 @@ if st.session_state.extracted:
                     _clear_batch_widget_state(["extramod_"] + SHARED_WIDGET_STATE_PREFIXES)
                     st.rerun()
 
-            if st.button(f"ðŸ”Ž Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
+            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
                 with st.spinner("Extracting..."):
                     mod["data"] = extract_option_only_data(st.session_state.raw_preview, human_hint=mod["hint"])
                     st.rerun()
@@ -16325,7 +16325,7 @@ if st.session_state.extracted:
                 st.info("Click 'Extract pricing' above to get started for this modality.")
             st.divider()
 
-        if st.button("âž• Add another Modality"):
+        if st.button("➕ Add another Modality"):
             st.session_state.extra_modalities.append({"code": "", "hint": "", "data": None})
             st.rerun()
 
@@ -16337,7 +16337,7 @@ if st.session_state.extracted:
                   "use a separate Modality instead (Publish Action 2).")
         st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
                   "supplement only applies during a specific date range (e.g. a seasonal excursion).")
-        st.caption("âš ï¸ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+        st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
                   "supplement is often genuinely optional, so these two boxes are the difference between "
                   "an add-on the client chooses and a charge they cannot avoid - the AI's guess is a "
                   "starting point, not a decision. House rule: ClosedTour supplements are never "
@@ -16388,12 +16388,12 @@ if st.session_state.extracted:
 
         editable_table("Supplements", supp_df, "supplements", on_save=_save_supplements)
         if st.session_state.get("_supplements_missing_name"):
-            st.warning("âš ï¸ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+            st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
     # STEP 6: Build payloads (destination resolution happens here)
     # ----------------------------------------------------------------------
-    st.subheader("ðŸ¤– Tell AI what to fix or clarify (optional)")
+    st.subheader("🤖 Tell AI what to fix or clarify (optional)")
     st.caption("Ask a question, or tell it to fix something (e.g. 'the end date of season 1 should be "
               "Sept 30, not Oct 10'). It applies real changes when you ask for them - always shows exactly "
               "what changed so you can double-check.")
@@ -16402,7 +16402,7 @@ if st.session_state.extracted:
     if render_house_rule_shortcut(clarify_question, "ClosedTour", "single_ct"):
         pass
     elif not clarify_question.strip():
-        st.caption(f"Type a message above first â€” Send stays disabled until there's something to send. "
+        st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
                   f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every ClosedTour "
                   f"supplier instead of a one-off fix.")
     if not clarify_question.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
@@ -16436,7 +16436,7 @@ if st.session_state.extracted:
         render_clarify_result(r)
     remember_memory_panel(clarify_supplier_id(), "ClosedTour", "legacy")
 
-    if st.button("ðŸ”Ž Check Locations & Continue",
+    if st.button("🔎 Check Locations & Continue",
                 disabled=not price_list_valid):
         # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
         # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
@@ -16480,45 +16480,45 @@ if st.session_state.extracted:
     # rebuild instead of letting a stale payload reach Step 6/7 below.
     if st.session_state.payloads and _data_fingerprint(data) != st.session_state.get("payloads_data_fingerprint"):
         st.session_state.payloads = None
-        st.warning("âœï¸ You edited the data above after building the payload - click "
-                  "**ðŸ”Ž Check Locations & Continue** again to refresh it before publishing.")
+        st.warning("✏️ You edited the data above after building the payload - click "
+                  "**🔎 Check Locations & Continue** again to refresh it before publishing.")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
 
-        st.header("Step 6 â€” Destination Resolution & Payload Preview")
+        st.header("Step 6 — Destination Resolution & Payload Preview")
 
         render_modalities_review(
             "tour", modality_code, "Base Modality", data,
             st.session_state.get("extra_modalities", []), currency
         )
 
-        st.subheader("Destination Check â€” verify these against Travel Compositor before publishing")
+        st.subheader("Destination Check — verify these against Travel Compositor before publishing")
         for res in payloads["itinerary_resolution"]:
             if res["valid"]:
                 st.markdown(
                     f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
-                    f"border-radius:4px; margin-bottom:4px;'>âœ… <b>{res['input']}</b> â†’ "
+                    f"border-radius:4px; margin-bottom:4px;'>✅ <b>{res['input']}</b> → "
                     f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
                     unsafe_allow_html=True
                 )
             else:
                 st.markdown(
                     f"<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                    f"border-radius:4px; margin-bottom:4px;'>âŒ <b>{res['input']}</b> â†’ NOT FOUND "
+                    f"border-radius:4px; margin-bottom:4px;'>❌ <b>{res['input']}</b> → NOT FOUND "
                     f"in Travel Compositor</div>",
                     unsafe_allow_html=True
                 )
 
         if payloads.get("is_indonesia"):
-            st.info(f"ðŸ‡®ðŸ‡© Indonesia detected in this itinerary â€” Vesak Day and Nyepi are automatically "
+            st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day and Nyepi are automatically "
                     f"blocked as stop-sale dates, no excursion/tour may start on either day. "
                     f"{payloads.get('indonesia_holiday_note', '')}")
 
         if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
             _ct_tet = payloads["tet_overlap"]
-            st.warning(f"ðŸ‡»ðŸ‡³ This ClosedTour's price list overlaps **Tet Holiday {_ct_tet['year']}** "
-                      f"({_ct_tet['start']} to {_ct_tet['end']}) â€” check whether the source document/"
+            st.warning(f"🇻🇳 This ClosedTour's price list overlaps **Tet Holiday {_ct_tet['year']}** "
+                      f"({_ct_tet['start']} to {_ct_tet['end']}) — check whether the source document/"
                       f"contract needs a Tet surcharge added as a seasonal price row. "
                       f"{payloads.get('tet_holiday_note', '')}")
 
@@ -16529,7 +16529,7 @@ if st.session_state.extracted:
 
         if payloads["unresolved_destinations"]:
             st.error(
-                f"ðŸš« **{len(payloads['unresolved_destinations'])} destination(s) could NOT be matched "
+                f"🚫 **{len(payloads['unresolved_destinations'])} destination(s) could NOT be matched "
                 f"to a real Travel Compositor location:** {', '.join(payloads['unresolved_destinations'])}\n\n"
                 f"This means Travel Compositor doesn't recognize this place by that name - publishing "
                 f"would fail or create a wrong/broken itinerary stop. **To fix:** go back up to Step 5's "
@@ -16555,9 +16555,9 @@ if st.session_state.extracted:
             if payloads.get("main_tour_error"):
                 show_publish_error("build the main tour payload", payloads["main_tour_error"], flow="tour_legacy")
             else:
-                with st.expander(f"ðŸ”§ {title}", expanded=False):
+                with st.expander(f"🔧 {title}", expanded=False):
                     if publish_action not in ("Create a brand-new tour (+ first option)", "Update an existing tour's details"):
-                        st.caption(f"Shown for reference only â€” '{publish_action}' doesn't touch the main tour.")
+                        st.caption(f"Shown for reference only — '{publish_action}' doesn't touch the main tour.")
                     st.json(payloads["main_tour_payload"])
         with col4:
             if publish_action in ("Create a brand-new tour (+ first option)", "Add a new option to an existing tour"):
@@ -16572,13 +16572,13 @@ if st.session_state.extracted:
             if payloads["tour_option_error"]:
                 show_publish_error("build the tour option payload", payloads["tour_option_error"], flow="tour_legacy")
             else:
-                with st.expander(f"ðŸ”§ {title}", expanded=False):
+                with st.expander(f"🔧 {title}", expanded=False):
                     st.json(payloads["tour_option_payload"])
 
         # ----------------------------------------------------------------------
         # STEP 7: Publish
         # ----------------------------------------------------------------------
-        st.header("Step 7 â€” Publish")
+        st.header("Step 7 — Publish")
 
         creating_new_tour = publish_action == "Create a brand-new tour (+ first option)"
         target_tour_code = payloads["main_tour_code"] if creating_new_tour else existing_tour_code
@@ -16590,7 +16590,7 @@ if st.session_state.extracted:
             and not fetched_tour_matches_code(existing_tour_code)
         )
         if missing_provider_code_for_update:
-            st.warning("âš ï¸ Go back to Step 3 and click 'Check what's already online for this code' first â€” "
+            st.warning("⚠️ Go back to Step 3 and click 'Check what's already online for this code' first — "
                       "without it, this update could overwrite the tour's real ClosedTour Code with a placeholder.")
 
         can_publish = (
@@ -16627,7 +16627,7 @@ if st.session_state.extracted:
                 with col_dup1:
                     st.warning(dup_warning)
                 with col_dup2:
-                    if st.button("ðŸ”„ Re-check", key="recheck_dup_tour_name"):
+                    if st.button("🔄 Re-check", key="recheck_dup_tour_name"):
                         st.session_state._existing_tours_cache.pop(payloads["supplier_id"], None)
                         st.rerun()
 
@@ -16641,7 +16641,7 @@ if st.session_state.extracted:
             )
             ct_publish_as_active = ct_activation_choice.startswith("Active")
 
-        if st.button("ðŸš€ Publish to Travel Compositor", disabled=not can_publish, type="primary"):
+        if st.button("🚀 Publish to Travel Compositor", disabled=not can_publish, type="primary"):
             with st.spinner("Sending to Travel Compositor..."):
 
                 try:
@@ -16669,8 +16669,8 @@ if st.session_state.extracted:
                             mark_code_as_taken("tour", payloads["supplier_id"], payloads["main_tour_code"], result.get("name"))
                             if real_code and real_code != payloads["main_tour_code"]:
                                 mark_code_as_taken("tour", payloads["supplier_id"], real_code, result.get("name"))
-                            st.success(f"âœ… Main tour created (active) with real Code: **{real_code}** "
-                                      f"â€” save this exact value, you'll need it for any future lookups, "
+                            st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
+                                      f"— save this exact value, you'll need it for any future lookups, "
                                       f"updates, or adding more modalities to this tour.")
 
                             # Try the human-chosen ClosedTour/Provider Code first (confirmed working
@@ -16694,12 +16694,12 @@ if st.session_state.extracted:
 
                             if "error" in option_result:
                                 show_publish_error(f"create the tour option after trying both `{provider_code}` and `{real_code}`", option_result, flow="tour_legacy")
-                                st.info(f"ðŸ’¡ Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                                st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                        f"aren't visible via the API. The tour was created with active:true, but if "
                                        f"this keeps failing, check inside Travel Compositor whether `{real_code}` "
                                        f"shows as active, and try 'Add a new option to an existing tour' manually once confirmed.")
                             else:
-                                st.success("âœ… Tour option created.")
+                                st.success("✅ Tour option created.")
 
                                 extra_modalities = st.session_state.get("extra_modalities", [])
                                 if extra_modalities:
@@ -16716,7 +16716,7 @@ if st.session_state.extracted:
                                         # all of 2027 at 0.00. `target_data["price_list"]` is now only ever real,
                                         # operator-saved rows (never the placeholder), so this check is trustworthy.
                                         if not mod.get("code") or not mod.get("data") or not (mod.get("data") or {}).get("price_list"):
-                                            st.warning(f"âš ï¸ Skipped modality '{mod.get('code') or '(no code)'}' - "
+                                            st.warning(f"⚠️ Skipped modality '{mod.get('code') or '(no code)'}' - "
                                                       f"missing code or at least one real (saved) price row.")
                                             continue
                                         with st.spinner(f"Creating modality '{mod['code']}'..."):
@@ -16738,13 +16738,13 @@ if st.session_state.extracted:
                                                 if "error" in mod_result:
                                                     show_publish_error(f"create modality '{mod['code']}'", mod_result, flow="tour_legacy")
                                                 else:
-                                                    st.success(f"âœ… Modality '{mod['code']}' created.")
+                                                    st.success(f"✅ Modality '{mod['code']}' created.")
                                             except Exception as e:
                                                 show_publish_error(f"create modality '{mod['code']}' (unexpected error - skipped, rest continues)", str(e), flow="tour_legacy")
                                                 continue
 
                                 if ct_publish_as_active:
-                                    st.success(f"âœ… Tour `{real_code}` left ACTIVE, as chosen above - it's live now.")
+                                    st.success(f"✅ Tour `{real_code}` left ACTIVE, as chosen above - it's live now.")
                                     st.session_state.just_published_tour_code = real_code
                                     st.session_state.just_published_supplier_id = payloads["supplier_id"]
                                     st.session_state.just_published_is_inactive = False
@@ -16755,12 +16755,12 @@ if st.session_state.extracted:
                                     deactivate_payload["code"] = real_code
                                     deactivate_result = client.update_closed_tour(payloads["supplier_id"], deactivate_payload)
                                     if "error" in deactivate_result:
-                                        st.warning(f"âš ï¸ Tour and option were created successfully, but switching "
+                                        st.warning(f"⚠️ Tour and option were created successfully, but switching "
                                                   f"the tour back to inactive/draft failed: {deactivate_result}. "
                                                   f"You may need to deactivate it manually inside Travel Compositor.")
                                     else:
-                                        st.success(f"âœ… Tour `{real_code}` switched back to inactive/draft. "
-                                                  f"Ready for human review â€” activate it inside Travel Compositor when ready to go live.")
+                                        st.success(f"✅ Tour `{real_code}` switched back to inactive/draft. "
+                                                  f"Ready for human review — activate it inside Travel Compositor when ready to go live.")
                                         st.session_state.just_published_tour_code = real_code
                                         st.session_state.just_published_supplier_id = payloads["supplier_id"]
                                         st.session_state.just_published_is_inactive = True
@@ -16773,11 +16773,11 @@ if st.session_state.extracted:
                         )
                         if "error" in option_result:
                             show_publish_error(f"add the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
-                            st.info(f"ðŸ’¡ Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel "
                                    f"Compositor first, then retry (you can switch it back to inactive/draft afterward).")
                         else:
-                            st.success(f"âœ… New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
+                            st.success(f"✅ New option added to existing tour using code `{used_code}`. Verify inside Travel Compositor.")
                             st.session_state.just_published_tour_code = target_tour_code
                             st.session_state.just_published_supplier_id = payloads["supplier_id"]
                             st.session_state.just_published_is_inactive = False
@@ -16800,7 +16800,7 @@ if st.session_state.extracted:
                                     old_tour = st.session_state.get("fetched_tour")
                                     if not isinstance(old_tour, dict) or "error" in old_tour:
                                         st.warning(
-                                            f"âš ï¸ '{modality_code}' was created, but its {len(new_supplements)} "
+                                            f"⚠️ '{modality_code}' was created, but its {len(new_supplements)} "
                                             f"supplement(s) were NOT added - couldn't find the tour's current "
                                             f"live data. Go back to Step 3, click 'Check what's already online "
                                             f"for this code', then use 'Update an existing tour's details' to "
@@ -16828,7 +16828,7 @@ if st.session_state.extracted:
                                                    f"only its supplements failed to attach. Retry via 'Update "
                                                    f"an existing tour's details' once the issue above is fixed.")
                                         else:
-                                            st.success(f"âœ… Added {len(new_supplements)} supplement(s) for "
+                                            st.success(f"✅ Added {len(new_supplements)} supplement(s) for "
                                                       f"'{modality_code}' to the tour (code `{supp_used_code}`).")
 
                     elif publish_action == "Update an existing tour's details":
@@ -16860,10 +16860,10 @@ if st.session_state.extracted:
                         )
                         if "error" in result:
                             show_publish_error(f"update the tour (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", result, flow="tour_legacy")
-                            st.info(f"ðŸ’¡ Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                         else:
-                            st.success(f"âœ… Tour updated using code `{used_code}`.")
+                            st.success(f"✅ Tour updated using code `{used_code}`.")
 
                             update_option_payload = dict(payloads["tour_option_payload"])
                             update_option_payload["code"] = modality_code
@@ -16873,12 +16873,12 @@ if st.session_state.extracted:
                             )
                             if "error" in option_result:
                                 show_publish_error(f"update the tour's pricing/modality (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
-                                st.info(f"ðŸ’¡ The tour's own details ARE saved. Only the Modality `{modality_code}`'s "
+                                st.info(f"💡 The tour's own details ARE saved. Only the Modality `{modality_code}`'s "
                                        f"pricing/schedule failed - fix and retry with **'Update existing ClosedTour "
                                        f"Modality'** against `{target_tour_code}` / `{modality_code}`, no need to "
                                        f"redo the tour details.")
                                 # CONFIRMED FIX (2026-08-30 audit): just_published_tour_code must NOT be set
-                                # here - setting it unconditionally (as this used to) made the green "âœ…
+                                # here - setting it unconditionally (as this used to) made the green "✅
                                 # ClosedTour published - what would you like to do next?" banner render right
                                 # below this failure message, which could lead an operator to trust the banner,
                                 # click "Start a new ClosedTour", and lose the only on-screen pointer to the
@@ -16886,7 +16886,7 @@ if st.session_state.extracted:
                                 # this handler (e.g. "Add a new option to an existing tour"), none of which set
                                 # just_published_tour_code on a sub-step failure either.
                             else:
-                                st.success(f"âœ… Modality `{modality_code}` pricing/schedule updated using code `{option_used_code}`.")
+                                st.success(f"✅ Modality `{modality_code}` pricing/schedule updated using code `{option_used_code}`.")
                                 st.session_state.just_published_tour_code = target_tour_code
                                 st.session_state.just_published_supplier_id = payloads["supplier_id"]
                                 st.session_state.just_published_is_inactive = False
@@ -16900,10 +16900,10 @@ if st.session_state.extracted:
                         )
                         if "error" in option_result:
                             show_publish_error(f"update the option (tried both `{target_tour_code}` and its CLOSEDTOUR- variant)", option_result, flow="tour_legacy")
-                            st.info(f"ðŸ’¡ Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
+                            st.info(f"💡 Adjustments to a ClosedTour require it to be ACTIVE - inactive tours "
                                    f"aren't visible via the API. Activate `{target_tour_code}` inside Travel Compositor first, then retry.")
                         else:
-                            st.success(f"âœ… Option `{modality_code}` under tour (code `{used_code}`) updated.")
+                            st.success(f"✅ Option `{modality_code}` under tour (code `{used_code}`) updated.")
                             st.session_state.just_published_tour_code = target_tour_code
                             st.session_state.just_published_supplier_id = payloads["supplier_id"]
                             st.session_state.just_published_is_inactive = False
@@ -16919,16 +16919,16 @@ if st.session_state.extracted:
 # ----------------------------------------------------------------------
 if st.session_state.get("just_published_tour_code"):
     st.divider()
-    st.subheader("âœ… ClosedTour published â€” what would you like to do next?")
+    st.subheader("✅ ClosedTour published — what would you like to do next?")
     st.write(f"Just published: **{st.session_state.just_published_tour_code}** "
             f"(Supplier {st.session_state.just_published_supplier_id})")
 
     if st.session_state.get("just_published_is_inactive"):
-        st.warning("âš ï¸ **This ClosedTour is now INACTIVE.** It was created, given its first Modality, then "
-                  "switched back to draft/inactive for your review â€” this is expected. To add more "
+        st.warning("⚠️ **This ClosedTour is now INACTIVE.** It was created, given its first Modality, then "
+                  "switched back to draft/inactive for your review — this is expected. To add more "
                   "Modalities or make further changes, first **activate it manually inside Travel "
                   "Compositor**, then come back and use 'Add new Modality to existing ClosedTour'.")
-        if st.button("ðŸ†• Start a new ClosedTour", type="primary"):
+        if st.button("🆕 Start a new ClosedTour", type="primary"):
             keep_client = st.session_state.client
             keep_suppliers = st.session_state.suppliers_cache
             keep_product_type = st.session_state.product_type
@@ -16942,7 +16942,7 @@ if st.session_state.get("just_published_tour_code"):
     else:
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            if st.button("ðŸ†• Start a new ClosedTour", type="primary"):
+            if st.button("🆕 Start a new ClosedTour", type="primary"):
                 keep_client = st.session_state.client
                 keep_suppliers = st.session_state.suppliers_cache
                 keep_product_type = st.session_state.product_type
@@ -16954,7 +16954,7 @@ if st.session_state.get("just_published_tour_code"):
                 st.session_state.active_tool = keep_tool
                 st.rerun()
         with fcol2:
-            if st.button("âž• Add another Modality to this same ClosedTour"):
+            if st.button("➕ Add another Modality to this same ClosedTour"):
                 prefill_tour_code = st.session_state.just_published_tour_code
                 prefill_supplier_id = st.session_state.just_published_supplier_id
                 keep_client = st.session_state.client

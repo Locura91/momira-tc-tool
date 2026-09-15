@@ -73,18 +73,18 @@ def _load_store() -> Dict[str, Any]:
             if legacy:
                 for supplier_key, routes in legacy.items():
                     platform_store.set(_NAMESPACE, str(supplier_key), routes)
-                print(f"ðŸ“¦ Migrated {len(legacy)} supplier(s) of transfer match history "
+                print(f"📦 Migrated {len(legacy)} supplier(s) of transfer match history "
                       f"from {_LEGACY_STORE_PATH} into durable storage.")
                 return legacy
         except Exception as e:
-            print(f"âš ï¸ Could not read the legacy transfer match store ({e}) - starting fresh "
+            print(f"⚠️ Could not read the legacy transfer match store ({e}) - starting fresh "
                   f"(falls back to name matching, nothing breaks).")
     return store
 
 
 def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
     if not platform_store.set(_NAMESPACE, str(supplier_key), routes):
-        print("âš ï¸ Could not save the transfer match store - the id -> route mapping just "
+        print("⚠️ Could not save the transfer match store - the id -> route mapping just "
               "learned won't persist to the next session, but nothing about this upload failed.")
 
 
@@ -118,7 +118,7 @@ def remember_transfer_id(supplier_id: str, departure_name: str, arrival_name: st
     routes = platform_store.get(_NAMESPACE, supplier_key) or {}
     routes[_route_key(departure_name, arrival_name)] = transfer_id
     _save_supplier(supplier_key, routes)
-    print(f"ðŸ“Œ Remembered TC id '{transfer_id}' for route '{departure_name}' -> '{arrival_name}' "
+    print(f"📌 Remembered TC id '{transfer_id}' for route '{departure_name}' -> '{arrival_name}' "
           f"(supplier {supplier_id}) - future updates to this route will auto-match.")
 
 

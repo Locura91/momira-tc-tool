@@ -1,5 +1,5 @@
 """
-text_normalize.py â€” the one shared name-normalization function used by every "does this new
+text_normalize.py — the one shared name-normalization function used by every "does this new
 document reference the same existing record" matcher in the platform.
 
 WHY THIS EXISTS (2026-09-13, product owner: "is there a chance we could merge some files...

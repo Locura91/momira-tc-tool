@@ -34,7 +34,7 @@ import os
 # surface only as a traceback whose line numbers pointed at unrelated code.
 MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
-_EMPTY_CELL = "Â·"          # visible placeholder, so a blank column is not silently swallowed
+_EMPTY_CELL = "·"          # visible placeholder, so a blank column is not silently swallowed
 
 
 def _render_grid(rows, table_label, previous_column_count=None, previous_paths=None,
@@ -69,9 +69,9 @@ def _render_grid(rows, table_label, previous_column_count=None, previous_paths=N
         for text, start, end in row:
             text = (text or "").strip() or _EMPTY_CELL
             if end > start:
-                cells.append(f"{text} Â«spans C{start + 1}-C{end + 1}Â»")
+                cells.append(f"{text} «spans C{start + 1}-C{end + 1}»")
             else:
-                cells.append(f"{text} Â«C{start + 1}Â»")
+                cells.append(f"{text} «C{start + 1}»")
         lines.append(f"R{row_index}: " + " | ".join(cells))
 
     # The column-wise view. Capped, because on a very wide table it would double the text for
@@ -688,7 +688,7 @@ def extract_images(file_path: str, max_images: int = 12, seen_hashes: set = None
         # expected case (image extraction is a bonus, not a requirement, for a format that isn't
         # PDF/.docx/.xlsx/.pptx), not a failure worth flagging.
     except Exception as e:
-        print(f"âš ï¸ Image extraction failed for {file_path}: {e}")
+        print(f"⚠️ Image extraction failed for {file_path}: {e}")
         if errors is not None:
             errors.append(f"'{display_name}': couldn't read embedded images from this file - {e}")
     return []

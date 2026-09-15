@@ -1,15 +1,15 @@
 """
-extraction_memory.py â€” the platform learns from the corrections a human makes.
+extraction_memory.py — the platform learns from the corrections a human makes.
 
 THE PROBLEM: every contract is read from scratch. When the extractor misreads something
-and a human fixes it on the review screen â€” a pickup point written the way the supplier
+and a human fixes it on the review screen — a pickup point written the way the supplier
 writes it rather than the way Travel Compositor needs it, a vehicle called "Car" that
 should be "Sedan", a cancellation policy the document never states and the operator types
-in every single time â€” that correction is thrown away the moment the service is published.
+in every single time — that correction is thrown away the moment the service is published.
 The next contract from the same supplier makes the identical mistake, and a person fixes
 it again. Nothing gets better, no matter how many contracts go through.
 
-WHAT IS ACTUALLY LEARNED: one very specific, defensible thing â€”
+WHAT IS ACTUALLY LEARNED: one very specific, defensible thing —
 
     "for supplier X, product type Y, whenever the extractor produces value V in field F,
      a human changes it to W."
@@ -28,7 +28,7 @@ that customers book.
 
 WHAT IS DELIBERATELY *NOT* AUTO-APPLIED (see _apply_blocked): dates and prices. A season
 date or a price repeats across every service in one contract, so a mapping learned from it
-looks extremely confident after a single document â€” and then fires on next season's
+looks extremely confident after a single document — and then fires on next season's
 contract, where it is not just wrong but wrong in a way that costs money and is hard to
 spot on a review screen. Those corrections are still RECORDED and visible in the memory
 panel, so a person can see the pattern; they are never pre-filled.
@@ -37,7 +37,7 @@ CONFIRMATION THRESHOLD: a mapping is applied only after it has been seen on
 _APPLY_AFTER separate publishes. One correction is as likely to be a typo or a one-off as
 a rule; two is a pattern. Everything applied is marked on screen and a human still confirms
 it before publishing, so the failure mode of a bad lesson is a person noticing a pre-filled
-value is wrong â€” not bad data reaching Travel Compositor.
+value is wrong — not bad data reaching Travel Compositor.
 """
 
 # Stamped on every delivery. app.py compares this against its own build string and says
@@ -576,19 +576,19 @@ def render_instruction_panel(supplier_id: str, product_type: str) -> None:
     entries = list_instructions(supplier_id, product_type)
     if not entries:
         return
-    with st.expander(f"ðŸ§  {len(entries)} thing(s) learned from your past corrections for this "
+    with st.expander(f"🧠 {len(entries)} thing(s) learned from your past corrections for this "
                      f"supplier", expanded=False):
-        st.caption("Typed into â€œTell AI what to fixâ€ on an earlier document, and now given to the "
+        st.caption("Typed into “Tell AI what to fix” on an earlier document, and now given to the "
                   "AI before it reads a new one. The document always wins over these.")
         for e in entries:
             cols = st.columns([6, 1])
             with cols[0]:
                 times = int(e.get("count", 0))
-                st.markdown(f"- {e['text']}" + (f"  Â·  *said {times}Ã—*" if times > 1 else ""))
+                st.markdown(f"- {e['text']}" + (f"  ·  *said {times}×*" if times > 1 else ""))
                 if e.get("fields"):
                     st.caption("changed: " + ", ".join(f"`{f}`" for f in e["fields"]))
             with cols[1]:
-                if st.button("ðŸ—‘ï¸", key=f"em_forget_instr_{supplier_id}_{product_type}_{e['key']}",
+                if st.button("🗑️", key=f"em_forget_instr_{supplier_id}_{product_type}_{e['key']}",
                              help="Forget this"):
                     forget_instruction(supplier_id, product_type, e["key"])
                     st.rerun()
@@ -637,14 +637,14 @@ def render_applied_banner(applied: List[Dict[str, Any]]) -> None:
     if not applied:
         return
     import streamlit as st
-    with st.expander(f"ðŸ§  {len(applied)} field(s) pre-filled from your past corrections",
+    with st.expander(f"🧠 {len(applied)} field(s) pre-filled from your past corrections",
                      expanded=True):
         st.caption("The extractor produced these values, and you have corrected them the same "
-                   "way before for this supplier. They are filled in for you â€” check them as "
+                   "way before for this supplier. They are filled in for you — check them as "
                    "usual, and just edit any that are wrong; that teaches it the new answer.")
         for a in applied:
-            st.markdown(f"- **{a['field']}**: `{a['from']}` â†’ `{a['to']}`  "
-                        f"<span style='color:#888'>(you changed this {a['count']}Ã— before)</span>",
+            st.markdown(f"- **{a['field']}**: `{a['from']}` → `{a['to']}`  "
+                        f"<span style='color:#888'>(you changed this {a['count']}× before)</span>",
                         unsafe_allow_html=True)
 
 
@@ -664,8 +664,8 @@ def render_memory_panel(supplier_id: Optional[str] = None) -> None:
     st.caption(f"{len(active)} rule(s) being applied, {len(rows) - len(active)} correction(s) "
                f"recorded but not applied.")
 
-    with st.expander("ðŸ§¹ Prune old corrections", expanded=False):
-        st.caption("Removes mappings â€” applied or not â€” that haven't been recorded or "
+    with st.expander("🧹 Prune old corrections", expanded=False):
+        st.caption("Removes mappings — applied or not — that haven't been recorded or "
                    "reconfirmed in a while. Useful once a supplier has visibly changed their "
                    "document style and an old rule would otherwise keep firing on new "
                    "contracts. Manual on purpose: deleting something the platform learned is "
@@ -673,33 +673,33 @@ def render_memory_panel(supplier_id: Optional[str] = None) -> None:
                    "the background.")
         info = last_prune_info()
         if info:
-            st.caption(f"Last run: {str(info.get('last_pruned_at', '?'))[:10]} â€” removed "
+            st.caption(f"Last run: {str(info.get('last_pruned_at', '?'))[:10]} — removed "
                        f"{info.get('removed', 0)} mapping(s) older than "
                        f"{info.get('max_age_days', '?')} day(s).")
         else:
             st.caption("Never run.")
         max_age = st.number_input("Remove mappings not seen in this many days", min_value=1,
                                   value=90, step=1, key="em_prune_max_age")
-        if st.button("ðŸ§¹ Prune now", key="em_prune_button"):
+        if st.button("🧹 Prune now", key="em_prune_button"):
             n = prune_old_mappings(int(max_age))
             st.success(f"Removed {n} mapping(s) not seen in {int(max_age)} day(s).")
             st.rerun()
 
     for r in rows:
         if r["active"]:
-            state = f"âœ… applied (seen {r['count']}Ã—)"
+            state = f"✅ applied (seen {r['count']}×)"
         elif r["blocked"]:
-            # Explain the refusal - otherwise it reads like a bug that a 5Ã—-confirmed
+            # Explain the refusal - otherwise it reads like a bug that a 5×-confirmed
             # correction still isn't being used.
-            state = f"ðŸ‘€ observed {r['count']}Ã— â€” dates and prices are never auto-filled"
+            state = f"👀 observed {r['count']}× — dates and prices are never auto-filled"
         else:
-            state = f"ðŸ‘€ seen {r['count']}Ã— â€” applied at {_APPLY_AFTER}"
+            state = f"👀 seen {r['count']}× — applied at {_APPLY_AFTER}"
         cols = st.columns([6, 1])
         with cols[0]:
-            st.markdown(f"**{r['product_type']} Â· {r['field']}** (supplier {r['supplier_id']})  \n"
-                        f"`{r['from']}` â†’ `{r['to']}`  \n{state}")
+            st.markdown(f"**{r['product_type']} · {r['field']}** (supplier {r['supplier_id']})  \n"
+                        f"`{r['from']}` → `{r['to']}`  \n{state}")
         with cols[1]:
-            if st.button("ðŸ—‘ï¸", key=f"em_forget_{r['supplier_id']}_{r['product_type']}_"
+            if st.button("🗑️", key=f"em_forget_{r['supplier_id']}_{r['product_type']}_"
                                    f"{r['field']}_{r['from_key']}", help="Forget this"):
                 forget(r["supplier_id"], r["product_type"], r["field"], r["from_key"])
                 st.rerun()

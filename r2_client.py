@@ -175,7 +175,7 @@ def stale_image_warning(urls) -> str:
         return ""
     plural = "s" if len(stale) != 1 else ""
     return (
-        f"âš ï¸ {len(stale)} image{plural} were uploaded more than "
+        f"⚠️ {len(stale)} image{plural} were uploaded more than "
         f"{int(STALE_IMAGE_WARNING_THRESHOLD_HOURS)}h ago and may have already expired from "
         f"temporary hosting - if Travel Compositor's own fetch fails at publish time, re-extract "
         f"or re-upload the affected image(s) first."

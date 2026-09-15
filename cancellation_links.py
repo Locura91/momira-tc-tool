@@ -1,15 +1,15 @@
 """
-cancellation_links.py â€” reusable "linked" cancellation policies.
+cancellation_links.py — reusable "linked" cancellation policies.
 
 WHY THIS EXISTS: today, the cancellation fee tiers a human sees on the review
-screen come from exactly one place â€” whatever the AI just extracted from THIS
-document. If the document doesn't state its own cancellation terms (common â€”
+screen come from exactly one place — whatever the AI just extracted from THIS
+document. If the document doesn't state its own cancellation terms (common —
 many rate sheets only cover prices/dates and leave cancellation to a standing
 contract clause), the table starts empty and a human has to know and re-type
 the same tiers by hand, for every single product, every time.
 
 In practice the same cancellation terms are usually shared across many
-products â€” sometimes because one supplier's whole contract uses one policy
+products — sometimes because one supplier's whole contract uses one policy
 ("all of Masons Travel's Transfers: free 30+ days, 25% inside 30, 100% inside
 7"), sometimes because Momira applies its own default to a whole product type
 regardless of supplier. A LINK captures one of those and gets applied
@@ -18,9 +18,9 @@ already does for voucher text.
 
 TWO SCOPES, both allowed, most-specific-wins when both exist:
 
-  * Supplier-scoped â€” "this supplier's Transfers" â€” same shape as Standing
+  * Supplier-scoped — "this supplier's Transfers" — same shape as Standing
     Notes' (supplier_id, product_type) key.
-  * Type-scoped â€” "all Transfers, any supplier" â€” a company-wide default
+  * Type-scoped — "all Transfers, any supplier" — a company-wide default
     with no supplier attached at all.
 
 THE DOCUMENT ALWAYS WINS WHEN IT SAYS SOMETHING (confirmed product-owner rule,
@@ -29,7 +29,7 @@ NO cancellation tiers of its own. It is a fallback for silence, never an
 override of what the supplier's own document actually states. See
 apply_cancellation_link_default()'s docstring for exactly when to call it.
 
-Storage lives in platform_store (same durability story as Standing Notes â€”
+Storage lives in platform_store (same durability story as Standing Notes —
 Postgres when DATABASE_URL is set, otherwise a local SQLite file that does
 NOT survive a redeploy).
 """
@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional
 
 import platform_store
 
-# Stamped on every delivery â€” see platform_store.py's own header for why.
+# Stamped on every delivery — see platform_store.py's own header for why.
 MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 _NAMESPACE = "cancellation_links"
@@ -240,7 +240,7 @@ def render_cancellation_link_editor(supplier_id: str, product_type: str, key_suf
     any_set = bool((supplier_existing or {}).get("tiers")) or bool((type_existing or {}).get("tiers"))
 
     with st.expander(
-        f"ðŸ”— Linked cancellation policy for {product_type}" + ("  Â·  currently set" if any_set else ""),
+        f"🔗 Linked cancellation policy for {product_type}" + ("  ·  currently set" if any_set else ""),
         expanded=any_set,
     ):
         st.caption(
@@ -287,4 +287,4 @@ def render_cancellation_link_editor(supplier_id: str, product_type: str, key_suf
             st.caption(f"Last updated {type_existing['updated_at'][:16].replace('T', ' ')} UTC")
 
         if not platform_store.is_durable():
-            st.warning("âš ï¸ No `DATABASE_URL` configured â€” a link saved here is lost on the next redeploy.")
+            st.warning("⚠️ No `DATABASE_URL` configured — a link saved here is lost on the next redeploy.")

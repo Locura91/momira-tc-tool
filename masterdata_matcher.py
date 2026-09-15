@@ -1,5 +1,5 @@
 """
-masterdata_matcher.py â€” scores candidates from the local Travel Compositor master-hotel index
+masterdata_matcher.py — scores candidates from the local Travel Compositor master-hotel index
 (masterdata_store.py) against a hotel name/country/geolocation typed in by a human, for the
 "Use Travel Compositor master data for this hotel?" step of the Hotel contract wizard
 (product owner request, 2026-09-06).

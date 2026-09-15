@@ -1,5 +1,5 @@
 """
-cancellation_bulk_transport.py â€” bulk-change the cancellation policy on every (or a chosen
+cancellation_bulk_transport.py — bulk-change the cancellation policy on every (or a chosen
 subset of) a supplier's already-live Transports, without going through per-item document
 extraction.
 

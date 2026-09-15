@@ -1,5 +1,5 @@
 """
-weekly_review.py â€” the app asks, once a week, what it should have understood by now.
+weekly_review.py — the app asks, once a week, what it should have understood by now.
 
 CONFIRMED PRODUCT-OWNER REQUEST: "Could we also include, that the integrated AI tool will ask me
 once a week, if it needs clarification. So we can constantly improve the included databank

@@ -1,5 +1,5 @@
 """
-trip_idea_tool.py â€” "AI Trip Idea" prototype screen: a customer's free-text trip idea, turned
+trip_idea_tool.py — "AI Trip Idea" prototype screen: a customer's free-text trip idea, turned
 into structured search criteria and shown back to a human.
 
 CONTEXT (2026-08-19): Chris's long-term vision is a client-facing widget where a customer types
@@ -50,12 +50,12 @@ def _render_criteria(result):
 
     when_bits = []
     if result.get("date_range_start") and result.get("date_range_end"):
-        when_bits.append(f"{result['date_range_start']} â†’ {result['date_range_end']}")
+        when_bits.append(f"{result['date_range_start']} → {result['date_range_end']}")
     elif result.get("travel_month"):
         when_bits.append(result["travel_month"])
     if result.get("duration_nights"):
         when_bits.append(f"{result['duration_nights']} night(s)")
-    when = " Â· ".join(when_bits) if when_bits else "*(not stated)*"
+    when = " · ".join(when_bits) if when_bits else "*(not stated)*"
 
     party_bits = [f"{result.get('adults', 0)} adult(s)"]
     if result.get("children"):
@@ -67,47 +67,47 @@ def _render_criteria(result):
     themes = result.get("themes") or []
     budget = result.get("budget_hint") or ""
     budget_tier = result.get("budget_tier") or "unspecified"
-    tier_label = {"budget": "ðŸ’° Budget-friendly", "superior": "â­ Superior",
-                 "luxury": "ðŸ’Ž Luxury", "unspecified": "*(not stated)*"}.get(budget_tier, budget_tier)
+    tier_label = {"budget": "💰 Budget-friendly", "superior": "⭐ Superior",
+                 "luxury": "💎 Luxury", "unspecified": "*(not stated)*"}.get(budget_tier, budget_tier)
 
     ccol1, ccol2 = st.columns(2)
     with ccol1:
-        st.markdown(f"**ðŸ“ Destination:** {dest}")
-        st.markdown(f"**ðŸ“… When:** {when}")
-        st.markdown(f"**ðŸ‘¥ Travellers:** {party}")
+        st.markdown(f"**📍 Destination:** {dest}")
+        st.markdown(f"**📅 When:** {when}")
+        st.markdown(f"**👥 Travellers:** {party}")
     with ccol2:
-        st.markdown(f"**ðŸŽ¯ Themes:** {', '.join(themes) if themes else '*(not stated)*'}")
-        st.markdown(f"**ðŸ’¶ Budget tier:** {tier_label}" + (f" *(\"{budget}\")*" if budget else ""))
+        st.markdown(f"**🎯 Themes:** {', '.join(themes) if themes else '*(not stated)*'}")
+        st.markdown(f"**💶 Budget tier:** {tier_label}" + (f" *(\"{budget}\")*" if budget else ""))
 
     confidence = result.get("confidence", "low")
-    badge = {"high": "ðŸŸ¢ High", "medium": "ðŸŸ¡ Medium", "low": "ðŸ”´ Low"}.get(confidence, confidence)
+    badge = {"high": "🟢 High", "medium": "🟡 Medium", "low": "🔴 Low"}.get(confidence, confidence)
     st.markdown(f"**Confidence:** {badge}")
 
     if result.get("clarification_needed"):
-        st.info(f"ðŸ’¬ Before searching, the widget would ask the customer: "
+        st.info(f"💬 Before searching, the widget would ask the customer: "
                f"*\"{result['clarification_needed']}\"*")
 
     # CONFIRMED PRODUCT-OWNER RULE (2026-08-19): "Budget friendly means 3* hotel, small car (if
     # requested). Superior means 4* hotel. Luxury means 5* hotel. Rule must be always with
     # breakfast, hotel reviews minimum 8." See trip_search_rules.py for where this rule lives.
     rules = tsr.resolve_search_rules(budget_tier, car_wanted=bool(result.get("car_wanted")))
-    st.markdown("##### ðŸ§­ Search rules this tier would apply")
+    st.markdown("##### 🧭 Search rules this tier would apply")
     rcol1, rcol2, rcol3, rcol4 = st.columns(4)
     with rcol1:
         stars = rules["hotel_star_rating"]
-        st.metric("Hotel stars", f"{stars}â˜…" if stars else "any")
+        st.metric("Hotel stars", f"{stars}★" if stars else "any")
     with rcol2:
         st.metric("Board", rules["board_type"].capitalize())
     with rcol3:
         st.metric("Min. review score", f"{rules['min_hotel_review_score']}/10*")
     with rcol4:
         st.metric("Car category", rules["car_category"] or ("none requested" if not result.get("car_wanted") else "standard"))
-    st.caption("*Review score assumed on a /10 scale â€” not yet confirmed against Travel "
+    st.caption("*Review score assumed on a /10 scale — not yet confirmed against Travel "
               "Compositor's actual review scale. Breakfast and the minimum review score apply "
               "regardless of tier; car category only applies when a rental car is actually part "
               "of the trip.")
 
-    with st.expander("ðŸ”Ž Raw structured output (what would be handed to a search step)"):
+    with st.expander("🔎 Raw structured output (what would be handed to a search step)"):
         st.json({**result, "resolved_search_rules": rules})
 
 
@@ -130,7 +130,7 @@ def _run_debug_quote(build_fn):
 
 
 def _render_quote_debug_panel():
-    """âš ï¸ Fires a REAL call against Travel Compositor's live booking/Quote API - Momira's actual
+    """⚠️ Fires a REAL call against Travel Compositor's live booking/Quote API - Momira's actual
     account, not a sandbox. Exists specifically to let a human running this tool somewhere with
     real TRAVELC_* credentials and real network access (this internal tool's usual home - NOT the
     cloud sandbox this feature is often developed in, which has neither) verify the guessed
@@ -142,14 +142,14 @@ def _render_quote_debug_panel():
     Confirm, Prebook, or Book (enforced by tests/test_trip_idea_never_books.py, which covers
     every trip_*.py file, this one included)."""
     st.divider()
-    with st.expander("ðŸ”§ Live Quote endpoint test (advanced â€” hits the real Travel Compositor account)"):
-        st.warning("âš ï¸ This fires a REAL call against Momira's live Travel Compositor account "
-                  "(not a sandbox/test account) â€” it needs real `TRAVELC_*` credentials and "
-                  "network access to work at all. It only ever calls a **Quote** endpoint â€” the "
+    with st.expander("🔧 Live Quote endpoint test (advanced — hits the real Travel Compositor account)"):
+        st.warning("⚠️ This fires a REAL call against Momira's live Travel Compositor account "
+                  "(not a sandbox/test account) — it needs real `TRAVELC_*` credentials and "
+                  "network access to work at all. It only ever calls a **Quote** endpoint — the "
                   "same non-binding step Travel Compositor's own booking wizard uses for its "
-                  "live ~30s search â€” never Confirm, Prebook, or Book, so nothing gets held or "
+                  "live ~30s search — never Confirm, Prebook, or Book, so nothing gets held or "
                   "charged. Useful for checking that the request shapes in `trip_quote_client.py` "
-                  "(the best-available guess from a different operator's API docs â€” see that "
+                  "(the best-available guess from a different operator's API docs — see that "
                   "file's own warning) actually work against Momira's real account, and for "
                   "seeing a real response shape for the first time.")
 
@@ -167,7 +167,7 @@ def _render_quote_debug_panel():
             children_ages = [int(a.strip()) for a in children_raw.split(",") if a.strip()]
         except ValueError:
             children_ages = []
-            st.caption("âš ï¸ Couldn't parse children ages â€” treating as no children.")
+            st.caption("⚠️ Couldn't parse children ages — treating as no children.")
 
         if endpoint == "Accommodations (hotels)":
             dest_query = st.text_input("Destination (name or code)", value="Cairo", key="qdbg_dest")
@@ -177,7 +177,7 @@ def _render_quote_debug_panel():
             with dcol2:
                 date_to = st.text_input("Check-out (YYYY-MM-DD)", value="2027-03-21", key="qdbg_to")
 
-            if st.button("ðŸš€ Fire real Accommodations Quote call", key="qdbg_fire_acc"):
+            if st.button("🚀 Fire real Accommodations Quote call", key="qdbg_fire_acc"):
                 def _do(api, client):
                     dest = api.resolve_destination(dest_query)
                     dist = tqc.build_distributions(adults, children_ages)
@@ -194,7 +194,7 @@ def _render_quote_debug_panel():
                 arr_query = st.text_input("Arrival (destination name or code)", value="Cairo", key="qdbg_arr")
             dep_date = st.text_input("Departure date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_dep_date")
 
-            if st.button("ðŸš€ Fire real Transports Quote call", key="qdbg_fire_transport"):
+            if st.button("🚀 Fire real Transports Quote call", key="qdbg_fire_transport"):
                 def _do(api, client):
                     dep = api.resolve_transport_base(dep_query)
                     arr = api.resolve_destination(arr_query)
@@ -221,7 +221,7 @@ def _render_quote_debug_panel():
                       "destination's accommodation lookup isn't wired here yet, so this uses "
                       "transport-base-to-transport-base as the simplest real-shape test.")
 
-            if st.button("ðŸš€ Fire real Transfer Quote call", key="qdbg_fire_transfer"):
+            if st.button("🚀 Fire real Transfer Quote call", key="qdbg_fire_transfer"):
                 def _do(api, client):
                     pu = api.resolve_transport_base(pickup_query)
                     do = api.resolve_transport_base(dropoff_query)
@@ -237,7 +237,7 @@ def _render_quote_debug_panel():
             ticket_id = st.text_input("Ticket catalog code (e.g. TICKET-417967)", value="", key="qdbg_ticket_id")
             ticket_date = st.text_input("Activity date (YYYY-MM-DD)", value="2027-03-19", key="qdbg_ticket_date")
             if not ticket_id.strip():
-                st.caption("Need a real ticket catalog code first â€” see a saved Idea's page or "
+                st.caption("Need a real ticket catalog code first — see a saved Idea's page or "
                           "the project doc's captured Ticket examples (e.g. TICKET-417967).")
             st.caption("Confirmed 2026-09-01: this calls the single-ticket endpoint "
                       "(`/booking/tickets/{ticketId}/quote`), which returns EVERY modality and "
@@ -246,7 +246,7 @@ def _render_quote_debug_panel():
                       "date range is possible but tickets in the captured examples are always "
                       "single-day).")
 
-            if st.button("ðŸš€ Fire real Tickets Quote call", key="qdbg_fire_ticket", disabled=not ticket_id.strip()):
+            if st.button("🚀 Fire real Tickets Quote call", key="qdbg_fire_ticket", disabled=not ticket_id.strip()):
                 def _do(api, client):
                     persons = tqc.build_persons(adults, children_ages)
                     result = client.quote_ticket(ticket_id.strip(), persons, ticket_date, ticket_date)
@@ -258,10 +258,10 @@ def _render_quote_debug_panel():
             start_date = st.text_input("Start date (YYYY-MM-DD)", value="2027-03-18", key="qdbg_ct_start")
             origin = st.text_input("Origin code (optional)", value="", key="qdbg_ct_origin")
             if not ct_id.strip():
-                st.caption("Need a real Closed Tour code first â€” this product type hasn't been "
+                st.caption("Need a real Closed Tour code first — this product type hasn't been "
                           "captured yet (still an open item in the project doc).")
 
-            if st.button("ðŸš€ Fire real Closed Tour Quote call", key="qdbg_fire_ct", disabled=not ct_id.strip()):
+            if st.button("🚀 Fire real Closed Tour Quote call", key="qdbg_fire_ct", disabled=not ct_id.strip()):
                 def _do(api, client):
                     dist = tqc.build_distributions(adults, children_ages)
                     result = client.quote_closed_tour(ct_id.strip(), start_date, dist,
@@ -270,7 +270,7 @@ def _render_quote_debug_panel():
                 _run_debug_quote(_do)
 
         if st.session_state.get("qdbg_last_error"):
-            st.error(f"Raw error (not a customer-facing message â€” this is a debug tool): "
+            st.error(f"Raw error (not a customer-facing message — this is a debug tool): "
                     f"{st.session_state.qdbg_last_error}")
         if st.session_state.get("qdbg_last_result") is not None:
             st.markdown("##### Raw response")
@@ -278,14 +278,14 @@ def _render_quote_debug_panel():
 
 
 def render_trip_idea_tool():
-    st.subheader("ðŸ’¡ AI Trip Idea (prototype)")
-    st.warning("âš ï¸ **Prototype â€” not connected to Travel Compositor.** This only shows how a "
+    st.subheader("💡 AI Trip Idea (prototype)")
+    st.warning("⚠️ **Prototype — not connected to Travel Compositor.** This only shows how a "
               "customer's free-text trip idea gets turned into structured search criteria. It "
-              "does not search for real availability or produce a bookable package yet â€” that "
+              "does not search for real availability or produce a bookable package yet — that "
               "depends on confirming Travel Compositor's search/booking API access. See the "
               "\"client-trip-prompt-idea\" project note for the full picture.")
 
-    st.caption("Type a trip idea the way a customer might describe it â€” casually, not filling "
+    st.caption("Type a trip idea the way a customer might describe it — casually, not filling "
               "in separate fields. Try leaving something out (destination, dates, party size) "
               "to see how it handles an incomplete idea.")
 
@@ -305,7 +305,7 @@ def render_trip_idea_tool():
                           placeholder="e.g. \"2 adults, travelling in February, with goal of city "
                                       "and beach in Spain\"")
 
-    if st.button("âœ¨ Understand this trip idea", type="primary", disabled=not prompt.strip()):
+    if st.button("✨ Understand this trip idea", type="primary", disabled=not prompt.strip()):
         with st.spinner("Reading the trip idea..."):
             try:
                 st.session_state.ti_result = tpe.extract_trip_criteria(prompt.strip())
@@ -320,7 +320,7 @@ def render_trip_idea_tool():
         st.divider()
         st.caption(f"For: *\"{st.session_state.get('ti_result_prompt', '')}\"*")
         _render_criteria(result)
-        st.caption("This is as far as the automatic extraction goes today â€” turning this into "
+        st.caption("This is as far as the automatic extraction goes today — turning this into "
                   "real, priced options (Phase 1's selection logic) is in progress. The panel "
                   "below lets you fire a real Quote call directly, ahead of that being wired in.")
 

@@ -64,7 +64,7 @@ def get_price_list_interactively(default_currency: str = "EUR") -> list:
     real API shape: startDate/endDate + a nested price object with
     per-occupancy MoneyVO (amount+currency) fields.
     """
-    print("\nðŸ’¶ No price list provided. Enter pricing now (required by the API).")
+    print("\n💶 No price list provided. Enter pricing now (required by the API).")
     print("   Leave 'Start date' empty and press Enter to finish.\n")
     price_list = []
     while True:
@@ -93,7 +93,7 @@ def get_price_list_interactively(default_currency: str = "EUR") -> list:
         if name:
             entry["name"] = name
         price_list.append(entry)
-        print(f"  âœ… Added row: {entry}\n")
+        print(f"  ✅ Added row: {entry}\n")
     return price_list
 
 
@@ -341,7 +341,7 @@ def extract_from_url(target_url: str, api_client: TravelCompositorAPI,
     on this page and the human picked one - extraction will focus on just
     that variant and ignore the others.
     """
-    print(f"ðŸ“¡ Fetching URL: {target_url}...")
+    print(f"📡 Fetching URL: {target_url}...")
     raw_text = get_page_text(target_url)
     print(f"   Extracted {len(raw_text)} characters of visible text.")
 
@@ -349,7 +349,7 @@ def extract_from_url(target_url: str, api_client: TravelCompositorAPI,
     data["image_urls"] = get_page_images(target_url)
 
     if not data.get("itinerary_destinations"):
-        print("âš ï¸ No destinations recognized. You'll need to add itinerary destinations manually before publishing.")
+        print("⚠️ No destinations recognized. You'll need to add itinerary destinations manually before publishing.")
 
     return data
 
@@ -377,7 +377,7 @@ def main():
     variants = detect_tour_variants(raw_text)
     variant_hint = None
     if variants:
-        print("\nâš ï¸ Multiple tour variants detected on this page:")
+        print("\n⚠️ Multiple tour variants detected on this page:")
         for i, v in enumerate(variants, 1):
             print(f"  {i}. {v.get('label')} ({v.get('nights')} nights)")
         choice = input("Which one do you want to extract? (enter number): ").strip()
@@ -413,38 +413,38 @@ def main():
     print(f"Tour code : {payloads['main_tour_code']}")
     print(f"Destinations resolved : {[i['destination'] for i in payloads['main_tour_payload']['itinerary']]}")
     if payloads["unresolved_destinations"]:
-        print(f"âš ï¸  UNRESOLVED destinations (fix before publishing): {payloads['unresolved_destinations']}")
+        print(f"⚠️  UNRESOLVED destinations (fix before publishing): {payloads['unresolved_destinations']}")
     if payloads["tour_option_error"]:
-        print(f"âš ï¸  Option payload incomplete (pricing missing/invalid) - fine for dry run, "
+        print(f"⚠️  Option payload incomplete (pricing missing/invalid) - fine for dry run, "
               f"must be fixed before publishing:\n{payloads['tour_option_error']}")
     print("=" * 60)
 
     if not args.publish:
-        print("\nðŸ§ª DRY RUN â€” nothing was uploaded. Re-run with --publish (and --price-list-file) once this looks right.")
+        print("\n🧪 DRY RUN — nothing was uploaded. Re-run with --publish (and --price-list-file) once this looks right.")
         return
 
     if payloads["unresolved_destinations"]:
-        print("\nâŒ Refusing to publish: unresolved destinations present. Fix them first.")
+        print("\n❌ Refusing to publish: unresolved destinations present. Fix them first.")
         return
 
     if payloads["tour_option_error"] or not payloads["tour_option_payload"]:
-        print("\nâŒ Refusing to publish: pricing is missing or invalid.")
+        print("\n❌ Refusing to publish: pricing is missing or invalid.")
         return
 
-    print("\nðŸš€ Publishing draft to Travel Compositor...")
+    print("\n🚀 Publishing draft to Travel Compositor...")
     result = client.create_closed_tour(payloads["supplier_id"], payloads["main_tour_payload"])
     if "error" in result:
-        print("âŒ Main tour creation failed:", result)
+        print("❌ Main tour creation failed:", result)
         return
-    print("âœ… Main tour created:", result.get("code", payloads["main_tour_code"]))
+    print("✅ Main tour created:", result.get("code", payloads["main_tour_code"]))
 
     option_result = client.create_closed_tour_option(
         payloads["supplier_id"], payloads["main_tour_code"], payloads["tour_option_payload"]
     )
     if "error" in option_result:
-        print("âŒ Tour option creation failed:", option_result)
+        print("❌ Tour option creation failed:", option_result)
         return
-    print("âœ… Tour option created. Draft is ready for review inside Travel Compositor.")
+    print("✅ Tour option created. Draft is ready for review inside Travel Compositor.")
 
 
 if __name__ == "__main__":

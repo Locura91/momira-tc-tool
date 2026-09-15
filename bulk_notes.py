@@ -1,5 +1,5 @@
 """
-bulk_notes.py â€” write one piece of text into every existing service of a supplier.
+bulk_notes.py — write one piece of text into every existing service of a supplier.
 
 THE JOB: "the pickup point for all Masons transfers moved to the new terminal" and "this
 supplier's cancellation terms changed" are facts about services that are ALREADY LIVE in
@@ -172,20 +172,20 @@ UNAVAILABLE_REASON: Dict[str, Dict[str, str]] = {
         # {supplierId}: ContractTransportDataSheetVO only has name/description - no
         # voucherRemarks field exists on Transport at all, unlike every other product type.
         "Voucher remarks": "Transport has no separate voucher-remarks field in Travel "
-                           "Compositor's API (confirmed via Swagger) â€” use Description.",
+                           "Compositor's API (confirmed via Swagger) — use Description.",
     },
     "Transfer": {
         "Included (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
         "Excluded (bottom)": "Included/Excluded exist on ClosedTour and Ticket only.",
-        "Remark": "Transfer has no separate remark field â€” use Voucher remarks.",
+        "Remark": "Transfer has no separate remark field — use Voucher remarks.",
     },
     "Hotel": {
         "Included (bottom)": "A hotel contract has no included/excluded fields.",
         "Excluded (bottom)": "A hotel contract has no included/excluded fields.",
-        "Remark": "A hotel contract has no separate remark field â€” use Voucher remarks.",
+        "Remark": "A hotel contract has no separate remark field — use Voucher remarks.",
     },
     "Ticket": {
-        "Remark": "A ticket's remarks live per modality, not on the ticket itself â€” "
+        "Remark": "A ticket's remarks live per modality, not on the ticket itself — "
                   "use Voucher remarks.",
     },
     "ClosedTour": {
@@ -283,7 +283,7 @@ def _today_iso():
 
 
 def _existing_transfer_supplement_total(record: Dict[str, Any], today: Optional[str] = None) -> float:
-    """The â‚¬ value of whatever mandatory surcharge is ALREADY in effect today on this transfer -
+    """The € value of whatever mandatory surcharge is ALREADY in effect today on this transfer -
     the "already existing Price supplement" half of the product owner's formula. An ABSOLUTE
     supplement counts at its own amount; a PERCENT one is converted using the transfer's own
     basePrice (the same base Travel Compositor itself would apply it to). Only supplements whose
@@ -488,21 +488,21 @@ def _plan_transport_price_increase(client, supplier_id: str, amount: float, incr
             if lines:
                 result["will_change"] += 1
                 result["items"].append({
-                    "id": item_id, "name": f"{t_name} â€” base price", "status": "will_change",
+                    "id": item_id, "name": f"{t_name} — base price", "status": "will_change",
                     "changes": {"EN": ("", "\n".join(lines))}, "record": updated_t,
                     "write_kind": "transport",
                 })
             else:
                 result["unchanged"] += 1
                 result["items"].append({
-                    "id": item_id, "name": f"{t_name} â€” base price", "status": "unchanged",
+                    "id": item_id, "name": f"{t_name} — base price", "status": "unchanged",
                     "changes": {}, "reason": "no base price set on this Transport",
                 })
 
         if increase_supplement:
             for code in (t.get("optionCodes") or []):
                 item_id = f"{t_id}:{code}:supplement"
-                bracket_label = f"{t_name} â€” {code} â€” active supplement"
+                bracket_label = f"{t_name} — {code} — active supplement"
                 try:
                     opt = client.get_transport_option(supplier_id, t_id, code)
                 except Exception as e:
@@ -512,8 +512,8 @@ def _plan_transport_price_increase(client, supplier_id: str, amount: float, incr
                         "detail": f"couldn't fetch option: {e}", "changes": {},
                     })
                     continue
-                bracket_label = (f"{t_name} â€” {code} ({opt.get('minPassengers', '?')}-"
-                                f"{opt.get('maxPassengers', '?')} pax) â€” active supplement")
+                bracket_label = (f"{t_name} — {code} ({opt.get('minPassengers', '?')}-"
+                                f"{opt.get('maxPassengers', '?')} pax) — active supplement")
                 active = _active_transport_price_entry(opt)
                 if not active:
                     result["unchanged"] += 1
@@ -744,14 +744,14 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
             except Exception as e:
                 result["failed"] += 1
                 result["items"].append({
-                    "id": item_id, "name": f"{t_name} â€” {code}", "status": "failed",
+                    "id": item_id, "name": f"{t_name} — {code}", "status": "failed",
                     "detail": f"couldn't fetch option: {e}", "changes": {},
                 })
                 continue
             existing_names = {_norm(e.get("name")) for e in (opt.get("prices") or [])
                               if isinstance(e, dict)
                               and e.get("startDate") == start_date and e.get("endDate") == end_date}
-            bracket_label = f"{t_name} â€” {code} ({opt.get('minPassengers', '?')}-{opt.get('maxPassengers', '?')} pax)"
+            bracket_label = f"{t_name} — {code} ({opt.get('minPassengers', '?')}-{opt.get('maxPassengers', '?')} pax)"
             if _norm(name) in existing_names:
                 result["unchanged"] += 1
                 result["items"].append({
@@ -1047,7 +1047,7 @@ def combine(existing: Any, text: str, mode: str):
 # (update_transport/update_transfer/etc), which is exactly what write_field's callers do.
 #
 # RECURRED (product owner, 2026-09-11): the SAME error, same field, on a DIFFERENT whole-record-
-# PUT module (cancellation_bulk_transport.py's bulk cancellation-policy update) - "0 updated Â·
+# PUT module (cancellation_bulk_transport.py's bulk cancellation-policy update) - "0 updated ·
 # 168 failed", identical airlineCode message on every row. That module built its own PUT payload
 # independently (`dict(p["raw"])`) instead of reusing this fix, because this function used to be
 # private (`_normalize_for_put`) to this file alone. Made public (dropped the leading
@@ -1265,7 +1265,7 @@ def plan(client, supplier_id: str, product_type: str, target: str, text: str,
         result["error"] = "No text to add."
         return result
     if target not in TARGETS.get(product_type, {}):
-        result["error"] = (f"{target!r} can't be written on a {product_type} â€” "
+        result["error"] = (f"{target!r} can't be written on a {product_type} — "
                            f"{unavailable_targets(product_type).get(target, 'no such field')}")
         return result
 

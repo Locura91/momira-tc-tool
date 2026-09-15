@@ -1,5 +1,5 @@
 """
-outreach_discovery.py â€” supplier discovery, scraping & vetting engine.
+outreach_discovery.py — supplier discovery, scraping & vetting engine.
 
 A faithful Python port of the Node service `server/services/searchService.js`
 (plus `aiVerificationService.js`) from the standalone momira-suppliersearch-mail
@@ -276,7 +276,7 @@ def _raise_for_status_with_body(res: "requests.Response") -> None:
     except requests.exceptions.HTTPError as e:
         body = (res.text or "").strip()
         if body:
-            raise requests.exceptions.HTTPError(f"{e} â€” response body: {body[:500]}",
+            raise requests.exceptions.HTTPError(f"{e} — response body: {body[:500]}",
                                                 response=res) from e
         raise
 
@@ -638,7 +638,7 @@ def _run_provider_search_with_diagnostics(source: str, query: str, country: str,
         # (the chain that was tried, in order - the LAST one is whoever's error this actually is)
         # right in the message, so "check TAVILY_API_KEY/SERPAPI_API_KEY" isn't a guess anymore.
         chain = _configured_provider_chain()
-        chain_note = f" [chain tried: {' â†’ '.join(chain)}]" if chain else " [no provider key configured - mock data]"
+        chain_note = f" [chain tried: {' → '.join(chain)}]" if chain else " [no provider key configured - mock data]"
         print(f"[outreach_discovery] provider search failed for \"{query}\": {e}{chain_note}")
         return [], f"{source}: {e}{chain_note}"
 
@@ -651,7 +651,7 @@ RATING_PATTERNS = [
     re.compile(r"(\d(?:[.,]\d)?)\s*(?:of|out of)\s*5\s*bubbles", re.I),        # Tripadvisor "4.5 of 5 bubbles"
     re.compile(r"(\d(?:[.,]\d)?)\s*stars?", re.I),                             # "4.6 stars"
     re.compile(r"(\d(?:[.,]\d)?)\s*sterne?", re.I),                            # "4,6 Sterne" (German)
-    re.compile(r"(\d(?:[.,]\d)?)\s*â˜…", re.I),                                  # "4.6â˜…"
+    re.compile(r"(\d(?:[.,]\d)?)\s*★", re.I),                                  # "4.6★"
     re.compile(r"rated\s*(\d(?:[.,]\d)?)", re.I),                              # "rated 4.6"
     re.compile(r"rating[:\s]+(\d(?:[.,]\d)?)", re.I),                          # "Rating: 4.6"
     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this pattern used to match ANY single
@@ -869,7 +869,7 @@ def is_question_or_listicle_title(title: Optional[str]) -> bool:
 # Travel magazines write ABOUT suppliers, they aren't one. An article title slipping
 # through is a different failure mode than a listicle, so it needs its own check.
 EDITORIAL_PUBLISHERS = [
-    "afar", "lonely planet", "condÃ© nast traveler", "travel + leisure",
+    "afar", "lonely planet", "condé nast traveler", "travel + leisure",
     "national geographic", "the points guy", "fodor", "frommer",
     "smarter travel", "travel and leisure",
 ]
@@ -928,7 +928,7 @@ def is_tripadvisor_listing_url(url: str) -> bool:
 
 
 # Momira wants DIRECT suppliers - the business that actually operates the product.
-# Brand size isn't the signal (Oberoi, Jaz Group, MÃ¶venpick are big AND direct
+# Brand size isn't the signal (Oberoi, Jaz Group, Mövenpick are big AND direct
 # suppliers, and should show up). DMCs are allowed through too. The only thing
 # filtered here is a generic online marketplace/OTA, which isn't a supplier at all.
 # Add global DMC aggregators/consolidators here as well.
@@ -980,7 +980,7 @@ def is_likely_international_dmc(candidate: Dict[str, Any]) -> bool:
     url = candidate.get("sourceUrl") or ""
     host = _hostname(url)
     if host:
-        # If the domain contains "dmc" but also "global" or "world" â€“ block
+        # If the domain contains "dmc" but also "global" or "world" – block
         if "dmc" in host and (host.startswith("global") or host.startswith("world")):
             return True
     return False
@@ -1412,7 +1412,7 @@ def scrape_aggregator_for_website_and_contact(url: str) -> Dict[str, Any]:
         outbound = find_outbound_website_link(soup, url)
         if outbound:
             site_result = scrape_website_contact(outbound)
-            # Even if site_result has no email, we have the website â€“ that's valuable.
+            # Even if site_result has no email, we have the website – that's valuable.
             listing_fallback = extract_email_and_instagram_from_page(soup)
             return {
                 "website": outbound,  # always return the found official site
@@ -1529,7 +1529,7 @@ def summarize_sources(sources: Optional[List[Dict[str, Any]]]) -> str:
 
 def guess_aggregator_label(url: Optional[str]) -> Optional[str]:
     """Human-readable label for a listing URL, so the review table can show
-    "Trustpilot â†—" / "Viator â†—" rather than a hardcoded "Tripadvisor"."""
+    "Trustpilot ↗" / "Viator ↗" rather than a hardcoded "Tripadvisor"."""
     if not url:
         return None
     host = _hostname(url)
@@ -1926,7 +1926,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     # to the pacing and stay in place. The actual fix for a genuine plan quota is on Tavily's
     # side (upgrade the plan, wait for the usage window to reset) or switching to the
     # SERPAPI_API_KEY fallback _select_and_run_provider already supports.
-    report(f"Searching {len(queries)} source(s)â€¦")
+    report(f"Searching {len(queries)} source(s)…")
     results_per_query = [
         _run_provider_search_with_diagnostics(q["source"], q["query"], country, keyword,
                                                q["domains"], q["max_results"])
@@ -1947,9 +1947,9 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     raw_count = len(candidates)
     if provider_errors:
         report(f"{raw_count} raw result(s) found ({len(provider_errors)} of {len(queries)} "
-               f"source(s) failed with an error). Filteringâ€¦")
+               f"source(s) failed with an error). Filtering…")
     else:
-        report(f"{raw_count} raw result(s) found. Filteringâ€¦")
+        report(f"{raw_count} raw result(s) found. Filtering…")
 
     relevance_tokens = build_relevance_tokens(country, keyword)
     drop_log: List[Dict[str, Any]] = []
@@ -2016,7 +2016,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
                            f"signal, or an explicit negative signal in the text"),
             })
     vetted_count = len(vetted)
-    report(f"{vetted_count} candidate(s) passed vetting. Checking for duplicatesâ€¦")
+    report(f"{vetted_count} candidate(s) passed vetting. Checking for duplicates…")
 
     deduped = dedupe_candidates(vetted)[:_max_candidates()]
 
@@ -2024,11 +2024,11 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
         # Cutting HERE, before verification/enrichment, is what actually saves the time - see
         # the max_results docstring above.
         deduped = cap_candidates_by_rating(deduped, max_results)
-        report(f"Keeping the top {len(deduped)} candidate(s) for speedâ€¦")
+        report(f"Keeping the top {len(deduped)} candidate(s) for speed…")
 
     ai_dropped = 0
     if is_ai_verification_enabled():
-        report("Verifying candidates with AIâ€¦")
+        report("Verifying candidates with AI…")
         verdicts = verify_candidates(deduped, country, keyword, known_examples=remembered_suppliers)
         if verdicts:
             before = len(deduped)
@@ -2057,7 +2057,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     # website/Instagram scrape is independent of every other candidate's, so this doesn't wait
     # for one supplier's site to respond before starting the next. Order-preserving map():
     # `enriched` must line up with `deduped` index-for-index exactly as a sequential loop would.
-    report(f"Looking up contact details for {len(deduped)} candidate(s)â€¦")
+    report(f"Looking up contact details for {len(deduped)} candidate(s)…")
     if deduped:
         with ThreadPoolExecutor(max_workers=min(len(deduped), _enrichment_concurrency())) as pool:
             enriched = list(pool.map(enrich_from_website, deduped))
@@ -2105,7 +2105,7 @@ def discover_suppliers(country: str, city: str, keyword: str, progress=None,
     ))
 
     suppliers = suppliers[:(max_results if max_results is not None else _max_results())]
-    report(f"Done â€” {len(suppliers)} supplier(s) ready for review.")
+    report(f"Done — {len(suppliers)} supplier(s) ready for review.")
 
     return {
         "suppliers": suppliers,

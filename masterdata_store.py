@@ -1,5 +1,5 @@
 """
-masterdata_store.py â€” local cache of Travel Compositor's "Web Content Accommodations" master
+masterdata_store.py — local cache of Travel Compositor's "Web Content Accommodations" master
 hotel database, used to let a human search/match a hotel BEFORE asking anyone to hunt for photos
 manually when creating a brand-new Hotel contract (product owner request, 2026-09-06 - mirrors
 Travel Compositor's own manual "add hotel" screen, which offers exactly this choice).

@@ -1,5 +1,5 @@
 """
-outreach_followups.py â€” durable send history + reply follow-up reminders for
+outreach_followups.py — durable send history + reply follow-up reminders for
 Find & Contact Suppliers.
 
 CONFIRMED PRODUCT-OWNER REQUEST (2026-08-16): "is there a chance to recognize, that once an

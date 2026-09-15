@@ -1,5 +1,5 @@
 """
-outreach_tool.py â€” the Supplier Discovery & Outreach tool, as it lives inside
+outreach_tool.py — the Supplier Discovery & Outreach tool, as it lives inside
 the Momira Travel Platform.
 
 Originally a React SPA (5-step wizard) talking to an Express API. The platform
@@ -39,7 +39,7 @@ sits next to it. One click, no ceremony, but not something you can trigger by
 misreading a screen.
 
 CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "remove the button Dry run at the supplier
-outreach, I don't need it any more." The standalone "ðŸ§ª Dry run instead" button (and the
+outreach, I don't need it any more." The standalone "🧪 Dry run instead" button (and the
 "Dry run - N would send, N skipped" result panel it populated) is gone from
 _render_review_and_send() - the "addresses that would receive this" expander above the Send
 button already covers the same "see before you send" need without a second button. dispatch_batch
@@ -114,7 +114,7 @@ def _reset_run():
 
 
 # ============================================================================
-# SCREEN 0 â€” WHAT SHOULD WE EVEN BE SELLING IN THIS COUNTRY?
+# SCREEN 0 — WHAT SHOULD WE EVEN BE SELLING IN THIS COUNTRY?
 # ============================================================================
 def _render_country_scope():
     """The country's touristic map, before any supplier search.
@@ -128,7 +128,7 @@ def _render_country_scope():
     Egypt" and you find Nile cruise operators - and never learn that you have nothing in Siwa, no
     Suez Canal day trip and no St Catherine's. Naming the whole board first turns an invisible gap
     into a visible tick box."""
-    st.subheader("Step 1 â€” What should we be selling in this country?")
+    st.subheader("Step 1 — What should we be selling in this country?")
     st.caption("Before hunting for suppliers, look at the whole country: the regions worth having "
                "in a programme, and the kinds of product it is actually known for. Tick what you "
                "want and each combination becomes its own supplier search.")
@@ -138,7 +138,7 @@ def _render_country_scope():
     # buried behind a menu the operator has to remember exists.
     due = ofw.pending_followups()
     if due:
-        if st.button(f"ðŸ“‹ {len(due)} follow-up(s) due â€” suppliers emailed a while ago with no "
+        if st.button(f"📋 {len(due)} follow-up(s) due — suppliers emailed a while ago with no "
                     f"reply logged yet", key="or_followups_nav"):
             st.session_state[_PHASE_KEY] = "followups"
             st.rerun()
@@ -149,13 +149,13 @@ def _render_country_scope():
     with col2:
         st.write("")
         st.write("")
-        if st.button("â­ï¸ Skip â€” I know what I want", key="or_scope_skip", use_container_width=True):
+        if st.button("⏭️ Skip — I know what I want", key="or_scope_skip", use_container_width=True):
             st.session_state[_PHASE_KEY] = "search"
             st.rerun()
 
     known = osc.list_known_countries()
     if known:
-        st.caption("Already researched: " + ", ".join(known) + " â€” those load instantly.")
+        st.caption("Already researched: " + ", ".join(known) + " — those load instantly.")
 
     if not country.strip():
         st.info("Enter a country to see its map, or skip straight to a supplier search.")
@@ -164,9 +164,9 @@ def _render_country_scope():
     cached = osc.get_cached_scope(country)
     bcol1, bcol2 = st.columns([1, 1])
     with bcol1:
-        research = st.button("ðŸŒ Show me this country", type="primary", key="or_scope_go")
+        research = st.button("🌍 Show me this country", type="primary", key="or_scope_go")
     with bcol2:
-        refresh = st.button("ðŸ”„ Research again from scratch", key="or_scope_refresh",
+        refresh = st.button("🔄 Research again from scratch", key="or_scope_refresh",
                             disabled=not (cached.get("places") or cached.get("themes")),
                             help="Replaces the stored list, including anything you added by hand.")
 
@@ -182,7 +182,7 @@ def _render_country_scope():
         st.error(scope["error"])
         return
     if scope.get("from_cache"):
-        st.caption("Loaded from the platform's memory â€” nothing was re-researched. Use **Research "
+        st.caption("Loaded from the platform's memory — nothing was re-researched. Use **Research "
                    "again** if the country's programme has genuinely moved on.")
     if scope.get("notes"):
         st.info(scope["notes"])
@@ -199,7 +199,7 @@ def _render_country_scope():
     per_place, countrywide = osc.group_themes_by_place(places, themes)
     pairs = []
 
-    st.markdown(f"#### ðŸ“ Places & their themes ({len(places)})")
+    st.markdown(f"#### 📍 Places & their themes ({len(places)})")
     st.caption("Open a place to see only the themes it's actually known for. Tick a theme to "
                "search for it there, or tick the place alone for a general supplier search.")
     for slot in per_place:
@@ -208,15 +208,15 @@ def _render_country_scope():
         place_themes = slot["themes"]
         theme_keys = [f"or_scope_pt_{name}_{j}_{t.get('name', '')}"
                      for j, t in enumerate(place_themes)]
-        header = f"ðŸ“ {name}" + (f" Â· {place['region']}" if place.get("region") else "")
-        with st.expander(f"{header}  â€”  {len(place_themes)} theme(s)"):
+        header = f"📍 {name}" + (f" · {place['region']}" if place.get("region") else "")
+        with st.expander(f"{header}  —  {len(place_themes)} theme(s)"):
             if place.get("why"):
                 st.caption(place["why"])
             if st.checkbox("Just search this place (no specific theme)",
                            key=f"or_scope_place_only_{name}"):
                 pairs.append((name, ""))
             if not place_themes:
-                st.caption("No theme from the list is matched to this place yet â€” add one "
+                st.caption("No theme from the list is matched to this place yet — add one "
                            "below, or use the general search above.")
             else:
                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-27): "one click to automatically
@@ -225,7 +225,7 @@ def _render_country_scope():
                 # this place by writing True into each checkbox's own session_state key before
                 # it renders - the individual checkboxes below are untouched, so any one of
                 # them can still be unticked afterwards without affecting the others.
-                if st.button(f"âœ… Select all {len(place_themes)} theme(s) for {name}",
+                if st.button(f"✅ Select all {len(place_themes)} theme(s) for {name}",
                             key=f"or_scope_select_all_{name}"):
                     for k in theme_keys:
                         st.session_state[k] = True
@@ -237,23 +237,23 @@ def _render_country_scope():
                 if theme.get("why"):
                     st.caption(theme["why"])
     new_place = st.text_input("Add a place it missed", key="or_scope_new_place")
-    if st.button("âž• Add place", key="or_scope_add_place", disabled=not new_place.strip()):
+    if st.button("➕ Add place", key="or_scope_add_place", disabled=not new_place.strip()):
         osc.add_place(country, new_place.strip())
         st.session_state.pop("or_scope", None)
         st.rerun()
 
-    st.markdown(f"#### ðŸŒ Country-wide themes ({len(countrywide)})")
-    st.caption("Not tied to one place â€” sold, or worth searching for, across the whole "
+    st.markdown(f"#### 🌐 Country-wide themes ({len(countrywide)})")
+    st.caption("Not tied to one place — sold, or worth searching for, across the whole "
                "country (e.g. Airport Transfer, Custom Private Tour).")
     for i, theme in enumerate(countrywide):
         name = theme.get("name", "")
-        label = f"**{name}**" + (f" Â· {theme['where']}" if theme.get("where") else "")
+        label = f"**{name}**" + (f" · {theme['where']}" if theme.get("where") else "")
         if st.checkbox(label, key=f"or_scope_cw_{i}_{name}"):
             pairs.append(("", name))
         if theme.get("why"):
             st.caption(theme["why"])
     new_theme = st.text_input("Add a theme it missed", key="or_scope_new_theme")
-    if st.button("âž• Add theme", key="or_scope_add_theme", disabled=not new_theme.strip()):
+    if st.button("➕ Add theme", key="or_scope_add_theme", disabled=not new_theme.strip()):
         osc.add_theme(country, new_theme.strip())
         st.session_state.pop("or_scope", None)
         st.rerun()
@@ -280,7 +280,7 @@ def _render_country_scope():
     with st.expander("See exactly what will be searched"):
         st.dataframe(pd.DataFrame(planned), use_container_width=True, hide_index=True)
 
-    if st.button(f"ðŸ”Ž Search suppliers for these {len(planned)} combination(s)", type="primary",
+    if st.button(f"🔎 Search suppliers for these {len(planned)} combination(s)", type="primary",
                  key="or_scope_run"):
         st.session_state["or_queue"] = planned
         st.session_state["or_queue_index"] = 0
@@ -289,7 +289,7 @@ def _render_country_scope():
 
 
 # ============================================================================
-# SCREEN 1 â€” SEARCH
+# SCREEN 1 — SEARCH
 # ============================================================================
 # CONFIRMED RULE (product owner, 2026-08-16): "only one supplier at all, even if the supplier
 # has multiple matches. We can contact each supplier only once." A country-scope run queues
@@ -459,7 +459,7 @@ def _process_one_queued_job():
     queue = st.session_state.or_queue_full
     pos = st.session_state.or_queue_pos
     job = queue[pos]
-    label = " Â· ".join(x for x in (job.get("city"), job.get("keyword")) if x) or job["country"]
+    label = " · ".join(x for x in (job.get("city"), job.get("keyword")) if x) or job["country"]
     try:
         result = od.discover_suppliers(job["country"], job.get("city", ""),
                                        job.get("keyword", "") or job["country"],
@@ -483,16 +483,16 @@ def _render_search():
         pos = st.session_state.or_queue_pos
         st.subheader(f"Searching {total} place/theme combination(s)")
         current_job = st.session_state.or_queue_full[pos] if pos < total else None
-        current_label = (" Â· ".join(x for x in (current_job.get("city"), current_job.get("keyword"))
+        current_label = (" · ".join(x for x in (current_job.get("city"), current_job.get("keyword"))
                                     if x) or current_job["country"]) if current_job else ""
         st.progress(pos / total if total else 0.0,
-                   text=f"â³ {pos} of {total} searched" + (f" â€” now: {current_label}" if current_label else ""))
+                   text=f"⏳ {pos} of {total} searched" + (f" — now: {current_label}" if current_label else ""))
         st.caption(f"{len(st.session_state.or_queue_merged)} supplier(s) found so far.")
         # CONFIRMED RULE (product owner, 2026-08-16): "give the human one button that says
         # 'Stop the search' and give the human all results found until then." Checked BEFORE
         # processing the next job, and this run must not call _process_one_queued_job/rerun
         # again once pressed - both would keep the loop going for another combination first.
-        if st.button("â¹ï¸ Stop the search â€” show me what's found so far", key="or_queue_stop"):
+        if st.button("⏹️ Stop the search — show me what's found so far", key="or_queue_stop"):
             st.session_state.or_queue_running = False
             st.session_state.or_queue_stopped = True
         else:
@@ -571,10 +571,10 @@ def _render_search():
             st.caption(f"{removed} combination(s) removed from this run - {len(run_queue)} will search.")
         qcol1, qcol2 = st.columns([1, 1])
         with qcol1:
-            go = st.button(f"â–¶ï¸ Run them now" + (f" ({len(run_queue)})" if removed else ""),
+            go = st.button(f"▶️ Run them now" + (f" ({len(run_queue)})" if removed else ""),
                           type="primary", key="or_queue_run", disabled=not run_queue)
         with qcol2:
-            if st.button("â¬…ï¸ Back to the country list", key="or_queue_back"):
+            if st.button("⬅️ Back to the country list", key="or_queue_back"):
                 st.session_state.pop("or_queue", None)
                 st.session_state.pop("or_queue_editor", None)
                 st.session_state[_PHASE_KEY] = "scope"
@@ -605,19 +605,19 @@ def _render_search():
     # against mock data when it wasn't. Uses od._configured_provider_chain() - the single source
     # of truth this module already exposes for exactly this check - instead of re-listing keys.
     if not od._configured_provider_chain():
-        st.warning("ðŸ” No search API key configured (`TAVILY_API_KEY`, `SERPAPI_API_KEY`, or "
-                   "`GEMINI_API_KEY`), so this runs against clearly-labelled **mock data** â€” "
+        st.warning("🔍 No search API key configured (`TAVILY_API_KEY`, `SERPAPI_API_KEY`, or "
+                   "`GEMINI_API_KEY`), so this runs against clearly-labelled **mock data** — "
                    "useful for trying the workflow, but the suppliers won't be real.")
 
-    if st.button("ðŸ”Ž Find suppliers", type="primary", disabled=not (country.strip() and keyword.strip())):
+    if st.button("🔎 Find suppliers", type="primary", disabled=not (country.strip() and keyword.strip())):
         progress_box = st.empty()
-        with st.spinner("Searchingâ€¦"):
+        with st.spinner("Searching…"):
             try:
                 result = od.discover_suppliers(
                     country.strip(),
                     city.strip(),          # <-- Pass city (may be empty)
                     keyword.strip(),
-                    progress=lambda msg: progress_box.caption(f"â³ {msg}"),
+                    progress=lambda msg: progress_box.caption(f"⏳ {msg}"),
                 )
             except Exception as e:
                 progress_box.empty()
@@ -642,7 +642,7 @@ def _render_search():
 
 
 # ============================================================================
-# SCREEN 2 â€” REVIEW, TEMPLATE AND SEND (one continuous screen)
+# SCREEN 2 — REVIEW, TEMPLATE AND SEND (one continuous screen)
 # ============================================================================
 def _log_dataframe(log):
     return pd.DataFrame([{
@@ -805,11 +805,11 @@ def _summarize_send_log(send_log):
     failed = sum(1 for e in send_log if e["status"] == "failed")
     show_balloons = sent > 0
     if failed:
-        message = (f"Finished â€” **{sent}** sent, **{skipped}** skipped, **{failed}** failed. "
+        message = (f"Finished — **{sent}** sent, **{skipped}** skipped, **{failed}** failed. "
                   f"Failures are per-recipient; the rest of the batch still went out.")
         level = "warning"
     elif sent or skipped:
-        message = f"ðŸŽ‰ Finished â€” **{sent}** sent, **{skipped}** skipped."
+        message = f"🎉 Finished — **{sent}** sent, **{skipped}** skipped."
         level = "success"
     else:
         message, level = "", None
@@ -829,15 +829,15 @@ def _render_review_and_send():
         location = session.get("city") or session.get("country")
         st.subheader(f"{len(suppliers)} supplier(s) for {session['keyword']} in {location}")
     with top2:
-        if st.button("ðŸ”Ž New search", use_container_width=True):
+        if st.button("🔎 New search", use_container_width=True):
             _reset_run()
             st.rerun()
 
     if stats["used_mock_provider"]:
-        st.warning("âš ï¸ These are **mock results** â€” no search API key is configured. Don't email them.")
+        st.warning("⚠️ These are **mock results** — no search API key is configured. Don't email them.")
 
     if stats.get("stopped_early"):
-        st.info(f"â¹ï¸ Search stopped early â€” {stats['searched']} of {stats['total_planned']} "
+        st.info(f"⏹️ Search stopped early — {stats['searched']} of {stats['total_planned']} "
                 f"combination(s) were searched before you stopped it. Everything found up to "
                 f"that point is below; run the rest later if you want the remaining "
                 f"{stats['total_planned'] - stats['searched']}.")
@@ -853,8 +853,8 @@ def _render_review_and_send():
     # right now" (a config/connectivity problem, fixable without touching any filter).
     if stats.get("provider_error_count"):
         st.error(
-            f"âš ï¸ **{stats['provider_error_count']} search call(s) failed with an error** instead "
-            f"of genuinely finding no results â€” this looks like a problem with the search "
+            f"⚠️ **{stats['provider_error_count']} search call(s) failed with an error** instead "
+            f"of genuinely finding no results — this looks like a problem with the search "
             f"provider itself (an expired/invalid API key, rate limiting, or a network issue), "
             f"not a real absence of suppliers. Sample error: `{stats.get('provider_error_sample')}`. "
             f"Check `TAVILY_API_KEY`/`SERPAPI_API_KEY` and the provider's own dashboard for quota/"
@@ -865,8 +865,8 @@ def _render_review_and_send():
         st.error("No suppliers survived filtering. The breakdown below shows where they dropped out.")
 
     if stats.get("remembered_added"):
-        st.caption(f"ðŸ§  {stats['remembered_added']} of these were remembered from a supplier you "
-                   f"added by hand in an earlier search for the same country/theme â€” no need to "
+        st.caption(f"🧠 {stats['remembered_added']} of these were remembered from a supplier you "
+                   f"added by hand in an earlier search for the same country/theme — no need to "
                    f"add them again.")
 
     # ---- Manual add ----
@@ -878,7 +878,7 @@ def _render_review_and_send():
     # Gemini directly) a real supplier can add it straight into this same list. It joins the
     # table below exactly like anything the search found: editable, tickable to send, and
     # blockable later - no separate manual-entries list to keep track of.
-    with st.expander("âž• Add a supplier by hand", expanded=not suppliers):
+    with st.expander("➕ Add a supplier by hand", expanded=not suppliers):
         st.caption("Know a supplier the search missed, or found one faster yourself? Add it here - "
                    "Name is required; Email and Link are both optional but a row needs an email "
                    "before it can actually be sent.")
@@ -923,7 +923,7 @@ def _render_review_and_send():
     # expander above. Now every column is editable, and num_rows="dynamic" lets a row be added
     # (or removed) directly in the table too - the expander stays as the guided, one-field-at-
     # a-time alternative for anyone who prefers it; both paths end up in the same list.
-    st.caption("Untick anyone you don't want to contact. Every field here is editable â€” corrections "
+    st.caption("Untick anyone you don't want to contact. Every field here is editable — corrections "
                "are saved back to the supplier list. Add a new partner directly by filling in the "
                "blank row at the bottom, or remove one by selecting its row and pressing the trash "
                "icon.")
@@ -932,13 +932,13 @@ def _render_review_and_send():
     # been emailed yet." Every row below could really be a repeat send with no way to tell from
     # this screen alone, so that has to be surfaced loudly rather than silently trusted.
     if result.get("duplicate_check_unavailable"):
-        st.warning("âš ï¸ Could not verify send history against the platform's database (it isn't "
+        st.warning("⚠️ Could not verify send history against the platform's database (it isn't "
                    "answering right now) - the **Contacted before** check below could not run. "
                    "Any of these suppliers may have already been emailed. Fix the database "
                    "connection before sending, or double-check manually.")
     if any(s.get("alreadyContacted") for s in suppliers):
-        st.caption("ðŸ” Rows marked **Contacted before** were already emailed in an earlier session and have "
-                   "been pre-unticked, per \"we can contact each supplier only once\" â€” re-tick one only if "
+        st.caption("🔁 Rows marked **Contacted before** were already emailed in an earlier session and have "
+                   "been pre-unticked, per \"we can contact each supplier only once\" — re-tick one only if "
                    "you deliberately want to reach out again.")
 
     if suppliers:
@@ -950,7 +950,7 @@ def _render_review_and_send():
             "Social": s["social"] or "",
             "Listing": s["listingUrl"] or "",
             "Rating": s["rating"],
-            "Contacted before": "ðŸ”" if s.get("alreadyContacted") else "",
+            "Contacted before": "🔁" if s.get("alreadyContacted") else "",
             "Why selected": s["selectionReason"],
         } for s in suppliers])
 
@@ -959,14 +959,14 @@ def _render_review_and_send():
             num_rows="dynamic",
             column_config={
                 "Send": st.column_config.CheckboxColumn("Send", help="Rows ticked here will be emailed."),
-                "Name": st.column_config.TextColumn("Name", help="Editable â€” correct the supplier name if needed."),
-                "Email": st.column_config.TextColumn("Email", help="Editable â€” add one the search missed."),
+                "Name": st.column_config.TextColumn("Name", help="Editable — correct the supplier name if needed."),
+                "Email": st.column_config.TextColumn("Email", help="Editable — add one the search missed."),
                 "Rating": st.column_config.NumberColumn("Rating", format="%.1f"),
                 "Website": st.column_config.LinkColumn("Website", help="Editable."),
                 "Social": st.column_config.LinkColumn("Social", help="Editable."),
                 "Listing": st.column_config.LinkColumn("Listing", help="Editable."),
                 "Contacted before": st.column_config.TextColumn(
-                    "Contacted before", help="Already emailed in an earlier session â€” pre-unticked. "
+                    "Contacted before", help="Already emailed in an earlier session — pre-unticked. "
                                              "Computed by the platform, not something to hand-edit."),
                 "Why selected": st.column_config.TextColumn("Why selected", width="large", help="Editable."),
             },
@@ -985,7 +985,7 @@ def _render_review_and_send():
 
         # ---- LEARNING: Block domains of unticked suppliers ----
         st.divider()
-        st.markdown("##### ðŸ§  Teach the system to block these in future searches")
+        st.markdown("##### 🧠 Teach the system to block these in future searches")
         st.caption("If you see domains that are never useful (e.g. directories, aggregators, unrelated sites), "
                    "click the button below to add their domains to the permanent blocklist. "
                    "Future searches from **anyone** will skip them automatically.")
@@ -1005,7 +1005,7 @@ def _render_review_and_send():
             st.success(st.session_state.pop("or_block_result"))
 
         if not candidates:
-            st.caption("Nothing new to block â€” every unticked row is either already blocked or has no "
+            st.caption("Nothing new to block — every unticked row is either already blocked or has no "
                        "website to block.")
         else:
             # SHOW BEFORE BLOCKING. This writes to a list that every future search by every user
@@ -1017,26 +1017,26 @@ def _render_review_and_send():
             chosen = []
             for domain in sorted(candidates):
                 who = ", ".join(sorted(set(candidates[domain]))[:3])
-                if st.checkbox(f"`{domain}` â€” {who}", value=True, key=f"or_blk_{domain}"):
+                if st.checkbox(f"`{domain}` — {who}", value=True, key=f"or_blk_{domain}"):
                     chosen.append(domain)
 
-            if st.button(f"ðŸ§  Block {len(chosen)} domain(s)", key="or_block_unticked",
+            if st.button(f"🧠 Block {len(chosen)} domain(s)", key="or_block_unticked",
                          disabled=not chosen):
                 added = [d for d in chosen if om.add_domain_to_blocklist(d)]
                 failed = [d for d in chosen if d not in added]
                 parts = []
                 if added:
-                    parts.append(f"âœ… Blocked {len(added)}: {', '.join(added)}. Future searches skip them.")
+                    parts.append(f"✅ Blocked {len(added)}: {', '.join(added)}. Future searches skip them.")
                 if failed:
                     # Never report a block that didn't land. The store can be unreachable, and a
                     # false "blocked" is worse than an error, because nobody goes back to re-check.
-                    parts.append(f"âš ï¸ NOT saved: {', '.join(failed)} â€” check the Memory line at the "
+                    parts.append(f"⚠️ NOT saved: {', '.join(failed)} — check the Memory line at the "
                                  f"bottom of the page before relying on this.")
                 st.session_state["or_block_result"] = "  ".join(parts)
                 st.rerun()
 
         # ---- Optional: Show current blocklist ----
-        with st.expander("ðŸ” Show current blocklist"):
+        with st.expander("🔍 Show current blocklist"):
             # ---- Manual add: for a known-bad domain that never showed up in a search
             # result, so there's nothing to tick in the "unticked suppliers" flow above.
             # add_domain_to_blocklist() already normalizes a bare domain or a full URL
@@ -1049,28 +1049,28 @@ def _render_review_and_send():
                     "Add a domain to block", placeholder="e.g. example.com or https://example.com/path",
                     key="or_new_block_domain", label_visibility="collapsed")
             with ac2:
-                add_clicked = st.button("âž• Add", key="or_add_block_domain")
+                add_clicked = st.button("➕ Add", key="or_add_block_domain")
             if add_clicked:
                 typed = new_domain.strip()
                 extracted = om.extract_domain(typed)
                 if not extracted:
                     st.session_state["or_block_result"] = (
-                        f"âš ï¸ Could not extract a domain from `{typed}` â€” enter a bare domain "
+                        f"⚠️ Could not extract a domain from `{typed}` — enter a bare domain "
                         f"(example.com) or a full URL.")
                 elif extracted in om.get_blocklist():
                     st.session_state["or_block_result"] = f"`{extracted}` is already blocked."
                 elif om.add_domain_to_blocklist(typed):
                     st.session_state["or_block_result"] = (
-                        f"âœ… Blocked `{extracted}`. Future searches skip it.")
+                        f"✅ Blocked `{extracted}`. Future searches skip it.")
                 else:
                     st.session_state["or_block_result"] = (
-                        f"âš ï¸ `{extracted}` was NOT saved â€” check the Memory line at the bottom "
+                        f"⚠️ `{extracted}` was NOT saved — check the Memory line at the bottom "
                         f"of the page before relying on this.")
                 st.rerun()
 
             blocked = om.get_blocklist()
             if blocked:
-                st.caption(f"âš ï¸ {len(blocked)} domain(s) are currently blocked and will never appear "
+                st.caption(f"⚠️ {len(blocked)} domain(s) are currently blocked and will never appear "
                            f"in search results for anyone.")
             if not blocked:
                 st.caption("No domains blocked yet.")
@@ -1080,13 +1080,13 @@ def _render_review_and_send():
                     with c1:
                         st.write(f"`{domain}`")
                     with c2:
-                        if st.button("ðŸ—‘ï¸ Remove", key=f"or_unblock_{domain}"):
+                        if st.button("🗑️ Remove", key=f"or_unblock_{domain}"):
                             if om.remove_domain_from_blocklist(domain):
                                 st.session_state["or_block_result"] = (
-                                    f"Removed `{domain}` â€” it can appear in searches again.")
+                                    f"Removed `{domain}` — it can appear in searches again.")
                             else:
                                 st.session_state["or_block_result"] = (
-                                    f"âš ï¸ `{domain}` could NOT be removed â€” the blocklist may not have "
+                                    f"⚠️ `{domain}` could NOT be removed — the blocklist may not have "
                                     f"been written. Check the Memory line at the bottom of the page.")
                             st.rerun()
 
@@ -1095,12 +1095,12 @@ def _render_review_and_send():
         # above - the same reasoning applies (see that section's own comment): a list every
         # future search reads from needs to be visible and correctable, not just a black box
         # that silently changes what shows up.
-        with st.expander("ðŸ§  Show what's been learned from manual adds"):
+        with st.expander("🧠 Show what's been learned from manual adds"):
             learned = oln.list_all()
             if st.session_state.get("or_learned_result"):
                 st.success(st.session_state.pop("or_learned_result"))
             if not learned:
-                st.caption("Nothing remembered yet â€” add a supplier by hand above and it will show "
+                st.caption("Nothing remembered yet — add a supplier by hand above and it will show "
                            "up here, tagged with the country/theme it was added for.")
             else:
                 st.caption(f"{len(learned)} supplier(s) remembered from manual adds. Each one "
@@ -1109,25 +1109,25 @@ def _render_review_and_send():
                 for entry in learned:
                     lc1, lc2 = st.columns([4, 1])
                     with lc1:
-                        where = " Â· ".join(x for x in (entry["country"], entry["theme"]) if x)
+                        where = " · ".join(x for x in (entry["country"], entry["theme"]) if x)
                         contact = entry["email"] or entry["website"] or "no contact saved"
-                        st.write(f"**{entry['name']}** â€” {where}")
+                        st.write(f"**{entry['name']}** — {where}")
                         st.caption(contact)
                     with lc2:
-                        if st.button("ðŸ—‘ï¸ Forget", key=f"or_forget_{entry['id']}"):
+                        if st.button("🗑️ Forget", key=f"or_forget_{entry['id']}"):
                             if oln.forget_supplier(entry["country"], entry["theme"], entry["id"]):
                                 st.session_state["or_learned_result"] = (
-                                    f"Forgot {entry['name']} for {where} â€” it won't be "
+                                    f"Forgot {entry['name']} for {where} — it won't be "
                                     f"auto-resurfaced any more.")
                             else:
                                 st.session_state["or_learned_result"] = (
-                                    f"âš ï¸ Could not remove {entry['name']} â€” check the Memory line "
+                                    f"⚠️ Could not remove {entry['name']} — check the Memory line "
                                     f"at the bottom of the page.")
                             st.rerun()
 
     if stats.get("dropped_over_cap"):
-        st.caption(f"â„¹ï¸ {stats['dropped_over_cap']} additional supplier(s) were found across these "
-                   f"combinations but not shown â€” capped at the top {stats['capped_at']} (by email, "
+        st.caption(f"ℹ️ {stats['dropped_over_cap']} additional supplier(s) were found across these "
+                   f"combinations but not shown — capped at the top {stats['capped_at']} (by email, "
                    f"then website, then rating). Run fewer combinations at once to see the rest.")
 
     # A combination/queue run merges several searches' own stats together (see
@@ -1135,7 +1135,7 @@ def _render_review_and_send():
     # breakdown of its own - only a single search (this screen's other entry point) produces
     # those. Every metric here is read with .get() so the expander degrades to "not available
     # for a combined run" instead of a KeyError, and the same for result.get("drop_log") below.
-    with st.expander(f"ðŸ”¬ How the {stats.get('raw', 0)} raw results became {stats.get('final', len(suppliers))}"):
+    with st.expander(f"🔬 How the {stats.get('raw', 0)} raw results became {stats.get('final', len(suppliers))}"):
         st.caption("The original tool wrote this to a server console. It's here instead because the "
                    "distinction matters: a known operator never appearing at all is a search problem, "
                    "whereas appearing and being dropped is a filter problem.")
@@ -1179,14 +1179,14 @@ def _render_review_and_send():
     selected = [s for s in selected if not s.get("isMock")]
     sendable = [s for s in selected if s.get("email")]
     if mock_reticked:
-        st.warning(f"âš ï¸ {len(mock_reticked)} mock/demo supplier(s) were ticked but skipped - these "
+        st.warning(f"⚠️ {len(mock_reticked)} mock/demo supplier(s) were ticked but skipped - these "
                    f"are fabricated placeholder rows (no search API key is configured), not real "
                    f"suppliers, and can never actually be sent.")
 
     if selected:
-        with st.expander(f"ðŸ‘€ Preview as {selected[0]['name']} would receive it"):
+        with st.expander(f"👀 Preview as {selected[0]['name']} would receive it"):
             msg = oe.build_message(selected[0], session, template)
-            st.caption(f"**To:** {', '.join(msg['to']) or '(no address)'}  Â·  **From:** {msg['from']}")
+            st.caption(f"**To:** {', '.join(msg['to']) or '(no address)'}  ·  **From:** {msg['from']}")
             st.caption(f"**Subject:** {msg['subject']}")
             st.text(msg["text"])
 
@@ -1199,34 +1199,34 @@ def _render_review_and_send():
     scol1, scol2 = st.columns([3, 2])
     with scol1:
         if provider == "demo":
-            st.warning("ðŸ“­ **Demo mode** â€” no email provider configured, so nothing is delivered. "
+            st.warning("📭 **Demo mode** — no email provider configured, so nothing is delivered. "
                        "Set `RESEND_API_KEY` (recommended) or the `SMTP_*` values to send for real.")
         elif not status["ok"]:
-            st.error(f"âŒ **{provider.upper()} is configured but not working:** {status.get('error')}")
+            st.error(f"❌ **{provider.upper()} is configured but not working:** {status.get('error')}")
         else:
-            st.success(f"âœ… Sending via **{provider.upper()}** from **{oe.get_from_address()}**")
+            st.success(f"✅ Sending via **{provider.upper()}** from **{oe.get_from_address()}**")
     with scol2:
         pdf = oe.get_pdf_status()
         if pdf["attached"]:
-            st.caption(f"ðŸ“Ž Company profile PDF attached ({pdf['sizeKb']} KB).")
+            st.caption(f"📎 Company profile PDF attached ({pdf['sizeKb']} KB).")
         else:
             # A warning, not a caption: a missing attachment changes what the supplier
             # receives while nothing about the send looks wrong, so it's the kind of thing
             # only noticed after a batch has gone out. (Real case: the first live send went
             # without the profile because the PDF wasn't in the deployment.)
-            st.warning(f"ðŸ“Ž **No PDF found â€” sending without an attachment.** "
+            st.warning(f"📎 **No PDF found — sending without an attachment.** "
                        f"Place it at `{pdf['path']}`.")
 
-    st.caption(f"**{len(selected)}** selected Â· **{len(sendable)}** with an email address Â· "
+    st.caption(f"**{len(selected)}** selected · **{len(sendable)}** with an email address · "
                f"**{len(selected) - len(sendable)}** would be skipped")
 
     if sendable:
-        with st.expander(f"ðŸ“‹ The {len(sendable)} address(es) that would receive this"):
+        with st.expander(f"📋 The {len(sendable)} address(es) that would receive this"):
             st.dataframe(pd.DataFrame([{"Supplier": s["name"], "Email": s["email"]} for s in sendable]),
                          use_container_width=True, hide_index=True)
 
     if not sendable:
-        st.info("No selected supplier has an email address yet â€” tick a row and add one above.")
+        st.info("No selected supplier has an email address yet — tick a row and add one above.")
         return
 
     if provider != "demo" and status["ok"]:
@@ -1237,7 +1237,7 @@ def _render_review_and_send():
     with ccol1:
         confirmed = st.checkbox(f"Yes, send to {len(sendable)}", key="or_confirm_real")
     with ccol2:
-        send_clicked = st.button(f"ðŸ“¨ Send to {len(sendable)} supplier(s)", type="primary",
+        send_clicked = st.button(f"📨 Send to {len(sendable)} supplier(s)", type="primary",
                                  disabled=not confirmed, use_container_width=True)
 
     if send_clicked:
@@ -1247,7 +1247,7 @@ def _render_review_and_send():
 
         def on_progress(entry):
             live.append(entry)
-            progress_box.caption(f"ðŸ“¤ {len(live)}/{len(selected)} â€” {entry['supplierName']}: {entry['status']}")
+            progress_box.caption(f"📤 {len(live)}/{len(selected)} — {entry['supplierName']}: {entry['status']}")
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): record each successful send
             # to durable history AS IT HAPPENS, not after the whole batch finishes. dispatch_batch
             # sends one supplier at a time with a throttle sleep between each real provider call -
@@ -1277,12 +1277,12 @@ def _render_review_and_send():
                                        entry.get("timestamp")):
                     record_failures.append(entry.get("supplierName") or entry.get("email"))
 
-        with st.spinner("Sendingâ€¦"):
+        with st.spinner("Sending…"):
             st.session_state.or_send_log = oe.dispatch_batch(selected, session, template,
                                                               on_progress=on_progress, dry_run=False)
 
         if record_failures:
-            st.error(f"âš ï¸ {len(record_failures)} email(s) were sent but could NOT be recorded to "
+            st.error(f"⚠️ {len(record_failures)} email(s) were sent but could NOT be recorded to "
                      f"durable send history: {', '.join(record_failures)}. These will look "
                      f"un-contacted on the next search and could be emailed again - check "
                      f"DATABASE_URL / the platform_store connection, then verify manually before "
@@ -1330,13 +1330,13 @@ def _render_review_and_send():
         # Build filename with city if available
         location = session.get("city") or session.get("country")
         filename = f"outreach-{location}-{session['keyword']}.csv".replace(" ", "-")
-        st.download_button("â¬‡ï¸ Download send log (CSV)", buf.getvalue(),
+        st.download_button("⬇️ Download send log (CSV)", buf.getvalue(),
                            file_name=filename,
                            mime="text/csv")
 
 
 # ============================================================================
-# SCREEN â€” FOLLOW-UPS DUE (manual-confirm reply tracking)
+# SCREEN — FOLLOW-UPS DUE (manual-confirm reply tracking)
 # ============================================================================
 def _render_followup_row(row, show_replied_button=True, show_reminder_button=True,
                          show_external_button=True):
@@ -1344,28 +1344,28 @@ def _render_followup_row(row, show_replied_button=True, show_reminder_button=Tru
     (a cold row already used its one reminder, so only 'mark replied' remains useful there)."""
     with st.container(border=True):
         title = row.get("supplier_name") or row.get("email")
-        st.markdown(f"**{title}** â€” {row.get('email', '')}")
+        st.markdown(f"**{title}** — {row.get('email', '')}")
         meta_bits = []
         if row.get("country"):
             meta_bits.append(row["country"])
         if row.get("keyword"):
             meta_bits.append(row["keyword"])
         if meta_bits:
-            st.caption(" Â· ".join(meta_bits))
+            st.caption(" · ".join(meta_bits))
         reminder_note = ""
         if row.get("reminder_sent_at"):
             channel = "logged externally" if row.get("reminder_channel") == "external" else "reminder sent"
-            reminder_note = f" Â· {channel} {row.get('days_since_reminder', '?')} day(s) ago"
-        st.caption(f"Sent {row.get('days_since_sent')} day(s) ago{reminder_note} Â· "
+            reminder_note = f" · {channel} {row.get('days_since_reminder', '?')} day(s) ago"
+        st.caption(f"Sent {row.get('days_since_sent')} day(s) ago{reminder_note} · "
                   f"subject: \"{row.get('subject', '')}\"")
 
         cols = st.columns([1, 1, 1])
         with cols[0]:
-            if show_replied_button and st.button("âœ… Mark as replied", key=f"or_followup_replied_{row['key']}"):
+            if show_replied_button and st.button("✅ Mark as replied", key=f"or_followup_replied_{row['key']}"):
                 ofw.mark_replied(row["email"], row["sent_at"])
                 st.rerun()
         with cols[1]:
-            if show_reminder_button and st.button("ðŸ“¨ Send reminder", key=f"or_followup_remind_{row['key']}"):
+            if show_reminder_button and st.button("📨 Send reminder", key=f"or_followup_remind_{row['key']}"):
                 # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): `row["keyword"]` is a
                 # display-only run summary (see record_send's comment on `focus_keyword`) - it
                 # must never be used to fill [FocusKeyword] in the reminder itself. Passing the
@@ -1403,7 +1403,7 @@ def _render_followup_row(row, show_replied_button=True, show_reminder_button=Tru
                     # applied here for the one send path that CRITICAL #4 didn't cover, since a
                     # reminder never goes through record_sends_from_log at all.
                     if reminder_result.get("demo"):
-                        st.warning("ðŸ“­ No email provider is configured, so this ran in **demo mode** - "
+                        st.warning("📭 No email provider is configured, so this ran in **demo mode** - "
                                   "nothing was actually delivered. The one-reminder allowance for "
                                   "this supplier was NOT used, so a real reminder can still be sent "
                                   "once a provider (Resend or SMTP) is configured.")
@@ -1422,12 +1422,12 @@ def _render_followup_row(row, show_replied_button=True, show_reminder_button=Tru
                         st.success("Reminder sent.")
                     st.rerun()
         with cols[2]:
-            if show_external_button and st.button("ðŸ“ž Log external contact",
+            if show_external_button and st.button("📞 Log external contact",
                                                    key=f"or_followup_external_{row['key']}",
                                                    help="I already followed up with this supplier myself, "
                                                         "outside this tool."):
                 ofw.log_external_contact(row["email"], row["sent_at"])
-                st.success("Logged â€” this won't nag again unless you mark it replied.")
+                st.success("Logged — this won't nag again unless you mark it replied.")
                 st.rerun()
 
 
@@ -1441,27 +1441,27 @@ def _render_followups():
     can also be settled by logging an external (outside-the-tool) contact - both move a row from
     the "due" list below into the "cold" list, which never nags but stays visible in case a very
     late reply shows up and the operator wants to mark it replied."""
-    st.subheader("ðŸ“‹ Follow-ups")
+    st.subheader("📋 Follow-ups")
     st.caption(f"Suppliers emailed **{ofw.FOLLOWUP_DUE_DAYS}+ days** ago with no reply logged yet. "
                "This is not automatic reply detection - the platform can't read your inbox, so "
                "please check it yourself before marking a row as replied.")
 
-    if st.button("â¬…ï¸ Back", key="or_followups_back"):
+    if st.button("⬅️ Back", key="or_followups_back"):
         st.session_state[_PHASE_KEY] = "scope"
         st.rerun()
 
     due = ofw.pending_followups()
     if not due:
-        st.success("Nothing due right now â€” either everything's been replied to, or it's too "
+        st.success("Nothing due right now — either everything's been replied to, or it's too "
                    "soon since the last send.")
     else:
-        st.markdown(f"##### {len(due)} due â€” never followed up on yet")
+        st.markdown(f"##### {len(due)} due — never followed up on yet")
         for row in due:
             _render_followup_row(row)
 
     cold = ofw.cold_followups()
     if cold:
-        with st.expander(f"ðŸ§Š {len(cold)} already followed up once, still no reply"):
+        with st.expander(f"🧊 {len(cold)} already followed up once, still no reply"):
             st.caption("Reminders are capped at one, so these won't come back onto the list above "
                       "on their own. Mark one replied if it eventually responds.")
             for row in cold:

@@ -1,5 +1,5 @@
 """
-supplier_migration.py â€” recreates one supplier's services under a different supplier, then
+supplier_migration.py — recreates one supplier's services under a different supplier, then
 retires the originals, for all 5 product types.
 
 CONFIRMED REAL NEED (product owner, 2026-08-24): "If I want mass change the supplier A, like

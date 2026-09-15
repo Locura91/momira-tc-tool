@@ -1,5 +1,5 @@
 """
-hotel_automap.py â€” remembers which published hotels still need "Automap with master" set by hand
+hotel_automap.py — remembers which published hotels still need "Automap with master" set by hand
 in Travel Compositor's back office, and the two ids a human needs to do it.
 
 WHY THIS EXISTS (product owner, 2026-09-13): "when we create a new hotel ... we are searching for

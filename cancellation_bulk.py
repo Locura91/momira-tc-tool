@@ -1,5 +1,5 @@
 """
-cancellation_bulk.py â€” bulk-change the cancellation policy on every (or a chosen subset of) a
+cancellation_bulk.py — bulk-change the cancellation policy on every (or a chosen subset of) a
 supplier's already-live ClosedTour, Ticket, Transfer, or Hotel services, without going through
 per-item document extraction.
 

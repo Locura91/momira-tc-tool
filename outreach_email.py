@@ -1,5 +1,5 @@
 """
-outreach_email.py â€” email infrastructure for the outreach tool.
+outreach_email.py — email infrastructure for the outreach tool.
 
 A faithful Python port of the Node service `server/services/emailService.js`
 from the standalone momira-suppliersearch-mail app.
@@ -19,7 +19,7 @@ PORTING NOTES (see outreach_discovery.py's header for the general rules; these
 are the traps specific to this file):
   * JS `\\w` inside a regex is ASCII-only. Python's `\\w` matches Unicode word
     characters by default, so `[Tag]` matching is compiled with re.ASCII -
-    without it, a tag like `[Ãœnternehmen]` would match in Python but not in
+    without it, a tag like `[Ünternehmen]` would match in Python but not in
     the original, silently changing which tags get substituted.
   * `renderTemplate` leaves an unmatched tag IN PLACE rather than blanking it,
     so authoring mistakes stay visible. Empty string counts as "no value" and
@@ -200,7 +200,7 @@ def _smtp_connection():
 # TEMPLATE ENGINE - simple, dependency-free [Tag] substitution
 # ============================================================================
 # re.ASCII matters: JS's \w is ASCII-only, Python's matches Unicode by default.
-# Without it a tag like [Ãœnternehmen] would substitute here but not in the original.
+# Without it a tag like [Ünternehmen] would substitute here but not in the original.
 TAG_PATTERN = re.compile(r"\[(\w+)\]", re.ASCII)
 
 
@@ -246,7 +246,7 @@ def build_template_data(supplier: Dict[str, Any], session: Dict[str, Any]) -> Di
     # summary string like "12 place/theme combination(s)" - real for the run as a whole, but
     # nonsense in a sentence addressed to one supplier ("...your 12 place/theme
     # combination(s) offerings..."). Each supplier found via a combination run carries its OWN
-    # `foundVia` label (e.g. "Luxor Â· Nile Cruise" - see _merge_one_job_result in
+    # `foundVia` label (e.g. "Luxor · Nile Cruise" - see _merge_one_job_result in
     # outreach_tool.py), which is what actually matched this specific supplier and is what
     # should go in the email. A plain single Country/City/Keyword search has no foundVia, so
     # session["keyword"] (the real keyword typed for that search) is still used there.
@@ -578,7 +578,7 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
 
 
 DEFAULT_TEMPLATE = {
-    "subject": "Partnership Opportunity with Momira Travel â€“ Portfolio Expansion & Integration",
+    "subject": "Partnership Opportunity with Momira Travel – Portfolio Expansion & Integration",
     "textBody": """Dear [SupplierName] Team,
 
 I hope this email finds you well.
@@ -597,14 +597,14 @@ We are excited about the prospect of working together and bringing a steady flow
 
 Thank you for your time and prompt assistance. We look forward to hearing from you.
 
-Liebe GrÃ¼ÃŸe / Best regards,
+Liebe Grüße / Best regards,
 Christian Hitzl
 
 Mail: christian@momira.de
 
 Momira Travel GmbH
-EdisonstraÃŸe 23, 74076 Heilbronn
-GeschÃ¤ftsfÃ¼hrer: Marcel Appolt
+Edisonstraße 23, 74076 Heilbronn
+Geschäftsführer: Marcel Appolt
 Handelsregister B des Amtsgerichts Stuttgart HRB 806164""",
 }
 
@@ -614,7 +614,7 @@ Handelsregister B des Amtsgerichts Stuttgart HRB 806164""",
 # gets sent from. Short and low-pressure on purpose: this is the SECOND email that DMC has
 # gotten from Momira, and a long one reads as impatience rather than genuine interest.
 DEFAULT_REMINDER_TEMPLATE = {
-    "subject": "Following up â€” Partnership Opportunity with Momira Travel",
+    "subject": "Following up — Partnership Opportunity with Momira Travel",
     "textBody": """Dear [SupplierName] Team,
 
 I wanted to briefly follow up on my previous email regarding a partnership opportunity between Momira Travel and [SupplierName] for our [FocusKeyword] offerings in [Country].
@@ -623,13 +623,13 @@ I understand you're likely busy, so just a gentle reminder in case it slipped th
 
 Please don't hesitate to reach out with any questions, or let me know if there's a better time to connect.
 
-Liebe GrÃ¼ÃŸe / Best regards,
+Liebe Grüße / Best regards,
 Christian Hitzl
 
 Mail: christian@momira.de
 
 Momira Travel GmbH
-EdisonstraÃŸe 23, 74076 Heilbronn
-GeschÃ¤ftsfÃ¼hrer: Marcel Appolt
+Edisonstraße 23, 74076 Heilbronn
+Geschäftsführer: Marcel Appolt
 Handelsregister B des Amtsgerichts Stuttgart HRB 806164""",
 }

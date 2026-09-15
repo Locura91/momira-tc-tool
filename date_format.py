@@ -1,5 +1,5 @@
 """
-date_format.py â€” one house date format on screen, one canonical format on the wire.
+date_format.py — one house date format on screen, one canonical format on the wire.
 
 CONFIRMED PRODUCT-OWNER RULE: "Please use always for Date: DD/MM/YYYY."
 

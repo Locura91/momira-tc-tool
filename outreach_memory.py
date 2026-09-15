@@ -1,5 +1,5 @@
 """
-outreach_memory.py â€” remembers which domains to skip in supplier searches.
+outreach_memory.py — remembers which domains to skip in supplier searches.
 
 The blocklist lives in the platform's durable key/value store (platform_store), so it
 survives redeploys and is shared by everyone using the tool. outreach_discovery.py reads

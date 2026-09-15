@@ -1,5 +1,5 @@
 """
-outreach_scope.py â€” what a tour operator ought to be selling in a country, before searching.
+outreach_scope.py — what a tour operator ought to be selling in a country, before searching.
 
 CONFIRMED PRODUCT-OWNER REQUEST: "the first step is a complete Country search. This search is
 selecting listing first the most important touristic regions and on a second list it is listing
