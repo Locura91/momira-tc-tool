@@ -22,7 +22,10 @@ import re
 
 
 def _read_render_price_refresh_flow_source():
-    with open("app.py", encoding="utf-8") as f:
+    # Phase 1 (2026-09-15) moved render_price_refresh_flow out of app.py into
+    # flows/price_refresh.py (verbatim/zero-behaviour-change), grouped with its sibling
+    # render_ticket_price_refresh_flow - read it from its new home.
+    with open("flows/price_refresh.py", encoding="utf-8") as f:
         lines = f.readlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("def render_price_refresh_flow("))
     # Function ends at the next top-level ("def " with no leading whitespace) after start.

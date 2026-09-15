@@ -91,18 +91,24 @@ def _read(path):
 
 
 def test_the_three_human_input_screens_no_longer_ask_for_cancellation_fee_percent():
-    app_src = _read("app.py")
+    # Phase 1 (2026-09-15) moved both render_transport_cancellation_bulk_flow and
+    # render_generic_cancellation_bulk_flow out of app.py into flows/cancellation.py, verbatim/
+    # zero-behaviour-change, grouped together per the refactor plan - read them from their new
+    # home. render_generic_cancellation_bulk_flow is now the LAST function in that file, so its
+    # regex needs the same "|\Z" end-of-string fallback the cancellation_links.py editor match
+    # below already uses.
+    app_src = _read("flows/cancellation.py")
     links_src = _read("cancellation_links.py")
 
-    # The two app.py "New policy" bulk-update screens (ctb_ = Transport, cb_ = ClosedTour/
+    # The two "New policy" bulk-update screens (ctb_ = Transport, cb_ = ClosedTour/
     # Ticket/Transfer/Hotel) - isolate each function body and check neither still contains the
     # old inverted column label.
     ctb_match = re.search(
-        r"def render_transport_cancellation_bulk_flow\(client\):.*?(?=\ndef \w)", app_src, re.S)
+        r"def render_transport_cancellation_bulk_flow\(client\):.*?(?=\ndef \w|\Z)", app_src, re.S)
     cb_match = re.search(
-        r"def render_generic_cancellation_bulk_flow\(client, product_type\):.*?(?=\ndef \w)",
+        r"def render_generic_cancellation_bulk_flow\(client, product_type\):.*?(?=\ndef \w|\Z)",
         app_src, re.S)
-    assert ctb_match and cb_match, "expected both bulk-cancellation render functions in app.py"
+    assert ctb_match and cb_match, "expected both bulk-cancellation render functions in flows/cancellation.py"
     # Check only actual code (not comments or docstrings) - the fix's own explanatory prose
     # legitimately still mentions the old phrase "Cancellation Fee %" for context.
     def _code_only(body):

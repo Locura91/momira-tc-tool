@@ -44,8 +44,18 @@ _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def _read_app_py():
+    """app.py's source concatenated with app_helpers.py - Phase 1 module 13 (2026-09-16) moved
+    ~96 shared helper functions/constants out of app.py into app_helpers.py, verbatim/zero-
+    behaviour-change, so source-text assertions that used to find their target inside app.py
+    alone now need to see app_helpers.py too. Reading app.py first keeps this purely additive.
+    """
     with open(_APP_PY, "r", encoding="utf-8") as f:
-        return f.read()
+        src = f.read()
+    app_helpers_path = os.path.join(os.path.dirname(_APP_PY), "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        with open(app_helpers_path, "r", encoding="utf-8") as f:
+            src += chr(10) + f.read()
+    return src
 
 
 # ======================================================================

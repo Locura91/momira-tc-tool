@@ -26,6 +26,24 @@ def _read(path):
         return f.read()
 
 
+def _read_app_py():
+    """app.py's source concatenated with every module under flows/ - Phase 1 (2026-09-15)
+    started splitting render_*_flow functions out of app.py into flows/*.py, verbatim/zero-
+    behaviour-change, so a momira-prefix filter that used to live in app.py (e.g. Hotel's
+    Select Supplier dropdown) can now be in a flows/*.py file instead. Reading app.py first
+    means this is purely additive to what _read(_APP_PY) already found there."""
+    src = _read(_APP_PY)
+    app_helpers_path = os.path.join(_REPO_DIR, "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        src += chr(10) + _read(app_helpers_path)
+    flows_dir = os.path.join(_REPO_DIR, "flows")
+    if os.path.isdir(flows_dir):
+        for _name in sorted(os.listdir(flows_dir)):
+            if _name.endswith(".py") and _name != "__init__.py":
+                src += chr(10) + _read(os.path.join(flows_dir, _name))
+    return src
+
+
 # ======================================================================
 # is_active_supplier itself
 # ======================================================================
@@ -63,15 +81,18 @@ def test_app_py_imports_is_active_supplier_from_ui_components():
 
 
 def test_every_momira_prefix_filter_in_app_py_also_checks_active():
-    content = _read(_APP_PY)
+    # Phase 1 (2026-09-15) deleted the confirmed-dead render_transfer_flow/render_transport_flow
+    # (184 lines, unreferenced anywhere in the repo or tests) - one of their momira-prefix filter
+    # sites went with them, dropping the known floor from 9 to 8.
+    content = _read_app_py()
     lines = [l for l in content.splitlines() if 'startswith("momira_")' in l]
-    assert len(lines) >= 9, "expected at least the 9 known Select Supplier filter sites"
+    assert len(lines) >= 8, "expected at least the 8 known Select Supplier filter sites"
     for line in lines:
         assert "is_active_supplier(" in line, f"momira filter line missing active check: {line!r}"
 
 
 def test_app_py_momira_filter_count_matches_active_check_count():
-    content = _read(_APP_PY)
+    content = _read_app_py()
     assert content.count('startswith("momira_")') == content.count(
         "is_active_supplier("
     ) - content.count("def is_active_supplier(")

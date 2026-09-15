@@ -139,9 +139,27 @@ def test_geolocation_invalid_and_source_not_found_when_there_is_no_address_at_al
 # pattern this suite already uses for other UI wiring - see test_2026_09_01_medium_batch1_app_py.py)
 # ======================================================================
 def _read_app_py():
+    """Returns app.py's source concatenated with every module under flows/ - Phase 1
+    (2026-09-15) started splitting render_*_flow functions out of app.py into flows/*.py,
+    verbatim/zero-behaviour-change, so source-text assertions that used to find their
+    target inside app.py alone now need to see the split-out modules too. Reading app.py
+    first means any offset/index a test computes for genuinely-still-in-app.py content is
+    unaffected; content that moved is simply found further along in the string.
+    """
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
     with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+        src = f.read()
+    app_helpers_path = os.path.join(os.path.dirname(path), "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        with open(app_helpers_path, "r", encoding="utf-8") as f:
+            src += chr(10) + f.read()
+    flows_dir = os.path.join(os.path.dirname(path), "flows")
+    if os.path.isdir(flows_dir):
+        for _name in sorted(os.listdir(flows_dir)):
+            if _name.endswith(".py") and _name != "__init__.py":
+                with open(os.path.join(flows_dir, _name), "r", encoding="utf-8") as f:
+                    src += chr(10) + f.read()
+    return src
 
 
 def test_hotel_publish_button_is_gated_on_geolocation_confirmation():

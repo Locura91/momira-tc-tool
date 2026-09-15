@@ -41,16 +41,41 @@ _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def _read_app_py():
+    """Returns app.py's source concatenated with every module under flows/ - Phase 1
+    (2026-09-15) started splitting render_*_flow functions out of app.py into flows/*.py,
+    verbatim/zero-behaviour-change, so source-text assertions that used to find their
+    target inside app.py alone now need to see the split-out modules too. Reading app.py
+    first means any offset/index a test computes for genuinely-still-in-app.py content is
+    unaffected; content that moved is simply found further along in the string.
+    """
     with open(_APP_PY, "r", encoding="utf-8") as f:
-        return f.read()
+        src = f.read()
+    app_helpers_path = os.path.join(os.path.dirname(_APP_PY), "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        with open(app_helpers_path, "r", encoding="utf-8") as f:
+            src += chr(10) + f.read()
+    flows_dir = os.path.join(os.path.dirname(_APP_PY), "flows")
+    if os.path.isdir(flows_dir):
+        for _name in sorted(os.listdir(flows_dir)):
+            if _name.endswith(".py") and _name != "__init__.py":
+                with open(os.path.join(flows_dir, _name), "r", encoding="utf-8") as f:
+                    src += chr(10) + f.read()
+    return src
+
 
 
 def _function_source(src, def_line, next_def_marker=None):
     """Slice out one top-level function's source, from its `def ...` line up to (but not
     including) the next top-level `def ` - robust to line-number drift from other edits, unlike a
     fixed character-offset window."""
+    # Phase 1 (2026-09-15) split render_ticket_flow out of app.py into flows/ticket.py,
+    # where it is now the LAST function in that file's source (nothing follows it there),
+    # so there is no next "\ndef " after it once flows/*.py is appended to app.py's own
+    # source (see _read_app_py). Falling back to end-of-string keeps this working for a
+    # function that is last in its file, without changing behaviour for any other case.
     start = src.index(def_line)
-    end = src.index("\ndef ", start + len(def_line))
+    next_def = src.find("\ndef ", start + len(def_line))
+    end = next_def if next_def != -1 else len(src)
     return src[start:end]
 
 
@@ -158,16 +183,35 @@ def test_exactly_seven_warn_stale_images_call_sites_plus_the_definition():
     src = _read_app_py()
     # 1 def + 8 call sites (ClosedTour create, ClosedTour update, Ticket batch-create,
     # Ticket batch-update (added 2026-09-08), Ticket single, Transfer, Transport, Hotel) = 9
-    # occurrences of the name total.
-    assert src.count("_warn_stale_images") == 9
+    # occurrences of the name total. Phase 1 (2026-09-15) moved the Ticket-single call site into
+    # flows/ticket.py, the Hotel call site into flows/hotel.py, the Ticket batch-create + Ticket
+    # batch-update call sites into flows/multi_ticket.py (both sharing ONE `from app import
+    # _warn_stale_images` line since they live in the same file), the ClosedTour create call site
+    # into flows/multi_tour.py, the Transport call site into flows/multi_transport.py, and the
+    # Transfer call site into flows/multi_transfer.py - six modules' worth of import lines beyond
+    # the base 9 (only the ClosedTour-update call site remains inline in app.py itself), for the
+    # same 9 real call sites/def. Phase 1 module 13 (2026-09-16) then moved the definition itself
+    # (and every remaining call site) out of app.py into app_helpers.py, and added one more
+    # `from app_helpers import (...)` line in app.py naming _warn_stale_images so the six
+    # `from app import _warn_stale_images` lines above keep resolving unchanged - one more
+    # occurrence of the name, bumping the known total from 15 to 16.
+    assert src.count("_warn_stale_images") == 16
 
 
 # ======================================================================
 # Deliberately-not-wired flow (no image concept at all)
 # ======================================================================
 def test_multi_modality_flow_has_no_image_field_and_is_not_wired():
-    src = _read_app_py()
-    window = _function_source(src, "def render_multi_modality_flow(client, url=None, uploaded_files=None):")
+    # Phase 1 (2026-09-15) moved render_multi_modality_flow into flows/multi_modality.py, which
+    # (alphabetically) sits BEFORE several other flows/*.py files in the concatenated
+    # _read_app_py() string and has no nested `def` of its own - so the generic
+    # _function_source(src, def_line) boundary search (next "\ndef " anywhere in the whole
+    # concatenated string) overshoots past this file's end and into the NEXT flows/*.py file's
+    # own header/imports (which can themselves mention "_warn_stale_images"), giving a false
+    # positive. Since this function now lives entirely in its own file, read that file directly
+    # instead of carving a window out of the concatenated string.
+    with open(os.path.join(os.path.dirname(_APP_PY), "flows", "multi_modality.py"), "r", encoding="utf-8") as f:
+        window = f.read()
     assert "image_urls" not in window
     assert '"images"' not in window and "'images'" not in window
     assert "_warn_stale_images" not in window

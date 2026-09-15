@@ -28,8 +28,23 @@ _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def _app_source() -> str:
+    """app.py's source concatenated with every module under flows/ - Phase 1 (2026-09-15)
+    started splitting render_*_flow functions out of app.py into flows/*.py, verbatim/zero-
+    behaviour-change, so Hotel-flow source text checked here (e.g. render_hotel_flow) can now
+    live in flows/hotel.py instead. Reading app.py first keeps this purely additive."""
     with open(_APP_PY, "r", encoding="utf-8") as f:
-        return f.read()
+        src = f.read()
+    app_helpers_path = os.path.join(os.path.dirname(_APP_PY), "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        with open(app_helpers_path, "r", encoding="utf-8") as f:
+            src += chr(10) + f.read()
+    flows_dir = os.path.join(os.path.dirname(_APP_PY), "flows")
+    if os.path.isdir(flows_dir):
+        for _name in sorted(os.listdir(flows_dir)):
+            if _name.endswith(".py") and _name != "__init__.py":
+                with open(os.path.join(flows_dir, _name), "r", encoding="utf-8") as f:
+                    src += chr(10) + f.read()
+    return src
 
 
 # ======================================================================

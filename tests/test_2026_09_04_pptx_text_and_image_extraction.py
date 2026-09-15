@@ -46,8 +46,27 @@ _REQUIREMENTS_TXT = os.path.join(
 
 
 def _read_app_py():
+    """Returns app.py's source concatenated with every module under flows/ - Phase 1
+    (2026-09-15) started splitting render_*_flow functions out of app.py into flows/*.py,
+    verbatim/zero-behaviour-change, so source-text assertions that used to find their
+    target inside app.py alone now need to see the split-out modules too. Reading app.py
+    first means any offset/index a test computes for genuinely-still-in-app.py content is
+    unaffected; content that moved is simply found further along in the string.
+    """
     with open(_APP_PY, "r", encoding="utf-8") as f:
-        return f.read()
+        src = f.read()
+    app_helpers_path = os.path.join(os.path.dirname(_APP_PY), "app_helpers.py")
+    if os.path.isfile(app_helpers_path):
+        with open(app_helpers_path, "r", encoding="utf-8") as f:
+            src += chr(10) + f.read()
+    flows_dir = os.path.join(os.path.dirname(_APP_PY), "flows")
+    if os.path.isdir(flows_dir):
+        for _name in sorted(os.listdir(flows_dir)):
+            if _name.endswith(".py") and _name != "__init__.py":
+                with open(os.path.join(flows_dir, _name), "r", encoding="utf-8") as f:
+                    src += chr(10) + f.read()
+    return src
+
 
 
 def _make_png_file(path, color, size):
@@ -255,15 +274,18 @@ def test_extract_images_stays_silent_for_a_genuinely_unsupported_extension():
 # Wiring - app.py's upload widgets now accept .pptx, requirements.txt carries python-pptx
 # ======================================================================
 def test_all_eight_file_uploaders_in_app_py_now_accept_pptx():
+    # Phase 1 (2026-09-15) deleted the confirmed-dead render_transfer_flow/render_transport_flow
+    # (184 lines, unreferenced anywhere in the repo or tests) - each had its own file uploader
+    # using this same type list, dropping the known count from 8 to 6.
     src = _read_app_py()
     old_type_list = 'type=["pdf", "docx", "xlsx"]'
     # CONFIRMED (product owner, 2026-09-08): csv support added alongside pdf/docx/xlsx/pptx -
-    # see test_2026_09_08_csv_support.py. Every one of these eight uploaders was updated in
+    # see test_2026_09_08_csv_support.py. Every one of these uploaders was updated in
     # lockstep the same way pptx was, so this check now looks for THAT literal instead.
     new_type_list = 'type=["pdf", "docx", "xlsx", "pptx", "csv"]'
     assert old_type_list not in src, "an upload widget was missed when adding pptx support"
     assert 'type=["pdf", "docx", "xlsx", "pptx"]' not in src, "an upload widget was missed when adding csv support"
-    assert src.count(new_type_list) == 8
+    assert src.count(new_type_list) == 6
 
 
 def test_requirements_txt_lists_python_pptx():
