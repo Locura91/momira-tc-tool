@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 _NAMESPACE = "translation_state"
 

@@ -33,7 +33,7 @@ memory of past uploads.
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 from typing import List, Optional
 from text_normalize import normalize_name as _norm

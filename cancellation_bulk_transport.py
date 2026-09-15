@@ -63,7 +63,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple

@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-13-text-normalize-consolidated"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 
 def normalize_name(s: Optional[str]) -> str:

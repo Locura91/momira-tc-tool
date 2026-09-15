@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-11-hotel-offer-supplement-providercode-and-travelwindow"
+MODULE_BUILD = "2026-09-13-hotel-automap-master-link"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

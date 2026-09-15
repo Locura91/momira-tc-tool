@@ -1,4 +1,4 @@
-# apply.ps1 - applies the 2026-09-13 hotel-automap changes to this repo.
+﻿# apply.ps1 - applies the 2026-09-13 hotel-automap changes to this repo.
 #
 # Run it from inside the repo folder. It does the two things the zip alongside it cannot do alone:
 #   1. patches app.py in place (app.py is far too big to ship whole through this route)
