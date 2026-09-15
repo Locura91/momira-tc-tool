@@ -85,7 +85,14 @@ def test_place_page_prefers_the_precise_pin_over_the_viewport_center():
 
 def test_bare_q_coordinate_link():
     result = geocoding_client.parse_google_maps_url("https://www.google.com/maps?q=27.394900,33.678400")
-    assert result == {"latitude": 27.3949, "longitude": 33.6784, "valid": True, "error": None}
+    # UPDATED 2026-09-16: parse_google_maps_url now also returns "source" ("link" when the
+    # coordinates came straight out of the URL, "geocoded from link" for the new place-name
+    # fallback - see that function's own docstring) - no longer an exact-dict match.
+    assert result["latitude"] == 27.3949
+    assert result["longitude"] == 33.6784
+    assert result["valid"] is True
+    assert result["error"] is None
+    assert result["source"] == "link"
 
 
 def test_ll_coordinate_link():
@@ -187,7 +194,15 @@ def test_parse_google_maps_url_is_imported():
     assert "from geocoding_client import geocode_search, geocode, parse_google_maps_url" in src
 
 
-def test_multi_ticket_flow_has_paste_url_option_before_manual_entry():
+def test_multi_ticket_flow_has_paste_url_option():
+    # SUPERSEDES the original 2026-09-03 version of this test (which checked the paste-url
+    # option came BEFORE a manual lat/long number-entry option). CONFIRMED PRODUCT-OWNER
+    # DECISION (2026-09-16): "we can remove the part, where the human can add manually longitude
+    # and latitude, if the google maps link works, the manual adding is not needed any more" -
+    # once parse_google_maps_url gained a geocode-the-place-name fallback for links that carry no
+    # coordinates of their own (see that function's own docstring), the manual number-entry
+    # fields (mt_geo_manlat_/mt_geo_manlng_/mt_geo_manual_btn_) were removed entirely from
+    # flows/multi_ticket.py - the paste-a-link option now covers what they used to.
     src = _read_app_py()
     window = _function_source(
         src,
@@ -195,12 +210,10 @@ def test_multi_ticket_flow_has_paste_url_option_before_manual_entry():
         'tk_url, tk_files, min_passengers=1, max_passengers=9, default_ticket_code=""):')
     assert "mt_geo_maps_url_btn_" in window
     assert "parse_google_maps_url(mt_maps_url)" in window
+    assert "mt_geo_manual_btn_" not in window  # manual entry removed
     paste_idx = window.index("mt_geo_maps_url_btn_")
-    manual_idx = window.index('mt_geo_manual_btn_')
-    assert paste_idx < manual_idx
-    # A successful parse must feed the SAME manual_latitude/manual_longitude fields the number-
-    # entry path uses, not a separate/parallel field.
-    paste_block = window[paste_idx:manual_idx]
+    # A successful parse must feed the manual_latitude/manual_longitude fields.
+    paste_block = window[paste_idx:paste_idx + 800]
     assert 'data["manual_latitude"] = mt_url_geo["latitude"]' in paste_block
     assert 'data["manual_longitude"] = mt_url_geo["longitude"]' in paste_block
 
@@ -216,14 +229,18 @@ def test_single_ticket_flow_resolved_branch_has_paste_url_option():
     assert 'data["manual_longitude"] = tk_url_geo["longitude"]' in block
 
 
-def test_single_ticket_flow_not_resolved_branch_has_paste_url_option_before_manual_entry():
+def test_single_ticket_flow_not_resolved_branch_has_paste_url_option():
+    # SUPERSEDES the original 2026-09-03 version (see test_multi_ticket_flow_has_paste_url_option
+    # for the full reasoning) - manual lat/long number entry (tk_use_manual_geo) was removed from
+    # flows/ticket.py's "not resolved" branch entirely, now that the Google Maps link paste
+    # option covers it (including a geocode-the-place-name fallback for links with no embedded
+    # coordinates).
     src = _read_app_py()
     window = _function_source(src, "def render_ticket_flow(client):")
     assert 'key="tk_geo_maps_url_btn2"' in window
+    assert 'key="tk_use_manual_geo"' not in window  # manual entry removed
     paste_idx = window.index('key="tk_geo_maps_url_btn2"')
-    manual_idx = window.index('key="tk_use_manual_geo"')
-    assert paste_idx < manual_idx
-    block = window[paste_idx:manual_idx]
+    block = window[paste_idx:paste_idx + 800]
     assert 'parse_google_maps_url(tk_maps_url2)' in block
     assert 'data["manual_latitude"] = tk_url_geo2["latitude"]' in block
     assert 'data["manual_longitude"] = tk_url_geo2["longitude"]' in block

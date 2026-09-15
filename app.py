@@ -497,14 +497,11 @@ from image_dimensions import FALLBACK_IMAGE
 # and build_ticket_supplement_vos' docstring (builder.py) for the full rule, including how an
 # undated row now defaults to the Modality's own validity window instead of being dropped.
 #
-# PARTIALLY REVERSED (2026-08-25, CONFIRMED REAL INCIDENT): merging a priced CHOICE (a foreign-
-# language guide, a vehicle upgrade) into the SAME "Supplements by dates" table as a genuinely
-# dated change let it stack onto this Modality's price as if it were just another date-window
-# surcharge - wrong, and expensive. The table itself is still the one place to enter either kind
-# (no separate "Extra Costs" UI came back), but a row now carries an is_priced_choice flag (the
-# "Needs own Modality?" checkbox) - checked rows are excluded from what publishes on THIS
-# Modality (build_ticket_payloads' excluded_language_choice_extras) rather than added to its
-# price, since Ticket creation still only ever publishes one Modality at a time.
+# RETIRED (2026-09-15, CONFIRMED PRODUCT-OWNER DECISION): "When Ticket creation and Supplement
+# says: Needs own Modality, we can ignore that information - we want to make the app simple and
+# handy for humans in the future." The "Needs own Modality?" checkbox (and the 2026-08-25
+# exclude-from-publish behaviour it drove) is gone - the table is the one place to enter every
+# priced extra, and every row published onto this Modality's price, no exceptions.
 
 
 
@@ -1169,19 +1166,32 @@ if st.session_state.active_tool is None:
     # real tools above, instead of getting their own full-width cards - same expandable-menu
     # pattern as Step 1 of Upload & Update, so a prototype only takes up screen space once
     # someone actually opens it.
-    # Outstanding back-office automaps, shown ONLY when there are any. A hotel published without
-    # its master mapping looks completely fine from inside this app - the duplicate only appears
-    # on the Travel Compositor surface - so this is the one place the outstanding work can become
-    # visible again to someone who isn't already looking for it.
+    # Outstanding back-office automaps. A hotel published without its master mapping looks
+    # completely fine from inside this app - the duplicate only appears on the Travel Compositor
+    # surface - so this is the one place the outstanding work can become visible again to someone
+    # who isn't already looking for it.
+    # CONFIRMED BUG FIX (product owner, 2026-09-16): "the Hotel review for automap can't be done
+    # after the hotel has been published. If we cannot do it from the beginning, the button is
+    # unable." Root cause: this button only rendered at all when hotel_automap already had a
+    # pending entry - which only ever got created by going through the masterdata step during a
+    # brand-new hotel's create flow (see flows/hotel.py, gated on `not existing_snapshot`). A
+    # hotel published before that entry got made (any hotel from before this feature existed, or
+    # an existing/already-published hotel, which never reaches that step at all) had NO way back
+    # into this screen - the button simply never appeared. Now always shown, and the screen itself
+    # (render_hotel_automap_review) offers a manual "search master data for a hotel" section so
+    # any hotel - already published or not, tracked or not - can be checked/linked at any time,
+    # not just the moment it's first created.
     _automap_pending = hotel_automap.pending_count()
+    st.write("")
     if _automap_pending:
-        st.write("")
         st.warning(f"🔗 **{_automap_pending} hotel(s) still need \"Automap with master\" set in "
                    f"Travel Compositor.** Until that's done they can show up as duplicate properties.")
-        if st.button(f"Review {_automap_pending} hotel(s) awaiting automap",
-                     key="tool_btn_automap", use_container_width=True):
-            st.session_state.active_tool = TOOL_HOTEL_AUTOMAP
-            st.rerun()
+        _automap_label = f"Review {_automap_pending} hotel(s) awaiting automap"
+    else:
+        _automap_label = "🔗 Hotels awaiting automap"
+    if st.button(_automap_label, key="tool_btn_automap", use_container_width=True):
+        st.session_state.active_tool = TOOL_HOTEL_AUTOMAP
+        st.rerun()
 
     st.write("")
     with st.expander("🧪 Prototypes — not part of the regular workflow yet"):
@@ -1232,7 +1242,7 @@ if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
 # this app's own durable store - never Travel Compositor (the automap it tracks cannot be set
 # through the API at all; see hotel_automap.py). ----
 if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
-    render_hotel_automap_review()
+    render_hotel_automap_review(client)
     st.stop()
 
 # ======================================================================

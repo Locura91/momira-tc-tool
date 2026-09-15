@@ -52,9 +52,9 @@ from app import (
     _warn_page_image_upload_errors, _warn_stale_images, apply_clarify_changes,
     bump_widget_generation, check_code_availability, check_duplicate_tour_name,
     clarify_supplier_id, flow_widget_key, mark_code_as_taken, remember_clarification,
-    remember_memory_panel, render_clarify_result, render_house_rule_shortcut,
-    reset_child_age_band_widgets, reset_stale_editable_field_widgets, show_publish_error,
-    try_code_variants, with_learned_guidance,
+    remember_memory_panel, render_candidate_filter, render_clarify_result,
+    render_house_rule_shortcut, reset_child_age_band_widgets, reset_stale_editable_field_widgets,
+    show_publish_error, try_code_variants, with_learned_guidance,
 )
 
 
@@ -482,6 +482,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 "the short category name itself, e.g. 'Standard' not 'Standard English min. 2 people') "
                 "- please shorten them to just the core category name: " + ", ".join(f"'{c}'" for c in suspicious_codes)
             )
+
+        render_candidate_filter(candidates, "mct_modcand", "modality")
 
         for i, cand in enumerate(candidates):
             c1, c2, c3, c4 = st.columns([1, 2, 3, 1])

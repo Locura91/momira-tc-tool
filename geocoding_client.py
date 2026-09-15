@@ -37,7 +37,7 @@ provider - no extra attribution needed.
 """
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import requests
 
@@ -360,11 +360,24 @@ def _resolve_short_google_maps_url(url: str) -> str:
         return url
 
 
+# A place page's URL path names the place right in it, e.g.
+# .../maps/place/Steigenberger+Golf+Resort+El+Gouna/data=!4m2!3m1!1s0x1450...  - used as a
+# LAST-RESORT geocode query (see parse_google_maps_url's fallback below) when the link itself
+# carries no coordinates at all. "+" is a literal space in this position (URL path, not query
+# string), and the segment is percent-decoded the normal way.
+_PLACE_NAME_PATTERN = re.compile(r"/maps/place/([^/@]+)")
+
+
 def parse_google_maps_url(url: str) -> dict:
     """
     Extracts {"latitude": float, "longitude": float} straight out of a Google Maps URL the human
     pastes in, instead of them having to read the coordinates off the page and type them by hand.
-    Returns {"latitude": float|None, "longitude": float|None, "valid": bool, "error": str|None}.
+    Returns {"latitude": float|None, "longitude": float|None, "valid": bool, "error": str|None,
+    "source": str|None} - "source" is "link" when the coordinates came straight out of the URL,
+    or "geocoded from link" when the link had no embedded coordinates and the place NAME in the
+    URL was geocoded instead (see the fallback below) - the caller can use this to tell a human
+    "read this from the link" apart from "guessed from the place name in the link, double-check
+    it's the right spot."
 
     Handles every URL shape actually seen from Google Maps' own "Share" / address-bar copy:
       - A place page with its own precise pin, e.g.
@@ -375,13 +388,33 @@ def parse_google_maps_url(url: str) -> dict:
       - A shortened share-link (maps.app.goo.gl/..., goo.gl/maps/...) - resolved to its real,
         long URL first (one network round-trip), then parsed the same as any other Maps URL.
 
-    Never raises - a URL that isn't recognized, isn't reachable (for a short link), or simply
-    doesn't contain coordinates in any of the shapes above comes back as valid=False with a
+    CONFIRMED REAL BUG (product owner, 2026-09-16): "I can add a google maps Link, but the
+    coordinates are not filled to the geolocation, even not after i click 'use this links
+    coordinates'." Root cause: a real, modern Google Maps "Share" link (especially from the
+    mobile app, for a business/POI that has its own Place ID) very often resolves to a URL that
+    carries NO embedded coordinates in ANY of the four shapes above at all - just a place-ID hash
+    (the "!1s0x..." Google internally uses to look the place up on ITS OWN servers), e.g.
+    ".../maps/place/Some+Hotel/data=!4m2!3m1!1s0x1450abc...?utm_source=mstt_1&entry=gps". No
+    client-side URL parsing can recover a coordinate that was never in the link to begin with, so
+    every one of these previously came back as a flat "couldn't find coordinates" failure -
+    exactly Chris's report.
+
+    FIX: when none of the four coordinate patterns match, fall back to geocoding the place NAME
+    that IS always present in a .../maps/place/<name>/... URL (the "+"-separated segment right
+    after "/place/") through the same free Nominatim/Photon pipeline geocode() already uses
+    everywhere else in this app - same idea as "paste the address instead", just done
+    automatically from the link the human already has. Never claims to be as precise as a real
+    embedded pin (the source is reported as "geocoded from link", not "link", so a human still
+    sees this was a name-based guess, not a read-off-the-pin coordinate), but turns a hard failure
+    into a usable starting point for the vast majority of real-world share links.
+
+    Never raises - a URL that isn't recognized, isn't reachable (for a short link), or has no
+    coordinates AND no extractable place name to fall back on comes back as valid=False with a
     human-readable `error`, so the caller can show it rather than silently doing nothing.
     """
     raw = (url or "").strip()
     if not raw:
-        return {"latitude": None, "longitude": None, "valid": False, "error": "Paste a Google Maps link first."}
+        return {"latitude": None, "longitude": None, "valid": False, "error": "Paste a Google Maps link first.", "source": None}
 
     candidate = raw if re.match(r"^https?://", raw, re.I) else f"https://{raw}"
     try:
@@ -391,7 +424,7 @@ def parse_google_maps_url(url: str) -> dict:
 
     if not host or ("google" not in host and "goo.gl" not in host and "g.co" not in host):
         return {"latitude": None, "longitude": None, "valid": False,
-                "error": "That doesn't look like a Google Maps link."}
+                "error": "That doesn't look like a Google Maps link.", "source": None}
 
     resolved = candidate
     if any(h in host for h in _SHORT_LINK_HOSTS):
@@ -403,9 +436,21 @@ def parse_google_maps_url(url: str) -> dict:
             continue
         lat, lng = float(m.group(1)), float(m.group(2))
         if -90 <= lat <= 90 and -180 <= lng <= 180:
-            return {"latitude": lat, "longitude": lng, "valid": True, "error": None}
+            return {"latitude": lat, "longitude": lng, "valid": True, "error": None, "source": "link"}
+
+    name_match = _PLACE_NAME_PATTERN.search(resolved)
+    if name_match:
+        place_query = unquote(name_match.group(1).replace("+", " ")).strip()
+        if place_query:
+            geo_result = geocode(place_query)
+            if geo_result.get("valid"):
+                return {
+                    "latitude": geo_result["latitude"], "longitude": geo_result["longitude"],
+                    "valid": True, "error": None, "source": "geocoded from link",
+                    "name": geo_result.get("display_name") or place_query,
+                }
 
     return {"latitude": None, "longitude": None, "valid": False,
-            "error": "Couldn't find coordinates in that link - try copying the link again from "
-                     "Google Maps' own Share button, or right-click the exact pin and copy the "
-                     "coordinates shown at the top of the menu."}
+            "error": "Couldn't find coordinates in that link, and geocoding the place name in it "
+                     "didn't find anything either - try copying the link again from Google Maps' "
+                     "own Share button, or search for the place by name instead.", "source": None}

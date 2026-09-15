@@ -462,7 +462,7 @@ Rules:
   start_time) one of the two defaults above applies.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
-- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this tour genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. Empty list if genuinely none.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this tour genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. Empty list if genuinely none.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
   {
     "name": "optional label, e.g. the season or date range description",
@@ -1728,25 +1728,19 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         "CONFIRMED REAL CORRECTION (product owner, 2026-08-24) - A TICKET NOW PUBLISHES ONLY ONE MODALITY, "
         "AND EVERY PRICED EXTRA ON IT IS A 'modality_supplements' ROW: Ticket creation no longer generates "
         "multiple Modality variants at all - it always publishes exactly one Modality, and every priced "
-        "extra it can carry (a genuinely dated change like a seasonal table or holiday surcharge, AND a "
-        "priced choice like a foreign-language guide or a Seat-in-Coach upgrade) lives in the SAME "
-        "'modality_supplements' list (each row: name, adult_price_supplement, children_price_supplement, "
-        "infant_price_supplement, start_date, end_date, is_priced_choice - dates may be blank, meaning the "
-        "row applies for the Modality's whole validity window). CONFIRMED REAL INCIDENT (2026-08-25) - "
-        "'is_priced_choice' (boolean) MUST be set correctly on every row: true for a priced CHOICE the "
-        "customer picks between (a foreign-language guide, a Seat-in-Coach/vehicle upgrade) - the app "
-        "EXCLUDES these from what publishes on this one Modality and reports them separately, since a "
-        "customer choosing between products is a different Modality, not a date-based price change; "
-        "false (default) for a genuinely dated change that just costs more during a window on this SAME "
-        "Modality (a season, a holiday surcharge) - these still publish normally. When the human asks to "
-        "remove/add/change one of these (e.g. 'delete the French-speaking guide option', 'the holiday "
-        "surcharge should be 20 not 15', 'the German guide needs its own Modality, don't add it to the "
-        "price'), the fix belongs in modality_supplements: remove/add/edit the matching entry there "
-        "(match by its 'name', e.g. an entry named 'French-speaking guide'), returning the FULL "
-        "modality_supplements array as it should read afterward, not just the changed row - and set/keep "
-        "is_priced_choice correctly on every row, not just the one the human named. If the human names the "
-        "BASE price itself (no extra), the fix is base_adult_price/base_children_price/base_infant_price "
-        "(or occupancy_prices/base_service_price - see below) instead.\n\n"
+        "extra it can carry (a genuinely dated change like a seasonal table or holiday surcharge, a "
+        "foreign-language guide, a Seat-in-Coach upgrade, etc.) lives in the SAME 'modality_supplements' "
+        "list (each row: name, adult_price_supplement, children_price_supplement, infant_price_supplement, "
+        "start_date, end_date - dates may be blank, meaning the row applies for the Modality's whole "
+        "validity window). RETIRED (product owner, 2026-09-15): 'is_priced_choice' is no longer a field on "
+        "these rows - never include it. Every row publishes onto this same Modality's price, whatever kind "
+        "of extra it is. When the human asks to remove/add/change one of these (e.g. 'delete the "
+        "French-speaking guide option', 'the holiday surcharge should be 20 not 15'), the fix belongs in "
+        "modality_supplements: remove/add/edit the matching entry there (match by its 'name', e.g. an entry "
+        "named 'French-speaking guide'), returning the FULL modality_supplements array as it should read "
+        "afterward, not just the changed row. If the human names the BASE price itself (no extra), the fix "
+        "is base_adult_price/base_children_price/base_infant_price (or occupancy_prices/base_service_price "
+        "- see below) instead.\n\n"
         "TICKET MODALITY PRICING - 'price_type' / 'occupancy_prices' / 'base_service_price' (Tickets "
         "only - a ClosedTour/Hotel/Transfer/Transport modality has no 'price_type' field at all, so "
         "none of this applies to those): a Ticket Modality's OWN price (as opposed to a modality_supplements "
@@ -2058,7 +2052,7 @@ Extract ONLY:
 - pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a group-size table into the 4-slot schema - explain exactly what, with real numbers.
 - schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only. NEVER include an instruction telling the customer to contact the operator/supplier directly (e.g. "contact the operator 48h before to confirm pick-up time") - Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
-- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies (e.g. an explicit gap in an otherwise fully-dated operating calendar). Empty list if genuinely none.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies (e.g. an explicit gap in an otherwise fully-dated operating calendar). IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. Empty list if genuinely none.
 - guaranteed_departure_rule: CONFIRMED REAL PATTERN - some contracts state that a weekly departure normally
   needs a minimum passenger count to run, EXCEPT specific ordinal occurrences of that weekday each month
   which are "guaranteed" to operate regardless of passenger count (e.g. "need a minimum of 4 clients to
@@ -2228,7 +2222,7 @@ Extract:
 - pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a table into the 4-slot schema, or note a peak-season surcharge calculation - explain exactly what, with real numbers.
 - schedule_notes: plain-English description of departure timing/pattern if mentioned - informational only.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names. If genuinely unclear, return all 7 days.
-- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when THIS Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside its normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. Empty list if genuinely none.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when THIS Modality genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside its normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. Empty list if genuinely none.
 - guaranteed_departure_rule: CONFIRMED REAL PATTERN (e.g. a river cruise contract: "need a minimum of 4
   clients to guarantee operation of any cruises, except for Upstream departures which can be operated
   without minimum of passengers on the 1st and 3rd Monday of every month during November 2026 - October
@@ -2747,7 +2741,7 @@ Extract:
   separate, non-contiguous date ranges (e.g. two different closures plus a holiday closure) - include
   EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one
   if the source is simply silent about closures - only include a range the source actually states or
-  clearly implies. Empty list if genuinely none.
+  clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. Empty list if genuinely none.
 - min_pax_guaranteed_departure: a flat statement that a minimum number of passengers is needed to
   guarantee this excursion actually departs (e.g. "Minimum 3 pax required for guaranteed departure",
   "operates with a minimum group size of 4", "requires min. 2 passengers to run"). Extract just the
@@ -2771,16 +2765,9 @@ Extract:
   can carry still goes here, whatever kind it is - a genuinely dated change (a seasonal price table, a
   holiday surcharge) AND a priced CHOICE the customer picks (a foreign-language guide, a Seat-in-Coach/
   vehicle upgrade) go in the SAME list, matching Travel Compositor's own Modality screen, which has
-  exactly one "Supplements by dates" box for all of it.
-  CONFIRMED REAL INCIDENT (product owner, 2026-08-25) - "is_priced_choice" DISTINGUISHES THE TWO: "Travel
-  C logic would add every single language up and the price would be too high and absolutely wrong... other
-  languages must have other modalities." Every entry now ALSO carries "is_priced_choice" (boolean):
-  true for a priced CHOICE the customer picks between (a foreign-language guide, a Seat-in-Coach/vehicle
-  upgrade) - the app EXCLUDES these from this Modality's published price entirely (ticket creation only
-  ever publishes one Modality) and reports them separately for the human to set up as their own Modality.
-  false (the default) for a genuinely dated change that just costs more during a window on this SAME
-  Modality (a season, a holiday surcharge) - these still publish normally. Get this right: a wrong true
-  silently drops a real price change; a wrong false stacks a different product's price onto the base one.
+  exactly one "Supplements by dates" box for all of it, and ALL of it publishes onto this same Modality's
+  price. RETIRED (product owner, 2026-09-15): "is_priced_choice" is no longer a field on these rows -
+  never include it in your output.
   CONFIRMED REAL RULE (product owner, 2026-08-24): "within the supplement name, please do not
   write any % to it and never a price, because the client can see that information and he
   should not see it." This `name` is customer-facing (shown on the voucher) - NEVER include a
@@ -2790,9 +2777,7 @@ Extract:
   {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
    "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
      <the EXTRA per child>, "infant_price_supplement": <usually 0>,
-   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
-   "is_priced_choice": <true for a foreign-language guide/vehicle upgrade/etc. the customer picks between,
-     false for a genuinely dated season/holiday change on this same Modality>}
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
   DATES ARE OPTIONAL for a supplement that isn't tied to a specific window (e.g. a foreign-language guide
   that simply always costs more, whenever booked) - leave start_date/end_date empty in that case; the app
   fills them in with the Modality's own whole validity window automatically, it does NOT need real dates
@@ -2804,12 +2789,12 @@ Extract:
   per guide language (an "English Speaking Guide" table, then a "German Speaking Guide" table with its own
   numbers). Take the FIRST/primary language's table as base_adult_price/base_children_price/
   base_infant_price, then for every OTHER language output the DIFFERENCE per passenger type as its own
-  entry here (undated, per the rule above, is_priced_choice=true - this is a different product, not a
-  dated change). If the difference is not constant across the table (e.g. it varies by group size), still
-  output your best single figure AND explain the variation with real numbers in pricing_notes.
+  entry here (undated, per the rule above - this is a different product, not a dated change). If the
+  difference is not constant across the table (e.g. it varies by group size), still output your best
+  single figure AND explain the variation with real numbers in pricing_notes.
   CONFIRMED PRODUCT-OWNER RULE - FLAT PER-GROUP LANGUAGE SURCHARGE (not per-person): some documents instead
   give ONE flat per-day surcharge for the whole group for a foreign-language guide (e.g. "French: $9",
-  "German: $47" - a flat add-on, not a per-adult price). Same is_priced_choice=true rule applies.
+  "German: $47" - a flat add-on, not a per-adult price).
   Converting a flat group charge into a per-person extra can never be exactly correct since it depends how
   many people are in the group, so orient the conversion around 2 PAX specifically (Momira's main target
   group booking size): output adult_price_supplement = <the flat surcharge> / 2. Say in pricing_notes that
@@ -2824,8 +2809,7 @@ Extract:
   HOW TO FILL THIS FROM A SEASONAL PRICE TABLE: take the LOWEST-priced season (usually "Normal"/"Low") as
   base_adult_price/base_children_price/base_infant_price above. For every OTHER season, output one entry
   here per passenger type with that season's price MINUS the base price (the extra on top, not the total),
-  WITH that season's real start_date/end_date and is_priced_choice=false (this is the same product, just
-  costing more during a window - not a different one). If a season is valid for SEVERAL separate
+  WITH that season's real start_date/end_date. If a season is valid for SEVERAL separate
   non-contiguous date ranges (common on these rate sheets - e.g. "2 Jan - 3 Feb", then "11 Feb - 15 Apr",
   then "2 May - 1 Sep", all at the identical price), output ONE ENTRY PER DATE RANGE, all sharing that
   same price delta - never merge them into one wide range, since the gaps between them belong to a
@@ -2833,8 +2817,8 @@ Extract:
   HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if the surcharge is stated as a PERCENTAGE of another
   amount (e.g. "100% surcharge" on a guide-language surcharge entry, meaning it doubles during the holiday),
   compute the actual currency delta from that other amount and output it here as its own entry WITH the
-  holiday's own real start_date/end_date (e.g. "5-9 February 2027" for Tet) and is_priced_choice=false -
-  explain the percentage-of-what calculation in pricing_notes so a human can verify it. If the holiday's
+  holiday's own real start_date/end_date (e.g. "5-9 February 2027" for Tet) - explain the percentage-of-what
+  calculation in pricing_notes so a human can verify it. If the holiday's
   dates are genuinely not stated (e.g. "Public Holidays (to be advised at time of booking)"), give it NO
   dates rather than inventing any - per the rule above, an undated entry still publishes, covering the
   Modality's whole validity window, which is the safer default when the real window is unknown.
@@ -3503,7 +3487,7 @@ Extract:
   can be MULTIPLE separate, non-contiguous date ranges (e.g. two different closures plus a holiday
   closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do
   NOT invent one if the source is simply silent about closures - only include a range the source actually
-  states or clearly implies. Empty list if genuinely none.
+  states or clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. Empty list if genuinely none.
 - min_pax_guaranteed_departure: a flat statement that a minimum number of passengers is needed to
   guarantee THIS Modality/excursion actually departs (e.g. "Minimum 3 pax required for guaranteed
   departure", "operates with a minimum group size of 4", "requires min. 2 passengers to run"). Extract
@@ -3535,15 +3519,9 @@ Extract:
   are supplement by dates. No need to distinguish that at the app." EVERY extra cost this ticket can carry
   still goes here, whatever kind it is - a genuinely dated change (a seasonal price table, a holiday
   surcharge) AND a priced CHOICE the customer picks (a foreign-language guide, a Seat-in-Coach/vehicle
-  upgrade) go in the SAME list, matching Travel Compositor's own single "Supplements by dates" box.
-  CONFIRMED REAL INCIDENT (product owner, 2026-08-25) - "is_priced_choice" DISTINGUISHES THE TWO: "Travel
-  C logic would add every single language up and the price would be too high and absolutely wrong... other
-  languages must have other modalities." Every entry now ALSO carries "is_priced_choice" (boolean): true
-  for a priced CHOICE the customer picks between (a foreign-language guide, a Seat-in-Coach/vehicle
-  upgrade) - the app EXCLUDES these from this Modality's published price (ticket creation only ever
-  publishes one Modality) and reports them for the human to set up as their own Modality. false (default)
-  for a genuinely dated change that just costs more during a window on this SAME Modality (a season, a
-  holiday surcharge) - these still publish normally.
+  upgrade) go in the SAME list, matching Travel Compositor's own single "Supplements by dates" box, and
+  ALL of it publishes onto this Modality's price. RETIRED (product owner, 2026-09-15): "is_priced_choice"
+  is no longer a field on these rows - never include it in your output.
   CONFIRMED REAL RULE (product owner, 2026-08-24): "within the supplement name, please do not
   write any % to it and never a price, because the client can see that information and he
   should not see it." This `name` is customer-facing (shown on the voucher) - NEVER include a
@@ -3553,9 +3531,7 @@ Extract:
   {"name": "clear label, e.g. 'High Season', 'Tet Holiday Surcharge', or 'German-speaking guide'",
    "adult_price_supplement": <the EXTRA per adult on top of base_adult_price>, "children_price_supplement":
      <the EXTRA per child>, "infant_price_supplement": <usually 0>,
-   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
-   "is_priced_choice": <true for a foreign-language guide/vehicle upgrade/etc., false for a dated
-     season/holiday change>}
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
   DATES ARE OPTIONAL for a supplement that isn't tied to a specific window (e.g. a foreign-language guide
   that simply always costs more) - leave start_date/end_date empty; the app fills them in with the
   Modality's own whole validity window automatically. Only give real dates for a genuine date-restricted
@@ -3564,24 +3540,22 @@ Extract:
   output adult_price_supplement: 10. The app adds the base itself.
   CRITICAL - SEPARATE FULL PRICE TABLES: a very common real case is a document with a complete price table
   per guide language. Take the FIRST/primary language's table as base_adult_price/base_children_price/
-  base_infant_price, then for every other language output the DIFFERENCE per passenger type here (undated,
-  is_priced_choice=true).
+  base_infant_price, then for every other language output the DIFFERENCE per passenger type here (undated).
   CONFIRMED PRODUCT-OWNER RULE - FLAT PER-GROUP LANGUAGE SURCHARGE (not per-person): some documents instead
   give ONE flat per-day surcharge for the whole group for a foreign-language guide (e.g. "German: $47" - a
-  flat add-on, not a per-adult price). Same is_priced_choice=true rule applies. Orient the conversion
-  around 2 PAX specifically: output adult_price_supplement = <the flat surcharge> / 2 for that language,
-  and say so in pricing_notes.
+  flat add-on, not a per-adult price). Orient the conversion around 2 PAX specifically: output
+  adult_price_supplement = <the flat surcharge> / 2 for that language, and say so in pricing_notes.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely.
   A language offered at the SAME price as the base is NOT a supplement - put it in languages above instead.
   HOW TO FILL THIS FROM A SEASONAL PRICE TABLE: take the LOWEST-priced season as base_adult_price/
   base_children_price/base_infant_price above. For every OTHER season, output one entry here per
-  passenger type with that season's price MINUS the base price, WITH that season's real dates and
-  is_priced_choice=false. If a season is valid for SEVERAL separate non-contiguous date ranges, output ONE
-  ENTRY PER DATE RANGE, all sharing that same price delta.
+  passenger type with that season's price MINUS the base price, WITH that season's real dates. If a season
+  is valid for SEVERAL separate non-contiguous date ranges, output ONE ENTRY PER DATE RANGE, all sharing
+  that same price delta.
   HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if stated as a PERCENTAGE, compute the actual
-  currency delta and output it here with the holiday's own dates and is_priced_choice=false - explain the
-  calculation in pricing_notes. If the holiday's dates are not stated, give it NO dates rather than
-  inventing any - an undated entry still publishes, covering the Modality's whole validity window.
+  currency delta and output it here with the holiday's own dates - explain the calculation in pricing_notes.
+  If the holiday's dates are not stated, give it NO dates rather than inventing any - an undated entry
+  still publishes, covering the Modality's whole validity window.
   Empty list if the document prices no extras/seasonal variation at all - never invent one.
 - occupancy_prices: ONLY populate if the human indicates Occupancy pricing mode is being used. If the
   source has a group-size-tiered price table (columns like "1", "2", "3-5", "6-8"), extract it here
@@ -3780,17 +3754,13 @@ the integer, null if no such minimum is stated - do not confuse with a private t
 "Min.2 pax in Vehicle" pricing basis, which is a different concept),
 modality_supplements (EVERY priced extra this Modality can carry - a genuinely dated change like a
 seasonal price table or holiday surcharge, AND a priced choice like a foreign-language guide or a
-Seat-in-Coach upgrade, go in the SAME list: each entry is {"name", "adult_price_supplement",
-"children_price_supplement", "infant_price_supplement", "start_date", "end_date", "is_priced_choice"} -
-dates are OPTIONAL for an entry that isn't tied to a specific window; leave them blank and the app
-defaults them to this Modality's own start_date/end_date, only give real dates for a genuine
+Seat-in-Coach upgrade, go in the SAME list and ALL of it publishes onto this Modality's price: each entry
+is {"name", "adult_price_supplement", "children_price_supplement", "infant_price_supplement", "start_date",
+"end_date"} - dates are OPTIONAL for an entry that isn't tied to a specific window; leave them blank and
+the app defaults them to this Modality's own start_date/end_date, only give real dates for a genuine
 date-restricted window. `name` is customer-facing (shown on the voucher) - NEVER include a percentage or
-currency amount in it, e.g. "Tet Holiday Surcharge" not "Tet Holiday Surcharge (+15%)". CONFIRMED REAL
-INCIDENT (2026-08-25) - `is_priced_choice` (boolean) MUST be set on every entry: true for a priced CHOICE
-the customer picks between (a foreign-language guide, a Seat-in-Coach/vehicle upgrade - excluded from
-this Modality's published price and reported to the human as needing its own Modality, since a wrong
-false here made Travel Compositor stack a different product's price onto the base one), false (default)
-for a genuinely dated change that just costs more during a window on this SAME Modality,
+currency amount in it, e.g. "Tet Holiday Surcharge" not "Tet Holiday Surcharge (+15%)". RETIRED (product
+owner, 2026-09-15): "is_priced_choice" is no longer a field on these rows - never include it,
 languages (list of ISO 639-1 two-letter UPPERCASE codes this Modality runs in AT THE SAME PRICE, e.g.
 ["EN"], or ["EN","DE"] when the source lists two or more languages as EQUAL standard options at the same
 price - "licenced English/German-speaking guiding service" - default ["EN"]; a language that costs EXTRA

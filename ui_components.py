@@ -473,47 +473,31 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
     can't be live when its own Modality isn't - see build_ticket_supplement_vos in builder.py,
     which applies the exact same default-and-clip as a second safety net at build time.
 
-    CONFIRMED REAL INCIDENT (product owner, 2026-08-25): "different languages are always a
-    problem within creating a ticket. Travel C logic would add every single language up and the
-    price would be too high and absolutely wrong. If a ticket has other language options apart
-    from the base modality, we must ignore it for the base modality - other languages must have
-    other modalities." The 2026-08-24 merge above was too broad: a foreign-language guide (or any
-    other priced CHOICE the customer picks between) is a different product, not a date-based price
-    change on THIS modality - stacking it into Supplements by dates let Travel Compositor add it
-    on top of the base price as if it were just another optional extra, inflating the price.
-    Ticket creation still only ever publishes one Modality (see build_ticket_modality_combinations'
-    max_modalities=1 cap), so a priced choice can't become its own Modality automatically - the
-    "Needs own Modality?" checkbox marks a row as exactly that kind of extra, so build_ticket_
-    payloads (builder.py) excludes it from what publishes here and reports it back as something
-    the human still needs to set up as a separate Modality by hand. Leave it unchecked for a
-    genuinely dated change (a season, a holiday surcharge) that just costs more on this SAME
-    modality during a window - that one still publishes normally.
+    RETIRED (product owner, 2026-09-15): "When Ticket creation and Supplement says: Needs own
+    Modality, we can ignore that information - we want to make the app simple and handy for
+    humans in the future." The old own-Modality checkbox (and the 2026-08-25 exclude-from-publish
+    behaviour it drove - see git history for that reasoning) is gone: every row entered here is
+    now a plain dated supplement, published as-is, no exceptions and nothing excluded.
     """
     modality_start = (data.get("start_date") or "").strip()
     modality_end = (data.get("end_date") or "").strip()
     with st.expander(f"Supplements by dates ({len(data.get('modality_supplements') or [])} priced extra(s))"):
         if help_text:
             st.caption(help_text)
-        st.caption("Every DATE-BASED price change on THIS Modality goes here (a High Season row, "
-                  "a holiday surcharge) - matching Travel Compositor's own \"Supplements by dates\" "
-                  "box. Leave Start/End blank to apply a row for this Modality's WHOLE validity "
-                  "window (its own Valid From/Until above) - only fill them in when the extra "
-                  "genuinely applies for a narrower date range, like a single holiday period. "
-                  "A row the customer actually CHOOSES between (a foreign-language guide that "
-                  "costs more, a vehicle/service upgrade) is a different product, not a date "
-                  "change - tick \"Needs own Modality?\" for those instead of leaving them here; "
-                  "they'll be excluded from this Modality's price and listed separately so you "
-                  "can set them up as their own Modality afterward.")
+        st.caption("Every price change on THIS Modality goes here (a High Season row, a holiday "
+                  "surcharge, a language/vehicle upgrade) - matching Travel Compositor's own "
+                  "\"Supplements by dates\" box. Leave Start/End blank to apply a row for this "
+                  "Modality's WHOLE validity window (its own Valid From/Until above) - only fill "
+                  "them in when the extra genuinely applies for a narrower date range, like a "
+                  "single holiday period.")
         supp_rows = [
             {"Name": s.get("name", ""), "Start Date": _disp(s.get("start_date", "")), "End Date": _disp(s.get("end_date", "")),
              "Adult Extra": s.get("adult_price_supplement", 0), "Child Extra": s.get("children_price_supplement", 0),
-             "Infant Extra": s.get("infant_price_supplement", 0),
-             "Needs own Modality?": bool(s.get("is_priced_choice", False))}
+             "Infant Extra": s.get("infant_price_supplement", 0)}
             for s in (data.get("modality_supplements") or []) if isinstance(s, dict)
         ]
         supp_df = pd.DataFrame(supp_rows) if supp_rows else pd.DataFrame(
-            columns=["Name", "Start Date", "End Date", "Adult Extra", "Child Extra", "Infant Extra",
-                     "Needs own Modality?"])
+            columns=["Name", "Start Date", "End Date", "Adult Extra", "Child Extra", "Infant Extra"])
 
         def _save_modality_supplements(edited_df, data=data, modality_start=modality_start, modality_end=modality_end):
             new_supplements = []
@@ -536,46 +520,22 @@ def render_ticket_modality_supplements_editor(data, key_prefix, help_text=None):
                     "adult_price_supplement": _safe_float(row.get("Adult Extra")),
                     "children_price_supplement": _safe_float(row.get("Child Extra")),
                     "infant_price_supplement": _safe_float(row.get("Infant Extra")),
-                    "is_priced_choice": bool(row.get("Needs own Modality?", False)),
                 })
             data["modality_supplements"] = new_supplements
 
-        editable_table("Supplements by dates", supp_df, f"{key_prefix}_modality_supplements", on_save=_save_modality_supplements,
-                       column_config={"Needs own Modality?": st.column_config.CheckboxColumn(
-                           help="A priced CHOICE the customer picks (a foreign-language guide, a vehicle "
-                                "upgrade) - not a date-based price change. Checked rows are excluded from "
-                                "this Modality's price and reported separately instead of being stacked "
-                                "onto it.")})
-
-        # CONFIRMED REAL INCIDENT (2026-08-25) - see this function's own docstring: named out loud
-        # right where the human is already looking, not just silently excluded at publish time
-        # (build_ticket_payloads' excluded_language_choice_extras does the same exclusion again as
-        # a second safety net, in case a row reaches publish some other way than this editor).
-        choice_names = [
-            (s.get("name") or "").strip() for s in (data.get("modality_supplements") or [])
-            if isinstance(s, dict) and s.get("is_priced_choice") and (s.get("name") or "").strip()
-        ]
-        if choice_names:
-            st.warning(
-                f"⚠️ {', '.join(choice_names)} will NOT be added to this Modality's price - "
-                f"marked \"Needs own Modality?\". Ticket creation only publishes one Modality at "
-                f"a time, so set each of these up as its own Modality (base price + this extra) "
-                f"after this ticket is created."
-            )
+        editable_table("Supplements by dates", supp_df, f"{key_prefix}_modality_supplements", on_save=_save_modality_supplements)
 
         # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never
         # have an End date earlier than today's date." Shown right here, at edit time, as the
         # first safety net - build_ticket_payloads' expired_dated_supplements (builder.py) BLOCKS
-        # PUBLISH on the same check as a second, unconditional safety net. Only checked for a row
-        # that will actually publish as a dated supplement (is_priced_choice is not set/false) -
-        # a "Needs own Modality?" row's dates don't matter here since it never reaches this
-        # Modality's price at all. A blank End Date defaults to this Modality's own End Date at
-        # publish time (see this function's own docstring), so that's the effective date checked
-        # here too, rather than flagging every blank row as if it were already past.
+        # PUBLISH on the same check as a second, unconditional safety net. A blank End Date
+        # defaults to this Modality's own End Date at publish time (see this function's own
+        # docstring), so that's the effective date checked here too, rather than flagging every
+        # blank row as if it were already past.
         _today_iso = datetime.now().strftime("%Y-%m-%d")
         expired_names = []
         for s in (data.get("modality_supplements") or []):
-            if not isinstance(s, dict) or s.get("is_priced_choice"):
+            if not isinstance(s, dict):
                 continue
             effective_end = (s.get("end_date") or "").strip() or modality_end
             if effective_end and effective_end < _today_iso:

@@ -87,7 +87,13 @@ def test_mt_clear_geo_confirmation_helper_exists_and_clears_both_the_flag_and_th
     assert 'st.session_state.pop(f"mt_geo_confirm_{idx}", None)' in window
 
 
-def test_search_pick_and_manual_entry_both_use_the_clear_helper_not_the_flag_alone():
+def test_search_pick_and_maps_link_paste_both_use_the_clear_helper_not_the_flag_alone():
+    # SUPERSEDES the original 2026-09-01 version of this test, which checked the SEARCH-pick
+    # path and the MANUAL lat/lng number-entry path. CONFIRMED PRODUCT-OWNER DECISION
+    # (2026-09-16): manual number entry was removed entirely (see
+    # test_2026_09_03_google_maps_url_coordinates.py's test_multi_ticket_flow_has_paste_url_option
+    # for the full reasoning) - the Google Maps link paste path is the other place this rule
+    # needs to hold now that manual entry no longer exists.
     source = _read_app_py()
     # The search-result "Use this" button.
     pick_idx = source.index('if st.button("Use this", key=f"mt_geo_pick_{idx}_{gi}"):')
@@ -95,11 +101,11 @@ def test_search_pick_and_manual_entry_both_use_the_clear_helper_not_the_flag_alo
     assert '_mt_clear_geo_confirmation(current, idx)' in pick_window
     assert 'data["manual_coords_for_city"] = mt_city' in pick_window
 
-    # The manual lat/lng entry button.
-    manual_idx = source.index('if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}"')
-    manual_window = source[manual_idx:manual_idx + 400]
-    assert '_mt_clear_geo_confirmation(current, idx)' in manual_window
-    assert 'data["manual_coords_for_city"] = mt_city' in manual_window
+    # The "paste a Google Maps link" button.
+    link_idx = source.index('if st.button("🔗 Use this link\'s coordinates", key=f"mt_geo_maps_url_btn_{idx}"')
+    link_window = source[link_idx:link_idx + 800]
+    assert '_mt_clear_geo_confirmation(current, idx)' in link_window
+    assert 'data["manual_coords_for_city"] = mt_city' in link_window
 
 
 def test_city_change_since_manual_coordinates_were_set_invalidates_them():

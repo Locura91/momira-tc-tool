@@ -46,8 +46,8 @@ from app import (
     apply_clarify_changes, bump_widget_generation, check_code_availability,
     check_modality_code_availability, clarify_supplier_id, flow_widget_key,
     floor_start_date_for_new_data, mark_code_as_taken, remember_clarification,
-    remember_memory_panel, render_clarify_result, render_code_availability_check,
-    render_house_rule_shortcut, render_modalities_review,
+    remember_memory_panel, render_candidate_filter, render_clarify_result,
+    render_code_availability_check, render_house_rule_shortcut, render_modalities_review,
     render_modality_code_availability_check, render_multi_ticket_flow,
     render_multi_ticket_update_flow, render_publish_blockers,
     render_ticket_language_options, render_ticket_update_comparison,
@@ -541,8 +541,12 @@ def render_ticket_flow(client):
             # code, the Modality Code defaults to the excursion's own name (already fully known
             # here, unlike that flow's async single-fallback case) instead of the generic
             # "Standard"/"Standard Private". modality_name (client-facing) is unaffected.
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-15): "When multiple Service been detected by
+            # the app, we must give the option 'select all' 'select none', on default select
+            # all." - was "selected": False here, the one detected-list default that didn't
+            # match every other batch/candidate screen in the app.
             st.session_state.tk_pending_variant_selection = [
-                {"label": e.get("label", f"Excursion {i+1}"), "selected": False,
+                {"label": e.get("label", f"Excursion {i+1}"), "selected": True,
                  "ticket_code": "",
                  "modality_code": (
                      f"{('Standard Private' if e.get('is_private') else 'Standard').upper().replace(' ', '_')}_{str(e.get('supplier_code') or '').strip()}"
@@ -557,6 +561,8 @@ def render_ticket_flow(client):
                 for i, e in enumerate(excursions)
             ]
         tkpv_selection = st.session_state.tk_pending_variant_selection
+
+        render_candidate_filter(tkpv_selection, "tkpv", "excursion")
 
         for i, sel in enumerate(tkpv_selection):
             sel["selected"] = st.checkbox(sel["label"], value=sel["selected"], key=f"tkpv_sel_{i}")
@@ -1091,6 +1097,9 @@ def render_ticket_flow(client):
         if st.session_state.get("tk_payloads"):
             payloads = st.session_state.tk_payloads
             st.header("Ticket — Step 6: Geolocation & Payload Preview")
+            if st.session_state.get("tk_geo_link_note"):
+                st.info(st.session_state.tk_geo_link_note)
+                st.session_state.tk_geo_link_note = None
 
             render_modalities_review(
                 "ticket", modality_code, "Base Modality", data,
@@ -1159,6 +1168,11 @@ def render_ticket_flow(client):
                                 st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                                 st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
                                 _tk_clear_geo_confirmation()
+                                st.session_state.tk_geo_link_note = (
+                                    f"ℹ️ That link had no coordinates of its own - geocoded its place "
+                                    f"name instead ({tk_url_geo.get('name') or 'match found'}). "
+                                    f"Double-check it above before confirming."
+                                ) if tk_url_geo.get("source") == "geocoded from link" else None
                                 st.rerun()
                             else:
                                 st.error(tk_url_geo["error"])
@@ -1202,8 +1216,9 @@ def render_ticket_flow(client):
                         "destination.</div>",
                         unsafe_allow_html=True
                     )
-                    st.caption("Search for the correct location below (easier than looking up exact "
-                              "coordinates), or enter coordinates manually if you already have them.")
+                    st.caption("Search for the correct location below, or paste a Google Maps link - "
+                              "manual coordinate entry isn't needed any more, the link (or its place "
+                              "name, if the link itself has none) covers that.")
 
                     tk_geo_search_query2 = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key="tk_geo_search_query2")
                     if st.button("🔎 Search", key="tk_geo_search_btn2"):
@@ -1248,31 +1263,15 @@ def render_ticket_flow(client):
                             st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
                             st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
                             _tk_clear_geo_confirmation()
+                            st.session_state.tk_geo_link_note = (
+                                f"ℹ️ That link had no coordinates of its own - geocoded its place "
+                                f"name instead ({tk_url_geo2.get('name') or 'match found'}). "
+                                f"Double-check it above before confirming."
+                            ) if tk_url_geo2.get("source") == "geocoded from link" else None
                             st.rerun()
                         else:
                             st.error(tk_url_geo2["error"])
 
-                    st.markdown("**Or enter coordinates manually:**")
-                    gcol1, gcol2 = st.columns(2)
-                    with gcol1:
-                        manual_lat = st.number_input("Latitude", value=None, format="%.6f", key=flow_widget_key("tk", "manual_lat"), placeholder="e.g. 27.394900")
-                    with gcol2:
-                        manual_lng = st.number_input("Longitude", value=None, format="%.6f", key=flow_widget_key("tk", "manual_lng"), placeholder="e.g. 33.678400")
-                    manual_geo_ready = manual_lat is not None and manual_lng is not None and not (manual_lat == 0 and manual_lng == 0)
-                    if manual_lat == 0 and manual_lng == 0:
-                        st.caption("⚠️ 0, 0 is a real point in the ocean, not a valid location - enter real coordinates.")
-                    if st.button("📍 Use these coordinates & rebuild payload", key="tk_use_manual_geo", disabled=not manual_geo_ready):
-                        data["manual_latitude"] = manual_lat
-                        data["manual_longitude"] = manual_lng
-                        pre_config = TicketHumanPreConfig(
-                            supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                            currency=currency, modality_code=modality_code, on_request=on_request,
-                            days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                        )
-                        st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                        st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                        _tk_clear_geo_confirmation()
-                        st.rerun()
             else:
                 st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "
                         "of its own (geolocation lives on the main ticket only) - nothing to confirm here.")

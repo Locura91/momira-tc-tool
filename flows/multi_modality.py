@@ -37,9 +37,9 @@ from app import (
     ALL_WEEKDAYS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES, _clean_modality_code,
     _clear_batch_widget_state, _fetch_url_text_safe, _modality_code_suspicious,
     apply_clarify_changes, clarify_supplier_id, fetched_tour_matches_code,
-    remember_clarification, remember_memory_panel, render_clarify_result,
-    render_house_rule_shortcut, render_skip_item_button, reset_stale_editable_field_widgets,
-    show_publish_error, try_code_variants,
+    remember_clarification, remember_memory_panel, render_candidate_filter,
+    render_clarify_result, render_house_rule_shortcut, render_skip_item_button,
+    reset_stale_editable_field_widgets, show_publish_error, try_code_variants,
 )
 
 
@@ -126,6 +126,7 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                   "Edit codes/hints as needed, or add more rows manually.")
 
         candidates = st.session_state.mm_candidates
+        render_candidate_filter(candidates, "mm", "modality")
         for i, cand in enumerate(candidates):
             ccol1, ccol2, ccol3 = st.columns([1, 3, 3])
             with ccol1:

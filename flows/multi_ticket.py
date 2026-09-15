@@ -52,10 +52,10 @@ from app import (
     _warn_stale_images, apply_clarify_changes, check_code_availability,
     check_modality_code_availability, clarify_supplier_id, floor_start_date_for_new_data,
     get_existing_ticket_codes, mark_code_as_taken, remember_clarification,
-    remember_memory_panel, render_clarify_result, render_house_rule_shortcut,
-    render_publish_blockers, render_skip_item_button, render_ticket_language_options,
-    reset_child_age_band_widgets, reset_stale_editable_field_widgets, show_publish_error,
-    with_learned_guidance,
+    remember_memory_panel, render_candidate_filter, render_clarify_result,
+    render_house_rule_shortcut, render_publish_blockers, render_skip_item_button,
+    render_ticket_language_options, reset_child_age_band_widgets,
+    reset_stale_editable_field_widgets, show_publish_error, with_learned_guidance,
 )
 
 
@@ -244,6 +244,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                       "becomes its own separate Ticket. Untick any row you don't actually want. For each "
                       "ticked row, fill in the two code fields on the right (hover the ⓘ next to each for "
                       "what it means).")
+            render_candidate_filter(candidates, "mt", "excursion")
 
         for i, cand in enumerate(candidates):
             cand.setdefault("modality_name", cand.get("modality_code", "Standard"))
@@ -559,11 +560,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
                     "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
-                    "location. Search below or enter coordinates manually.</div>",
+                    "location. Search below, or paste a Google Maps link.</div>",
                     unsafe_allow_html=True
                 )
 
             with st.expander("🔍 Search for a better match / fix this location", expanded=not mt_geo.get("valid")):
+                if current.get("geo_link_note"):
+                    st.info(current["geo_link_note"])
+                    current["geo_link_note"] = None
                 mt_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mt_city), key=f"mt_geo_query_{idx}")
                 if st.button("🔎 Search", key=f"mt_geo_search_btn_{idx}"):
                     with st.spinner("Searching..."):
@@ -595,22 +599,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         data["manual_longitude"] = mt_url_geo["longitude"]
                         data["manual_coords_for_city"] = mt_city
                         _mt_clear_geo_confirmation(current, idx)
+                        current["geo_link_note"] = (
+                            f"ℹ️ That link had no coordinates of its own - geocoded its place name "
+                            f"instead ({mt_url_geo.get('name') or 'match found'}). Double-check it "
+                            f"above before confirming."
+                        ) if mt_url_geo.get("source") == "geocoded from link" else None
                         st.rerun()
                     else:
                         st.error(mt_url_geo["error"])
-
-                st.markdown("**Or enter coordinates manually:**")
-                mgcol1, mgcol2 = st.columns(2)
-                with mgcol1:
-                    mt_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mt_geo_manlat_{idx}", placeholder="e.g. 27.394900")
-                with mgcol2:
-                    mt_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mt_geo_manlng_{idx}", placeholder="e.g. 33.678400")
-                if st.button("📍 Use these coordinates", key=f"mt_geo_manual_btn_{idx}", disabled=mt_man_lat is None or mt_man_lng is None):
-                    data["manual_latitude"] = mt_man_lat
-                    data["manual_longitude"] = mt_man_lng
-                    data["manual_coords_for_city"] = mt_city
-                    _mt_clear_geo_confirmation(current, idx)
-                    st.rerun()
 
             current["geo_confirmed"] = st.checkbox(
                 "✅ I've checked this location and it's correct for this ticket",
@@ -1510,6 +1506,8 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             for item in existing_items if (item.get("code") or "").strip()
         }
 
+        render_candidate_filter(candidates, "mtu", "ticket")
+
         for i, cand in enumerate(candidates):
             if "target_ticket_code" not in cand:
                 # CONFIRMED PRODUCT-OWNER RULE (2026-09-08): "Same codes - direct match" is the
@@ -1814,11 +1812,14 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                 st.markdown(
                     "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
                     "border-radius:4px;'>❌ Geolocation NOT resolved - the City name may not match a known "
-                    "location. Search below or enter coordinates manually.</div>",
+                    "location. Search below, or paste a Google Maps link.</div>",
                     unsafe_allow_html=True
                 )
 
             with st.expander("🔍 Search for a better match / fix this location", expanded=not mtu_geo.get("valid")):
+                if current.get("geo_link_note"):
+                    st.info(current["geo_link_note"])
+                    current["geo_link_note"] = None
                 mtu_geo_query = st.text_input("Search for a location", value=_geo_search_default(client, mtu_city), key=f"mtu_geo_query_{idx}")
                 if st.button("🔎 Search", key=f"mtu_geo_search_btn_{idx}"):
                     with st.spinner("Searching..."):
@@ -1848,22 +1849,14 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                         data["manual_longitude"] = mtu_url_geo["longitude"]
                         data["manual_coords_for_city"] = mtu_city
                         _mtu_clear_geo_confirmation(current, idx)
+                        current["geo_link_note"] = (
+                            f"ℹ️ That link had no coordinates of its own - geocoded its place name "
+                            f"instead ({mtu_url_geo.get('name') or 'match found'}). Double-check it "
+                            f"above before confirming."
+                        ) if mtu_url_geo.get("source") == "geocoded from link" else None
                         st.rerun()
                     else:
                         st.error(mtu_url_geo["error"])
-
-                st.markdown("**Or enter coordinates manually:**")
-                mgcol1, mgcol2 = st.columns(2)
-                with mgcol1:
-                    mtu_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key=f"mtu_geo_manlat_{idx}", placeholder="e.g. 27.394900")
-                with mgcol2:
-                    mtu_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key=f"mtu_geo_manlng_{idx}", placeholder="e.g. 33.678400")
-                if st.button("📍 Use these coordinates", key=f"mtu_geo_manual_btn_{idx}", disabled=mtu_man_lat is None or mtu_man_lng is None):
-                    data["manual_latitude"] = mtu_man_lat
-                    data["manual_longitude"] = mtu_man_lng
-                    data["manual_coords_for_city"] = mtu_city
-                    _mtu_clear_geo_confirmation(current, idx)
-                    st.rerun()
 
             current["geo_confirmed"] = st.checkbox(
                 "✅ I've checked this location and it's correct for this ticket",

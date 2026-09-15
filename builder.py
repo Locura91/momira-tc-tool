@@ -2266,6 +2266,23 @@ def build_closed_tour_payloads(
         ),
     }
 
+def _resolve_ticket_duration(duration_raw: Any, duration_type_raw: Any) -> tuple:
+    """CONFIRMED REAL BUG (product owner, 2026-09-15): "Half day cannot be 0,5 days, travel c
+    translates it to 4 days - if half day, just leave estimated duration empty." A fractional
+    "DAYS" duration (0.5 = half a day) sent to Travel Compositor gets misinterpreted on their
+    side and comes back as 4 whole days - there is no unit TC accepts that means "half a day",
+    so per the product owner's own instruction the fix is to send nothing (the schema's own
+    duration=0.0/durationType="HOURS" defaults, which the UI/API treat as "not set") rather than
+    a fractional day count. Only DAYS is affected - a fractional HOURS value (e.g. 1.5 hours) is
+    a real, unambiguous duration and is left untouched.
+    """
+    duration = _safe_float(duration_raw, fallback=0.0)
+    duration_type = duration_type_raw or "HOURS"
+    if duration_type == "DAYS" and duration % 1 != 0:
+        return 0.0, "HOURS"
+    return duration, duration_type
+
+
 def build_ticket_payloads(
     pre_config: TicketHumanPreConfig,
     extracted_ticket_data: Dict[str, Any],
@@ -2425,28 +2442,22 @@ def build_ticket_payloads(
         # defaults to the Modality's own window instead of being dropped, and a supplement whose own
         # dates reach outside that window gets clipped into it.
         #
-        # REVERSED IN PART (2026-08-25, CONFIRMED REAL INCIDENT): "different languages are always a
-        # problem within creating a ticket. Travel C logic would add every single language up and
-        # the price would be too high and absolutely wrong... other languages must have other
-        # modalities." A priced CHOICE row (is_priced_choice=True - the human ticks "Needs own
-        # Modality?" in the editor, or the AI flags it at extraction) is a different product, not a
-        # date-based change on THIS Modality, and ticket creation still only ever publishes one
-        # Modality - so it must NOT reach supplements_list, where it would stack onto the base price
-        # as if it were just another date-window surcharge. It's excluded here and named out loud
-        # (excluded_language_choice_extras below) instead of silently dropped, same "never silent"
-        # pattern as _ignored_ticket_supplements right below.
+        # REVERSED (2026-09-15, CONFIRMED PRODUCT-OWNER DECISION): "When Ticket creation and
+        # Supplement says: Needs own Modality, we can ignore that information - we want to make
+        # the app simple and handy for humans in the future." The "Needs own Modality?"
+        # flag/checkbox (is_priced_choice) - and the whole "exclude priced-choice extras from
+        # publish" behaviour it drove (2026-08-25 incident fix, see git history for the old
+        # reasoning) - is retired: every modality_supplements row is now published as a dated
+        # Ticket supplement regardless of is_priced_choice, and nothing excludes or reports rows
+        # separately anymore. is_priced_choice may still be present on old saved drafts; it is
+        # simply ignored, never read.
         _modality_start = start_date_or_today(extracted_ticket_data.get("start_date"))
         _modality_end = end_date_iso(extracted_ticket_data.get("end_date"))
         _all_modality_supplements = [
             s for s in (extracted_ticket_data.get("modality_supplements") or []) if isinstance(s, dict)
         ]
-        _dated_modality_supplements = [s for s in _all_modality_supplements if not s.get("is_priced_choice")]
-        excluded_language_choice_extras = [
-            str(s.get("name") or "").strip() for s in _all_modality_supplements if s.get("is_priced_choice")
-        ]
-        excluded_language_choice_extras = [n for n in excluded_language_choice_extras if n]
         supplements_list = build_ticket_supplement_vos(
-            _dated_modality_supplements, _modality_start, _modality_end)
+            _all_modality_supplements, _modality_start, _modality_end)
 
         # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
         # an End date earlier than today's date." A dated supplement (a season, a holiday
@@ -2611,8 +2622,8 @@ def build_ticket_payloads(
             childTaxesAmount=_safe_float(extracted_ticket_data.get("child_taxes_amount", 0)),
             infantTaxesAmount=_safe_float(extracted_ticket_data.get("infant_taxes_amount", 0)),
             daysAvailableBeforeRelease=effective_release_days,
-            duration=_safe_float(extracted_ticket_data.get("duration", 0)),
-            durationType=extracted_ticket_data.get("duration_type", "HOURS"),
+            **dict(zip(("duration", "durationType"), _resolve_ticket_duration(
+                extracted_ticket_data.get("duration", 0), extracted_ticket_data.get("duration_type", "HOURS")))),
             cancellationRanges=ticket_cancellation_ranges,
             meetingPoints=meeting_points_out,
             active=False,  # LOCKED default - same confirmed workflow as ClosedTour applies
@@ -2780,8 +2791,8 @@ def build_ticket_payloads(
                 2, 12))),
             languages=_ticket_languages,
             timeTables=time_tables_list,
-            duration=_safe_float(extracted_ticket_data.get("duration", 0)),
-            durationType=extracted_ticket_data.get("duration_type", "HOURS"),
+            **dict(zip(("duration", "durationType"), _resolve_ticket_duration(
+                extracted_ticket_data.get("duration", 0), extracted_ticket_data.get("duration_type", "HOURS")))),
         )
         ticket_option_payload = ticket_option.dict()
     except ValidationError as e:
@@ -2798,11 +2809,12 @@ def build_ticket_payloads(
         "ticket_option_error": ticket_option_error,
         # Named out loud rather than dropped in silence - see the supplements block above.
         "ignored_ticket_supplements": [n for n in _ignored_ticket_supplements if n],
-        # CONFIRMED REAL INCIDENT (2026-08-25): priced-choice rows (a foreign-language guide,
-        # a vehicle upgrade - see the "Needs own Modality?" comment above supplements_list)
-        # excluded from THIS Modality's price, named out loud so the human sets each one up as
-        # its own Modality afterward instead of it silently vanishing.
-        "excluded_language_choice_extras": excluded_language_choice_extras,
+        # RETIRED (2026-09-15): "Needs own Modality?" / is_priced_choice no longer excludes
+        # anything from supplements_list (see the comment above supplements_list), so there is
+        # nothing left to report here. Kept as an always-empty list rather than removed outright,
+        # so any caller still reading this key (none found in this codebase, but a safety margin
+        # for anything outside it) degrades to "nothing excluded" instead of a KeyError.
+        "excluded_language_choice_extras": [],
         # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
         # an End date earlier than today's date." Blocks publish via render_publish_blockers
         # (app.py) - see the comment above supplements_list for the full rule.

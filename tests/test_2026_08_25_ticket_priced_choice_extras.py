@@ -11,11 +11,17 @@ language guide, a Seat-in-Coach/vehicle upgrade - a different product, not a dat
 one undifferentiated list. Publishing a priced-choice row as a supplement let Travel Compositor
 stack its price onto the base modality as if it were just another date-window extra.
 
-Fix: every modality_supplements entry now carries is_priced_choice (bool). build_ticket_payloads
-excludes is_priced_choice=True rows from what publishes on the Modality (build_ticket_supplement_vos
-never even sees them) and reports their names back as excluded_language_choice_extras, instead of
-silently stacking or silently dropping them - same "never silent" pattern as the pre-existing
-ignored_ticket_supplements field.
+The 2026-08-25 fix added an is_priced_choice (bool) flag - the "Needs own Modality?" checkbox -
+so build_ticket_payloads could exclude those rows from what publishes and report their names back
+as excluded_language_choice_extras.
+
+RETIRED (product owner, 2026-09-15): "When Ticket creation and Supplement says: Needs own Modality,
+we can ignore that information - we want to make the app simple and handy for humans in the
+future." is_priced_choice is no longer read anywhere - every modality_supplements row publishes
+onto the Modality, whatever kind of extra it is (see test_2026_09_15_needs_own_modality_retired.py
+for the exclusion-removed coverage). The same_price_language_includes_line tests below are
+unaffected - that is a different, still-active feature (same-price language options, not a priced
+choice extra).
 
 Second, related request: when a Modality's languages field carries 2+ same-price languages, Includes
 gets one deterministic line - "You can choose between X-speaking Guide or Y-speaking Guide" - built
@@ -59,80 +65,6 @@ def test_language_code_names_has_every_ticket_language():
     for code in ["EN", "FR", "SL", "PL", "DE", "SK", "HU", "NL", "ES", "TR",
                  "RU", "NO", "SV", "RO", "CS", "EL", "FI", "PT", "DA", "IT"]:
         assert code in LANGUAGE_CODE_NAMES
-
-
-# ---------------------------------------------------------------------------
-# build_ticket_payloads: priced-choice supplements excluded from the published Modality
-# ---------------------------------------------------------------------------
-
-def test_priced_choice_supplement_is_excluded_from_the_published_modality(fake_api_client):
-    data = minimal_ticket_data(start_date="2026-01-01", end_date="2026-12-31", modality_supplements=[
-        {"name": "French-speaking guide", "adult_price_supplement": 15, "children_price_supplement": 15,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-    ])
-    result = builder.build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    names = [s["translations"]["EN"]["name"] for s in result["ticket_option_payload"]["supplements"]]
-    assert "French-speaking guide" not in names
-    assert result["excluded_language_choice_extras"] == ["French-speaking guide"]
-
-
-def test_dated_non_choice_supplement_still_publishes_normally(fake_api_client):
-    data = minimal_ticket_data(start_date="2026-01-01", end_date="2026-12-31", modality_supplements=[
-        {"name": "Holiday Season Surcharge", "adult_price_supplement": 22.5, "children_price_supplement": 22.5,
-         "infant_price_supplement": 0, "start_date": "2025-12-24", "end_date": "2026-01-07",
-         "is_priced_choice": False},
-    ])
-    result = builder.build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    names = [s["translations"]["EN"]["name"] for s in result["ticket_option_payload"]["supplements"]]
-    assert "Holiday Season Surcharge" in names
-    assert result["excluded_language_choice_extras"] == []
-
-
-def test_a_mix_of_choice_and_dated_rows_splits_correctly(fake_api_client):
-    """The exact real scenario from the report: several language-guide rows (choice) alongside a
-    Holiday Season Surcharge (dated) on the same Modality."""
-    data = minimal_ticket_data(start_date="2026-01-01", end_date="2026-12-31", modality_supplements=[
-        {"name": "French-speaking guide", "adult_price_supplement": 15, "children_price_supplement": 15,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-        {"name": "Italian-speaking guide", "adult_price_supplement": 15, "children_price_supplement": 15,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-        {"name": "Spanish-speaking guide", "adult_price_supplement": 15, "children_price_supplement": 15,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-        {"name": "Russian-speaking guide", "adult_price_supplement": 15, "children_price_supplement": 15,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-        {"name": "Holiday Season Surcharge", "adult_price_supplement": 22.5, "children_price_supplement": 22.5,
-         "infant_price_supplement": 0, "start_date": "2025-12-24", "end_date": "2026-01-07",
-         "is_priced_choice": False},
-    ])
-    result = builder.build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    published_names = {s["translations"]["EN"]["name"] for s in result["ticket_option_payload"]["supplements"]}
-    assert published_names == {"Holiday Season Surcharge"}
-    assert set(result["excluded_language_choice_extras"]) == {
-        "French-speaking guide", "Italian-speaking guide", "Spanish-speaking guide", "Russian-speaking guide"}
-
-
-def test_missing_is_priced_choice_key_defaults_to_publishing_as_dated(fake_api_client):
-    """Backward compatible with older extracted/saved data that predates this field - absence
-    means false (a dated change), not an accidental exclusion."""
-    data = minimal_ticket_data(start_date="2026-01-01", end_date="2026-12-31", modality_supplements=[
-        {"name": "High Season", "adult_price_supplement": 10, "children_price_supplement": 10,
-         "infant_price_supplement": 0},
-    ])
-    result = builder.build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    names = [s["translations"]["EN"]["name"] for s in result["ticket_option_payload"]["supplements"]]
-    assert "High Season" in names
-    assert result["excluded_language_choice_extras"] == []
-
-
-def test_build_ticket_supplement_vos_itself_is_unchanged_and_unaware_of_is_priced_choice():
-    """The filter lives at the build_ticket_payloads call site, not inside build_ticket_supplement_vos
-    - existing direct callers/tests of that function are unaffected by this change."""
-    result = builder.build_ticket_supplement_vos([
-        {"name": "German guide", "adult_price_supplement": 10, "children_price_supplement": 10,
-         "infant_price_supplement": 0, "is_priced_choice": True},
-    ], "2026-01-01", "2026-12-31")
-    assert len(result) == 1
-    assert result[0].translations["EN"].name == "German guide"
 
 
 # ---------------------------------------------------------------------------

@@ -930,6 +930,9 @@ def render_hotel_flow(client):
         )
 
     with st.expander("🔍 Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
+        if st.session_state.get("hp_geo_link_note"):
+            st.info(st.session_state.hp_geo_link_note)
+            st.session_state.hp_geo_link_note = None
         hp_geo_default_query = (data.get("address") or {}).get("location_name") or data.get("hotelname") or ""
         hp_geo_query = st.text_input("Search for a location", value=hp_geo_default_query, key="hp_geo_query")
         if st.button("🔎 Search", key="hp_geo_search_btn"):
@@ -951,7 +954,9 @@ def render_hotel_flow(client):
 
         st.markdown("**Or paste a Google Maps link:**")
         st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
-                  "it here - the coordinates are read out of the link automatically.")
+                  "it here - the coordinates are read out of the link automatically. If the link "
+                  "itself has none (common for a mobile Share link), the place name in it is "
+                  "looked up instead - manual lat/long entry is no longer needed, this covers it.")
         hp_maps_url = st.text_input("Google Maps link", key="hp_geo_maps_url", placeholder="https://maps.google.com/...")
         if st.button("🔗 Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
             with st.spinner("Reading coordinates from the link..."):
@@ -960,21 +965,16 @@ def render_hotel_flow(client):
                 data["manual_latitude"] = hp_url_geo["latitude"]
                 data["manual_longitude"] = hp_url_geo["longitude"]
                 st.session_state.hp_geo_confirmed = False
+                # A message set here would be wiped by the rerun below before it's ever seen -
+                # stash it in session_state instead, shown once at the top of this expander.
+                st.session_state.hp_geo_link_note = (
+                    f"ℹ️ That link had no coordinates of its own - geocoded its place name instead "
+                    f"({hp_url_geo.get('name') or 'match found'}). Double-check the pin above looks "
+                    f"right before confirming."
+                ) if hp_url_geo.get("source") == "geocoded from link" else None
                 st.rerun()
             else:
                 st.error(hp_url_geo["error"])
-
-        st.markdown("**Or enter coordinates manually:**")
-        hgmcol1, hgmcol2 = st.columns(2)
-        with hgmcol1:
-            hp_man_lat = st.number_input("Latitude", value=data.get("manual_latitude"), format="%.6f", key="hp_geo_manlat", placeholder="e.g. 27.394900")
-        with hgmcol2:
-            hp_man_lng = st.number_input("Longitude", value=data.get("manual_longitude"), format="%.6f", key="hp_geo_manlng", placeholder="e.g. 33.678400")
-        if st.button("📍 Use these coordinates", key="hp_geo_manual_btn", disabled=hp_man_lat is None or hp_man_lng is None):
-            data["manual_latitude"] = hp_man_lat
-            data["manual_longitude"] = hp_man_lng
-            st.session_state.hp_geo_confirmed = False
-            st.rerun()
 
     # CONFIRMED REAL BUG (reported 2026-09-06): this used to pass BOTH `key="hp_geo_confirmed"`
     # AND `value=...` to the checkbox - unlike Ticket's own, already-proven tk_geo_confirmed

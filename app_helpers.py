@@ -34,6 +34,7 @@ import widget_state
 import masterdata_store
 import masterdata_matcher
 import hotel_automap
+import bulk_notes
 import platform_store
 import supplier_images
 import extraction_memory
@@ -1083,8 +1084,8 @@ def render_ticket_language_options(data, key_prefix):
     was extraction and the UI that never surfaced it, so every ticket silently published as
     English-only even when a document listed "English/German-speaking guide" as equal standard
     options. See ai_extractor.py's `languages` field rule for the extraction side (and how it's
-    kept distinct from a language that costs EXTRA, which needs its own Modality - see the
-    "Needs own Modality?" note below).
+    kept distinct from a language that costs EXTRA, which is entered as a priced supplement
+    instead - see "Supplements by dates" below).
 
     Editable here too, independent of what extraction found, since a human reading the source
     directly may catch a language the AI missed or want to add one the document didn't spell out
@@ -1105,9 +1106,7 @@ def render_ticket_language_options(data, key_prefix):
         format_func=lambda code: f"{code} — {LANGUAGE_CODE_NAMES.get(code, code)}",
         key=f"{key_prefix}_languages",
         help="A language that costs MORE than the base price is a different product, not a language "
-             "option here - enter it as a row under \"Supplements by dates\" below and tick "
-             "\"Needs own Modality?\" instead. It will be excluded from this Modality's price and "
-             "reported so you can set it up as its own Modality afterward.",
+             "option here - enter it as a row under \"Supplements by dates\" below instead.",
     )
     data["languages"] = chosen or ["EN"]
 
@@ -3007,11 +3006,13 @@ def _render_hotel_masterdata_step(client):
         st.rerun()
 
 
-def render_hotel_automap_review():
+def render_hotel_automap_review(client):
     """"Hotels awaiting automap" - the follow-up checklist for the one step of hotel creation that
     Travel Compositor's API cannot perform (product owner, 2026-09-13: "we must make sure that
     Automap with master is also set, so the hotel is not a duplicate in the travel compositor
-    surface").
+    surface"). Also offers a standalone manual search (see the expander at the bottom) so this can
+    be done for any hotel, published or not, at any time - not just the moment a brand-new hotel
+    is first created (see that section's own comment for the confirmed bug this fixes, 2026-09-16).
 
     This screen exists because of a confirmed API limitation, not a missing feature on our side:
     neither `ContractHotelDetailedVO` (POST/PUT /hotel/{supplierId}) nor the read-only "Web content
@@ -3072,6 +3073,131 @@ def render_hotel_automap_review():
                 when = datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M") if done else "—"
                 st.markdown(f"- **{entry.get('provider_code')}** — {entry.get('hotel_name') or ''} "
                             f"(marked done {when})")
+
+    # CONFIRMED BUG FIX (product owner, 2026-09-16): "the Hotel review for automap can't be done
+    # after the hotel has been published. If we cannot do it from the beginning, the button is
+    # unable." Before this, the ONLY way a hotel ever landed on the list above was going through
+    # the masterdata step at the moment of a brand-new hotel's creation (flows/hotel.py gates that
+    # step on `not existing_snapshot`) - an already-published hotel, or one created before this
+    # feature existed, or whose masterdata step was skipped, had no way back in at all. This
+    # section is a standalone entry point into the exact same search (masterdata_store /
+    # masterdata_matcher), reachable for ANY hotel at ANY time, that records straight into
+    # hotel_automap - independent of the create/update flow, so "do it later" is always possible.
+    st.markdown("---")
+    with st.expander("🔎 Search master data for a hotel (published or not)"):
+        st.caption(
+            "Check or set the automap for any hotel - already published, created before this "
+            "reminder existed, or whose masterdata step was skipped at the time. This never "
+            "writes to Travel Compositor - it only searches the local master-data copy and "
+            "records the result here as the reminder for the back-office step."
+        )
+        supplier_id = _ur_pick_momira_supplier(client, "ham_supplier")
+        if not supplier_id:
+            return
+        if st.button("📥 Load hotels from this supplier", key="ham_load_hotels"):
+            with st.spinner("Loading hotels..."):
+                records, err = bulk_notes.list_services(client, supplier_id, "Hotel")
+            if err and not records:
+                st.error(f"❌ Couldn't load hotels: {err}")
+            else:
+                if err:
+                    st.warning(f"⚠️ Some couldn't be loaded: {err}")
+                st.session_state.ham_hotels = records
+                st.session_state.ham_hotels_supplier = supplier_id
+                st.rerun()
+
+        hotels = st.session_state.get("ham_hotels")
+        if hotels and st.session_state.get("ham_hotels_supplier") == supplier_id:
+            if not hotels:
+                st.info("This supplier has no hotels.")
+                return
+            hotel_options = {
+                f"{h.get('hotelname') or '(unnamed)'} — {h.get('providerCode')}": h for h in hotels
+            }
+            picked_label = st.selectbox("Which hotel?", list(hotel_options.keys()), key="ham_hotel_pick")
+            picked = hotel_options[picked_label]
+            provider_code = picked.get("providerCode")
+            hotel_name = picked.get("hotelname") or ""
+
+            existing_entry = hotel_automap.get(supplier_id, provider_code)
+            if existing_entry:
+                status_word = "already marked mapped" if existing_entry.get("mapped_at") else "already on the pending list above"
+                st.info(f"This hotel is {status_word}.")
+
+            _render_hotel_automap_manual_search(client, supplier_id, provider_code, hotel_name)
+
+
+def _render_hotel_automap_manual_search(client, supplier_id, provider_code, hotel_name):
+    """The search/confirm widget behind the manual automap-review entry point above - same
+    underlying search (masterdata_store/masterdata_matcher) as _render_hotel_masterdata_step, but
+    standalone: its own session-state keys (never touches hp_masterdata_*, which belong to the
+    create-a-new-hotel flow and would corrupt an in-progress creation if reused here), and it
+    writes straight to hotel_automap.record_pending on a decision instead of feeding an
+    in-progress contract build."""
+    meta = masterdata_store.index_meta()
+    if not masterdata_store.index_is_usable():
+        st.warning("⚠️ No usable local copy of Travel Compositor's master data yet - sync it "
+                   "from the hotel creation screen first (Step 3 - Use Travel Compositor master "
+                   "data?), then come back here.")
+        return
+
+    giata_query = st.text_input(
+        "GIATA code (optional, exact match)", value="", key=f"ham_md_giata_{provider_code}")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        search_name = st.text_input("Hotel name to search for", value=hotel_name, key=f"ham_md_name_{provider_code}")
+    with col_b:
+        search_country = st.text_input("Country code (optional, e.g. EG)", value="", key=f"ham_md_country_{provider_code}", max_chars=2)
+
+    if st.button("🔎 Search master data", key=f"ham_md_search_{provider_code}",
+                 disabled=not (giata_query.strip() or search_name.strip())):
+        if "hp_md_index_cache" not in st.session_state:
+            with st.spinner("Loading local master-data index..."):
+                st.session_state.hp_md_index_cache = masterdata_store.load_index()
+        if giata_query.strip():
+            st.session_state[f"ham_md_candidates_{provider_code}"] = masterdata_matcher.find_by_giata_id(
+                giata_query, st.session_state.hp_md_index_cache)
+        else:
+            st.session_state[f"ham_md_candidates_{provider_code}"] = masterdata_matcher.find_candidates(
+                search_name, st.session_state.hp_md_index_cache, country_code=search_country or None)
+
+    candidates = st.session_state.get(f"ham_md_candidates_{provider_code}")
+    if candidates is not None:
+        if not candidates:
+            st.warning("No close matches found. Adjust the search above, or record this as "
+                       "checked-and-not-found below.")
+        else:
+            st.write(f"Found {len(candidates)} possible match(es):")
+            for i, cand in enumerate(candidates):
+                with st.container(border=True):
+                    cols = st.columns([4, 1])
+                    with cols[0]:
+                        giata_note = f" · GIATA {cand['giataId']}" if cand.get("giataId") else ""
+                        confidence = "exact GIATA match" if cand.get("name_score") is None \
+                            else f"{cand['score']*100:.0f}%"
+                        st.markdown(f"**{cand.get('name') or '(unnamed)'}**  \n"
+                                    f"Country: {cand.get('countryCode') or '—'}{giata_note} · "
+                                    f"Match confidence: {confidence}")
+                    with cols[1]:
+                        if st.button("Use this", key=f"ham_md_pick_{provider_code}_{i}"):
+                            hotel_automap.record_pending(
+                                supplier_id, provider_code, hotel_name=hotel_name,
+                                accommodation_id=cand.get("id"), giata_id=cand.get("giataId"),
+                                master_name=cand.get("name"))
+                            st.success(f"✅ Recorded — map this to accommodation `{cand.get('id')}` "
+                                      f"in Travel Compositor's back office.")
+                            st.rerun()
+
+    reason = st.text_input(
+        "Or: record as checked, nothing matches (say why)", value="",
+        key=f"ham_md_reason_{provider_code}",
+        placeholder="e.g. confirmed with the supplier this property isn't listed anywhere yet")
+    if st.button("Record as checked — no master record found", key=f"ham_md_skip_{provider_code}",
+                 disabled=not reason.strip()):
+        hotel_automap.record_pending(
+            supplier_id, provider_code, hotel_name=hotel_name, skip_reason=reason.strip())
+        st.success("✅ Recorded.")
+        st.rerun()
 
 
 def _render_hotel_price_audit_section(data, primary):

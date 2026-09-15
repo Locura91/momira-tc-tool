@@ -174,12 +174,18 @@ def test_hotel_geo_ok_requires_both_valid_and_confirmed():
     assert idx > 0
 
 
-def test_hotel_geolocation_section_offers_manual_entry_search_and_maps_link():
+def test_hotel_geolocation_section_offers_search_and_maps_link():
+    # SUPERSEDES the original 2026-09-06 version of this test, which also required a manual
+    # lat/long st.number_input pair. CONFIRMED PRODUCT-OWNER DECISION (2026-09-16): "we can
+    # remove the part, where the human can add manually longitude and latitude, if the google
+    # maps link works, the manual adding is not needed any more" - manual entry was removed from
+    # flows/hotel.py once parse_google_maps_url gained a geocode-the-place-name fallback for
+    # links that carry no coordinates of their own (see that function's own docstring).
     src = _read_app_py()
     idx = src.index("#### Geolocation")
     window = src[idx:idx + 4000]
-    assert 'st.number_input("Latitude"' in window
-    assert 'st.number_input("Longitude"' in window
+    assert 'st.number_input("Latitude"' not in window  # manual entry removed
+    assert 'st.number_input("Longitude"' not in window
     assert "geocode_search" in window
     assert "parse_google_maps_url" in window
     assert 'hp_geo_confirmed' in window
