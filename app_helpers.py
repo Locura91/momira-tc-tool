@@ -2163,15 +2163,17 @@ def ensure_return_candidates(candidates):
 
 
 def render_candidate_filter(candidates, key_prefix, noun):
-    """A search box and three bulk buttons above a long candidate list.
+    """Two bulk buttons - "Select all" / "Select none" - above a long candidate list.
 
     WHY: a real supplier rate sheet prices TWO services on every row - a Shuttle and a
     Private version of the same route - so a forty-route document detects as ~80 separate
-    products, all pre-ticked. A human who only wants the Private ones was left un-ticking
-    forty boxes by hand, which is both tedious and easy to get wrong by one.
+    products, all pre-ticked. A human who only wants a handful was left un-ticking dozens of
+    boxes by hand (or, the other way round, ticking dozens by hand after clearing them), which
+    is both tedious and easy to get wrong by one.
 
-    Matching is on the whole candidate (label, service name and both location hints), so
-    typing "private" isolates a service class and typing "luxor" isolates a destination.
+    SIMPLIFIED (product owner, 2026-09-16): "we must keep it simple. No text to be added, just
+    select all or unselect all." The original version of this also had a filter text box and a
+    third button that ticked every row matching a typed term. Retired - two buttons only.
 
     The widget keys are swept after a bulk action on purpose: a Streamlit checkbox with a
     fixed key ignores its `value=` argument on every render after the first, so setting
@@ -2182,33 +2184,18 @@ def render_candidate_filter(candidates, key_prefix, noun):
     total = len(candidates)
     chosen = sum(1 for c in candidates if c.get("selected"))
 
-    fcol1, fcol2, fcol3, fcol4 = st.columns([3, 1.4, 1.2, 1.2])
-    with fcol1:
-        term = st.text_input(f"Filter {noun}s", key=f"{key_prefix}_filter",
-                             placeholder="e.g. Private   ·   Shuttle   ·   Luxor",
-                             label_visibility="collapsed").strip().lower()
-
-    def _matches(cand):
-        haystack = " ".join(str(cand.get(k) or "") for k in
-                            ("label", "service_name", "departure_hint", "arrival_hint")).lower()
-        return term in haystack
-
     def _apply(fn):
         for cand in candidates:
             fn(cand)
         _clear_batch_widget_state([f"{key_prefix}_sel_"])
         st.rerun()
 
-    with fcol2:
-        if st.button("Keep only these", key=f"{key_prefix}_only", disabled=not term,
-                     use_container_width=True,
-                     help="Tick every row matching the filter and untick every other row."):
-            _apply(lambda c: c.__setitem__("selected", _matches(c)))
-    with fcol3:
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
         if st.button("Select all", key=f"{key_prefix}_all", use_container_width=True):
             _apply(lambda c: c.__setitem__("selected", True))
-    with fcol4:
-        if st.button("Clear all", key=f"{key_prefix}_none", use_container_width=True):
+    with bcol2:
+        if st.button("Select none", key=f"{key_prefix}_none", use_container_width=True):
             _apply(lambda c: c.__setitem__("selected", False))
 
     # Travel Compositor stores a route in ONE direction, and a "per way" rate sheet lists it
@@ -2252,11 +2239,7 @@ def render_candidate_filter(candidates, key_prefix, noun):
         st.success(f"Added {st.session_state.pop(f'{key_prefix}_returns_added')} return "
                    f"direction(s) to the list below.")
 
-    if term:
-        st.caption(f"{sum(1 for c in candidates if _matches(c))} of {total} row(s) match "
-                   f"“{term}”. **{chosen} currently ticked.**")
-    else:
-        st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
+    st.caption(f"**{chosen} of {total} ticked.** Only ticked rows are reviewed and published.")
 
 
 def with_learned_guidance(supplier_id, product_type, hint):
