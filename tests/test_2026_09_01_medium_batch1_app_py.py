@@ -434,19 +434,20 @@ def test_ctb_apply_button_is_disabled_while_the_policy_table_is_being_edited():
 
 
 # ======================================================================
-# 17. Supplier migration deactivating the original even without a new id
+# 17. Supplier migration for Transfer/Transport is a true in-place move, not create+deactivate
 # ======================================================================
-def test_transfer_migration_does_not_deactivate_the_original_when_create_returns_no_id():
-    # CONFIRMED (2026-09-10): this logic moved from app.py's inline Transfer-only migration
-    # code into supplier_migration.py's migrate_transfer, when the "Move to another Supplier"
-    # tool was generalized to all 5 product types (product owner: "this is not only for the
-    # transfer section, it must work for all services").
+def test_transfer_migration_is_a_single_in_place_update_not_create_then_deactivate():
+    # SUPERSEDES the original 2026-09-10 version of this test (which checked that a failed
+    # create-under-destination correctly skipped deactivating the original). CONFIRMED
+    # PRODUCT-OWNER CORRECTION (2026-09-16): "just exchanging the supplier and NOT creating new
+    # services... we strictly keep them separately." migrate_transfer no longer creates a new
+    # record at all - it does one PUT straight to the destination supplier's URL with the
+    # record's own (unchanged) id, per Travel Compositor's own Swagger for
+    # PUT /transfer/{supplierId} ("updates an existing transfer"). See supplier_migration.py's
+    # module docstring for the full reasoning.
     src = _read("supplier_migration.py")
-    idx = src.index('new_id = create_res.get("id") if isinstance(create_res, dict) else None')
-    window = src[idx:idx + 1200]
-    assert "if not new_id:" in window
-    assert "NOT deactivated" in window
-    # The guard must come BEFORE the deactivate call.
-    deactivate_idx = window.index('deactivate_payload = dict(record)')
-    guard_idx = window.index("if not new_id:")
-    assert guard_idx < deactivate_idx
+    idx = src.index("def migrate_transfer(")
+    window = src[idx:idx + 1500]
+    assert "client.update_transfer(dest_id, payload)" in window
+    assert "client.create_transfer(" not in window
+    assert "deactivate_payload" not in window

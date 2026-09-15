@@ -1,6 +1,6 @@
 """
-supplier_migration.py — recreates one supplier's services under a different supplier, then
-retires the originals, for all 5 product types.
+supplier_migration.py — moves one supplier's services to a different supplier, for all 5 product
+types.
 
 CONFIRMED REAL NEED (product owner, 2026-08-24): "If I want mass change the supplier A, like
 all Transfers from supplier must now be changed to supplier B." Extended (product owner,
@@ -8,20 +8,32 @@ all Transfers from supplier must now be changed to supplier B." Extended (produc
 app.py's render_supplier_migration_flow used to call straight into inline Transfer-only logic;
 that logic now lives here as migrate_transfer, alongside a migrate_* for every other type.
 
-WHY THIS IS RECREATE-THEN-RETIRE, NOT A "MOVE": Travel Compositor's supplierId is part of every
-product's URL (GET/POST/PUT /<type>/{supplierId}[/...]), never a field on the payload itself -
-so a product's supplier is fixed for its whole life once created, and there is no API operation
-that moves one. The only way to "move" one is: fetch it whole from the source supplier, recreate
-an identical copy under the destination supplier (Travel Compositor always assigns the copy a
-brand-new identity - the old one can never be reused or transferred), then retire the ORIGINAL
-so the same thing can't be booked/sold under two suppliers at once.
+TRANSFER / TRANSPORT: TRUE IN-PLACE MOVE, NOT A RECREATE (changed 2026-09-16). CONFIRMED
+PRODUCT-OWNER CORRECTION (2026-09-16): "just exchanging the supplier and NOT creating new
+services. We are within updating existing services and we are never creating new services, as
+we strictly keep them separately." Chris pasted Travel Compositor's own Swagger for
+`PUT /transport/{supplierId}` - the endpoint is literally described as "Updates an existing
+transport", supplierId is a URL path parameter (this IS the destination), and the record's own
+`id` stays in the request body pointing at the SAME record. So migrate_transfer/migrate_transport
+now do exactly one call: PUT the record, unchanged id, straight to the DESTINATION supplier's
+URL (client.update_transfer/update_transport with dest_id). No create call, no new id, no
+separate deactivate-the-original step - there is nothing left under the source supplier to
+retire, because the record itself now belongs to the destination supplier. The only change
+still applied to the payload before sending is `_strip_nested_null_ids` (still needed - see that
+function's docstring; unrelated to which supplier owns the record).
+
+NOTE: this was NOT independently verified against a live call before shipping (no API access
+from this environment) - it rests on Chris's read of the Swagger and his explicit instruction.
+Recommend testing on ONE real route first (e.g. re-run the "Cairo - Alexandria" Transport that
+originally failed) before trusting this for a full-supplier batch move.
+
+Ticket / ClosedTour / Hotel below are UNCHANGED (still recreate-then-retire) - they were not
+part of this correction and have their own reasons (documented per-type below) for needing a
+multi-call create sequence rather than a single in-place update.
 
 RECREATE MIRRORS THE REAL CREATE FLOW FOR EACH TYPE - not a shortcut invented for this tool.
 Where a type's real create flow (already live elsewhere in this app) needs more than one call,
 migrating it needs exactly the same sequence, in the same order, for the same reason:
-  * Transfer / Transport: one parent record, plus (Transport only) one Option per occupancy
-    bracket. No follow-up call needed - neither type validates its own child-code list against
-    already-existing options at create time.
   * Ticket / ClosedTour: CREATE BARE (active=True, modalityCodes/supplements cleared) -> CREATE
     EVERY OPTION/MODALITY (the source's own code is reused - option/modality codes are scoped to
     the parent, not global, so the same string is safe to reuse under a brand-new parent) ->
@@ -112,128 +124,64 @@ def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------
-# Transfer - unchanged from the original 2026-08-24 tool, just extracted into its own function.
+# Transfer - TRUE in-place move (2026-09-16, see module docstring) - one PUT straight to the
+# destination supplier's URL, same record id, nothing created or deactivated.
 # ----------------------------------------------------------------------
 def migrate_transfer(client, source_id: str, dest_id: str, record: Dict[str, Any],
                      transfer_matcher=None) -> Dict[str, Any]:
     dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
     arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
     name = record.get("name") or f"{dep} - {arr}".strip(" -") or record.get("id") or "(unnamed transfer)"
+    moved_id = record.get("id")
 
-    create_payload = dict(record)
-    create_payload["id"] = None
-    create_payload["active"] = True
-    _strip_nested_null_ids(create_payload)  # see that function's docstring - fixes the confirmed
-    # real "null PK...find operation" create failure (2026-09-16)
+    payload = dict(record)
+    _strip_nested_null_ids(payload)  # see that function's docstring - fixes the confirmed real
+    # "null PK...find operation" failure (2026-09-16) - unrelated to which supplier owns it
     try:
-        create_res = client.create_transfer(dest_id, create_payload)
+        res = client.update_transfer(dest_id, payload)
     except Exception as e:
-        return {"name": name, "ok": False, "stage": "create", "detail": friendly_error_message(e)}
-    if isinstance(create_res, dict) and "error" in create_res:
-        return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
-    new_id = create_res.get("id") if isinstance(create_res, dict) else None
-    if not new_id:
-        return {"name": name, "ok": False, "stage": "create",
-                "detail": "the create call didn't return an id for the new record - the "
-                          "original was NOT deactivated, nothing was lost."}
-
-    deactivate_payload = dict(record)
-    deactivate_payload["active"] = False
-    try:
-        deact_res = client.update_transfer(source_id, deactivate_payload)
-    except Exception as e:
-        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                "detail": f"created as `{new_id}`, but couldn't deactivate the original: {friendly_error_message(e)}"}
-    if isinstance(deact_res, dict) and "error" in deact_res:
-        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                "detail": f"created as `{new_id}`, but couldn't deactivate the original: {_err_detail(deact_res)}"}
+        return {"name": name, "ok": False, "stage": "move", "detail": friendly_error_message(e)}
+    if isinstance(res, dict) and "error" in res:
+        return {"name": name, "ok": False, "stage": "move", "detail": _err_detail(res)}
 
     if transfer_matcher is not None:
         try:
             if dep and arr:
                 transfer_matcher.forget_transfer_id(source_id, dep, arr)
-                transfer_matcher.remember_transfer_id(dest_id, dep, arr, new_id)
+                transfer_matcher.remember_transfer_id(dest_id, dep, arr, moved_id)
         except Exception:
             pass
 
-    return {"name": name, "ok": True, "stage": "done", "new_id": new_id}
+    return {"name": name, "ok": True, "stage": "done", "new_id": moved_id, "moved_in_place": True}
 
 
 # ----------------------------------------------------------------------
-# Transport - parent + one Option per occupancy bracket, no finalize call needed (mirrors the
-# real Transport publish flow in app.py - "STAGE 1"/"STAGE 2", which never declares optionCodes
-# back after the fact either).
+# Transport - TRUE in-place move (2026-09-16, see module docstring) - one PUT straight to the
+# destination supplier's URL, same record id, options move with it (they're keyed to the
+# transport's own id, not the supplier), nothing created or deactivated.
 # ----------------------------------------------------------------------
 def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, Any]) -> Dict[str, Any]:
     name = record.get("name") or record.get("id") or "(unnamed transport)"
-    source_transport_id = record.get("id")
-    option_codes = list(record.get("optionCodes") or [])
+    moved_id = record.get("id")
 
-    create_payload = dict(record)
-    create_payload["id"] = None
-    create_payload["active"] = True
-    create_payload["optionCodes"] = []
-    _strip_nested_null_ids(create_payload)  # same confirmed "null PK...find operation" create
-    # failure as migrate_transfer - applied here too as a preventive fix, same wholesale-copy
-    # shape and same risk, even though it was only actually reported failing for Transfer.
+    payload = dict(record)
+    _strip_nested_null_ids(payload)  # see that function's docstring - fixes the confirmed real
+    # "null PK...find operation" failure (2026-09-16) - unrelated to which supplier owns it
     # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, cancellation_bulk_transport.py):
     # a whole-record Transport write built from a raw GET response, same as this one, failed
     # every row with "updateTransport.transport.airlineCode: must not be null" - airlineCode is
     # REQUIRED by Travel Compositor's own Swagger even though a real GET response for a
-    # non-flight Transport routinely omits it or returns null. Applies equally to a CREATE here
-    # (same ContractTransportVO schema) as it does to the PUT below - see
-    # bulk_notes.normalize_for_put's own docstring for the full history.
-    normalize_for_put(create_payload, "Transport")
+    # non-flight Transport routinely omits it or returns null. See bulk_notes.normalize_for_put's
+    # own docstring for the full history.
+    normalize_for_put(payload, "Transport")
     try:
-        create_res = client.create_transport(dest_id, create_payload)
+        res = client.update_transport(dest_id, payload)
     except Exception as e:
-        return {"name": name, "ok": False, "stage": "create", "detail": friendly_error_message(e)}
-    if isinstance(create_res, dict) and "error" in create_res:
-        return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
-    new_id = create_res.get("id") if isinstance(create_res, dict) else None
-    if not new_id:
-        return {"name": name, "ok": False, "stage": "create",
-                "detail": "the create call didn't return an id - the original was NOT "
-                          "deactivated, nothing was lost."}
+        return {"name": name, "ok": False, "stage": "move", "detail": friendly_error_message(e)}
+    if isinstance(res, dict) and "error" in res:
+        return {"name": name, "ok": False, "stage": "move", "detail": _err_detail(res)}
 
-    option_failures = []
-    for code in option_codes:
-        try:
-            option = client.get_transport_option(source_id, source_transport_id, code)
-        except Exception as e:
-            option_failures.append(f"{code} (couldn't read: {friendly_error_message(e)})")
-            continue
-        if not isinstance(option, dict) or "error" in option:
-            option_failures.append(f"{code} (couldn't read: {_err_detail(option)})")
-            continue
-        try:
-            opt_res = client.create_transport_option(dest_id, new_id, option)
-        except Exception as e:
-            option_failures.append(f"{code} ({friendly_error_message(e)})")
-            continue
-        if isinstance(opt_res, dict) and "error" in opt_res:
-            option_failures.append(f"{code} ({_err_detail(opt_res)})")
-
-    if option_failures:
-        return {"name": name, "ok": "partial", "stage": "options", "new_id": new_id,
-                "detail": f"created as `{new_id}`, but {len(option_failures)} bracket(s) failed "
-                          f"and the original was NOT deactivated: {'; '.join(option_failures)}"}
-
-    deactivate_payload = dict(record)
-    deactivate_payload["active"] = False
-    normalize_for_put(deactivate_payload, "Transport")  # same airlineCode fix as the create above
-    try:
-        deact_res = client.update_transport(source_id, deactivate_payload)
-    except Exception as e:
-        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                "detail": f"created as `{new_id}` with all brackets, but couldn't deactivate the "
-                          f"original: {friendly_error_message(e)}"}
-    if isinstance(deact_res, dict) and "error" in deact_res:
-        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
-                "detail": f"created as `{new_id}` with all brackets, but couldn't deactivate the "
-                          f"original: {_err_detail(deact_res)}"}
-
-    return {"name": name, "ok": True, "stage": "done", "new_id": new_id}
+    return {"name": name, "ok": True, "stage": "done", "new_id": moved_id, "moved_in_place": True}
 
 
 # ----------------------------------------------------------------------

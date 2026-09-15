@@ -84,8 +84,12 @@ def render_supplier_migration_flow(client):
         st.caption(f"{len(ok)} moved cleanly · {len(partial)} partially done (needs a "
                   f"look) · {len(failed)} failed outright.")
         for r in ok:
-            st.success(f"✅ **{r['name']}** — now `{r.get('new_id')}` under the new supplier; "
-                      f"original retired.")
+            if r.get("moved_in_place"):
+                st.success(f"✅ **{r['name']}** — moved to the new supplier (same id "
+                          f"`{r.get('new_id')}`), nothing else to do.")
+            else:
+                st.success(f"✅ **{r['name']}** — now `{r.get('new_id')}` under the new supplier; "
+                          f"original retired.")
         for r in partial:
             st.warning(f"⚠️ **{r['name']}** — {r['detail']}")
         for r in failed:
@@ -178,18 +182,25 @@ def render_supplier_migration_flow(client):
         return
 
     st.subheader("3 — Move")
-    _SM_RETIRE_NOTE = {
-        "Transfer": "switches the same number OFF (active = False) under the source supplier",
-        "Transport": "switches the same number OFF (active = False) under the source supplier",
-        "Ticket": "switches the same number OFF (active = False) under the source supplier",
-        "ClosedTour": "switches the same number OFF (active = False) under the source supplier",
-        "Hotel": "blocks every future date on the original instead - Travel Compositor has no "
-                 "active flag or delete endpoint for Hotel at all, so this is the only way to "
-                 "stop it being booked (see supplier_migration.py's migrate_hotel docstring)",
-    }
-    st.warning(f"⚠️ This creates {len(selected_indices)} new {product_type}(s) under the "
-              f"destination supplier, and {_SM_RETIRE_NOTE[product_type]}. The new records get "
-              f"brand-new Travel Compositor identities - the old ones cannot be reused.")
+    if product_type in ("Transfer", "Transport"):
+        # CONFIRMED PRODUCT-OWNER CORRECTION (2026-09-16): "just exchanging the supplier and NOT
+        # creating new services... we strictly keep them separately." See supplier_migration.py's
+        # module docstring for the full reasoning - this is now a true in-place move (one PUT
+        # straight to the destination supplier, same Travel Compositor id).
+        st.warning(f"⚠️ This moves {len(selected_indices)} {product_type}(s) directly to the "
+                  f"destination supplier - same Travel Compositor id(s), nothing new is created "
+                  f"and there's nothing left to retire under the source supplier.")
+    else:
+        _SM_RETIRE_NOTE = {
+            "Ticket": "switches the same number OFF (active = False) under the source supplier",
+            "ClosedTour": "switches the same number OFF (active = False) under the source supplier",
+            "Hotel": "blocks every future date on the original instead - Travel Compositor has no "
+                     "active flag or delete endpoint for Hotel at all, so this is the only way to "
+                     "stop it being booked (see supplier_migration.py's migrate_hotel docstring)",
+        }
+        st.warning(f"⚠️ This creates {len(selected_indices)} new {product_type}(s) under the "
+                  f"destination supplier, and {_SM_RETIRE_NOTE[product_type]}. The new records get "
+                  f"brand-new Travel Compositor identities - the old ones cannot be reused.")
     if product_type == "Hotel":
         st.caption("Hotel migration also recreates every room, meal plan, offer, supplement and "
                   "rate one at a time (Travel Compositor assigns each a brand-new code - rates "
