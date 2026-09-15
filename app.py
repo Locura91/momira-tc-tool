@@ -20,6 +20,27 @@ Reuses everything already built and tested:
     - ai_extractor.py     (raw text -> structured English data)
     - web_extractor.py    (URL -> structured data, incl. destination scanning)
 """
+# CONFIRMED REAL PRODUCTION BUG (2026-09-16, Streamlit Cloud deploy): Streamlit's script runner
+# executes this file as the top-level script (registered in sys.modules under its own runner
+# name, e.g. "__main__"), NOT as an importable module named "app". Every flows/*.py file split
+# out by the Phase 1 refactor does `from app import (...)` to pull back names still defined here
+# - under a plain `python -c "import app"` that's harmless (Python's import machinery registers
+# sys.modules["app"] BEFORE executing this file's body, precisely to support this exact
+# circular-import shape). Under Streamlit, no such "app" entry exists yet, so the FIRST
+# `from app import (...)` anywhere in flows/*.py instead triggers a brand-new, independent
+# import of this entire file under the name "app" - which starts re-executing app.py from the
+# top while the original run is still mid-way through, and that second run re-enters the same
+# `from flows.<module> import ...` line whose module is already (from the first run) stuck
+# partway through its own `from app import (...)` - raising exactly "ImportError: cannot import
+# name '<flow_function>' from partially initialized module 'flows.<module>' (most likely due to
+# a circular import)". Fix: alias "app" to whatever module this file is ACTUALLY running as, so
+# every `from app import (...)` elsewhere resolves against the SAME live namespace instead of
+# kicking off a second execution. Must run before any of this file's own `from app_helpers
+# import (...)` or `from flows.<module> import ...` lines - hence right at the top.
+import sys as _sys
+if __name__ in _sys.modules and "app" not in _sys.modules:
+    _sys.modules["app"] = _sys.modules[__name__]
+
 import json
 import re
 import copy
