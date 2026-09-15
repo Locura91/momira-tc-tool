@@ -16,6 +16,13 @@ Fix: every stop_sales prompt (there are 5 near-identical ones across ClosedTour/
 Modality extraction, plus the excursion-specific one) now explicitly states that a holiday/
 peak-period SURCHARGE is NOT itself evidence of a stop sale, and must not be duplicated into
 stop_sales just because a supplement or higher price applies during that window.
+
+REINFORCED (product owner, 2026-09-15, a live recurrence on EXC-073 "Dahab City and Bedouin
+Dinner" - the same conflation happened again despite the fix above): "When we have a supplement
+already added, no need to add stop sale. that is useless." Each of the 5 prompt blocks now also
+carries a second, more explicit CONFIRMED RULE sentence naming this exact real example and
+spelling out that adding a peak-period supplement for a date range and a stop_sales entry for
+that same range are contradictory outputs that must not both be produced.
 """
 import os
 import re
@@ -36,9 +43,12 @@ def test_every_stop_sales_prompt_warns_against_holiday_surcharge_conflation():
     matches = list(re.finditer(r"Empty list if genuinely none\.", src))
     assert len(matches) == 5  # all 5 stop_sales prompt blocks in this file
     for m in matches:
-        preceding = src[max(0, m.start() - 500):m.start()]
+        preceding = src[max(0, m.start() - 1200):m.start()]
         assert "holiday/peak-period SURCHARGE" in preceding
         assert "NOT a stop sale by itself" in preceding
+        # the 2026-09-15 reinforcement, added after this exact conflation recurred live on EXC-073
+        assert "no need to add stop sale. that is useless" in preceding
+        assert "are contradictory outputs for the same dates" in preceding
 
 
 def test_stop_sales_field_count_matches_modality_supplements_holiday_example_count():
