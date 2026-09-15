@@ -2175,36 +2175,56 @@ def render_candidate_filter(candidates, key_prefix, noun):
     select all or unselect all." The original version of this also had a filter text box and a
     third button that ticked every row matching a typed term. Retired - two buttons only.
 
-    The widget keys are swept after a bulk action on purpose: a Streamlit checkbox with a
-    fixed key ignores its `value=` argument on every render after the first, so setting
-    cand["selected"] alone would change the data and leave every box on screen showing its
-    old state - the confirmed failure that _clear_batch_widget_state exists for."""
+    CONFIRMED REAL BUG (product owner, 2026-09-16, live on a 116-row document): "Select none"
+    correctly updated the ticked-count caption to "0 of 116 ticked" but every checkbox on screen
+    still showed checked. Popping the "{key_prefix}_sel_" keys from session_state (via
+    _clear_batch_widget_state, the pattern this whole codebase otherwise relies on for
+    text/number widgets) relies on Streamlit treating an absent key as "uninitialized" and
+    falling back to the `value=` argument on the next render - which held up in this repo's own
+    test harness, but not on whatever Streamlit build is actually deployed with 116 real
+    checkboxes in a live browser. Fixed by not relying on that fallback at all: `_apply` now
+    WRITES the exact target boolean straight into st.session_state[f"{key_prefix}_sel_{i}"] for
+    every row before the rerun, which every Streamlit version honors unconditionally (a keyed
+    widget always displays st.session_state[key] once that key is set, full stop - no
+    "was this ever rendered before" ambiguity for popped-vs-never-set keys to get wrong)."""
     if len(candidates) < 2:
         return
     total = len(candidates)
     chosen = sum(1 for c in candidates if c.get("selected"))
 
-    def _apply(fn):
-        for cand in candidates:
-            fn(cand)
-        _clear_batch_widget_state([f"{key_prefix}_sel_"])
+    def _apply(new_value):
+        for i, cand in enumerate(candidates):
+            cand["selected"] = new_value
+            st.session_state[f"{key_prefix}_sel_{i}"] = new_value
         st.rerun()
 
     bcol1, bcol2 = st.columns(2)
     with bcol1:
         if st.button("Select all", key=f"{key_prefix}_all", use_container_width=True):
-            _apply(lambda c: c.__setitem__("selected", True))
+            _apply(True)
     with bcol2:
         if st.button("Select none", key=f"{key_prefix}_none", use_container_width=True):
-            _apply(lambda c: c.__setitem__("selected", False))
+            _apply(False)
 
     # Travel Compositor stores a route in ONE direction, and a "per way" rate sheet lists it
     # once - so selling the return leg means a second product per route. Sixteen routes is
     # sixteen more rows to type by hand, which is exactly the kind of work this screen exists
     # to remove. Added as candidates rather than silently doubling the queue, so the return
     # legs sit in the list and can be unticked or renamed like any other.
+    #
+    # CONFIRMED REAL BUG (product owner, 2026-09-16): "the button 'add the return direction for
+    # tickets' is absolutely useless. It would be more useful for transfers and transports, but
+    # not for tickets." A Ticket/Modality candidate has no departure_hint/arrival_hint at all -
+    # the button rendered anyway (it only checked whether anything was ticked, not whether any
+    # ticked row actually had a route to mirror) and, once clicked, did nothing every time,
+    # since the loop below already skipped every row lacking both hints. Fixed by gating the
+    # button itself on the same condition, so it simply doesn't appear on a screen where it
+    # could never add anything - Ticket/Modality batch screens never show it, Transfer/Transport
+    # screens are unaffected.
     ticked = [c for c in candidates if c.get("selected")]
-    if ticked and st.button(f"↔️ Add the return direction for the {len(ticked)} ticked route(s)",
+    routes_ticked = [c for c in ticked if str(c.get("departure_hint") or "").strip()
+                     and str(c.get("arrival_hint") or "").strip()]
+    if routes_ticked and st.button(f"↔️ Add the return direction for the {len(routes_ticked)} ticked route(s)",
                             key=f"{key_prefix}_returns", use_container_width=True,
                             help="Creates a mirrored candidate for each ticked route, with the "
                                  "departure and arrival swapped. Prices are read from the "
@@ -2214,11 +2234,9 @@ def render_candidate_filter(candidates, key_prefix, noun):
                      str(c.get("arrival_hint") or "").strip().lower(),
                      str(c.get("service_name") or "").strip().lower()) for c in candidates}
         added = 0
-        for cand in ticked:
+        for cand in routes_ticked:
             dep = str(cand.get("departure_hint") or "").strip()
             arr = str(cand.get("arrival_hint") or "").strip()
-            if not (dep and arr):
-                continue
             key = (arr.lower(), dep.lower(), str(cand.get("service_name") or "").strip().lower())
             if key in existing:
                 continue          # the document already listed this direction separately
