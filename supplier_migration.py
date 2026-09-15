@@ -85,6 +85,32 @@ def _remap_codes(codes: Optional[List[str]], code_map: Dict[str, str]) -> List[s
     return [code_map.get(c, c) for c in (codes or []) if c]
 
 
+def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
+    """CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-16): migrating Transfers failed at
+    the create step for every route tried, with `java.lang.IllegalArgumentException: An instance
+    of a null PK has been incorrectly provided for this find operation.` - Travel Compositor's
+    backend treats any nested object that carries an "id" KEY (regardless of its value) as a
+    reference to an existing child row it must look up; a raw GET response routinely includes
+    "id": null on nested rows (price brackets, supplements, properties, etc. - Hibernate-assigned
+    child-row PKs the write-side schema in schemas.py never models, since they only matter for
+    reads) that are harmless to echo back on an UPDATE of the SAME parent, but crash outright on
+    CREATE, where there is no existing parent row for that null-PK child lookup to attach to.
+
+    Recursively deletes every "id" key whose value is None, at every nesting depth EXCEPT the
+    top level (the top-level "id": None is deliberate - see migrate_transfer/migrate_transport,
+    which need it present and None so Travel Compositor treats this as a create, not an update -
+    the exact same convention builder.py's schema-based create flow already relies on). Mutates
+    obj in place; walks dicts and lists only, matching plain JSON structure."""
+    if isinstance(obj, dict):
+        if not _top and "id" in obj and obj["id"] is None:
+            del obj["id"]
+        for value in obj.values():
+            _strip_nested_null_ids(value, _top=False)
+    elif isinstance(obj, list):
+        for item in obj:
+            _strip_nested_null_ids(item, _top=False)
+
+
 # ----------------------------------------------------------------------
 # Transfer - unchanged from the original 2026-08-24 tool, just extracted into its own function.
 # ----------------------------------------------------------------------
@@ -97,6 +123,8 @@ def migrate_transfer(client, source_id: str, dest_id: str, record: Dict[str, Any
     create_payload = dict(record)
     create_payload["id"] = None
     create_payload["active"] = True
+    _strip_nested_null_ids(create_payload)  # see that function's docstring - fixes the confirmed
+    # real "null PK...find operation" create failure (2026-09-16)
     try:
         create_res = client.create_transfer(dest_id, create_payload)
     except Exception as e:
@@ -145,6 +173,9 @@ def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, An
     create_payload["id"] = None
     create_payload["active"] = True
     create_payload["optionCodes"] = []
+    _strip_nested_null_ids(create_payload)  # same confirmed "null PK...find operation" create
+    # failure as migrate_transfer - applied here too as a preventive fix, same wholesale-copy
+    # shape and same risk, even though it was only actually reported failing for Transfer.
     # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-11, cancellation_bulk_transport.py):
     # a whole-record Transport write built from a raw GET response, same as this one, failed
     # every row with "updateTransport.transport.airlineCode: must not be null" - airlineCode is
