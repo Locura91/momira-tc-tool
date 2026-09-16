@@ -118,6 +118,26 @@ def test_render_notes_editor_supports_hiding_the_standing_note_editor():
     assert sig.parameters["show_standing_note"].default is True
 
 
+# ---------------------------------------------------------------------------------------------
+# Step 2 - show every existing hotel code for the selected supplier, so a human has something to
+# check a typed code against instead of guessing (product owner, 2026-09-16, same message)
+# ---------------------------------------------------------------------------------------------
+
+def test_step2_looks_up_existing_hotel_codes_for_the_selected_supplier():
+    src = _read_hotel_flow()
+    assert "get_existing_hotel_names(client, supplier_id_choice)" in src
+    idx = src.index("get_existing_hotel_names(client, supplier_id_choice)")
+    preceding = src[max(0, idx - 300):idx]
+    assert "if supplier_id_choice:" in preceding
+
+
+def test_step2_existing_hotel_codes_render_before_the_provider_code_text_input():
+    src = _read_hotel_flow()
+    codes_idx = src.index("get_existing_hotel_names(client, supplier_id_choice)")
+    input_idx = src.index('st.text_input(\n            "Hotel code (providerCode)"')
+    assert codes_idx < input_idx
+
+
 def test_compose_manual_notes_still_includes_the_standing_note_even_when_editor_is_hidden():
     # show_standing_note=False only hides the second copy of the EDITOR UI - a supplier's
     # already-saved standing note must still be composed into the voucher either way.

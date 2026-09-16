@@ -45,6 +45,7 @@ from app import (
     _hp_str_to_dist, _hp_str_to_names, _hp_str_to_nums, _hp_window_list,
     _render_hotel_masterdata_step, _render_hotel_price_audit_section,
     _warn_page_image_upload_errors, _warn_stale_images, show_publish_error,
+    get_existing_hotel_names,
 )
 
 
@@ -95,6 +96,29 @@ def render_hotel_flow(client):
             with st.expander("⚠️ Emergency manual entry"):
                 st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
                 supplier_id_choice = st.text_input("Supplier ID (numeric)", value="", key="hp_supplier_manual")
+
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "We shall provide the human with all
+        # Hotel code possible from the supplier we have selected - otherwise the human makes a
+        # mistake and writes the code wrong." The code below is free-typed either way (it's how
+        # both a brand-new hotel and an update to an existing one are entered), but showing every
+        # code this supplier already has on file - right above the box - gives a human something
+        # to check against/copy instead of guessing or mistyping a code from memory. Reuses
+        # get_existing_hotel_names, the same lookup the Update/Refresh screen's Hotel picker
+        # already relies on (app_helpers.py) - no new API call shape needed.
+        if supplier_id_choice:
+            _hp_existing_names, _hp_existing_names_error = get_existing_hotel_names(client, supplier_id_choice)
+            if _hp_existing_names:
+                with st.expander(f"📋 Existing hotel codes for this supplier ({len(_hp_existing_names)})"):
+                    st.caption("Already on file in Travel Compositor for this supplier - check here before "
+                              "typing the code below to avoid a typo. Re-using one of these UPDATES that "
+                              "hotel; any other code CREATES a new one.")
+                    st.dataframe(
+                        pd.DataFrame([{"Hotel code": i["code"], "Name": i["name"]} for i in _hp_existing_names]),
+                        use_container_width=True, hide_index=True,
+                    )
+            elif _hp_existing_names_error:
+                st.caption(f"ℹ️ Couldn't load this supplier's existing hotel codes ({_hp_existing_names_error}) "
+                          f"- type the code manually below.")
 
         provider_code_in = st.text_input(
             "Hotel code (providerCode)", value="", key="hp_provider_code",

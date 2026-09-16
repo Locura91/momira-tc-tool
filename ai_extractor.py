@@ -4816,6 +4816,14 @@ Only extract a meal plan the document actually prices as an addition to the room
 rates already include a meal plan (e.g. "rate is All Inclusive"), still create one entry for it but with
 base_price/adult_prices/child_prices all 0 (already included, no extra add-on cost), and note this in the
 top-level description so a human reviewer understands the room rate already includes it.
+"breakfast_included_in_rate": true specifically when the document states breakfast is bundled into the room
+rate itself, with no separate paid Room Only vs. Bed & Breakfast distinction (e.g. "rate includes breakfast",
+"B&B rate", every rate shown already covers breakfast). CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "If meal
+type with Breakfast is already included, the app still must add the B&B as 0 Euro to the Meal plans" - this
+flag is what makes that happen deterministically downstream (builder.py adds a 0-cost Bed & Breakfast meal
+plan whenever it's true, the same automatic-at-0-cost treatment "Room Only" always gets), so set it whenever
+this is true even if you also add your own 0-cost Bed & Breakfast meal_plans entry for it - false whenever
+breakfast is a separately priced add-on, or the document says nothing about breakfast at all.
 
 === OFFERS (discounts) and SUPPLEMENTS (extra charges) ===
 Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - those are offer-only):
@@ -5014,6 +5022,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "minimum_stay": null, "maximum_stay": null, "release_days": null,
   "cancellation_policy_tiers": [], "cancellation_policy_text": "",
   "rooms": [{"name": "", "type_id": null, "distributions": []}],
+  "breakfast_included_in_rate": false,
   "meal_plans": [{"meal_plan_hint": "", "base_price": 0.0, "adult_prices": [], "child_prices": []}],
   "offers": [],
   "supplements": [],
@@ -5081,7 +5090,8 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
         "infants_allowed": 2, "min_children_age": 0, "max_children_age": 12,
         "minimum_stay": None, "maximum_stay": None, "release_days": None,
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
-        "rooms": [], "meal_plans": [], "offers": [], "supplements": [], "rates": [],
+        "rooms": [], "breakfast_included_in_rate": False, "meal_plans": [], "offers": [],
+        "supplements": [], "rates": [],
     }
     # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 2): Hotel output nests rooms x
     # seasons x room_prices x stop_sales - the largest combinatorial shape of any extractor in

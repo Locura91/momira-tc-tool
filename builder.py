@@ -4897,7 +4897,7 @@ def _map_price_type(hint):
     return text if text in ("PAX", "DISTRIBUTION") else "DISTRIBUTION"
 
 
-def _translation_list(text, language="EN"):
+def _translation_list(text, language="EN", max_length=None):
     """Wraps a single text string into Hotel's [TranslationVO] shape ({language, description}
     pairs) - used for descriptions/voucherRemarks/offer&supplement names. Returns [] for blank
     text so an empty field isn't sent as a meaningless single empty-string entry.
@@ -4907,10 +4907,24 @@ def _translation_list(text, language="EN"):
     voucherRemarks, offer/supplement names - gets the same 2026-08-25 no-raw-HTML guarantee the
     other four products have, in one place. voucherRemarks text arriving here has usually
     already been through strip_stray_html once (via _with_manual_notes) - a second pass on
-    already-clean text is a no-op."""
+    already-clean text is a no-op.
+
+    max_length: CONFIRMED REAL BUG (2026-09-16, real hotel publish, three Early Bird offers all
+    rejected the same way): "HotelContractOffers18N.name:Size must be between 0 and 100" - the
+    AI extractor is deliberately prompted to write offer/supplement names that spell out the
+    combinability rule in parentheses (e.g. "Early Bird Discount 20% (book by 31 Jul 2026, not
+    combinable with Gala Dinners/Meal Supplements/Club Packages)"), which is exactly the kind of
+    name that runs past 100 characters and gets the whole publish rejected. Only
+    build_hotel_offer_payloads/build_hotel_supplement_payloads pass this - descriptions and
+    voucherRemarks have no such limit and stay uncapped."""
     clean = strip_stray_html((text or "").strip())
     if not clean:
         return []
+    if max_length and len(clean) > max_length:
+        # Trim on a word boundary where possible so the cut doesn't land mid-word, then use an
+        # ellipsis to show the name was shortened rather than silently truncated.
+        cut = clean[:max_length - 1].rsplit(" ", 1)[0] or clean[:max_length - 1]
+        clean = cut.rstrip(" ,.;:-") + "…"
     return [TranslationVO(language=language, description=clean)]
 
 
@@ -4964,6 +4978,33 @@ def _ensure_room_only_meal_plan(meal_plans_data):
     has_room_only = any(_map_meal_plan_type((mp or {}).get("meal_plan_hint")) == "ROOM_ONLY" for mp in result)
     if not has_room_only:
         result.insert(0, {"meal_plan_hint": "ROOM_ONLY", "base_price": 0.0, "adult_prices": [], "child_prices": []})
+    return result
+
+
+def _ensure_breakfast_included_meal_plan(meal_plans_data, breakfast_included_in_rate):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-16): 'If meal type with Breakfast is already
+    included, the app still must add the B&B as 0 Euro to the Meal plans.' Confirmed trigger:
+    the document states the ROOM RATE ITSELF already includes breakfast (not a separately
+    priced add-on) - e.g. 'Rate includes breakfast', 'B&B rate', a room-only vs. B&B rate never
+    being distinguished because breakfast is simply always there.
+
+    Same shape as _ensure_room_only_meal_plan, and for the same reason: the AI extractor's own
+    prompt already asks for a 0-cost BED_AND_BREAKFAST entry in this situation (see the MEAL
+    PLANS section of ai_extractor.py's hotel prompt), but that is a best-effort instruction to a
+    model, not a guarantee - a document phrasing this in an unusual way, or extraction simply
+    missing it, would silently leave B&B unbookable at no charge even though the contract says
+    it's already covered. `breakfast_included_in_rate` is the deterministic top-level flag
+    (extracted.get("breakfast_included_in_rate")) that makes this an enforced rule rather than a
+    hope: when true and no BED_AND_BREAKFAST entry is already present, one is added at 0 cost -
+    mirroring ROOM_ONLY's own always-0 guarantee. Does nothing when the flag is false/absent, or
+    when a Breakfast/B&B entry is already there (its own price - including a genuinely paid
+    upgrade rate - is left exactly as extracted, never overwritten to 0)."""
+    if not breakfast_included_in_rate:
+        return meal_plans_data
+    result = list(meal_plans_data or [])
+    has_b_and_b = any(_map_meal_plan_type((mp or {}).get("meal_plan_hint")) == "BED_AND_BREAKFAST" for mp in result)
+    if not has_b_and_b:
+        result.append({"meal_plan_hint": "BED_AND_BREAKFAST", "base_price": 0.0, "adult_prices": [], "child_prices": []})
     return result
 
 
@@ -5074,6 +5115,8 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     # ---- Meal plans: same carry-forward merge, keyed by mealPlan type (only one entry per type) ----
     document_meal_plans = _ensure_room_only_meal_plan(extracted.get("meal_plans") or [])
+    document_meal_plans = _ensure_breakfast_included_meal_plan(
+        document_meal_plans, extracted.get("breakfast_included_in_rate"))
     meal_plan_payloads = []
     seen_plan_types = set()
     for mp_data in document_meal_plans:
@@ -5337,7 +5380,7 @@ def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_ty
         maximumChildrens=(item_data or {}).get("maximum_childrens"),
         value=_safe_float((item_data or {}).get("value", 0)),
         childValue=_safe_float((item_data or {}).get("child_value", 0)),
-        names=_translation_list((item_data or {}).get("name")),
+        names=_translation_list((item_data or {}).get("name"), max_length=100),
         travelWindows=travel_window_vos,
         bookingWindows=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in windows_booking],
         providerRoomCodes=list(room_codes or []),
