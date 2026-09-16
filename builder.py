@@ -4458,6 +4458,130 @@ def build_transport_payloads(
     }
 
 
+def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api_client: TravelCompositorAPI):
+    """Transport counterpart to build_transfer_swap_payload - given a full existing
+    ContractTransportVO payload (exactly what GET /transport/{supplierId}/{transportId} returns),
+    builds a payload for the OPPOSITE direction of the SAME route: same vehicle/price/cancellation/
+    images, only the route (segments) and name/description swapped to read in the new direction.
+    Always a CREATE (the 'id' field is dropped) - this never updates the original.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "can we do the same for Transport. Changing the
+    Destination of the original Transport ID, adopting the Name and adopting the Description."
+    Same underlying need as the Transfer version (2026-09-16 duplicate-and-swap feature) -
+    Transport has had NO create path in this app since 2026-08-12's redesign either.
+
+    KEY DIFFERENCE FROM TRANSFER: Transfer's departure/arrival are full location OBJECTS with a
+    human-readable 'name' right there in the payload. Transport's route lives only as raw
+    LOCATION CODES on each segment (schemas.py's TransportSegmentVO docstring: "segments do NOT
+    map one-to-one to each physical leg... a real COMBINED route was still represented as a
+    SINGLE segment"), so there is no name to read off the payload directly - this function calls
+    api_client.resolve_transport_base() on the overall old departure/arrival codes (best-effort;
+    falls back to the bare code as its own "name" if the lookup fails, which still lets an exact
+    code literally embedded in the name/description text get swapped, and simply doesn't swap
+    prose that never named the location at all - never worse than doing nothing) to get back
+    real place names, purely so the SAME _swap_route_text/_swap_route_text_if_found logic used
+    for Transfer's name/description can be reused unchanged here.
+
+    SEGMENTS: reverses the segment list order and swaps each segment's departureLocationCode/
+    arrivalLocationCode. For the common single-segment case (confirmed the overwhelming norm per
+    the docstring above) this is just one clean swap. A genuine multi-segment record would also
+    have its times/legs reversed in ORDER, which is directionally correct, but the individual
+    segments' own departureTime/arrivalTime/durationTime are left exactly as copied (mirrors
+    Transfer's approach of keeping the safe default and letting the human's own re-resolve/edit
+    step in the review screen fix anything that's route-specific rather than guessing at new
+    timings here).
+
+    Returns (payload, swap_report, route_info):
+      swap_report: {"name": bool, "datasheet_name": bool, "description": bool or None} - same
+        meaning as build_transfer_swap_payload's own swap_report (see its docstring).
+      route_info: {"old_departure_name", "old_arrival_name", "new_departure_name",
+        "new_arrival_name"} - resolved display names for the review screen's departure/arrival
+        fields, since (unlike Transfer) there's nothing to read straight off the swapped payload."""
+    payload = copy.deepcopy(existing_transport_payload or {})
+    payload.pop("id", None)
+    payload["active"] = True
+
+    segments = payload.get("segments") or []
+    old_departure_code = (segments[0].get("departureLocationCode") if segments else "") or ""
+    old_arrival_code = (segments[-1].get("arrivalLocationCode") if segments else "") or ""
+
+    new_segments = []
+    for seg in reversed(segments):
+        seg = dict(seg)
+        seg["departureLocationCode"], seg["arrivalLocationCode"] = (
+            seg.get("arrivalLocationCode"), seg.get("departureLocationCode"))
+        new_segments.append(seg)
+    payload["segments"] = new_segments
+
+    def _resolve_name(code: str) -> str:
+        if not code:
+            return ""
+        try:
+            result = api_client.resolve_transport_base(code)
+        except Exception:
+            result = None
+        if isinstance(result, dict) and result.get("valid") and result.get("name"):
+            return result["name"]
+        return code  # best-effort fallback - still lets an exact code match in text swap
+
+    old_departure_name = _resolve_name(old_departure_code)
+    old_arrival_name = _resolve_name(old_arrival_code)
+
+    swap_report = {"name": None, "datasheet_name": None, "description": None}
+    if payload.get("name"):
+        payload["name"] = _swap_route_text(payload["name"], old_departure_name, old_arrival_name)
+        swap_report["name"] = True
+
+    datasheets = dict(payload.get("datasheets") or {})
+    en = dict(datasheets.get("EN") or {})
+    if en.get("name"):
+        en["name"] = _swap_route_text(en["name"], old_departure_name, old_arrival_name)
+        swap_report["datasheet_name"] = True
+    if en.get("description"):
+        en["description"], swapped = _swap_route_text_if_found(en["description"], old_departure_name, old_arrival_name)
+        swap_report["description"] = swapped
+    datasheets["EN"] = en
+    payload["datasheets"] = datasheets
+
+    route_info = {
+        "old_departure_name": old_departure_name, "old_arrival_name": old_arrival_name,
+        "new_departure_name": old_arrival_name, "new_arrival_name": old_departure_name,
+    }
+    return payload, swap_report, route_info
+
+
+def build_transport_option_swap_payload(existing_option_payload: Dict[str, Any],
+                                         new_departure_name: str, new_arrival_name: str) -> Dict[str, Any]:
+    """Duplicates ONE existing ContractTransportOptionVO (an occupancy/passenger-bracket
+    sub-resource - see schemas.py's own docstring for why Transport's per-occupancy pricing is
+    modelled as separate Option records, unlike Transfer's single pricesByOccupancy array) for the
+    swapped-direction transport build_transport_swap_payload just built. Every price/inventory
+    figure is copied exactly - only the option's own 'code' is regenerated (real codes embed an
+    abbreviated route, e.g. "ASWHRG" - see _generate_transport_option_code - so the OLD code would
+    read backwards on the new, swapped-direction transport; codes are never used to match/update
+    existing options on their own anyway - see transport_matcher.match_bracket_to_existing_option
+    - so regenerating one here is purely cosmetic, never a correctness risk) and, best-effort, its
+    own translations.EN.name (real option translations "only ever populate name, never
+    description" per TransportDataSheetVO's docstring, so description is never touched here)."""
+    option = copy.deepcopy(existing_option_payload or {})
+    min_occ = _safe_int(option.get("minPassengers", 1), fallback=1)
+    max_occ = _safe_int(option.get("maxPassengers", min_occ), fallback=min_occ)
+    option["code"] = _generate_transport_option_code(new_departure_name, new_arrival_name, min_occ, max_occ)
+    option["active"] = True
+
+    translations = dict(option.get("translations") or {})
+    en = dict(translations.get("EN") or {})
+    if en.get("name"):
+        # Reversing the SAME departure/arrival names the parent swap used, so a translation name
+        # that happens to spell out the route reads correctly too - never the new/new pair, which
+        # would be a no-op swap.
+        en["name"] = _swap_route_text(en["name"], new_arrival_name, new_departure_name)
+        translations["EN"] = en
+        option["translations"] = translations
+
+    return option
+
+
 # ==========================================
 # HOTEL BUILDER
 # Confirmed against the real Contract Hotel Swagger + 2 real GET pulls for a

@@ -644,6 +644,9 @@ from flows.multi_transfer import render_multi_transfer_flow
 # just the SAME route sold the other way.
 from flows.duplicate_transfer import render_duplicate_transfer_flow
 
+# Same feature, for Transport - see DUPLICATE_TRANSPORT_CHOICE's own comment further down.
+from flows.duplicate_transport import render_duplicate_transport_flow
+
 
 # ======================================================================
 # TRANSPORT FLOW
@@ -1104,6 +1107,12 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # arrival swapped - see builder.build_transfer_swap_payload's own docstring for the full
 # reasoning. A Step 1 "Create a new product" destination, alongside ClosedTour/Ticket/Hotel.
 DUPLICATE_TRANSFER_CHOICE = "Transfer (duplicate an existing one & swap destinations)"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), same day as DUPLICATE_TRANSFER_CHOICE above:
+# "can we do the same for Transport. Changing the Destination of the original Transport ID,
+# adopting the Name and adopting the Description." Transport has the same missing-create-path
+# problem as Transfer did - see builder.build_transport_swap_payload's own docstring for the
+# swap logic (and why it needs an extra api_client lookup Transfer's version doesn't).
+DUPLICATE_TRANSPORT_CHOICE = "Transport (duplicate an existing one & swap destinations)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -1311,6 +1320,11 @@ if st.session_state.product_type is None:
                   "direction (e.g. Hotel → Airport once Airport → Hotel already exists) - picks "
                   "an existing published Transfer and clones it with departure/arrival swapped, "
                   "instead of re-entering everything from a document.")
+        if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
+            st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
+            st.rerun()
+        st.caption("Same idea, for Transport - clones an existing published Transport (parent "
+                  "record AND every occupancy bracket) with the route swapped.")
 
     with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
@@ -1359,6 +1373,10 @@ if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
 
 if st.session_state.product_type == DUPLICATE_TRANSFER_CHOICE:
     render_duplicate_transfer_flow(client)
+    st.stop()
+
+if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:
+    render_duplicate_transport_flow(client)
     st.stop()
 
 if st.session_state.product_type == "Ticket":

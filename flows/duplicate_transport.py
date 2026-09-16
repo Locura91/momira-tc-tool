@@ -1,0 +1,392 @@
+"""
+Duplicate-and-swap Transport creation flow.
+
+CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "can we do the same for Transport. Changing the
+Destination of the original Transport ID, adopting the Name and adopting the Description." A
+direct follow-up to the Transfer version of this same feature (flows/duplicate_transfer.py,
+same day) - Transport has had NO create path in this app since 2026-08-12's redesign either
+("Transfer and Transport are not possible to automatically Import/upload" - see
+app_helpers.render_update_refresh_flow's own docstring), so this is that missing create path
+for Transport too.
+
+KEY DIFFERENCE FROM THE TRANSFER VERSION: Transport's per-occupancy pricing lives on SEPARATE
+Option sub-resources (schemas.py's ContractTransportOptionVO docstring), not one flat array on
+the parent record the way Transfer's pricesByOccupancy works - so duplicating a Transport means
+duplicating its parent record AND every one of its existing Options (fetched via
+client.get_transport_option for each of the source's optionCodes), then publishing the parent
+FIRST (to get its real new id) and each Option second, exactly mirroring how a brand-new
+Transport is built everywhere else in this app (builder.build_transport_payloads' own two-phase
+create sequencing). See builder.build_transport_swap_payload/build_transport_option_swap_payload
+for the actual swap logic and why Transport needs an extra api_client lookup that Transfer's
+version doesn't (Transport's route lives only as location CODES on its segments, not a
+human-readable name field).
+
+Same duplicate-safety bar as every other create flow in this app: Publish is disabled until the
+human has explicitly checked (and, if a match is found, confirmed it away) that a transport for
+the NEW swapped route doesn't already exist - see transport_matcher.suggest_existing_transport_matches.
+"""
+import pandas as pd
+import streamlit as st
+
+from builder import build_transport_swap_payload, build_transport_option_swap_payload
+import transport_matcher
+from ui_components import editable_table, _safe_float, _safe_int
+
+from app_helpers import _ur_pick_momira_supplier, show_publish_error
+
+
+def render_duplicate_transport_flow(client):
+    st.header("🧬 New Transport — duplicate an existing one & swap destinations")
+    if st.button("🔙 Back to Step 1", key="dtp_back"):
+        st.session_state.product_type = None
+        st.rerun()
+    st.caption("For a brand-new Transport that's really the SAME route sold the other way - e.g. "
+              "you already have Airport → Hotel and now need Hotel → Airport. Pick the existing "
+              "one below: vehicle, price, cancellation text, images and every occupancy bracket's "
+              "pricing are all copied exactly, only the route (and any name/description text that "
+              "names it) is swapped. Edit anything that genuinely differs for the new direction "
+              "before publishing.")
+
+    supplier_id = _ur_pick_momira_supplier(client, "dtp")
+    if not supplier_id:
+        return
+
+    if st.session_state.get("dtp_supplier_id") != supplier_id:
+        # Supplier changed - drop everything picked/loaded for the previous one, same as every
+        # other flow in this app does when the supplier selection changes underneath it.
+        for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
+                  "dtp_route_info", "dtp_options", "dtp_match_result",
+                  "dtp_match_route_fingerprint", "dtp_search_results"):
+            st.session_state.pop(k, None)
+        st.session_state.dtp_supplier_id = supplier_id
+
+    if not st.session_state.get("dtp_source"):
+        _render_pick_source(client, supplier_id)
+        return
+
+    _render_review_and_publish(client, supplier_id)
+
+
+def _fetch_source_and_options(client, supplier_id, transport_id):
+    """Fetches the parent record plus every one of its existing Options (iterating its own
+    optionCodes list, exactly like flows/multi_transport.py's merge-on-update snapshot fetch) -
+    both are needed before build_transport_swap_payload/build_transport_option_swap_payload can
+    run. Returns (parent_dict, options_list) or (None, None) on a fetch error (already reported
+    to the user via st.error)."""
+    with st.spinner(f"Fetching {transport_id} and its occupancy brackets..."):
+        parent = client.get_transport(supplier_id, transport_id)
+        if isinstance(parent, dict) and "error" in parent:
+            st.error(f"❌ Couldn't fetch {transport_id}: {parent.get('message', parent)}")
+            return None, None
+        options = []
+        for opt_code in (parent.get("optionCodes") or []):
+            opt = client.get_transport_option(supplier_id, transport_id, opt_code)
+            if isinstance(opt, dict) and "error" not in opt:
+                options.append(opt)
+            else:
+                st.warning(f"⚠️ Couldn't fetch occupancy bracket {opt_code} of {transport_id} - "
+                          f"it won't be duplicated onto the new Transport; add it manually "
+                          f"afterward if it's genuinely needed.")
+    return parent, options
+
+
+def _render_pick_source(client, supplier_id):
+    st.markdown("#### Find the Transport to duplicate")
+    pick_mode = st.radio(
+        "How do you want to find it?",
+        ["Search by departure/arrival", "I already know its Travel Compositor id"],
+        horizontal=True, key="dtp_pick_mode")
+
+    if pick_mode == "I already know its Travel Compositor id":
+        tid = st.text_input("Transport id (e.g. TRANSPORT-412579)", key="dtp_manual_id").strip()
+        if st.button("Fetch", key="dtp_fetch_manual", disabled=not tid):
+            parent, options = _fetch_source_and_options(client, supplier_id, tid)
+            if parent is not None:
+                st.session_state.dtp_source = parent
+                st.session_state.dtp_source_options = options
+                st.rerun()
+        return
+
+    scol1, scol2 = st.columns(2)
+    with scol1:
+        dep_search = st.text_input("Departure (or part of it)", key="dtp_search_dep")
+    with scol2:
+        arr_search = st.text_input("Arrival (or part of it)", key="dtp_search_arr")
+    if st.button("🔎 Search", key="dtp_search_btn", disabled=not (dep_search or arr_search)):
+        with st.spinner("Fetching this supplier's existing transports..."):
+            result = client.get_transports(supplier_id)
+        if isinstance(result, dict) and "error" in result:
+            st.error(f"❌ Couldn't fetch this supplier's transports: {result.get('message', result)}")
+            st.session_state.dtp_search_results = []
+        else:
+            existing = result.get("transport", []) if isinstance(result, dict) else (result or [])
+            st.session_state.dtp_search_results = transport_matcher.suggest_existing_transport_matches(
+                dep_search or "", arr_search or "", existing, top_n=10)
+
+    results = st.session_state.get("dtp_search_results")
+    if results:
+        options = [f"{r['name'] or '(unnamed)'} ({r['transport_id']}, match {r['score']})" for r in results]
+        picked = st.radio("Pick the one to duplicate:", options, key="dtp_search_pick")
+        picked_idx = options.index(picked)
+        if st.button("Use this one", key="dtp_use_picked"):
+            tid = results[picked_idx]["transport_id"]
+            parent, opts = _fetch_source_and_options(client, supplier_id, tid)
+            if parent is not None:
+                st.session_state.dtp_source = parent
+                st.session_state.dtp_source_options = opts
+                st.rerun()
+    elif results == []:
+        st.info("No existing transports found for this supplier - nothing to duplicate yet. "
+                "Create the first one for this route directly in Travel Compositor, then this "
+                "tool can clone it for the return direction.")
+
+
+def _render_review_and_publish(client, supplier_id):
+    source = st.session_state.dtp_source
+    source_options = st.session_state.get("dtp_source_options") or []
+    if "dtp_payload" not in st.session_state:
+        payload, swap_report, route_info = build_transport_swap_payload(source, client)
+        st.session_state.dtp_payload = payload
+        st.session_state.dtp_swap_report = swap_report
+        st.session_state.dtp_route_info = route_info
+        st.session_state.dtp_options = [
+            build_transport_option_swap_payload(
+                opt, route_info["new_departure_name"], route_info["new_arrival_name"])
+            for opt in source_options
+        ]
+
+    payload = st.session_state.dtp_payload
+    swap_report = st.session_state.get("dtp_swap_report") or {}
+    route_info = st.session_state.get("dtp_route_info") or {}
+    options = st.session_state.dtp_options
+
+    st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}): "
+              f"**{route_info.get('old_departure_name', '?')} → {route_info.get('old_arrival_name', '?')}** "
+              f"({len(options)} occupancy bracket(s)).")
+
+    if st.button("↩️ Pick a different Transport to duplicate", key="dtp_restart"):
+        for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
+                  "dtp_route_info", "dtp_options", "dtp_match_result",
+                  "dtp_match_route_fingerprint", "dtp_search_results"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
+    st.markdown("#### Route (already swapped — edit if the new direction needs different wording)")
+    rcol1, rcol2 = st.columns(2)
+    with rcol1:
+        new_dep_name = st.text_input("New departure", value=route_info.get("new_departure_name", ""), key="dtp_dep_name")
+    with rcol2:
+        new_arr_name = st.text_input("New arrival", value=route_info.get("new_arrival_name", ""), key="dtp_arr_name")
+
+    dep_changed = new_dep_name != route_info.get("new_departure_name", "")
+    arr_changed = new_arr_name != route_info.get("new_arrival_name", "")
+    segments = payload.get("segments") or []
+    if len(segments) > 1:
+        st.caption("⚠️ This route has more than one segment - re-resolving below only updates the "
+                  "OVERALL departure (first segment) and arrival (last segment). Check the "
+                  "interior legs in the payload preview further down before publishing.")
+    if dep_changed or arr_changed:
+        st.warning("⚠️ You changed a location name - it still carries the OLD (swapped) "
+                  "Transport Base code until you re-resolve it, or this would publish at the "
+                  "wrong spot.")
+        if st.button("🔎 Re-resolve both locations now", key="dtp_reresolve"):
+            with st.spinner("Resolving..."):
+                dep_result = client.resolve_transport_base(new_dep_name)
+                arr_result = client.resolve_transport_base(new_arr_name)
+            if segments:
+                segments = [dict(s) for s in segments]
+                if dep_result.get("valid"):
+                    segments[0]["departureLocationCode"] = dep_result["code"]
+                else:
+                    st.warning(f"⚠️ Couldn't resolve '{new_dep_name}' to a known Transport Base - "
+                              f"the old code was left in place.")
+                if arr_result.get("valid"):
+                    segments[-1]["arrivalLocationCode"] = arr_result["code"]
+                else:
+                    st.warning(f"⚠️ Couldn't resolve '{new_arr_name}' to a known Transport Base - "
+                              f"the old code was left in place.")
+                payload["segments"] = segments
+            route_info["new_departure_name"] = new_dep_name
+            route_info["new_arrival_name"] = new_arr_name
+            st.session_state.dtp_route_info = route_info
+            st.rerun()
+
+    st.markdown("#### Name")
+    payload["name"] = st.text_input("Transport name", value=payload.get("name", ""), key="dtp_name")
+    datasheets = dict(payload.get("datasheets") or {})
+    en = dict(datasheets.get("EN") or {})
+    en["name"] = st.text_input("Datasheet name (customer-facing)", value=en.get("name", ""), key="dtp_datasheet_name")
+
+    if en.get("description") is not None or swap_report.get("description") is not None:
+        if swap_report.get("description") is False:
+            st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
+                      "both original location names, so it's copied unchanged below. Check it "
+                      "reads correctly for the new direction before publishing.")
+        en["description"] = st.text_area("Description", value=en.get("description", ""), key="dtp_description")
+
+    datasheets["EN"] = en
+    payload["datasheets"] = datasheets
+
+    st.markdown("#### Price")
+    currency = payload.get("currency", "EUR")
+    pcol1, pcol2, pcol3 = st.columns(3)
+    with pcol1:
+        payload["baseAdultPrice"] = st.number_input(
+            f"Base adult price ({currency})", min_value=0.0,
+            value=_safe_float(payload.get("baseAdultPrice", 0.0)), key="dtp_base_adult")
+    with pcol2:
+        payload["baseChildrenPrice"] = st.number_input(
+            f"Base children price ({currency})", min_value=0.0,
+            value=_safe_float(payload.get("baseChildrenPrice", 0.0)), key="dtp_base_children")
+    with pcol3:
+        payload["baseInfantPrice"] = st.number_input(
+            f"Base infant price ({currency})", min_value=0.0,
+            value=_safe_float(payload.get("baseInfantPrice", 0.0)), key="dtp_base_infant")
+    st.caption("Copied from the original - edit if the new direction is genuinely priced "
+              "differently. Every occupancy bracket below is an ADDITIONAL supplement on top of "
+              "this base, same as the original.")
+
+    opt_rows = []
+    for opt in options:
+        first_price = next(iter(opt.get("prices") or []), {})
+        opt_rows.append({
+            "min_passengers": opt.get("minPassengers"), "max_passengers": opt.get("maxPassengers"),
+            "adult_supplement": first_price.get("adultPriceSupplement", 0.0),
+            "children_supplement": first_price.get("childrenPriceSupplement", 0.0),
+            "infant_supplement": first_price.get("infantPriceSupplement", 0.0),
+        })
+    opt_df = pd.DataFrame(opt_rows or [{"min_passengers": 1, "max_passengers": 1,
+                                        "adult_supplement": 0.0, "children_supplement": 0.0,
+                                        "infant_supplement": 0.0}])
+
+    def _save_options(edited_df):
+        rows = list(edited_df.to_dict("records"))
+        for i, opt in enumerate(options):
+            if i >= len(rows):
+                break
+            row = rows[i]
+            adult = _safe_float(row.get("adult_supplement"), fallback=0.0)
+            children = _safe_float(row.get("children_supplement"), fallback=0.0)
+            infant = _safe_float(row.get("infant_supplement"), fallback=0.0)
+            # CONFIRMED CONVENTION (see builder.build_transport_payloads): a bracket that costs
+            # exactly the base rate has NO price entries at all, never a redundant zero entry.
+            if adult == 0 and children == 0 and infant == 0:
+                opt["prices"] = []
+            else:
+                existing_first = next(iter(opt.get("prices") or []), {})
+                opt["prices"] = [{
+                    "name": existing_first.get("name"),
+                    "startDate": existing_first.get("startDate") or payload.get("startDate") or "",
+                    "endDate": existing_first.get("endDate") or "2049-12-31",
+                    "adultPriceSupplement": adult, "childrenPriceSupplement": children,
+                    "infantPriceSupplement": infant,
+                    "adultRTPriceSupplement": existing_first.get("adultRTPriceSupplement", 0.0),
+                    "childrenRTPriceSupplement": existing_first.get("childrenRTPriceSupplement", 0.0),
+                    "infantRTPriceSupplement": existing_first.get("infantRTPriceSupplement", 0.0),
+                }]
+        st.session_state.dtp_options = options
+
+    editable_table("Occupancy brackets (supplement on top of the base price above)",
+                   opt_df, "dtp_occ", on_save=_save_options, num_rows="fixed")
+    st.caption("Each row is a real, separate occupancy bracket copied from the original (min/max "
+              "passengers can't be changed here) - only the supplement amounts are editable. To "
+              "add or remove a whole bracket, do that directly in Travel Compositor after "
+              "publishing.")
+
+    with st.expander("🔎 Everything else, copied exactly from the original (edit later in Travel "
+                     "Compositor if the new direction genuinely differs)"):
+        st.json({k: v for k, v in payload.items()
+                if k not in ("segments", "name", "datasheets", "baseAdultPrice",
+                             "baseChildrenPrice", "baseInfantPrice")})
+
+    st.markdown("#### Duplicate check")
+    st.caption("Same safeguard every other create flow here has - confirms a Transport for THIS "
+              "new (swapped) route doesn't already exist before you publish another one.")
+    current_route_fingerprint = f"{new_dep_name}::{new_arr_name}"
+    if st.session_state.get("dtp_match_route_fingerprint") != current_route_fingerprint:
+        st.session_state.dtp_match_result = None
+        st.session_state.dtp_match_route_fingerprint = current_route_fingerprint
+
+    if st.button("🔎 Check for a matching existing transport", key="dtp_checkmatch"):
+        with st.spinner("Checking..."):
+            st.session_state.dtp_match_result = transport_matcher.resolve_transport_match(
+                client, supplier_id, new_dep_name, new_arr_name)
+            st.session_state.dtp_match_route_fingerprint = current_route_fingerprint
+
+    match_result = st.session_state.get("dtp_match_result")
+    match_checked = match_result is not None
+    blocks_as_duplicate = False
+    if match_result:
+        if match_result.get("fetch_error"):
+            st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a "
+                      f"match: {match_result['fetch_error'].get('message', match_result['fetch_error'])}.")
+        elif match_result.get("tracked_id"):
+            st.error(f"🚫 This app already tracks a Transport for this exact route: "
+                    f"**{match_result['tracked_id']}**. Duplicating would create a second, "
+                    f"conflicting record - go update that one instead (Step 1 → Price update to "
+                    f"existing Products), or change the route text above if this is genuinely a "
+                    f"different one.")
+            blocks_as_duplicate = True
+        elif match_result.get("fallback_candidates"):
+            best = match_result["fallback_candidates"][0]
+            if best["score"] >= 0.85:
+                st.warning(f"⚠️ A very similar Transport already exists: **{best['name'] or '(unnamed)'}** "
+                          f"({best['transport_id']}) (match {best['score']}). Double-check this "
+                          f"isn't the same route before publishing.")
+            else:
+                st.info(f"No close match found for this route (best similarity: {best['score']}) - "
+                        f"safe to publish as new.")
+        else:
+            st.info("No existing transports found for this supplier - safe to publish as new.")
+
+    if not match_checked:
+        st.warning("⚠️ Click **Check for a matching existing transport** above before publishing.")
+
+    st.markdown("#### Publish")
+    with st.expander("🔎 Preview full parent payload"):
+        st.json(payload)
+    with st.expander(f"🔎 Preview {len(options)} occupancy bracket payload(s)"):
+        st.json(options)
+
+    dates_ok = bool((payload.get("startDate") or "").strip()) and bool((payload.get("endDate") or "").strip())
+    segments_ok = bool(segments) and all(
+        s.get("departureLocationCode") and s.get("arrivalLocationCode") for s in segments)
+    if not segments_ok:
+        st.warning("⚠️ Departure and/or arrival couldn't be resolved to a real Transport Base - "
+                  "fix the names above and re-resolve before publishing.")
+
+    publish_disabled = not match_checked or blocks_as_duplicate or not dates_ok or not segments_ok
+    if st.button("🚀 Publish — CREATE new transport", type="primary", key="dtp_publish", disabled=publish_disabled):
+        with st.spinner("Publishing parent transport to Travel Compositor..."):
+            try:
+                result = client.create_transport(supplier_id, payload)
+            except Exception as e:
+                show_publish_error(f"publish transport **{payload.get('name') or '(unnamed)'}**", str(e))
+                result = None
+        if isinstance(result, dict) and "error" in result:
+            show_publish_error(f"publish transport **{payload.get('name') or '(unnamed)'}**", result)
+        elif result is not None:
+            new_id = result.get("id") if isinstance(result, dict) else None
+            if not new_id:
+                st.error("❌ Transport was created but no id came back - can't create its "
+                        "occupancy brackets. Check Travel Compositor directly.")
+            else:
+                failed_options = []
+                with st.spinner(f"Publishing {len(options)} occupancy bracket(s)..."):
+                    for opt in options:
+                        opt_result = client.create_transport_option(supplier_id, new_id, opt)
+                        if isinstance(opt_result, dict) and "error" in opt_result:
+                            failed_options.append((opt.get("code"), opt_result))
+                transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
+                if failed_options:
+                    st.warning(f"⚠️ Published (id: {new_id}), but {len(failed_options)} of "
+                              f"{len(options)} occupancy bracket(s) failed to publish - add "
+                              f"them manually in Travel Compositor: " +
+                              ", ".join(code or "?" for code, _err in failed_options))
+                else:
+                    st.success(f"✅ Published successfully (id: {new_id}) with all {len(options)} "
+                              f"occupancy bracket(s).")
+                for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
+                          "dtp_route_info", "dtp_options", "dtp_match_result",
+                          "dtp_match_route_fingerprint", "dtp_search_results"):
+                    st.session_state.pop(k, None)
