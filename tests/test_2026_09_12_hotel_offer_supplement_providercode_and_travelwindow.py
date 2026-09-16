@@ -127,11 +127,14 @@ def test_offer_with_no_stated_travel_window_defaults_instead_of_sending_empty_ar
 
 
 def test_stated_travel_window_is_used_as_is_not_overridden_by_the_fallback():
+    # Dates bumped to 2099 (2026-09-16): build_hotel_offer_payloads now skips an offer whose
+    # travel_windows are ALL already past (see _hp_all_windows_entirely_past) - this test needs a
+    # genuinely future window to actually reach the fallback-vs-stated comparison it's testing.
     extracted = [{"name": "Early Bird 20%", "type": "PERCENT", "value": 20, "room_names": [],
-                  "travel_windows": [{"start": "2026-01-01", "end": "2026-07-31"}]}]
+                  "travel_windows": [{"start": "2099-01-01", "end": "2099-07-31"}]}]
     room_map = {"Deluxe Room": "HRG-H1-DELUXEROOM-1"}
     results = build_hotel_offer_payloads(extracted, room_map, existing_hotel_snapshot=None,
                                           hotel_meal_plan_types=["ROOM_ONLY"],
                                           hotel_provider_code="HRG-H1")
     windows = results[0]["offer_payload"]["travelWindows"]
-    assert windows == [{"start": "2026-01-01", "end": "2026-07-31"}]
+    assert windows == [{"start": "2099-01-01", "end": "2099-07-31"}]

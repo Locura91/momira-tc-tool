@@ -19,10 +19,14 @@ from builder import build_hotel_rate_payloads, _hotel_rate_payload_unchanged
 def _identical_setup():
     """An existing rate with one fully-specified season, and a fresh extraction that restates
     it with the exact same values - the "just checking, nothing changed" case."""
+    # releaseDays is 0 here (not None) on both the existing rate/season and the fresh extraction
+    # below - matches the real shape now that builder.py always sends 0 rather than None (see
+    # test_2026_09_16_hotel_release_days_npe_and_publish_block.py), so this fixture stays a
+    # genuinely identical "nothing changed" comparison rather than an artificial mismatch.
     existing_snapshot = {
         "rates": [{
             "id": 501, "name": "Standard Rate", "bookingWindows": [], "offers": [], "supplements": [],
-            "stopSales": [], "releaseDays": None, "minimumStay": 1, "maximumStay": None,
+            "stopSales": [], "releaseDays": 0, "minimumStay": 1, "maximumStay": None,
             "seasons": [{
                 "id": 9001, "name": "Summer Season",
                 "dateRanges": [{"start": "2027-06-01", "end": "2027-08-31"}],
@@ -32,7 +36,7 @@ def _identical_setup():
                     "distributionPrices": [{"amount": 100.0, "adults": 2, "children": 0}],
                     "basePrice": 100.0, "adultPrices": [], "childPrices": [],
                 }],
-                "releaseDays": None, "minimumStay": 1, "maximumStay": None, "priceType": "DISTRIBUTION",
+                "releaseDays": 0, "minimumStay": 1, "maximumStay": None, "priceType": "DISTRIBUTION",
             }],
         }],
     }

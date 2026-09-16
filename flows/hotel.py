@@ -54,6 +54,22 @@ from app import (
 # comment at its call site (Step 3) for the full history of why this moved up from a review-
 # screen-only, extraction-blind toggle. Kept as a module-level dict (not inline) so the wording
 # for each purpose lives in exactly one place alongside the radio's own labels.
+def _hp_already_exists_error(message):
+    """CONFIRMED REAL BUG (2026-09-16, HRG-H1): a republish (e.g. fixing an unrelated failure -
+    a rate error, a missing image - and clicking Publish again) re-ran Phase 2a/2b's offers and
+    supplements from scratch, including ones that were already successfully created in an
+    earlier attempt this same session. Travel Compositor rejected those with "Supplement
+    HRG-H1-SUPP-COMPULSORYCHRIST-1 already exists for contract HRG-H1" - and since offers/
+    supplements are confirmed create-only (no PUT endpoint), this class of error means the item
+    is ALREADY live under the exact placeholder code this run just tried to (re)create it with,
+    not a genuine problem. Surfacing it as a hard failure needing "fix and retry" was wrong - the
+    retry itself was the safe, correct thing to do, it just needs to recognize this specific
+    response as a no-op success rather than an error. Returns True only for this specific
+    "already exists" shape, never for any other API rejection - a real validation error must
+    still surface as a failure exactly as before."""
+    return bool(message) and "already exists" in str(message).lower()
+
+
 _HP_CONTRACT_PURPOSE_EXTRACTION_HINTS = {
     "new_period": "This document describes a NEW price period for this hotel - focus on accurately "
                   "extracting the new season's dates, rates, and any new rooms/meal plans/offers/"
@@ -815,7 +831,9 @@ def render_hotel_flow(client):
             })
         data["offers"] = rows
 
-    editable_table("Offers", offers_df, "hp_offers", on_save=_hp_save_offers)
+    editable_table("Offers", offers_df, "hp_offers", on_save=_hp_save_offers,
+                   column_config={"apply": st.column_config.SelectboxColumn(
+                       "apply", options=HOTEL_APPLY_VALUES, required=False)})
 
     # ---- Supplements ----
     st.markdown("#### Supplements (extra charges)")
@@ -861,7 +879,15 @@ def render_hotel_flow(client):
             })
         data["supplements"] = rows
 
-    editable_table("Supplements", supp_df, "hp_supplements", on_save=_hp_save_supplements)
+    editable_table("Supplements", supp_df, "hp_supplements", on_save=_hp_save_supplements,
+                   column_config={"apply": st.column_config.SelectboxColumn(
+                       # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "if this warning [no apply
+                       # basis] comes, the human shall easily select from a dropdown menu what to
+                       # choose. No handwritten field is required" - "" stays a selectable option
+                       # (not just the blank-column default) since an unfilled basis is still a
+                       # valid, expected state until the human deliberately picks one; picking ""
+                       # again leaves it exactly as unfilled as before.
+                       "apply", options=[""] + list(HOTEL_APPLY_VALUES), required=False)})
     _missing_apply = [s.get("name") or "(unnamed)" for s in (data.get("supplements") or [])
                       if str(s.get("apply") or "").strip().upper() not in HOTEL_APPLY_VALUES]
     if _missing_apply:
@@ -1195,8 +1221,26 @@ def render_hotel_flow(client):
                  "coordinates don't fall inside any of its known destinations, so a human must "
                  "check the map above and tick the confirmation box before publishing.")
 
+    # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): a supplement missing its apply/charging basis
+    # used to only warn on the Supplements table above (see `_missing_apply`) - Publish still
+    # went ahead, reached Travel Compositor, and came back with that supplement rejected AFTER
+    # everything else had already published, requiring the human to fix it and re-run the whole
+    # thing. "we need to avoid that this error happens again... a better workaround or callback
+    # solution with simple human interaction must solve that issue" - same "block before the API
+    # call, not after" gate already used for rooms/images/geolocation above, now extended to this
+    # case too, with the apply-basis dropdown (added moments earlier the same day) making the fix
+    # itself a one-click pick instead of a handwritten value.
+    supplements_ok = not _missing_apply
+    if not supplements_ok:
+        st.error("⚠️ " + ", ".join(_missing_apply) +
+                 (" has" if len(_missing_apply) == 1 else " have") +
+                 " no apply/charging basis yet - pick one from the dropdown in the Supplements "
+                 "table above before publishing, so this doesn't reach Travel Compositor as a "
+                 "partial-failure rejection.")
+
     if st.button(f"🚀 Publish — {'UPDATE' if existing_snapshot else 'CREATE'} hotel {provider_code}",
-                 type="primary", key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok):
+                 type="primary", key="hp_publish",
+                 disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok or not supplements_ok):
         st.session_state.hp_publish_succeeded = False
         progress = st.container()
         try:
@@ -1450,9 +1494,16 @@ def render_hotel_flow(client):
                                                         hotel_meal_plan_types=hotel_meal_plan_types,
                                                         hotel_provider_code=provider_code)
             offer_failures = []
+            offers_skipped_past = []
             with st.spinner("Phase 2 of 2 — publishing offers..."):
                 for offer_data, res in zip(data.get("offers") or [], offer_results):
                     name = offer_data.get("name")
+                    if res["action"] == "skipped_past":
+                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices,
+                        # offers and supplements, which are already in the past. We only need to
+                        # sell in the future." - never created, not a failure.
+                        offers_skipped_past.append(name)
+                        continue
                     if res["action"] == "skip_duplicate":
                         offer_map[name] = res.get("matched_provider_code")
                         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a skipped
@@ -1467,7 +1518,13 @@ def render_hotel_flow(client):
                         continue
                     resp = client.create_hotel_offer(supplier_id, provider_code, res["offer_payload"])
                     if isinstance(resp, dict) and "error" in resp:
-                        offer_failures.append((name, resp.get("message")))
+                        if _hp_already_exists_error(resp.get("message")):
+                            # Already live under the exact placeholder code this run just sent -
+                            # see _hp_already_exists_error's own docstring. A no-op success, not
+                            # a failure needing another retry.
+                            offer_map[name] = res["offer_payload"].get("providerCode")
+                        else:
+                            offer_failures.append((name, resp.get("message")))
                     else:
                         offer_map[name] = resp.get("providerCode") if isinstance(resp, dict) else None
 
@@ -1478,9 +1535,14 @@ def render_hotel_flow(client):
                                                             hotel_meal_plan_types=hotel_meal_plan_types,
                                                             hotel_provider_code=provider_code)
             supp_failures = []
+            supplements_skipped_past = []
             with st.spinner("Phase 2 of 2 — publishing supplements..."):
                 for supp_data, res in zip(data.get("supplements") or [], supp_results):
                     name = supp_data.get("name")
+                    if res["action"] == "skipped_past":
+                        # Same "ignore what's already in the past" rule as offers above.
+                        supplements_skipped_past.append(name)
+                        continue
                     if res["action"] == "skip_duplicate":
                         supplement_map[name] = res.get("matched_provider_code")
                         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching
@@ -1493,28 +1555,61 @@ def render_hotel_flow(client):
                         continue
                     resp = client.create_hotel_supplement(supplier_id, provider_code, res["supplement_payload"])
                     if isinstance(resp, dict) and "error" in resp:
-                        supp_failures.append((name, resp.get("message")))
+                        if _hp_already_exists_error(resp.get("message")):
+                            # Same reasoning as the offers branch above - already live under the
+                            # exact placeholder code this run just sent.
+                            supplement_map[name] = res["supplement_payload"].get("providerCode")
+                        else:
+                            supp_failures.append((name, resp.get("message")))
                     else:
                         supplement_map[name] = resp.get("providerCode") if isinstance(resp, dict) else None
 
             # ---- PHASE 2c: rates (needs the room/offer/supplement codes resolved above) ----
             # room_name_to_distributions feeds the missing-distribution-price safety net (see
             # builder._fill_missing_distribution_prices, 2026-09-11 HRG-H1 fix) - every room's own
-            # allowed occupancy list, straight from what extraction gave for "rooms" (same data
-            # that already went into Phase 1's room payloads).
+            # allowed occupancy list.
+            #
+            # CONFIRMED REAL BUG (2026-09-16, HRG-H1 "Winter 26-27"): this used to come ONLY from
+            # data.get("rooms") - this DOCUMENT's own freshly extracted rooms. That was fine when
+            # every document restated its rooms, but no longer holds now that an existing hotel's
+            # rooms are treated as already-correct in Travel Compositor and a rate-only follow-up
+            # document legitimately doesn't redeclare them at all (see the 2026-09-16 "only
+            # focusing on price, supplement, meal type, offer, stop sale" simplification). With
+            # room_name_to_distributions coming back EMPTY for a room this document never
+            # mentions by name, the safety net had nothing to check against and silently let a
+            # genuinely missing price straight through to Travel Compositor's own raw exception
+            # ("java.lang.IllegalArgumentException: Room price missing for distributions: 2 Ad. +
+            # 0 Ch., 1 Ad. + 0 Ch.") instead of catching it beforehand with an editable message.
+            # Seeded from the EXISTING hotel's own live rooms first (same distributions data the
+            # room carry-forward logic already trusts), then this document's own rooms override
+            # per name - a document that DOES restate a room's occupancy still wins for that room.
             room_name_to_distributions = {
                 (r or {}).get("name"): (r or {}).get("distributions") or []
-                for r in data.get("rooms") or [] if (r or {}).get("name")
+                for r in (existing_snapshot or {}).get("rooms") or [] if (r or {}).get("name")
             }
+            room_name_to_distributions.update({
+                (r or {}).get("name"): (r or {}).get("distributions") or []
+                for r in data.get("rooms") or [] if (r or {}).get("name")
+            })
             rate_results = build_hotel_rate_payloads(data.get("rates") or [], room_map, offer_map,
                                                       supplement_map, existing_hotel_snapshot=existing_snapshot,
                                                       room_name_to_distributions=room_name_to_distributions)
             rate_failures = []
             rate_warnings_all = []
             rate_unchanged_names = []
+            seasons_skipped_past = []
             with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
                 for res in rate_results:
                     rate_warnings_all.extend(res.get("rate_warnings") or [])
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices, offers
+                    # and supplements, which are already in the past. We only need to sell in
+                    # the future." - a season this document stated but that's now entirely past
+                    # is never built at all (see builder._hp_all_windows_entirely_past); collect
+                    # its name here purely for the summary caption below, same treatment as
+                    # rate_unchanged_names.
+                    seasons_skipped_past.extend(
+                        sa.get("season_name") for sa in (res.get("season_actions") or [])
+                        if sa.get("action") == "skipped_past")
                     if res.get("rate_error") or not res.get("rate_payload"):
                         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this used to read
                         # res.get("rate_payload", {}).get("name") - rate_payload is present but
@@ -1584,6 +1679,14 @@ def render_hotel_flow(client):
                     st.caption(f"ℹ️ {len(rate_unchanged_names)} rate(s) matched exactly what was already "
                               f"live and were left alone - nothing to change, nothing sent: " +
                               ", ".join(f"**{n}**" for n in rate_unchanged_names))
+                _hp_past_skipped = offers_skipped_past + supplements_skipped_past + seasons_skipped_past
+                if _hp_past_skipped:
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices, offers
+                    # and supplements, which are already in the past. We only need to sell in
+                    # the future."
+                    st.caption(f"ℹ️ {len(_hp_past_skipped)} item(s) already entirely in the past "
+                              f"were skipped - nothing to sell there anymore: " +
+                              ", ".join(f"**{n or '(unnamed)'}**" for n in _hp_past_skipped))
                 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): "Start a new Hotel" used
                 # to be a button nested inside `if st.button("🚀 Publish...")` - that outer
                 # button's own value is only True on the EXACT render where it was clicked, so on

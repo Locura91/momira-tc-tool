@@ -332,9 +332,12 @@ def test_start_a_new_hotel_button_is_rendered_outside_the_publish_button_block()
 
 
 def test_hp_publish_succeeded_is_reset_when_a_new_publish_attempt_starts():
+    # 2026-09-16: the disabled= expression moved to its own line (a new "not supplements_ok"
+    # clause was added alongside it) - match the stable key="hp_publish" prefix only, same
+    # loosening already used elsewhere in this suite for a wrapped/reformatted line.
     src = _read_app_py()
-    idx = src.index('key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok):')
-    window = src[idx:idx + 200]
+    idx = src.index('key="hp_publish"')
+    window = src[idx:idx + 300]
     assert "st.session_state.hp_publish_succeeded = False" in window
 
 

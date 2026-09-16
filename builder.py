@@ -5371,7 +5371,15 @@ def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_ty
     return dict(
         providerCode=provider_code,
         apply=_map_apply_type((item_data or {}).get("apply"), default=apply_default),
-        releaseDays=(item_data or {}).get("release_days"),
+        # CONFIRMED REAL BUG (product owner, 2026-09-16, Four Seasons Resort Seychelles at
+        # Desroches Island): "java.lang.NullPointerException: Cannot invoke
+        # "java.lang.Integer.intValue()" because the return value of "...getReleaseDays()" is
+        # null" - Travel Compositor auto-unboxes releaseDays as a primitive int server-side, so
+        # leaving it None (the document never mentions a release-days figure) crashes the WHOLE
+        # publish for this item instead of a clean validation message. 0 ("no release delay")
+        # is a safe, meaningful default - same fallback already used for the hotel contract's
+        # own top-level releaseDays (see effective_release_days above) - never sent as null.
+        releaseDays=_safe_int((item_data or {}).get("release_days", 0), fallback=0),
         minimumStay=(item_data or {}).get("minimum_stay"),
         maximumStay=(item_data or {}).get("maximum_stay"),
         minimumAdults=(item_data or {}).get("minimum_adults"),
@@ -5438,6 +5446,26 @@ def _resolve_offer_or_supplement_meal_plans(item_data, all_meal_plan_types):
     return list(dict.fromkeys(_map_meal_plan_type(h) for h in hints))
 
 
+def _hp_all_windows_entirely_past(windows):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices, offers and supplements,
+    which are already in the past. We only need to sell in the future." Used to skip a hotel
+    season/offer/supplement entirely - never even built or sent to Travel Compositor - when
+    EVERY date window it carries has already ended. `windows` is a list of {"start","end"}
+    dicts (travel_windows for an offer/supplement, date_ranges for a season).
+
+    Deliberately conservative: an EMPTY windows list is NOT "entirely past" - that means no
+    dates were stated at all (e.g. a compulsory, undated supplement that runs indefinitely), and
+    dropping something with no stated window would be guessing, not reading the document. Only a
+    window that DOES state dates, and whose every one of them has already ended, counts."""
+    if not windows:
+        return False
+    today_iso = datetime.date.today().isoformat()
+    ends = [w.get("end") for w in windows if isinstance(w, dict) and w.get("end")]
+    if not ends:
+        return False
+    return all(end < today_iso for end in ends)
+
+
 def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, existing_hotel_snapshot=None,
                                 hotel_meal_plan_types=None, hotel_provider_code=None):
     """
@@ -5467,6 +5495,13 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
     results = []
     for offer_index, offer_data in enumerate(extracted_offers or []):
         offer_name = (offer_data or {}).get("name")
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices, offers and
+        # supplements, which are already in the past. We only need to sell in the future." -
+        # an offer whose travel_windows have ALL already ended is never even created.
+        if _hp_all_windows_entirely_past((offer_data or {}).get("travel_windows")):
+            results.append({"offer_payload": None, "offer_error": None, "action": "skipped_past",
+                             "matched_provider_code": None})
+            continue
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(offer_name, existing_offers)
         if existing_match:
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): a name match used to be
@@ -5520,6 +5555,12 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
     results = []
     for supp_index, supp_data in enumerate(extracted_supplements or []):
         supp_name = (supp_data or {}).get("name")
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): same "ignore what's already in the past"
+        # rule as build_hotel_offer_payloads above - see that function for the full quote.
+        if _hp_all_windows_entirely_past((supp_data or {}).get("travel_windows")):
+            results.append({"supplement_payload": None, "supplement_error": None, "action": "skipped_past",
+                             "matched_provider_code": None})
+            continue
         existing_match = hotel_matcher.match_offer_or_supplement_by_name(supp_name, existing_supplements)
         if existing_match:
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching fix in
@@ -5712,6 +5753,17 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
             season_name = (season_data or {}).get("name") or "Season"
             date_ranges_data = [w for w in (season_data or {}).get("date_ranges") or []
                                  if isinstance(w, dict) and w.get("start") and w.get("end")]
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "please ignore prices, offers and
+            # supplements, which are already in the past. We only need to sell in the future." -
+            # a season whose date_ranges have ALL already ended is skipped entirely: never built,
+            # never matched against an existing season (so an already-live past season, if any,
+            # is simply left untouched rather than rebuilt-then-sent), same "no deletion needed,
+            # a closed time window can't be sold anymore anyway" reasoning ContractHotelRateVO's
+            # own docstring already documents for rates in general.
+            if _hp_all_windows_entirely_past(date_ranges_data):
+                season_actions.append({"season_name": season_name, "action": "skipped_past",
+                                        "matched_season_id": None})
+                continue
             existing_season = hotel_matcher.match_season_to_existing(season_name, date_ranges_data, existing_seasons)
             if existing_season and existing_season.get("id") is not None:
                 matched_existing_season_ids.add(existing_season["id"])
@@ -5769,9 +5821,30 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         positive_amounts = [_safe_float(p.get("amount", 0)) for p in distribution_prices_data
                                              if _safe_float(p.get("amount", 0)) > 0]
                         effective_base_price = min(positive_amounts) if positive_amounts else 0
+                _hp_stated_units_quota = _safe_int((rp_data or {}).get("units_quota", 20), fallback=20)
+                _hp_stated_units_on_request = _safe_int((rp_data or {}).get("units_on_request", 0), fallback=0)
+                if not existing_hotel_snapshot:
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "all hotel creation must be
+                    # start with on request at the beginning. no hotel room shall be on free
+                    # sale" - a brand-new hotel (existing_hotel_snapshot is falsy - this call IS
+                    # the creation) starts with every room fully on-request, never any guaranteed
+                    # free-sale allotment, no matter what quota the document itself states.
+                    # Releasing rooms to free sale is a deliberate later step in Travel
+                    # Compositor's back office, not something a first contract upload should do
+                    # automatically. The total room count still carries over from the document
+                    # (its stated units_quota plus any units_on_request it already listed, or the
+                    # 20/0 fallback) - only WHICH bucket (quota vs on-request) it sits in flips.
+                    # An UPDATE to an already-existing hotel (existing_hotel_snapshot present)
+                    # keeps the document's own quota/on-request split untouched - this rule is
+                    # about hotel CREATION specifically, not every later price refresh.
+                    _hp_units_quota = 0
+                    _hp_units_on_request = _hp_stated_units_quota + _hp_stated_units_on_request
+                else:
+                    _hp_units_quota = _hp_stated_units_quota
+                    _hp_units_on_request = _hp_stated_units_on_request
                 room_prices.append(ContractHotelSeasonPricesVO(
-                    unitsQuota=_safe_int((rp_data or {}).get("units_quota", 20), fallback=20),
-                    unitsOnRequest=_safe_int((rp_data or {}).get("units_on_request", 0), fallback=0),
+                    unitsQuota=_hp_units_quota,
+                    unitsOnRequest=_hp_units_on_request,
                     providerRoomCode=provider_room_code,
                     distributionPrices=[ContractRoomDistributionPriceVO(
                         amount=_safe_float(p.get("amount", 0)),
@@ -5791,7 +5864,10 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 dateRanges=[LocalDateRangeVO(start=w["start"], end=w["end"]) for w in date_ranges_data],
                 mealPlans=season_meal_plans,
                 seasonRoomPrices=room_prices,
-                releaseDays=(season_data or {}).get("release_days"),
+                # Same NullPointerException-on-null fix as the rate/offer/supplement releaseDays
+                # below (product owner, 2026-09-16, Four Seasons Resort Seychelles) - default 0
+                # rather than None, never send it unset.
+                releaseDays=_safe_int((season_data or {}).get("release_days", 0), fallback=0),
                 minimumStay=_safe_int((season_data or {}).get("minimum_stay", 1), fallback=1),
                 maximumStay=(season_data or {}).get("maximum_stay"),
                 priceType=_map_price_type((season_data or {}).get("price_type")),
@@ -5882,7 +5958,15 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
             offers=offer_codes,
             supplements=supplement_codes,
             stopSales=stop_sales_payloads,
-            releaseDays=(rate_data or {}).get("release_days"),
+            # CONFIRMED REAL BUG (product owner, 2026-09-16, Four Seasons Resort Seychelles at
+            # Desroches Island - "Standard Rates"): "java.lang.NullPointerException: Cannot
+            # invoke "java.lang.Integer.intValue()" because the return value of
+            # "...getReleaseDays()" is null" - THIS is the exact field/call site the error names.
+            # Travel Compositor auto-unboxes releaseDays as a primitive int server-side, so
+            # leaving it None (the common case - most documents never state a rate-level
+            # release-days figure) crashed the WHOLE rate publish. Default 0 ("no release
+            # delay"), never send it unset.
+            releaseDays=_safe_int((rate_data or {}).get("release_days", 0), fallback=0),
             minimumStay=_safe_int((rate_data or {}).get("minimum_stay", 1), fallback=1),
             maximumStay=(rate_data or {}).get("maximum_stay"),
         )

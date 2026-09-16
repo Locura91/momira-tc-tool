@@ -139,8 +139,11 @@ def test_images_ok_computed_from_the_actual_payload_sent_to_travel_compositor():
 
 def test_publish_button_disabled_when_no_images():
     content = _read_app_py()
-    idx = content.index('key="hp_publish", disabled=')
-    line = content[idx: idx + 200]
+    # 2026-09-16: the disabled= expression moved to its own line (a new "not supplements_ok"
+    # clause was added alongside it) - match the stable key="hp_publish" prefix only, same
+    # loosening already used elsewhere in this suite for a wrapped/reformatted line.
+    idx = content.index('key="hp_publish"')
+    line = content[idx: idx + 300]
     assert "not images_ok" in line
 
 

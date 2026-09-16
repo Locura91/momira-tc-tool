@@ -180,9 +180,14 @@ def _read_app_py():
 
 
 def test_hotel_publish_button_is_gated_on_geolocation_confirmation():
+    # 2026-09-16: the disabled= expression moved to its own line (a new "not supplements_ok"
+    # clause was added alongside it) - match the stable key="hp_publish" prefix and check the
+    # geo_ok clause is still present in the window that follows, same loosening already used
+    # elsewhere in this suite for a wrapped/reformatted line.
     src = _read_app_py()
-    idx = src.index('key="hp_publish", disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok):')
-    assert idx > 0
+    idx = src.index('key="hp_publish"')
+    window = src[idx:idx + 300]
+    assert "not geo_ok" in window
 
 
 def test_hotel_geo_ok_requires_both_valid_and_confirmed():
@@ -215,4 +220,9 @@ def test_hotel_geolocation_section_appears_before_the_publish_section():
     # Transport) - find the one that actually follows the Hotel Geolocation section.
     publish_idx = src.index("#### Publish", geo_idx)
     assert geo_idx < publish_idx
-    assert publish_idx - geo_idx < 6000
+    # Threshold raised 2026-09-16 (6000 -> 9000): the secondary Price Audit section (added when
+    # the contract-purpose question moved earlier in the flow) and the new missing-apply-basis
+    # publish gate both legitimately sit between Geolocation and Publish now - this check is only
+    # meant to catch Geolocation ending up far away from Publish entirely, not to cap organic
+    # growth of what's genuinely between them.
+    assert publish_idx - geo_idx < 9000

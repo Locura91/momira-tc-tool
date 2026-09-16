@@ -68,7 +68,7 @@ def test_build_hotel_offer_payload_truncates_a_too_long_name():
     offer_data = {
         "name": _REAL_OFFER_NAME, "type": "PERCENTAGE", "value": 20,
         "room_names": [], "meal_plans": [],
-        "travel_windows": [{"start": "2026-01-01", "end": "2026-07-31"}],
+        "travel_windows": [{"start": "2099-01-01", "end": "2099-07-31"}],
     }
     results = build_hotel_offer_payloads(
         [offer_data], room_name_to_provider_code={"Deluxe Room": "AUTO123"},
@@ -104,7 +104,7 @@ def test_build_hotel_offer_payload_leaves_a_short_name_untouched():
     offer_data = {
         "name": "Early Booking 10%", "type": "PERCENTAGE", "value": 10,
         "room_names": [], "meal_plans": [],
-        "travel_windows": [{"start": "2026-01-01", "end": "2026-07-31"}],
+        "travel_windows": [{"start": "2099-01-01", "end": "2099-07-31"}],
     }
     results = build_hotel_offer_payloads(
         [offer_data], room_name_to_provider_code={"Deluxe Room": "AUTO123"},
