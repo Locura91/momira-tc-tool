@@ -51,7 +51,7 @@ from document_reader import extract_raw_text
 from ui_components import is_active_supplier, _safe_float, _safe_int
 from web_extractor import get_page_text, short_page_text_warning
 from r2_client import stale_image_warning
-from geocoding_client import geocode, build_place_query
+from geocoding_client import build_place_query
 from ai_extractor import friendly_error_message, min_pax_guaranteed_departure_note
 from price_audit import run_hotel_price_audit, compare_price_audit_to_extraction, summarize_findings
 from translation_tool import DEFAULT_TARGET_LANGUAGES
@@ -2760,10 +2760,19 @@ def _render_hotel_masterdata_step(client):
 
     UPDATED 2026-09-11 (product owner, showing Travel Compositor's own "New hotel using master
     data" screen - Destination + Name search - as the model to match): added a Destination field
-    (geocoded to boost nearby candidates, same geocode() this app already uses for a hotel's own
-    address) and a GIATA code field (exact-id lookup, see masterdata_matcher.find_by_giata_id) -
-    either one an alternative path into the same candidate-confirmation list below, never a
-    silent auto-match.
+    and a GIATA code field (exact-id lookup, see masterdata_matcher.find_by_giata_id) - either
+    one an alternative path into the same candidate-confirmation list below, never a silent
+    auto-match.
+
+    UPDATED AGAIN 2026-09-16 (product owner, same screen, red-circled): "Human must first select
+    the destination, which must be confirmed by Travel C." The free-text Destination field above
+    (only ever geocoded via OpenStreetMap as a soft boost) is now a required confirmation step
+    against Travel Compositor's OWN destination list (client.find_destination_candidates - a
+    real GET /destination/{micrositeId}) - the Hotel name field isn't even shown until one is
+    confirmed. The Country code field is gone entirely: the confirmed destination's own country
+    is used instead, as a hard filter this time (masterdata_matcher.find_candidates'
+    strict_country=True) rather than the soft boost/fallback the plain-text version used. GIATA
+    code is unchanged - still skips destination confirmation entirely.
     """
     st.header("Hotel — Step 3: Use Travel Compositor master data?")
     st.caption(
@@ -2846,43 +2855,90 @@ def _render_hotel_masterdata_step(client):
         else:
             st.error(f"❌ Sync failed: {sync_result['error']}")
 
-    # CONFIRMED REAL REQUEST (product owner, 2026-09-11, showing Travel Compositor's own "New
-    # hotel using master data" screen as the model to match): "Could we search it with
-    # Giatacodes if we enter it or just by manually adding the name of the hotel... For the
-    # example of Steigenberger El Gouna I would have get results from Travel C". Their screen
-    # searches by Destination + Name; a Destination free-text field is added here alongside the
-    # existing Hotel name field, geocoded (the same geocode() this app already uses for a
-    # hotel's own address, see the meeting-point step further down) purely to BOOST candidates
-    # near that point - never a hard filter, since geocoding can fail or a hotel can sit right
-    # on a destination's edge. The existing Country code field stays as the cheap, no-network-
-    # call hard filter for anyone who already knows the 2-letter code. A GIATA code field is
-    # also added - see masterdata_matcher.find_by_giata_id's own docstring for why an id lookup
-    # is authoritative (never needs human confirmation between candidates) even though contracts
-    # themselves never carry one.
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16, screenshots of this exact screen and Travel
+    # Compositor's own "Search Accommodation" screen, red-circled): "Human must first select the
+    # destination, which must be confirmed by Travel C. Then we add the name of the hotel we are
+    # creation. The country is not needed, as this information is provided by the destination
+    # code from travel compositor: So after checking, travel c first GET the Destination
+    # information and only when human confirms the destination the human can add the name of the
+    # hotel he is searching." Replaces the old free-text Destination field (only ever geocoded
+    # via OpenStreetMap - a soft, never-confirmed boost) and the 2-letter Country code field with
+    # a required destination-confirmation step against Travel Compositor's OWN destination list
+    # (api_client.find_destination_candidates - a real GET /destination/{micrositeId}, not a
+    # free-text guess): type a destination, see every real Travel Compositor destination that
+    # matches, confirm the right one. Only then does the Hotel name field become usable, scoped
+    # to the confirmed destination's own country as a HARD filter (product owner's own explicit
+    # choice, see masterdata_matcher.find_candidates' strict_country parameter) and its own
+    # coordinates for the geo-boost (no separate OpenStreetMap call needed - Travel Compositor's
+    # destination record already carries them when available).
+    #
+    # GIATA code stays exactly as it was: an authoritative id lookup that skips destination
+    # confirmation entirely (product owner's own "search it with Giatacodes OR just by manually
+    # adding the name" framing from 2026-09-11 - a known id needs no destination check at all).
     giata_query = st.text_input(
-        "GIATA code (optional, exact match — skips name search entirely if filled in)",
+        "GIATA code (optional, exact match — skips destination confirmation entirely)",
         value="", key="hp_md_search_giata",
         help="If you already know this hotel's GIATA id, this is the fastest and most reliable "
              "way to find it - an exact id match, not a name guess.")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        search_name = st.text_input("Hotel name to search for", value="", key="hp_md_search_name")
-    with col_b:
-        search_destination = st.text_input(
-            "Destination (optional, e.g. \"El Gouna, Egypt\")", value="",
-            key="hp_md_search_destination",
-            help="Geocoded to boost candidates actually near this place - narrows down a common "
-                 "chain name like \"Steigenberger\" to the right property.")
-    with col_c:
-        search_country = st.text_input("Country code (optional, e.g. EG)", value="", key="hp_md_search_country", max_chars=2)
+
+    confirmed_destination = st.session_state.get("hp_md_confirmed_destination")
+
+    search_name = ""
+    if not giata_query.strip():
+        if confirmed_destination:
+            st.success(
+                f"✅ Destination confirmed: **{confirmed_destination.get('name')}** "
+                f"(code `{confirmed_destination.get('code')}`"
+                + (f", country {confirmed_destination.get('country')}"
+                   if confirmed_destination.get("country") else "") + ")")
+            if st.button("↩️ Change destination", key="hp_md_dest_change"):
+                for k in ("hp_md_confirmed_destination", "hp_md_dest_candidates", "hp_md_candidates"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            search_name = st.text_input(
+                "Hotel name to search for", value="", key="hp_md_search_name",
+                help=f"Searched within {confirmed_destination.get('name')} "
+                     f"({confirmed_destination.get('country') or 'country unknown'}).")
+        else:
+            st.markdown("##### Step 1 — confirm the destination")
+            st.caption("Checked against Travel Compositor's own real destination list - not a "
+                      "free-text guess. The hotel name search only becomes available once one "
+                      "of these is confirmed.")
+            dest_query = st.text_input(
+                "Destination (e.g. \"El Gouna, Egypt\")", value="", key="hp_md_dest_query")
+            if st.button("🔎 Find destination", key="hp_md_dest_search_btn",
+                         disabled=not dest_query.strip()):
+                with st.spinner(f"Looking up \"{dest_query.strip()}\" in Travel Compositor..."):
+                    st.session_state.hp_md_dest_candidates = client.find_destination_candidates(
+                        dest_query.strip())
+                if not st.session_state.hp_md_dest_candidates:
+                    st.warning(f"No destination matching \"{dest_query.strip()}\" was found in "
+                               f"Travel Compositor. Try a different spelling.")
+
+            dest_candidates = st.session_state.get("hp_md_dest_candidates")
+            if dest_candidates:
+                st.write(f"Found {len(dest_candidates)} destination(s) — confirm the right one:")
+                for i, dest in enumerate(dest_candidates):
+                    with st.container(border=True):
+                        dcols = st.columns([4, 1])
+                        with dcols[0]:
+                            st.markdown(
+                                f"**{dest.get('name')}** — code `{dest.get('code')}`"
+                                + (f" · country {dest.get('country')}" if dest.get("country") else ""))
+                        with dcols[1]:
+                            if st.button("Confirm", key=f"hp_md_dest_confirm_{i}"):
+                                st.session_state.hp_md_confirmed_destination = dest
+                                st.session_state.pop("hp_md_dest_candidates", None)
+                                st.session_state.pop("hp_md_candidates", None)
+                                st.rerun()
 
     if st.button("🔎 Search master data", key="hp_md_search_btn",
-                 disabled=not (giata_query.strip() or search_name.strip())):
+                 disabled=not (giata_query.strip() or (confirmed_destination and search_name.strip()))):
         if "hp_md_index_cache" not in st.session_state:
             with st.spinner("Loading local master-data index..."):
                 st.session_state.hp_md_index_cache = masterdata_store.load_index()
         if giata_query.strip():
-            # Authoritative id lookup - skips name/destination search entirely, per the product
+            # Authoritative id lookup - skips destination confirmation entirely, per the product
             # owner's own framing ("search it with Giatacodes if we enter it OR just by
             # manually adding the name" - an either/or, not a combined filter).
             st.session_state.hp_md_candidates = masterdata_matcher.find_by_giata_id(
@@ -2892,18 +2948,35 @@ def _render_hotel_masterdata_step(client):
                            f"local master data. Search by name instead, or refresh the sync if "
                            f"this hotel might be very new.")
         else:
-            geo_lat = geo_lon = None
-            if search_destination.strip():
-                with st.spinner(f"Looking up \"{search_destination.strip()}\"..."):
-                    geo = geocode(search_destination.strip())
-                if geo.get("valid"):
-                    geo_lat, geo_lon = geo["latitude"], geo["longitude"]
-                else:
-                    st.warning(f"⚠️ Couldn't find \"{search_destination.strip()}\" on the map - "
-                               f"searching by name and country only.")
             st.session_state.hp_md_candidates = masterdata_matcher.find_candidates(
-                search_name, st.session_state.hp_md_index_cache, country_code=search_country or None,
-                lat=geo_lat, lon=geo_lon)
+                search_name, st.session_state.hp_md_index_cache,
+                country_code=confirmed_destination.get("country"),
+                lat=confirmed_destination.get("latitude"), lon=confirmed_destination.get("longitude"),
+                strict_country=True)
+
+    with st.expander("🔍 Not finding a hotel you know is in Travel Compositor? Check the raw local copy"):
+        st.caption("Bypasses country/score matching entirely - a plain text search over every "
+                   "name in the local copy, so you can see directly whether the hotel is in "
+                   "there at all, and if so, exactly what Travel Compositor's own record says "
+                   "for its name/country - rather than trusting the ranked results above.")
+        raw_query = st.text_input("Text to search for (part of the name is enough)", value="",
+                                  key="hp_md_raw_search")
+        if raw_query.strip():
+            if "hp_md_index_cache" not in st.session_state:
+                with st.spinner("Loading local master-data index..."):
+                    st.session_state.hp_md_index_cache = masterdata_store.load_index()
+            raw_hits = masterdata_matcher.find_by_raw_substring(raw_query, st.session_state.hp_md_index_cache)
+            if not raw_hits:
+                st.error(f"Not in the local copy at all - {len(st.session_state.hp_md_index_cache):,} "
+                         f"accommodations checked, none with \"{raw_query.strip()}\" in the name. "
+                         f"Try **🔄 Refresh master data** above (this hotel may have been added to "
+                         f"Travel Compositor after the last sync), then search again.")
+            else:
+                st.success(f"Found {len(raw_hits)} record(s) with \"{raw_query.strip()}\" in the name:")
+                for r in raw_hits:
+                    st.markdown(f"- **{r.get('name') or '(unnamed)'}** — id `{r.get('id')}` · "
+                               f"country `{r.get('countryCode') or '(blank)'}` · "
+                               f"GIATA `{r.get('giataId') or '—'}`")
 
     candidates = st.session_state.get("hp_md_candidates")
     if candidates is not None:

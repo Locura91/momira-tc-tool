@@ -137,6 +137,7 @@ def find_candidates(
     lat: Optional[float] = None,
     lon: Optional[float] = None,
     limit: int = 8,
+    strict_country: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Returns up to `limit` records from `index` (as produced by masterdata_store.load_index()),
@@ -152,11 +153,20 @@ def find_candidates(
     itself is genuinely in that country - a data-quality gap on Travel Compositor's side, but one
     that was silently hiding an otherwise-perfect name match rather than surfacing it, which is
     exactly the "a human decides" philosophy this module's own docstring commits to. Fixed by
-    treating the country filter as a first, fast PASS rather than an absolute one: when its best
-    result isn't convincingly strong (or it finds nothing at all), a second pass searches the
-    WHOLE index by name (+ geo boost/penalty) too, and any good match found that way is merged in
-    - flagged with country_mismatch=True so the UI can show a human why a hotel from an
-    unexpected country showed up, rather than hiding it from them entirely.
+    treating the country filter as a first, fast PASS rather than an absolute one (default,
+    strict_country=False): when its best result isn't convincingly strong (or it finds nothing at
+    all), a second pass searches the WHOLE index by name (+ geo boost/penalty) too, and any good
+    match found that way is merged in - flagged with country_mismatch=True so the UI can show a
+    human why a hotel from an unexpected country showed up, rather than hiding it from them
+    entirely.
+
+    strict_country=True (CONFIRMED PRODUCT-OWNER CHOICE, 2026-09-16, same day, for the new
+    destination-confirmed search step in app_helpers._render_hotel_masterdata_step): once a
+    human has explicitly confirmed a REAL Travel Compositor destination (not just typed a free-
+    text country guess), country_code carries far more authority than an unconfirmed 2-letter
+    code ever did - the product owner explicitly chose a hard filter for that case over keeping
+    this fallback. Skips the whole-index fallback pass entirely; only records inside
+    country_filter are ever considered. Has no effect when country_code is blank.
     """
     query = (hotel_name or "").strip()
     if not query or not index:
@@ -174,7 +184,8 @@ def find_candidates(
     scored = _score_records(query, primary_pool, lat, lon, have_geo)
     scored.sort(key=lambda r: r["score"], reverse=True)
 
-    if country_filter and (not scored or scored[0]["score"] < _STRONG_MATCH_THRESHOLD):
+    if (not strict_country and country_filter
+            and (not scored or scored[0]["score"] < _STRONG_MATCH_THRESHOLD)):
         already_ids = {r.get("id") for r in scored}
         fallback_pool = [r for r in index if isinstance(r, dict) and r.get("id") not in already_ids
                         and (r.get("countryCode") or "").strip().upper() != country_filter]

@@ -19,6 +19,19 @@ load_dotenv()
 MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
 
+def _extract_destination_coords(d: dict):
+    """Shared by resolve_destination_geolocation and find_destination_candidates - Travel
+    Compositor's DestinationVO coordinate field naming isn't confirmed to be consistent across
+    every record, so this tries the common variants in order rather than assuming one."""
+    for lat_key, lng_key in [("latitude", "longitude"), ("lat", "lng"), ("lat", "lon")]:
+        if d.get(lat_key) is not None and d.get(lng_key) is not None:
+            try:
+                return float(d[lat_key]), float(d[lng_key])
+            except (TypeError, ValueError):
+                continue
+    return None, None
+
+
 class TravelCompositorAPI:
     """
     Single, shared client for all Travel Compositor API interactions:
@@ -385,6 +398,63 @@ class TravelCompositorAPI:
             }
 
         return {"latitude": None, "longitude": None, "name": clean_query, "valid": False, "source": "not_found"}
+
+    def find_destination_candidates(self, query_term: str, max_results: int = 15) -> List[Dict[str, Any]]:
+        """
+        CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16, screenshots of the Hotel-creation master-
+        data search step and Travel Compositor's own "Search Accommodation" screen): "Human must
+        first select the destination, which must be confirmed by Travel C... So after checking,
+        travel c first GET the Destination information and only when human confirms the
+        destination the human can add the name of the hotel he is searching." Unlike
+        resolve_destination() (which silently commits to its single best guess - fine for an
+        automated lookup buried in a publish payload, wrong for a human-facing confirmation
+        step), this returns EVERY destination whose name contains the query so a human can pick
+        the one they actually mean - e.g. "Faiyum" may match both "Faiyum" and "Faiyum City".
+
+        Returns up to `max_results` destinations, exact name matches first, then substring
+        matches, each: {"code": str, "name": str, "country": str|None,
+        "latitude": float|None, "longitude": float|None} - includes Travel Compositor's own
+        coordinates (when present) so the calling screen can use them directly as a geo-boost
+        for the master-data hotel search that follows, without a second (and less authoritative)
+        OpenStreetMap geocoding call. Empty list for a blank query or if the destination list
+        can't be fetched - never raises, since this backs an interactive search a human can
+        simply retype.
+        """
+        clean_query = (query_term or "").strip()
+        if not clean_query:
+            return []
+        try:
+            destinations = self._get_all_destinations()
+        except requests.RequestException:
+            return []
+
+        query_lower = clean_query.lower()
+        exact, partial = [], []
+        for dest in destinations:
+            name = (dest.get("name") or "").strip()
+            if not name:
+                continue
+            name_lower = name.lower()
+            if name_lower == query_lower:
+                exact.append(dest)
+            elif query_lower in name_lower:
+                partial.append(dest)
+
+        results = []
+        seen_codes = set()
+        for dest in exact + partial:
+            code = dest.get("code")
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            lat, lng = _extract_destination_coords(dest)
+            results.append({
+                "code": code, "name": dest.get("name"), "country": dest.get("country"),
+                "latitude": lat, "longitude": lng,
+            })
+            if len(results) >= max_results:
+                break
+        return results
 
     # ------------------------------------------------------------------
     # TRANSFER ZONES  (real TC-native coordinates, but scoped to whatever
