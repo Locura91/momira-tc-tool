@@ -5617,6 +5617,34 @@ def _fill_missing_distribution_prices(distribution_prices_data, allowed_distribu
     return filled, still_missing, fill_notes
 
 
+def _hotel_rate_payload_unchanged(rate_payload, existing_rate):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-16): 'when rechecking the current price data, we
+    only must upload/change the information that really was detected as change. Not everything
+    needs a complete update.' Before this, an existing rate matched by name always got sent as
+    an "update" PUT once ANY document mentioning it was republished, even when the freshly built
+    payload was byte-for-byte identical to what was already live - the common case for a
+    'checking the current period' document that just confirms nothing changed.
+
+    Re-parses the raw existing_rate (a live GET /hotel/{...} response, same shape the carry-
+    forward logic above already feeds straight into ContractHotelSeasonVO/ContractHotelRateVO)
+    through ContractHotelRateVO itself, so both sides of the comparison go through the exact
+    same normalization (field order, defaults, float shapes) before comparing - comparing the
+    raw API response dict directly against a freshly-built .dict() would flag every rate as
+    'changed' on formatting differences alone, not real ones.
+
+    Deliberately conservative: returns False (i.e. "treat as changed, send the update") whenever
+    there's nothing to compare against, or the existing record doesn't even parse against this
+    same schema - a skipped write is a real cost (a genuine change silently not reaching Travel
+    Compositor) that a redundant write never is, so any doubt resolves toward sending it."""
+    if not existing_rate or not rate_payload:
+        return False
+    try:
+        existing_normalized = ContractHotelRateVO(**existing_rate).dict()
+    except (ValidationError, ValueError, TypeError):
+        return False
+    return existing_normalized == rate_payload
+
+
 def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer_name_to_provider_code,
                                supplement_name_to_provider_code, existing_hotel_snapshot=None,
                                room_name_to_distributions=None):
@@ -5653,9 +5681,12 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
     rather than submitting a rate that references a room Travel Compositor won't recognize.
 
     Returns a list of {"rate_payload": dict|None, "rate_error": str|None, "rate_name": str,
-                        "action": "create"|"update", "matched_rate_id": int|None,
+                        "action": "create"|"update"|"unchanged", "matched_rate_id": int|None,
                         "rate_warnings": [str, ...],
                         "season_actions": [{"season_name", "action", "matched_season_id"}]}.
+    "unchanged" (2026-09-16 - see _hotel_rate_payload_unchanged) means an existing rate was
+    matched but the freshly built payload is identical to what's already live - the caller
+    should skip the update_hotel_rates() call for it entirely rather than send a no-op PUT.
     `rate_warnings` are non-blocking - e.g. a missing distribution price that was safely filled
     by reusing a same-occupancy-count price already given.
     """
@@ -5874,6 +5905,15 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
             except (ValueError, TypeError) as e:
                 rate_error = f"Couldn't build rate '{rate_name}' - {e}"
 
+        # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "when rechecking the current price data, we
+        # only must upload/change the information that really was detected as change. Not
+        # everything needs a complete update." - see _hotel_rate_payload_unchanged's own
+        # docstring. Only reachable for an "update" (existing_rate present, rate_payload built
+        # cleanly) - a "create" always has something genuinely new to send, by definition.
+        rate_action = "update" if existing_rate else "create"
+        if rate_action == "update" and _hotel_rate_payload_unchanged(rate_payload, existing_rate):
+            rate_action = "unchanged"
+
         results.append({
             "rate_payload": rate_payload,
             "rate_error": rate_error,
@@ -5884,7 +5924,7 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
             # rate_payload is None on exactly the failure path that needs a name, raising
             # 'NoneType' object has no attribute 'get' instead of showing which rate broke.
             "rate_name": rate_name,
-            "action": "update" if existing_rate else "create",
+            "action": rate_action,
             "matched_rate_id": (existing_rate or {}).get("id"),
             "season_actions": season_actions,
         })

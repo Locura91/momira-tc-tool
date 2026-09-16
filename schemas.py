@@ -1147,7 +1147,16 @@ class ContractHotelOffersVO(BaseModel):
     ContractRoomVO - a create with providerCode left None was rejected ("HotelContractOffers.
     providerCode:must not be null"). builder.py now generates a deterministic client-side
     placeholder (see _hotel_offer_supplement_placeholder_code) and always reads the REAL code back
-    from the create response, never from what was sent."""
+    from the create response, never from what was sent.
+
+    active: CONFIRMED REAL BUG (product owner, 2026-09-16, right after a real publish): "when we
+    have an offer we must also activate the offer" - an offer created without this field explicit
+    was published but not actually live/applicable to bookings, needing a separate manual
+    activation step in Travel Compositor's back office. Same confirmed default every other
+    product type's own 'active' field already uses on create (ClosedTour/Ticket/Transfer/
+    Transport all default active:True unless a specific inactive/draft workflow says otherwise -
+    see this schema's other active fields) - added here so it's always sent, not omitted."""
+    active: bool = True
     providerCode: Optional[str] = None
     type: str  # PERCENT / ABSOLUTE / STAY_TO_PAY
     apply: str  # LODGING / MEAL / LODGING_AND_MEAL / PER_NIGHT / PER_NIGHT_PERSON / PER_STAY / PER_STAY_PERSON

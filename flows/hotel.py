@@ -49,6 +49,25 @@ from app import (
 )
 
 
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): folded into the extraction hint once the human
+# answers the contract-purpose question, BEFORE the document is read - see the "CONTRACT PURPOSE"
+# comment at its call site (Step 3) for the full history of why this moved up from a review-
+# screen-only, extraction-blind toggle. Kept as a module-level dict (not inline) so the wording
+# for each purpose lives in exactly one place alongside the radio's own labels.
+_HP_CONTRACT_PURPOSE_EXTRACTION_HINTS = {
+    "new_period": "This document describes a NEW price period for this hotel - focus on accurately "
+                  "extracting the new season's dates, rates, and any new rooms/meal plans/offers/"
+                  "supplements it introduces.",
+    "check_current": "This document is being used to CHECK/VERIFY the CURRENTLY live period for this "
+                     "hotel - extract the current season's rooms/rates/meal plans/offers/supplements as "
+                     "thoroughly and accurately as possible so they can be compared against what's "
+                     "already published.",
+    "mixture": "This document is a MIX for this hotel - it may describe both a NEW price period AND "
+              "details for the CURRENTLY live period in the same document. Extract everything present; "
+              "do not assume it is only one or the other.",
+}
+
+
 def render_hotel_flow(client):
     """Hotel wizard entry point: Supplier + hotel code + currency + release window, then Input
     Source, then a single review screen, then the two-phase publish."""
@@ -108,14 +127,32 @@ def render_hotel_flow(client):
         if supplier_id_choice:
             _hp_existing_names, _hp_existing_names_error = get_existing_hotel_names(client, supplier_id_choice)
             if _hp_existing_names:
-                with st.expander(f"📋 Existing hotel codes for this supplier ({len(_hp_existing_names)})"):
-                    st.caption("Already on file in Travel Compositor for this supplier - check here before "
-                              "typing the code below to avoid a typo. Re-using one of these UPDATES that "
-                              "hotel; any other code CREATES a new one.")
+                with st.expander(f"📋 Existing hotel codes for this supplier ({len(_hp_existing_names)})",
+                                 expanded=True):
+                    st.caption("Already on file in Travel Compositor for this supplier. Pick one below and "
+                              "click Use to fill the code field (this UPDATES that hotel), or just type a new "
+                              "code yourself below to CREATE one.")
                     st.dataframe(
                         pd.DataFrame([{"Hotel code": i["code"], "Name": i["name"]} for i in _hp_existing_names]),
                         use_container_width=True, hide_index=True,
                     )
+                    # CONFIRMED REAL BUG (product owner, 2026-09-16, right after this list was
+                    # first added): "the Hotel code selection, after i chose the supplier is not
+                    # working. i still have to add the Hotel code manually" - the table above was
+                    # read-only, nothing to click actually filled the text field below it. This
+                    # selectbox + button pair sets st.session_state["hp_provider_code"] - the
+                    # text_input's own key - BEFORE that widget is instantiated further down, so
+                    # it picks the chosen code up as its value on the rerun triggered by the
+                    # button (same set-then-rerun pattern app_helpers.py's "suggested match" /
+                    # "Use this" buttons already use elsewhere in this app).
+                    _hp_code_pick_options = {f"{i['code']} — {i['name']}": i["code"] for i in _hp_existing_names}
+                    _hp_code_pick_label = st.selectbox(
+                        "Pick an existing code", list(_hp_code_pick_options.keys()), key="hp_code_pick",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("✅ Use this code", key="hp_code_pick_use"):
+                        st.session_state["hp_provider_code"] = _hp_code_pick_options[_hp_code_pick_label]
+                        st.rerun()
             elif _hp_existing_names_error:
                 st.caption(f"ℹ️ Couldn't load this supplier's existing hotel codes ({_hp_existing_names_error}) "
                           f"- type the code manually below.")
@@ -230,6 +267,35 @@ def render_hotel_flow(client):
             _render_hotel_masterdata_step(client)
             return
 
+        # ------------------------------------------------------------------
+        # CONTRACT PURPOSE - moved here, BEFORE the document is read (product owner, 2026-09-16):
+        # "would it not be smarter to ask before the AI reads the document, if the document is a:
+        # checking current period b: Add a new period c: mixture of both." Originally (2026-09-12)
+        # this was only asked on the review screen, AFTER extraction had already run - purely to
+        # decide where the Price Audit tool appears, never actually informing the extraction
+        # itself. Now it's asked up front and its answer is folded into the extraction hint below
+        # (see _HP_CONTRACT_PURPOSE_EXTRACTION_HINTS), and a third "mixture" option covers a
+        # document that does both at once (e.g. a rate sheet that restates the current season
+        # while also adding the next one). Still only asked for an EXISTING hotel, same reasoning
+        # as before - a brand-new hotel has nothing live yet to "check" or "add a period to".
+        # hp_contract_purpose itself is read again, unchanged, further down (Price Audit
+        # placement, Standing/Manual notes) - only WHERE it's asked moved, not how it's used.
+        # ------------------------------------------------------------------
+        if existing_snapshot:
+            st.session_state.hp_contract_purpose = st.radio(
+                "What is this document for?",
+                ["new_period", "check_current", "mixture"],
+                format_func=lambda v: {
+                    "new_period": "📈 A NEW price period - add/extend rates, offers or rooms for a season not yet live",
+                    "check_current": "🔍 CHECKING the CURRENT period - verify what's already live against this contract",
+                    "mixture": "🔀 A MIX of both - some current-period verification AND a new period in the same document",
+                }[v],
+                index=["new_period", "check_current", "mixture"].index(
+                    st.session_state.get("hp_contract_purpose") or "new_period"),
+                key="hp_contract_purpose_radio",
+            )
+            st.caption("Asked before the document is read so the extraction can focus on the right thing.")
+
         st.header("Hotel — Step 3: Input Source")
         st.caption("A hotel contract normally covers ONE property: its rooms and allowed occupancy "
                   "combinations, meal plans, any offers/supplements, and the rate seasons with a price per "
@@ -332,8 +398,16 @@ def render_hotel_flow(client):
                                   f"for each of the others.")
                         hotel_hint = detected[0].get("hotelname_hint") or detected[0].get("label")
 
+                    # Fold the contract-purpose answer (asked above, before this document was
+                    # read) into the extraction hint, so the AI itself is told what it's looking
+                    # at rather than that only shaping the review screen afterward - see
+                    # _HP_CONTRACT_PURPOSE_EXTRACTION_HINTS's own comment for the full reasoning.
+                    _hp_purpose_hint = _HP_CONTRACT_PURPOSE_EXTRACTION_HINTS.get(
+                        st.session_state.get("hp_contract_purpose")) if existing_snapshot else None
+                    combined_hint = "\n\n".join(p for p in [_hp_purpose_hint, hp_hint] if p) or None
+
                     st.session_state.hp_raw_text = raw_text
-                    st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)
+                    st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=combined_hint)
                     # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "why must humans confirm the
                     # geolocation ... this information is coming from the hotel information
                     # already." When this hotel was seeded from a human-CONFIRMED Travel
@@ -468,26 +542,17 @@ def render_hotel_flow(client):
         st.rerun()
 
     # ------------------------------------------------------------------
-    # CONTRACT PURPOSE (product owner, 2026-09-12) - "once a product is uploaded and prices must
-    # be checked or new prices will be added, it will always be under manage existing products...
-    # the app can also ask the human to make it clear if the contract is for a new period or a
-    # current period to check." Only asked for an EXISTING hotel - a brand-new hotel has nothing
-    # live yet to "check", so there's nothing to disambiguate there; this question, and the Price
-    # Audit tool below it, only exist once there's already something published to compare against.
-    # This is also what keeps the Price Audit from appearing on BOTH the brand-new-hotel path and
-    # the existing-hotel path - product owner: "we must structure it simple and not on both ends."
+    # CONTRACT PURPOSE (product owner, originally 2026-09-12): "once a product is uploaded and
+    # prices must be checked or new prices will be added... the app can also ask the human to
+    # make it clear if the contract is for a new period or a current period to check." Only set
+    # for an EXISTING hotel - a brand-new hotel has nothing live yet to "check", so there's
+    # nothing to disambiguate there; this drives where the Price Audit tool appears below, same
+    # as before - product owner: "we must structure it simple and not on both ends."
+    #
+    # MOVED (product owner, 2026-09-16): the actual question is now asked at Step 3, BEFORE the
+    # document is read (see _HP_CONTRACT_PURPOSE_EXTRACTION_HINTS and its call site) - this is
+    # just re-reading the answer already given, not re-asking it a second time on this screen.
     # ------------------------------------------------------------------
-    if existing_snapshot:
-        st.session_state.hp_contract_purpose = st.radio(
-            "What is this contract for?",
-            ["new_period", "check_current"],
-            format_func=lambda v: {
-                "new_period": "📈 A NEW price period - add/extend rates, offers or rooms for a season not yet live",
-                "check_current": "🔍 CHECKING the CURRENT period - verify what's already live against this contract",
-            }[v],
-            index=["new_period", "check_current"].index(st.session_state.get("hp_contract_purpose") or "new_period"),
-            key="hp_contract_purpose_radio",
-        )
     hp_contract_purpose = st.session_state.get("hp_contract_purpose") if existing_snapshot else None
 
     # ------------------------------------------------------------------
@@ -1446,6 +1511,7 @@ def render_hotel_flow(client):
                                                       room_name_to_distributions=room_name_to_distributions)
             rate_failures = []
             rate_warnings_all = []
+            rate_unchanged_names = []
             with st.spinner("Phase 2 of 2 — publishing rates and seasons..."):
                 for res in rate_results:
                     rate_warnings_all.extend(res.get("rate_warnings") or [])
@@ -1459,6 +1525,14 @@ def render_hotel_flow(client):
                         # were already published, with no name for the offending rate. Use the
                         # dedicated rate_name field (always present) instead.
                         rate_failures.append((res.get("rate_name"), res.get("rate_error")))
+                        continue
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-16): "when rechecking the current
+                    # price data, we only must upload/change the information that really was
+                    # detected as change. Not everything needs a complete update." - see
+                    # builder._hotel_rate_payload_unchanged. Nothing to send, so nothing is sent -
+                    # not even a no-op PUT.
+                    if res["action"] == "unchanged":
+                        rate_unchanged_names.append(res.get("rate_name"))
                         continue
                     if res["action"] == "update":
                         resp = client.update_hotel_rates(supplier_id, provider_code, res["rate_payload"])
@@ -1506,6 +1580,10 @@ def render_hotel_flow(client):
                 st.balloons()
                 st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
                           f"offers, supplements and {seasons_total} season(s) of prices.")
+                if rate_unchanged_names:
+                    st.caption(f"ℹ️ {len(rate_unchanged_names)} rate(s) matched exactly what was already "
+                              f"live and were left alone - nothing to change, nothing sent: " +
+                              ", ".join(f"**{n}**" for n in rate_unchanged_names))
                 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): "Start a new Hotel" used
                 # to be a button nested inside `if st.button("🚀 Publish...")` - that outer
                 # button's own value is only True on the EXACT render where it was clicked, so on

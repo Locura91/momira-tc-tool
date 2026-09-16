@@ -53,15 +53,19 @@ def _read_app_py():
 
 
 def _extraction_block():
+    # 2026-09-16: extract_hotel_data's human_hint argument changed from the raw hp_hint text box
+    # to combined_hint (the contract-purpose answer folded in ahead of it - see
+    # test_2026_09_16_hotel_purpose_before_extraction_and_code_picker.py) - match on the stable
+    # part of the call (up to human_hint=) rather than the exact old argument name.
     src = _read_app_py()
     return src.split(
-        'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)'
+        'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint='
     )[1].split('st.session_state.hp_phase = "reviewing"')[0]
 
 
 def test_masterdata_seed_images_are_folded_into_hp_data_images_after_extraction():
     src = _read_app_py()
-    assert 'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)' in src
+    assert 'st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=' in src
     # The auto-fold must happen AFTER hp_data is assigned (so it starts from whatever
     # extract_hotel_data actually returned) and must extend rather than overwrite, in case
     # extraction itself ever populates "images".
