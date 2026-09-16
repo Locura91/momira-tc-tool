@@ -71,6 +71,18 @@ def test_the_real_hotel_ranks_above_the_distant_unrelated_resorts():
     )
 
 
+def test_the_distant_sharm_resorts_are_excluded_entirely_not_just_outranked():
+    # CONFIRMED HARD RULE (product owner, 2026-09-16): "the destination cannot be further than
+    # 150 km." The Sharm resorts are ~870km from Siwa Oasis - real live results (from the
+    # screenshot that prompted this) showed them anyway, at 68-70% "match confidence". With a
+    # destination given, they must not appear in the results AT ALL now, not merely rank lower.
+    index = _index_missing_country_code_on_the_real_match()
+    results = mm.find_candidates("Siwa Shali Resort", index, country_code="EG", lat=29.203, lon=25.519)
+    ids = {r["id"] for r in results}
+    assert ids == {"TC-SIWA"}
+    assert "TC-SHARM-1" not in ids and "TC-SHARM-2" not in ids and "TC-SHARM-3" not in ids
+
+
 def test_country_mismatch_warning_is_wired_into_both_masterdata_search_screens():
     src = _read_app_helpers()
     # _render_hotel_masterdata_step (new-hotel Step 3) and _render_hotel_automap_manual_search
@@ -78,3 +90,28 @@ def test_country_mismatch_warning_is_wired_into_both_masterdata_search_screens()
     # must show the human why a flagged candidate is there.
     assert src.count('cand.get("country_mismatch")') == 2
     assert "Outside the country you searched for" in src
+
+
+def test_find_by_raw_substring_is_unfiltered_and_unscored():
+    # Deliberately does NOT go through _MIN_NAME_SCORE/country/geo at all - a diagnostic tool to
+    # answer "is this hotel in our local copy at all", independent of whether find_candidates
+    # would have surfaced it.
+    index = [
+        {"id": "TC-1", "name": "Siwa Shali Resort", "countryCode": "", "giataId": None},
+        {"id": "TC-2", "name": "Completely Unrelated Guesthouse", "countryCode": "EG", "giataId": None},
+    ]
+    hits = mm.find_by_raw_substring("shali", index)
+    assert [h["id"] for h in hits] == ["TC-1"]
+
+
+def test_find_by_raw_substring_case_insensitive_and_handles_blank_input():
+    index = [{"id": "TC-1", "name": "Siwa Shali Resort", "countryCode": "", "giataId": None}]
+    assert [h["id"] for h in mm.find_by_raw_substring("SHALI", index)] == ["TC-1"]
+    assert mm.find_by_raw_substring("", index) == []
+    assert mm.find_by_raw_substring("shali", []) == []
+
+
+def test_raw_search_debug_tool_is_wired_into_the_masterdata_step():
+    src = _read_app_helpers()
+    assert "find_by_raw_substring" in src
+    assert "Not finding a hotel you know is in Travel Compositor?" in src

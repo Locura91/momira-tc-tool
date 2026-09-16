@@ -34,19 +34,39 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 from text_normalize import normalize_name as _norm
 
-# Below this, a candidate is noise rather than a real suggestion - keeps the picker short and
-# avoids showing a human a "match" that shares nothing but a common word like "Hotel" or "Resort".
-_MIN_NAME_SCORE = 0.45
+# CONFIRMED PRODUCT-OWNER RULE (2026-09-16, after seeing "Siwa Shali Resort" search results
+# include Sharm-area resorts 900+ km away at 68-70% "match confidence"): "The name must be
+# closer searched to the one i type in, the destination cannot be further than 150 km." Two
+# separate tightenings below implement this - see _score_records and find_candidates.
 
-# Within this distance a geolocation match meaningfully boosts confidence; beyond it, no boost.
+# Below this, a candidate is noise rather than a real suggestion - keeps the picker short and
+# avoids showing a human a "match" that shares nothing but a common word like "Hotel" or
+# "Resort". Raised from 0.45 (2026-09-16): plain difflib similarity alone gave a hotel like
+# "Sharm Resort" a 69% score against a search for "Siwa Shali Resort" - both are "<place>
+# Resort", which is enough shared text for SequenceMatcher to call it close, without the two
+# hotels having anything real in common. See _SUBSTRING_BOOST below for why this rise doesn't
+# also break the legitimate case of typing only part of a hotel's real name.
+_MIN_NAME_SCORE = 0.72
+
+# A human typing a SHORTENED version of the real name (e.g. "Steigenberger" for "Steigenberger
+# Golf Resort El Gouna") is a normal, wanted search, not noise - but its plain SequenceMatcher
+# ratio can sit as low as ~0.55, well under _MIN_NAME_SCORE above. Boosted only when the
+# (normalized) query is fully contained in the candidate name or vice versa - a real substring
+# relationship, unlike two names that merely share common words/letters in different places.
+_SUBSTRING_BOOST = 0.20
+
+# Within this distance a geolocation match meaningfully boosts confidence.
 _GEO_BOOST_RADIUS_KM = 50.0
 _GEO_BOOST_WEIGHT = 0.15
 
-# Beyond this distance, a candidate is very unlikely to genuinely be the searched-for property -
-# a name-only match that far away gets a confidence PENALTY rather than nothing, so it doesn't
-# quietly outrank a real nearby candidate in the country-mismatch fallback below.
-_GEO_PENALTY_RADIUS_KM = 300.0
-_GEO_PENALTY_WEIGHT = 0.25
+# CONFIRMED HARD RULE (product owner, 2026-09-16, verbatim: "the destination cannot be further
+# than 150 km"): when the caller supplies a destination lat/lon AND the candidate record has its
+# own geolocation to compare against, anything farther than this is EXCLUDED outright - not just
+# scored lower. A hotel 900km from the place a human typed is never the right answer regardless
+# of how its name happens to score, so no name similarity can outweigh this. Only applies when a
+# real distance was actually computed - a record with no geolocation of its own can't be judged
+# this way and is left to name matching alone, same as when the caller gives no destination.
+_GEO_HARD_LIMIT_KM = 150.0
 
 # A country-filtered top match at or above this is trusted outright - no need to also search
 # outside the filter. Below it, the country filter itself might be the problem (see the
@@ -55,7 +75,14 @@ _STRONG_MATCH_THRESHOLD = 0.80
 
 
 def _name_score(query: str, candidate: str) -> float:
-    return SequenceMatcher(None, _norm(query), _norm(candidate)).ratio()
+    """Plain similarity, boosted when one name is fully contained in the other (normalized) -
+    see _SUBSTRING_BOOST's own docstring for why that specific case earns a boost and a
+    coincidental "both contain the word Resort" case does not."""
+    norm_query, norm_candidate = _norm(query), _norm(candidate)
+    score = SequenceMatcher(None, norm_query, norm_candidate).ratio()
+    if norm_query and norm_candidate and (norm_query in norm_candidate or norm_candidate in norm_query):
+        score = min(1.0, score + _SUBSTRING_BOOST)
+    return score
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -88,13 +115,12 @@ def _score_records(query: str, records: List[Dict[str, Any]], lat: Optional[floa
             r_lat, r_lon = geoloc.get("latitude"), geoloc.get("longitude")
             if isinstance(r_lat, (int, float)) and isinstance(r_lon, (int, float)):
                 geo_km = _haversine_km(lat, lon, r_lat, r_lon)
+                if geo_km > _GEO_HARD_LIMIT_KM:
+                    # CONFIRMED HARD RULE - see _GEO_HARD_LIMIT_KM's own comment. Not a score
+                    # penalty: this candidate is dropped entirely, no name score can outweigh it.
+                    continue
                 if geo_km <= _GEO_BOOST_RADIUS_KM:
                     score = min(1.0, score + _GEO_BOOST_WEIGHT * (1 - geo_km / _GEO_BOOST_RADIUS_KM))
-                elif geo_km > _GEO_PENALTY_RADIUS_KM:
-                    # A name-only match this far from the given destination is very unlikely to
-                    # genuinely be the property being searched for - penalized, not just left
-                    # unboosted, so it can't quietly outrank a real nearby candidate.
-                    score = max(0.0, score - _GEO_PENALTY_WEIGHT)
 
         entry = {**record, "score": round(score, 4), "name_score": round(name_score, 4),
                  "geo_km": round(geo_km, 1) if geo_km is not None else None}
@@ -157,6 +183,34 @@ def find_candidates(
         scored.sort(key=lambda r: r["score"], reverse=True)
 
     return scored[:limit]
+
+
+def find_by_raw_substring(text: str, index: List[Dict[str, Any]], limit: int = 50) -> List[Dict[str, Any]]:
+    """Diagnostic tool, not a matching path a normal search uses: a plain, UNSCORED, UNFILTERED
+    case-insensitive substring search over the whole local index's own 'name' field - no
+    _MIN_NAME_SCORE threshold, no country filter, no geo. Answers one narrow question directly:
+    "is a hotel with this text anywhere in our local copy at all, and if so, what does Travel
+    Compositor's own record actually say for its country/name?" - rather than leaving that as a
+    guess when find_candidates comes back empty or wrong.
+
+    CONFIRMED NEED (product owner, 2026-09-16): after find_candidates' country-filter fallback
+    fix still didn't surface "Siwa Shali Resort" (a real hotel confirmed to exist in Travel
+    Compositor's own "Automap with master" search), the open question became whether the record
+    is missing from our LOCAL COPY entirely (a sync completeness/coverage gap - a different bug
+    from the one already fixed) versus present but scoring too low for some other reason. This
+    function exists so that question has a direct answer instead of another guess."""
+    query = (text or "").strip().lower()
+    if not query or not index:
+        return []
+    out = []
+    for record in index:
+        if not isinstance(record, dict):
+            continue
+        if query in (record.get("name") or "").strip().lower():
+            out.append(record)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def find_by_giata_id(giata_id: str, index: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

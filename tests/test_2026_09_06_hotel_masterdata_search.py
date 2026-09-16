@@ -87,41 +87,42 @@ def test_country_filter_is_case_insensitive():
     assert [r["id"] for r in results_lower] == [r["id"] for r in results_upper]
 
 
-def test_geolocation_boosts_score_for_the_nearby_record_over_a_similarly_named_one():
-    # Both Steigenberger hotels share a lot of name overlap; a real geolocation near El Gouna
-    # should push TC-1 further ahead of TC-2 than name similarity alone would.
+def test_geolocation_prefers_the_nearby_record_over_a_similarly_named_distant_one():
+    # Both Steigenberger hotels share a lot of name overlap and would both come back without a
+    # destination given. TC-2 (Cairo) is genuinely ~440km from El Gouna - once a real
+    # geolocation near El Gouna is given, the 150km hard cutoff (product owner, 2026-09-16)
+    # drops it entirely rather than just nudging TC-1 ahead of it by score.
     no_geo = mm.find_candidates("Steigenberger", _INDEX)
-    no_geo_gap = next(r for r in no_geo if r["id"] == "TC-1")["score"] - next(r for r in no_geo if r["id"] == "TC-2")["score"]
+    assert {r["id"] for r in no_geo} == {"TC-1", "TC-2"}
 
     with_geo = mm.find_candidates("Steigenberger", _INDEX, lat=27.4, lon=33.68)
-    with_geo_gap = next(r for r in with_geo if r["id"] == "TC-1")["score"] - next(r for r in with_geo if r["id"] == "TC-2")["score"]
-
-    assert with_geo_gap > no_geo_gap
+    assert {r["id"] for r in with_geo} == {"TC-1"}
 
 
-def test_moderately_far_geolocation_gives_no_boost_but_no_penalty_either():
-    # Between the boost radius and the penalty radius, geo distance is simply not informative
+def test_moderately_far_geolocation_gives_no_boost_but_is_still_allowed_through():
+    # Between the boost radius and the hard cutoff, geo distance is simply not informative
     # enough either way - score should equal the plain name score, same as always.
     index = [{"id": "TC-4", "giataId": 444, "name": "Steigenberger Golf Resort El Gouna",
               "geolocation": {"latitude": 27.394, "longitude": 33.679}, "countryCode": "EG"}]
-    # ~150km away - past the 50km boost radius, well short of the 300km penalty radius.
+    # ~134km away - past the 50km boost radius, still short of the 150km hard cutoff.
     results = mm.find_candidates("Steigenberger Golf Resort El Gouna", index, lat=28.6, lon=33.6)
     top = results[0]
-    assert mm._GEO_BOOST_RADIUS_KM < top["geo_km"] < mm._GEO_PENALTY_RADIUS_KM
+    assert mm._GEO_BOOST_RADIUS_KM < top["geo_km"] < mm._GEO_HARD_LIMIT_KM
     assert top["score"] == top["name_score"]
 
 
-def test_very_far_geolocation_penalizes_score_instead_of_just_withholding_the_boost():
-    # CONFIRMED FIX (2026-09-16, alongside the country-filter fallback): a name-only match
-    # thousands of km from the given destination is very unlikely to really be the same
-    # property - previously this left the score untouched (same as a next-door match with no
-    # geo data at all), letting a coincidentally-similar far-away name rank as confidently as a
-    # real nearby one. Now it's penalized instead.
+def test_geolocation_beyond_150km_excludes_the_candidate_entirely():
+    # CONFIRMED HARD RULE (product owner, 2026-09-16, verbatim): "the destination cannot be
+    # further than 150 km." Real example that prompted this: searching "Siwa Shali Resort" with
+    # a geocoded destination returned Sharm-area resorts 900+ km away at 68-70% "match
+    # confidence" - clearly wrong regardless of name score. A candidate this far from the given
+    # destination is now dropped outright, not merely scored lower, so no name similarity can
+    # outweigh it.
     results = mm.find_candidates("Steigenberger Golf Resort El Gouna", _INDEX, lat=18.7, lon=-68.4)
-    top = results[0]
-    assert top["geo_km"] is not None and top["geo_km"] > mm._GEO_PENALTY_RADIUS_KM
-    assert top["score"] == round(max(0.0, top["name_score"] - mm._GEO_PENALTY_WEIGHT), 4)
-    assert top["score"] < top["name_score"]
+    assert not any(r["id"] == "TC-1" for r in results), (
+        "TC-1 is thousands of km from the given destination and must be excluded entirely, "
+        "even though its name is an exact match"
+    )
 
 
 def test_blank_query_or_empty_index_returns_nothing_and_never_raises():
