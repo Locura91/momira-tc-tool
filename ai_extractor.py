@@ -212,6 +212,13 @@ Rules:
   season/holiday without exact dates (e.g. "Christmas/New Year", "Peak Season"), use your best real-world
   date range for that period and say so in pricing_notes - don't leave the date range empty just because
   exact dates weren't spelled out.
+  CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): specifically for an Easter/Easter holiday
+  surcharge with no exact dates of its own stated in the source, do NOT estimate a range yourself - use
+  these exact confirmed windows instead: 30 March 2027 - 8 April 2027 (travel_start_date 2027-03-30,
+  travel_end_date 2027-04-08), and 10 April 2028 - 25 April 2028 (travel_start_date 2028-04-10,
+  travel_end_date 2028-04-25). Use whichever year's window overlaps this product's own validity dates; if
+  neither year applies, fall back to the general best-real-world-guess rule above. If the source states
+  its OWN explicit Easter dates, always use those instead of this confirmed default.
   CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND
   the "per_pax" flag below; getting the combination wrong over- or under-charges the customer, so follow
   this exactly:
@@ -2194,7 +2201,7 @@ Extract:
   on this record - there is no equivalent for single/double occupancy.
 - supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them (upgrades, optional excursions), OR a peak-season/holiday surcharge, that apply SPECIFICALLY to bookings of THIS Modality. Do NOT include anything already covered in included/excluded, and do NOT include a supplement that the source clearly ties to a DIFFERENT Modality.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional CO2 offset contribution") - never add these as a supplement. This is a deliberate exclusion, not an oversight.
-  CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes.
+  CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes. CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): specifically for an Easter/Easter holiday surcharge with no exact dates of its own stated in the source, do NOT estimate - use these exact confirmed windows instead: 30 March 2027 - 8 April 2027 (travel_start_date 2027-03-30, travel_end_date 2027-04-08), and 10 April 2028 - 25 April 2028 (travel_start_date 2028-04-10, travel_end_date 2028-04-25) - whichever year overlaps this Modality's own validity dates; if neither applies, fall back to the general best-guess rule above. If the source states its OWN explicit Easter dates, use those instead.
   CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND the "per_pax" flag; getting the combination wrong over- or under-charges the customer:
   - "per stay" / a flat one-time amount (neither "per person" nor "per night"): price = the stated flat amount, per_pax: false. Never multiply.
   - "per person" (and NOT also "per night"): price = the stated per-person amount as-is - do NOT multiply by a pax count. Set per_pax: true so Travel Compositor's own booking engine multiplies it by however many travelers actually book (pax is a min/max range at extraction time, never one fixed number).
@@ -2818,7 +2825,12 @@ Extract:
   amount (e.g. "100% surcharge" on a guide-language surcharge entry, meaning it doubles during the holiday),
   compute the actual currency delta from that other amount and output it here as its own entry WITH the
   holiday's own real start_date/end_date (e.g. "5-9 February 2027" for Tet) - explain the percentage-of-what
-  calculation in pricing_notes so a human can verify it. If the holiday's
+  calculation in pricing_notes so a human can verify it. CONFIRMED EASTER DATES RULE (product owner,
+  2026-09-16): specifically for an Easter/Easter holiday surcharge with no exact dates of its own stated
+  in the source, do NOT leave it undated - use these exact confirmed dates instead: start_date 2027-03-30,
+  end_date 2027-04-08 (30 March - 8 April 2027), or start_date 2028-04-10, end_date 2028-04-25 (10-25
+  April 2028) - whichever year overlaps this Modality's own validity dates; if the source states its own
+  explicit Easter dates, use those instead. If the holiday's
   dates are genuinely not stated (e.g. "Public Holidays (to be advised at time of booking)"), give it NO
   dates rather than inventing any - per the rule above, an undated entry still publishes, covering the
   Modality's whole validity window, which is the safer default when the real window is unknown.
@@ -3554,6 +3566,10 @@ Extract:
   that same price delta.
   HOW TO FILL THIS FROM A HOLIDAY/PEAK-DATE SURCHARGE: if stated as a PERCENTAGE, compute the actual
   currency delta and output it here with the holiday's own dates - explain the calculation in pricing_notes.
+  CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): specifically for an Easter/Easter holiday
+  surcharge with no exact dates of its own stated in the source, do NOT leave it undated - use these exact
+  confirmed dates instead: 2027-03-30 to 2027-04-08, or 2028-04-10 to 2028-04-25 - whichever year overlaps
+  this Modality's own validity dates; if the source states its own explicit Easter dates, use those instead.
   If the holiday's dates are not stated, give it NO dates rather than inventing any - an undated entry
   still publishes, covering the Modality's whole validity window.
   Empty list if the document prices no extras/seasonal variation at all - never invent one.
@@ -4141,7 +4157,12 @@ Extract:
   round, and never split it into two entries.  If the source states no hours at all, leave both empty.
   DATES: only fill start_date/end_date if the surcharge itself is restricted to a date range (e.g. a
   Christmas-only surcharge). A permanent night surcharge has NO dates of its own - leave both empty and
-  it will inherit the transfer's own validity window.
+  it will inherit the transfer's own validity window. CONFIRMED EASTER DATES RULE (product owner,
+  2026-09-16): specifically for an Easter/Easter holiday surcharge with no exact dates of its own stated
+  in the source, use these exact confirmed dates instead of leaving it undated: start_date 2027-03-30,
+  end_date 2027-04-08 (30 March - 8 April 2027), or start_date 2028-04-10, end_date 2028-04-25 (10-25
+  April 2028) - whichever year overlaps this transfer's own validity dates; if the source gives its own
+  explicit Easter dates, use those instead.
   If a mandatory-sounding fee only applies to a subset of pickups within a broader zone/area (e.g. a
   harbor-only permit fee on a route that also serves airport pickups), do NOT put it here - put a
   plain-English note about it in location_notes instead, since this schema cannot apply a fee
@@ -4762,7 +4783,12 @@ Both use the same shape (supplements never use type="STAY_TO_PAY" or stay/pay - 
    "stay": <int, only for STAY_TO_PAY, e.g. 7 for "stay 7">, "pay": <int, only for STAY_TO_PAY, e.g. 6 for "pay 6">,
    "release_days": null, "minimum_stay": null, "maximum_stay": null,
    "minimum_adults": null, "maximum_adults": null, "minimum_childrens": null, "maximum_childrens": null,
-   "travel_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the stay-date window this applies to),
+   "travel_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the stay-date window this applies to).
+   CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): for a supplement named as an Easter/Easter
+   holiday surcharge with no exact dates of its own stated in this document, do NOT leave travel_windows
+   empty - use these exact confirmed windows instead: 2027-03-30 to 2027-04-08 (30 March - 8 April 2027),
+   or 2028-04-10 to 2028-04-25 (10-25 April 2028) - whichever year overlaps the hotel's own contract
+   period; if the document states its own explicit Easter dates, use those instead.
    "booking_windows": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (the window during which this must be BOOKED, if the document states a booking deadline separate from the stay window),
    "room_names": [] (which room type name(s), from the "rooms" list above, this applies to - empty if it applies to all rooms),
    "meal_plans": [] (a list of plain meal-plan hint strings, e.g. ["Half Board"] - same free-text style as
