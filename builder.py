@@ -4458,6 +4458,54 @@ def build_transport_payloads(
     }
 
 
+# CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-16, live "Aswan - Alexandria Train
+# Ticket" duplicate): the Name became "Aswan - Alexandria Train Ticket (return)" and the
+# Description was left completely unswapped ("Train ticket from Aswan to Alexandria..."),
+# neither ever actually reading in the new direction. Root cause: api_client.resolve_transport_base
+# returns the FORMAL Transport Base name ("Aswan Train Station", "Alexandria Train Station"), but
+# real transport names/descriptions almost always use just the bare place ("Aswan", "Alexandria")
+# - so the literal-substring check inside _swap_route_text/_swap_route_text_if_found (looking for
+# the FULL formal name) never matched, even though the text plainly does name the route. Transfer
+# doesn't have this problem (build_transfer_swap_payload's departure/arrival.name IS already
+# whatever informal string the source used), so this is scoped to Transport only.
+_TRANSPORT_BASE_NAME_SUFFIXES = [
+    "international airport", "airport", "railway station", "train station", "bus station",
+    "bus terminal", "ferry terminal", "ferry port", "station", "terminal", "harbour", "harbor",
+    "port",
+]
+
+
+def _transport_location_name_aliases(name: str) -> List[str]:
+    """Candidate names to try when swapping route text for Transport, longest/most specific
+    first: the full formal Transport Base name, then (if it ends with a generic location-type
+    word like "Train Station"/"Airport") the bare place name with that suffix stripped. Only one
+    suffix is ever stripped, to avoid over-shortening a genuinely compound place name."""
+    name = (name or "").strip()
+    if not name:
+        return []
+    aliases = [name]
+    low = name.lower()
+    for suffix in _TRANSPORT_BASE_NAME_SUFFIXES:
+        if low.endswith(" " + suffix):
+            core = name[: -(len(suffix) + 1)].strip(" -,")
+            if core and core not in aliases:
+                aliases.append(core)
+            break
+    return aliases
+
+
+def _find_present_transport_aliases(text: str, departure_aliases: List[str], arrival_aliases: List[str]):
+    """Returns the first (departure_alias, arrival_alias) pair that BOTH appear literally in
+    text, trying aliases longest/most-formal first so an exact full-name match always wins over
+    the shortened fallback. None if no pair is found in this text at all."""
+    text = text or ""
+    for dep_alias in departure_aliases:
+        for arr_alias in arrival_aliases:
+            if dep_alias and arr_alias and dep_alias in text and arr_alias in text:
+                return dep_alias, arr_alias
+    return None
+
+
 def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api_client: TravelCompositorAPI):
     """Transport counterpart to build_transfer_swap_payload - given a full existing
     ContractTransportVO payload (exactly what GET /transport/{supplierId}/{transportId} returns),
@@ -4500,6 +4548,18 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     payload = copy.deepcopy(existing_transport_payload or {})
     payload.pop("id", None)
     payload["active"] = True
+    # CONFIRMED REAL PRODUCTION ERROR (product owner, 2026-09-16, a live "Aswan - Alexandria
+    # Train Ticket" duplicate publish): "createTransport.transport.airlineCode: must not be
+    # null" - a real GET /transport/{supplierId}/{transportId} response can genuinely omit
+    # airlineCode entirely (schemas.py's ContractTransportVO docstring already flagged this as
+    # confirmed-absent-from-every-real-GET-example), so deepcopy-ing the source straight through
+    # carries that missing/null value into the CREATE payload. Unlike ContractTransportVO's own
+    # pydantic default (which only ever applies when this app BUILDS a transport field-by-field
+    # via build_transport_payloads), this function works on a raw dict copied from a live GET
+    # response, so nothing defaults it automatically - Travel Compositor tolerates it missing on
+    # GET but rejects it as null specifically on CREATE. Same "" default schemas.py already uses.
+    if not payload.get("airlineCode"):
+        payload["airlineCode"] = ""
 
     segments = payload.get("segments") or []
     old_departure_code = (segments[0].get("departureLocationCode") if segments else "") or ""
@@ -4526,19 +4586,35 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
 
     old_departure_name = _resolve_name(old_departure_code)
     old_arrival_name = _resolve_name(old_arrival_code)
+    departure_aliases = _transport_location_name_aliases(old_departure_name)
+    arrival_aliases = _transport_location_name_aliases(old_arrival_name)
+
+    def _swap_with_aliases(text: str):
+        """Tries the full formal name pair first, then the shortened alias pair, before falling
+        back to _swap_route_text's own "(return)" suffix - see _transport_location_name_aliases'
+        docstring for why a shortened alias is often what's needed."""
+        pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
+        dep, arr = pair if pair else (old_departure_name, old_arrival_name)
+        return _swap_route_text(text, dep, arr)
+
+    def _swap_with_aliases_if_found(text: str):
+        pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
+        if not pair:
+            return text, False
+        return _swap_route_text_if_found(text, pair[0], pair[1])
 
     swap_report = {"name": None, "datasheet_name": None, "description": None}
     if payload.get("name"):
-        payload["name"] = _swap_route_text(payload["name"], old_departure_name, old_arrival_name)
+        payload["name"] = _swap_with_aliases(payload["name"])
         swap_report["name"] = True
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     if en.get("name"):
-        en["name"] = _swap_route_text(en["name"], old_departure_name, old_arrival_name)
+        en["name"] = _swap_with_aliases(en["name"])
         swap_report["datasheet_name"] = True
     if en.get("description"):
-        en["description"], swapped = _swap_route_text_if_found(en["description"], old_departure_name, old_arrival_name)
+        en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
     datasheets["EN"] = en
     payload["datasheets"] = datasheets

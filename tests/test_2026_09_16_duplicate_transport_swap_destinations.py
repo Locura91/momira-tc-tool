@@ -67,7 +67,9 @@ def _real_transport_get_response():
         "active": True,
         "id": "TRANSPORT-412579",
         "name": "One-way transfer Marsa Matruh to Alexandria Airport (ALY)",
-        "airlineCode": "",
+        # airlineCode is DELIBERATELY ABSENT here, matching real production GET responses (see
+        # schemas.py's ContractTransportVO docstring, and the real 2026-09-16 CREATE rejection
+        # this reproduces - see test_missing_airline_code_is_defaulted_to_empty_string below).
         "segments": [{
             "departureLocationCode": "meet_marsa_matruh",
             "arrivalLocationCode": "meet_alexandria_airport",
@@ -219,6 +221,101 @@ def test_option_original_never_mutated():
     original_code = option["code"]
     build_transport_option_swap_payload(option, "Alexandria Airport (ALY)", "Marsa Matruh")
     assert option["code"] == original_code
+
+
+# ---------------------------------------------------------------------------------------------
+# Two REAL production bugs (product owner, 2026-09-16, live "Aswan - Alexandria Train Ticket"
+# duplicate-and-swap publish attempt) - both reported live, after the feature above first shipped:
+#
+# 1. "createTransport.transport.airlineCode: must not be null" - the real GET response for this
+#    transport had no airlineCode at all (schemas.py's ContractTransportVO docstring already
+#    flagged this as confirmed-absent-from-every-real-GET-example), and deepcopy-ing it straight
+#    through carried the missing/null value into the CREATE payload, which Travel Compositor
+#    rejects outright even though it tolerates the field being absent on GET.
+#
+# 2. "here is also an error, as no Name and no Description change was made" (screenshot: Name
+#    became "Aswan - Alexandria Train Ticket (return)", Description stayed completely unswapped
+#    reading "Train ticket from Aswan to Alexandria..."). Root cause: api_client.
+#    resolve_transport_base returns the FORMAL Transport Base name ("Aswan Train Station",
+#    "Alexandria Train Station"), but the real name/description only ever say the bare place
+#    ("Aswan", "Alexandria") - so the old literal-substring check never matched even though the
+#    text plainly does name the route. Fixed via _transport_location_name_aliases, which also
+#    tries the place name with a trailing "Train Station"/"Airport"/etc suffix stripped.
+# ---------------------------------------------------------------------------------------------
+
+def _real_train_ticket_get_response():
+    """Reproduces the exact real record from the live bug report: a Travel Compositor GET
+    response with NO airlineCode field at all, and a name/description that only ever use the
+    bare place names ("Aswan", "Alexandria"), never the formal Transport Base names."""
+    return {
+        "active": True,
+        "id": "TRANSPORT-425287",
+        "name": "Aswan - Alexandria Train Ticket",
+        # no "airlineCode" key at all - matches the real live GET response exactly.
+        "segments": [{
+            "departureLocationCode": "meet_aswan", "arrivalLocationCode": "meet_alexandria",
+            "departureTime": "08:00:00", "arrivalTime": "14:00:00", "plusDays": 0,
+        }],
+        "transportType": "TRAIN",
+        "datasheets": {"EN": {
+            "name": "Aswan - Alexandria Train Ticket",
+            "description": "<p>Train ticket from Aswan to Alexandria. The estimated departure time "
+                            "may change slightly due to ticket availability.</p><p>Three different "
+                            "categories are available:</p><ul><li>AC First Class Seat</li>"
+                            "<li>Sleeper Double Cabin</li><li>Sleeper Single Cabin</li></ul>",
+        }},
+        "currency": "USD",
+        "baseAdultPrice": 105.0, "baseChildrenPrice": 105.0, "baseInfantPrice": 0.0,
+        "startDate": "2026-08-25", "endDate": "2049-12-31",
+        "optionCodes": ["AC First Class Seat"],
+        "cancellationRanges": [{"days": 30, "percentage": 0, "isBeforeStart": True}],
+    }
+
+
+class _TrainStationApiClient:
+    """resolve_transport_base returning the FORMAL Transport Base name, exactly as the real bug
+    report's success banner showed ("Aswan Train Station", "Alexandria Train Station") - the
+    formal name is deliberately NOT what the fixture's name/description text says."""
+    _CODE_TO_NAME = {"meet_aswan": "Aswan Train Station", "meet_alexandria": "Alexandria Train Station"}
+
+    def resolve_transport_base(self, code):
+        name = self._CODE_TO_NAME.get(code)
+        return {"code": code, "name": name, "valid": bool(name), "match_type": "code"}
+
+
+def test_missing_airline_code_is_defaulted_to_empty_string():
+    source = _real_train_ticket_get_response()
+    assert "airlineCode" not in source  # sanity-check the fixture matches the real bug report
+    payload, _report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())
+    assert payload["airlineCode"] == ""
+
+
+def test_name_swaps_using_the_bare_place_name_when_the_formal_name_never_appears():
+    source = _real_train_ticket_get_response()
+    payload, report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())
+    assert payload["name"] == "Alexandria - Aswan Train Ticket"
+    assert payload["datasheets"]["EN"]["name"] == "Alexandria - Aswan Train Ticket"
+    assert report["name"] is True
+    assert report["datasheet_name"] is True
+
+
+def test_description_swaps_using_the_bare_place_name_when_the_formal_name_never_appears():
+    source = _real_train_ticket_get_response()
+    payload, report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())
+    description = payload["datasheets"]["EN"]["description"]
+    assert "Train ticket from Alexandria to Aswan." in description
+    assert "AC First Class Seat" in description  # untouched prose stays exactly as-is
+    assert report["description"] is True
+
+
+def test_full_formal_name_is_still_preferred_over_the_short_alias_when_present():
+    # When the text DOES spell out the full formal name, that exact match must win over the
+    # shortened alias - never swap a short alias if the fuller, more specific one is right there.
+    source = _real_train_ticket_get_response()
+    source["name"] = "Aswan Train Station to Alexandria Train Station - Ticket"
+    source["datasheets"]["EN"]["name"] = source["name"]
+    payload, _report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())
+    assert payload["name"] == "Alexandria Train Station to Aswan Train Station - Ticket"
 
 
 def _read_app_py():
