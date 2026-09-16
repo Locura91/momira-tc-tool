@@ -390,9 +390,31 @@ def _render_review_and_publish(client, supplier_id):
 
     publish_disabled = not match_checked or blocks_as_duplicate or not dates_ok or not segments_ok
     if st.button("🚀 Publish — CREATE new transport", type="primary", key="dtp_publish", disabled=publish_disabled):
+        # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-16): the SAME "java.lang.
+        # IllegalArgumentException: An instance of a null PK has been incorrectly provided for
+        # this find operation" error kept happening even after the optionCodes-regeneration fix
+        # AND the companyName fix - diagnosed live via screen-share a second time: the actual
+        # submitted parent payload had every schema field present with sane values (including a
+        # correctly-matching, freshly-generated optionCodes: ["ALEASW14"]) and still failed on
+        # the PARENT create call itself, before any Option was ever submitted. The one thing left
+        # that's genuinely different from the WORKING path: build_transport_payloads' own create
+        # path (flows/multi_transport.py) has only ever been exercised going through
+        # update_transport for a real, already-existing Transport (Transport has had NO working
+        # create path in this app since 2026-08-12 per this file's own module docstring) - so a
+        # brand-new Transport's optionCodes pointing at Options that DON'T EXIST YET has likely
+        # never actually been proven to work on a real CREATE call at all, only assumed to mirror
+        # the update case. Travel Compositor's create endpoint appears to try to resolve/look up
+        # each optionCodes entry as a real entity even on create, and a code that doesn't exist
+        # yet resolves to a null PK. FIX: create the parent with optionCodes EMPTY (nothing to
+        # resolve), create every Option under the new id (exactly as before), THEN a follow-up
+        # PUT sets the parent's optionCodes to the now-real codes - same two-step shape Hotel's
+        # two-phase build already uses for its own analogous forward-reference problem (room
+        # providerCodes only exist after the parent's first create response).
+        create_payload = dict(payload)
+        create_payload["optionCodes"] = []
         with st.spinner("Publishing parent transport to Travel Compositor..."):
             try:
-                result = client.create_transport(supplier_id, payload)
+                result = client.create_transport(supplier_id, create_payload)
             except Exception as e:
                 show_publish_error(f"publish transport **{payload.get('name') or '(unnamed)'}**", str(e))
                 result = None
@@ -405,11 +427,26 @@ def _render_review_and_publish(client, supplier_id):
                         "occupancy brackets. Check Travel Compositor directly.")
             else:
                 failed_options = []
+                created_codes = []
                 with st.spinner(f"Publishing {len(options)} occupancy bracket(s)..."):
                     for opt in options:
                         opt_result = client.create_transport_option(supplier_id, new_id, opt)
                         if isinstance(opt_result, dict) and "error" in opt_result:
                             failed_options.append((opt.get("code"), opt_result))
+                        else:
+                            created_codes.append(opt.get("code"))
+                if created_codes:
+                    with st.spinner("Linking occupancy bracket(s) to the new transport..."):
+                        link_payload = dict(payload)
+                        link_payload["id"] = new_id
+                        link_payload["optionCodes"] = created_codes
+                        link_result = client.update_transport(supplier_id, link_payload)
+                    if isinstance(link_result, dict) and "error" in link_result:
+                        st.warning(f"⚠️ Published (id: {new_id}) with {len(created_codes)} "
+                                  f"occupancy bracket(s), but couldn't link them to the parent "
+                                  f"record ({link_result.get('message', link_result)}) - open "
+                                  f"the transport in Travel Compositor and set its optionCodes "
+                                  f"manually: " + ", ".join(created_codes))
                 transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
                 if failed_options:
                     st.warning(f"⚠️ Published (id: {new_id}), but {len(failed_options)} of "

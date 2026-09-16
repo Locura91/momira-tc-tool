@@ -410,6 +410,33 @@ def test_success_banner_states_both_the_original_and_the_new_route():
     assert "New route being created:" in src
 
 
+# ---------------------------------------------------------------------------------------------
+# Fourth real bug, same live "Alexandria - Aswan Train Ticket" publish attempt: the SAME null-PK
+# error persisted even after (1) the optionCodes fix above and (2) a companyName default fix in
+# builder.py, confirmed via a second live screen-share that the actual submitted parent payload
+# had every field present with sane values, including a correctly-matching optionCodes -  yet
+# the PARENT create call itself still failed, before any Option was ever submitted. Root cause:
+# Transport has never had a genuinely working, exercised CREATE path in this app (only UPDATE,
+# where the Options already exist) - sending optionCodes that reference Options which don't
+# exist YET apparently makes Travel Compositor's create endpoint try to resolve them and fail
+# with a null PK. Fix: create the parent with optionCodes EMPTY, create every Option under the
+# new id, then a follow-up PUT (update_transport) links the parent to the now-real codes.
+# ---------------------------------------------------------------------------------------------
+
+def test_parent_is_first_created_with_empty_option_codes():
+    src = _read_duplicate_transport_flow()
+    assert 'create_payload["optionCodes"] = []' in src
+    assert "client.create_transport(supplier_id, create_payload)" in src
+
+
+def test_parent_is_linked_to_the_real_option_codes_via_a_follow_up_update_after_options_exist():
+    src = _read_duplicate_transport_flow()
+    assert 'link_payload["optionCodes"] = created_codes' in src
+    assert "client.update_transport(supplier_id, link_payload)" in src
+    # the linking update must carry the real, TC-assigned id, not the pre-create payload's own
+    assert 'link_payload["id"] = new_id' in src
+
+
 def test_step_1_create_menu_offers_the_duplicate_transport_choice():
     src = _read_app_py()
     assert "DUPLICATE_TRANSPORT_CHOICE" in src
