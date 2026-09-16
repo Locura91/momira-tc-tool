@@ -127,24 +127,41 @@ def test_flow_imports_the_ai_rewrite_function():
     assert "from ai_extractor import rewrite_route_description_for_new_direction" in src
 
 
-def test_flow_offers_an_ai_rewrite_button_for_description_and_pickup_description():
+def test_flow_no_longer_offers_a_manual_ai_rewrite_button():
+    # 2026-09-16 follow-up: Chris confirmed the AI rewrite "works perfectly, please automatically
+    # use that already - no human must click additionally on this button." The button is gone;
+    # the rewrite now runs unconditionally (for fields the literal swap couldn't handle) the first
+    # time the payload is built.
     src = _read_duplicate_transfer_flow()
-    assert src.count('st.button("🤖 Rewrite with AI for the new direction"') == 2
+    assert 'st.button("🤖 Rewrite with AI for the new direction"' not in src
     assert 'rewrite_route_description_for_new_direction(' in src
 
 
-def test_flow_only_offers_the_ai_rewrite_button_when_the_literal_swap_failed():
-    # The button must be nested under the "couldn't auto-swap" (swapped is False) branch, not
-    # shown unconditionally - it's meant for the minority case the free literal swap can't handle.
-    # Both the description's and the pickup info's button must each follow their own "is False:"
-    # check within a short distance (i.e. nested directly under it, not just present somewhere
-    # earlier in the file).
+def test_flow_only_calls_the_ai_rewrite_when_the_literal_swap_failed():
+    # The rewrite call must stay guarded by the "couldn't auto-swap" (swap_report.get(field) is
+    # False) check, not run unconditionally on every field - it's meant for the minority case the
+    # free literal swap can't handle.
     src = _read_duplicate_transfer_flow()
-    button_positions = [i for i in range(len(src)) if src.startswith(
-        'st.button("🤖 Rewrite with AI for the new direction"', i)]
-    assert len(button_positions) == 2
-    for button_pos in button_positions:
-        preceding_is_false = src.rfind("is False:", 0, button_pos)
+    call_positions = [i for i in range(len(src)) if src.startswith(
+        'rewrite_route_description_for_new_direction(', i)]
+    assert len(call_positions) >= 1
+    for call_pos in call_positions:
+        preceding_is_false = src.rfind("is False:", 0, call_pos)
         assert preceding_is_false != -1
-        assert button_pos - preceding_is_false < 1200, (
-            "the AI-rewrite button isn't closely nested under its 'is False:' swap-failed check")
+        assert call_pos - preceding_is_false < 1200, (
+            "the AI-rewrite call isn't closely guarded by its 'is False:' swap-failed check")
+
+
+def test_flow_marks_the_swap_report_as_ai_after_a_successful_rewrite():
+    src = _read_duplicate_transfer_flow()
+    assert 'swap_report[field] = "ai"' in src
+
+
+def test_flow_runs_the_rewrite_inside_the_initial_payload_build_not_a_button_callback():
+    # The rewrite must happen once, the first time the payload is built for this source (guarded
+    # by "dtf_payload" not in st.session_state), not re-triggered by a widget click.
+    src = _read_duplicate_transfer_flow()
+    build_block_start = src.index('if "dtf_payload" not in st.session_state:')
+    rewrite_call = src.index('rewrite_route_description_for_new_direction(')
+    next_top_level_marker = src.index('st.session_state.dtf_payload = payload', build_block_start)
+    assert build_block_start < rewrite_call < next_top_level_marker

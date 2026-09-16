@@ -9,20 +9,24 @@ docstring), which left NO way at all in this app to create a brand-new Transfer 
 price_refresh.py's update-existing-only flow remained. This is that missing create path.
 
 SCOPE (confirmed): Transfer only for now (Transport is the natural next step once this is
-proven out). Finding the source product to duplicate is by SEARCHING (departure/arrival text
-against this supplier's live Travel Compositor list, via transfer_matcher's existing similarity
-scoring - or pasting a known Travel Compositor id directly), not from a picked-list of what this
-app has published this session.
+proven out). Finding the source product to duplicate is by pasting a known Travel Compositor id
+directly - not from a picked-list of what this app has published this session.
+
+CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16), simplifying this flow after it was proven out:
+"Search by departure/arrival can be delete in the transfer creation for swap. Not needed." - the
+id-paste path alone covers this flow's real use (a human duplicating a SPECIFIC known record),
+so the search-by-text picker (and its transfer_matcher.suggest_existing_transfer_matches call)
+was removed. Also: "'duplicate Check' not needed, it is always safe to duplicate." - the
+"Check for a matching existing transfer" step (and the Publish-blocking gate that required it)
+was removed for the same reason; publishing a genuine duplicate is a low-cost, easily-fixed
+mistake (delete/deactivate it in Travel Compositor), not one worth a mandatory extra click on
+every single publish.
 
 Everything about the source Transfer (vehicle, price, cancellation text, images, validity dates,
 supplements) is copied exactly - see builder.build_transfer_swap_payload's own docstring for why
 swapping the departure/arrival LOCATION OBJECTS wholesale (not re-typing/re-geocoding a name from
 scratch) is the safer default. The human can still edit the route names, top-level price, and
 the per-occupancy price table before publishing, since the new direction may genuinely differ.
-
-Same duplicate-safety bar as every other create flow in this app: Publish is disabled until the
-human has explicitly checked (and, if a match is found, confirmed it away) that a transfer for
-the NEW swapped route doesn't already exist - see transfer_matcher.suggest_existing_transfer_matches.
 """
 import pandas as pd
 import streamlit as st
@@ -85,8 +89,7 @@ def render_duplicate_transfer_flow(client):
     if st.session_state.get("dtf_supplier_id") != supplier_id:
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.
-        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
-                  "dtf_match_route_fingerprint", "dtf_search_results"):
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info"):
             st.session_state.pop(k, None)
         st.session_state.dtf_supplier_id = supplier_id
 
@@ -98,66 +101,55 @@ def render_duplicate_transfer_flow(client):
 
 
 def _render_pick_source(client, supplier_id):
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): "Search by departure/arrival can be delete
+    # in the transfer creation for swap. Not needed." - a human duplicating a specific record
+    # already knows which one; pasting its id is the whole real use of this flow.
     st.markdown("#### Find the Transfer to duplicate")
-    pick_mode = st.radio(
-        "How do you want to find it?",
-        ["Search by departure/arrival", "I already know its Travel Compositor id"],
-        horizontal=True, key="dtf_pick_mode")
-
-    if pick_mode == "I already know its Travel Compositor id":
-        tid = st.text_input("Transfer id (e.g. TRANSFER-412545)", key="dtf_manual_id").strip()
-        if st.button("Fetch", key="dtf_fetch_manual", disabled=not tid):
-            with st.spinner(f"Fetching {tid}..."):
-                result = client.get_transfer(supplier_id, tid)
-            if isinstance(result, dict) and "error" in result:
-                st.error(f"❌ Couldn't fetch {tid}: {result.get('message', result)}")
-            else:
-                st.session_state.dtf_source = result
-                st.rerun()
-        return
-
-    scol1, scol2 = st.columns(2)
-    with scol1:
-        dep_search = st.text_input("Departure (or part of it)", key="dtf_search_dep")
-    with scol2:
-        arr_search = st.text_input("Arrival (or part of it)", key="dtf_search_arr")
-    if st.button("🔎 Search", key="dtf_search_btn", disabled=not (dep_search or arr_search)):
-        with st.spinner("Fetching this supplier's existing transfers..."):
-            result = client.get_transfers(supplier_id)
+    tid = st.text_input("Transfer id (e.g. TRANSFER-412545)", key="dtf_manual_id").strip()
+    if st.button("Fetch", key="dtf_fetch_manual", disabled=not tid):
+        with st.spinner(f"Fetching {tid}..."):
+            result = client.get_transfer(supplier_id, tid)
         if isinstance(result, dict) and "error" in result:
-            st.error(f"❌ Couldn't fetch this supplier's transfers: {result.get('message', result)}")
-            st.session_state.dtf_search_results = []
+            st.error(f"❌ Couldn't fetch {tid}: {result.get('message', result)}")
         else:
-            existing = result.get("transfer", []) if isinstance(result, dict) else (result or [])
-            st.session_state.dtf_search_results = transfer_matcher.suggest_existing_transfer_matches(
-                dep_search or "", arr_search or "", existing, top_n=10)
-
-    results = st.session_state.get("dtf_search_results")
-    if results:
-        options = [f"{r['name'] or '(unnamed)'} — {r['departure_name']!r} → {r['arrival_name']!r} "
-                  f"({r['transfer_id']}, match {r['score']})" for r in results]
-        picked = st.radio("Pick the one to duplicate:", options, key="dtf_search_pick")
-        picked_idx = options.index(picked)
-        if st.button("Use this one", key="dtf_use_picked"):
-            tid = results[picked_idx]["transfer_id"]
-            with st.spinner(f"Fetching {tid}..."):
-                result = client.get_transfer(supplier_id, tid)
-            if isinstance(result, dict) and "error" in result:
-                st.error(f"❌ Couldn't fetch {tid}: {result.get('message', result)}")
-            else:
-                st.session_state.dtf_source = result
-                st.rerun()
-    elif results == []:
-        st.info("No existing transfers found for this supplier - nothing to duplicate yet. "
-                "Create the first one for this route directly in Travel Compositor, then this "
-                "tool can clone it for the return direction.")
+            st.session_state.dtf_source = result
+            st.rerun()
 
 
 def _render_review_and_publish(client, supplier_id):
     source = st.session_state.dtf_source
     if "dtf_payload" not in st.session_state:
-        (st.session_state.dtf_payload, st.session_state.dtf_swap_report,
-         st.session_state.dtf_route_info) = build_transfer_swap_payload(source)
+        payload, swap_report, route_info = build_transfer_swap_payload(source)
+
+        # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): "the 'Rewrite with AI for the new
+        # direction' works perfectly, please automatically use that already - no human must
+        # click additionally on this button." Runs once, right here, for any field the literal
+        # swap couldn't confidently handle (swap_report[field] is False) - never for a field
+        # that already swapped cleanly for free. swap_report[field] becomes "ai" (distinct from
+        # True/False) only when the rewrite genuinely changed the text, so the review screen can
+        # tell the human it was AI-rewritten rather than silently leaving the old "couldn't
+        # auto-swap" warning up when it no longer applies; if the AI call itself fails or returns
+        # the text unchanged (rewrite_route_description_for_new_direction's own documented
+        # fallback), swap_report[field] stays False and the original warning still shows, so nothing
+        # is silently lost.
+        datasheets = dict(payload.get("datasheets") or {})
+        en = dict(datasheets.get("EN") or {})
+        for field in ("description", "pickupDescription"):
+            if swap_report.get(field) is False:
+                plain = _html_to_plain_for_editing(en.get(field, ""))
+                with st.spinner(f"Rewriting {'description' if field == 'description' else 'pickup information'} with AI for the new direction..."):
+                    rewritten = rewrite_route_description_for_new_direction(
+                        plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+                if rewritten.strip() and rewritten.strip() != plain.strip():
+                    en[field] = _plain_to_html_for_saving(rewritten)
+                    swap_report[field] = "ai"
+        datasheets["EN"] = en
+        payload["datasheets"] = datasheets
+
+        st.session_state.dtf_payload = payload
+        st.session_state.dtf_swap_report = swap_report
+        st.session_state.dtf_route_info = route_info
 
     payload = st.session_state.dtf_payload
     swap_report = st.session_state.get("dtf_swap_report") or {}
@@ -175,8 +167,7 @@ def _render_review_and_publish(client, supplier_id):
               f"{route_info.get('new_arrival_name', '?')}**")
 
     if st.button("↩️ Pick a different Transfer to duplicate", key="dtf_restart"):
-        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
-                  "dtf_match_route_fingerprint", "dtf_search_results"):
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info"):
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -229,24 +220,19 @@ def _render_review_and_publish(client, supplier_id):
     # plain, human-friendly text and convert it back to the same HTML shape automatically on
     # save - the human never sees or types a tag.
     if en.get("description") is not None or swap_report.get("description") is not None:
-        if swap_report.get("description") is False:
-            st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
-                      "both original location names, so it's copied unchanged below. Check it "
-                      "reads correctly for the new direction before publishing.")
-            # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): a real description never
-            # named the arrival point at all - "your booked accommodation in Cairo or Giza"
-            # describes it by ROLE, not by place name, so there was nothing for the literal swap
-            # to find. "We must rewrite the description and the description must understand its
-            # meaning." - a genuine AI rewrite (ai_extractor.rewrite_route_description_for_new_
-            # direction), triggered by this button rather than run automatically on every load
-            # (an extra API call, only needed for the minority the literal swap couldn't handle).
-            if st.button("🤖 Rewrite with AI for the new direction", key="dtf_ai_rewrite_description"):
-                with st.spinner("Rewriting..."):
-                    st.session_state["dtf_description"] = rewrite_route_description_for_new_direction(
-                        _html_to_plain_for_editing(en.get("description", "")),
-                        route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
-                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
-                st.rerun()
+        # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): the AI rewrite now runs automatically
+        # (see the payload-build block above) whenever the literal swap couldn't confidently
+        # handle this field - swap_report["description"] == "ai" means that already happened, so
+        # this just informs the human rather than asking them to click a button. Only the rare
+        # case where the AI rewrite ITSELF made no change (still False) shows the original
+        # "couldn't auto-swap" warning, so nothing is silently lost.
+        if swap_report.get("description") == "ai":
+            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
+                    "reads correctly before publishing.")
+        elif swap_report.get("description") is False:
+            st.warning("⚠️ Couldn't auto-swap the description (even the AI rewrite made no "
+                      "change) - check it reads correctly for the new direction before "
+                      "publishing.")
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
                   "plain text, with a blank line between paragraphs and one item per line for a "
                   "list.")
@@ -255,17 +241,13 @@ def _render_review_and_publish(client, supplier_id):
         en["description"] = _plain_to_html_for_saving(new_plain_description)
 
     if en.get("pickupDescription") is not None or swap_report.get("pickupDescription") is not None:
-        if swap_report.get("pickupDescription") is False:
-            st.warning("⚠️ Couldn't auto-swap the pickup information - it doesn't literally "
-                      "contain both original location names, so it's copied unchanged below. "
-                      "Check it reads correctly for the new direction before publishing.")
-            if st.button("🤖 Rewrite with AI for the new direction", key="dtf_ai_rewrite_pickup"):
-                with st.spinner("Rewriting..."):
-                    st.session_state["dtf_pickup_description"] = rewrite_route_description_for_new_direction(
-                        _html_to_plain_for_editing(en.get("pickupDescription", "")),
-                        route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
-                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
-                st.rerun()
+        if swap_report.get("pickupDescription") == "ai":
+            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
+                    "reads correctly before publishing.")
+        elif swap_report.get("pickupDescription") is False:
+            st.warning("⚠️ Couldn't auto-swap the pickup information (even the AI rewrite made "
+                      "no change) - check it reads correctly for the new direction before "
+                      "publishing.")
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
                   "plain text, with a blank line between paragraphs and one item per line for a "
                   "list.")
@@ -324,49 +306,10 @@ def _render_review_and_publish(client, supplier_id):
                 if k not in ("departure", "arrival", "name", "datasheets", "basePrice",
                              "pricesByOccupancy", "transferToHotel")})
 
-    st.markdown("#### Duplicate check")
-    st.caption("Same safeguard every other create flow here has - confirms a Transfer for THIS "
-              "new (swapped) route doesn't already exist before you publish another one.")
-    current_route_fingerprint = f"{new_dep_name}::{new_arr_name}"
-    if st.session_state.get("dtf_match_route_fingerprint") != current_route_fingerprint:
-        st.session_state.dtf_match_result = None
-        st.session_state.dtf_match_route_fingerprint = current_route_fingerprint
-
-    if st.button("🔎 Check for a matching existing transfer", key="dtf_checkmatch"):
-        with st.spinner("Checking..."):
-            st.session_state.dtf_match_result = transfer_matcher.resolve_transfer_match(
-                client, supplier_id, new_dep_name, new_arr_name)
-            st.session_state.dtf_match_route_fingerprint = current_route_fingerprint
-
-    match_result = st.session_state.get("dtf_match_result")
-    match_checked = match_result is not None
-    blocks_as_duplicate = False
-    if match_result:
-        if match_result.get("fetch_error"):
-            st.warning(f"⚠️ Couldn't fetch this supplier's existing transfers to check for a "
-                      f"match: {match_result['fetch_error'].get('message', match_result['fetch_error'])}.")
-        elif match_result.get("tracked_id"):
-            st.error(f"🚫 This app already tracks a Transfer for this exact route: "
-                    f"**{match_result['tracked_id']}**. Duplicating would create a second, "
-                    f"conflicting record - go update that one instead (Step 1 → Price update to "
-                    f"existing Products), or change the route text above if this is genuinely a "
-                    f"different one.")
-            blocks_as_duplicate = True
-        elif match_result.get("fallback_candidates"):
-            best = match_result["fallback_candidates"][0]
-            if best["score"] >= 0.85:
-                st.warning(f"⚠️ A very similar Transfer already exists: **{best['name'] or '(unnamed)'}** "
-                          f"({best['transfer_id']}) — {best['departure_name']!r} → {best['arrival_name']!r} "
-                          f"(match {best['score']}). Double-check this isn't the same route before publishing.")
-            else:
-                st.info(f"No close match found for this route (best similarity: {best['score']}) - "
-                        f"safe to publish as new.")
-        else:
-            st.info("No existing transfers found for this supplier - safe to publish as new.")
-
-    if not match_checked:
-        st.warning("⚠️ Click **Check for a matching existing transfer** above before publishing.")
-
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): "'duplicate Check' not needed, it is always
+    # safe to duplicate." - removed the "Check for a matching existing transfer" step and the
+    # Publish-blocking gate that required it (transfer_matcher.resolve_transfer_match is no
+    # longer called from this flow at all).
     st.markdown("#### Publish")
     with st.expander("🔎 Preview full payload"):
         st.json(payload)
@@ -377,7 +320,7 @@ def _render_review_and_publish(client, supplier_id):
         st.warning("⚠️ Departure and/or arrival couldn't be resolved to real coordinates - fix "
                   "the names above and re-resolve before publishing.")
 
-    publish_disabled = not match_checked or blocks_as_duplicate or not dates_ok or not geoloc_ok
+    publish_disabled = not dates_ok or not geoloc_ok
     if st.button("🚀 Publish — CREATE new transfer", type="primary", key="dtf_publish", disabled=publish_disabled):
         with st.spinner("Publishing to Travel Compositor..."):
             try:
@@ -389,8 +332,7 @@ def _render_review_and_publish(client, supplier_id):
                     if new_id:
                         transfer_matcher.remember_transfer_id(supplier_id, new_dep_name, new_arr_name, new_id)
                     st.success(f"✅ Published successfully (id: {new_id or 'unknown'}).")
-                    for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
-                              "dtf_match_route_fingerprint", "dtf_search_results"):
+                    for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info"):
                         st.session_state.pop(k, None)
             except Exception as e:
                 show_publish_error(f"publish transfer **{payload.get('name') or '(unnamed)'}**", str(e))

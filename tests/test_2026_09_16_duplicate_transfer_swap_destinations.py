@@ -378,3 +378,57 @@ def test_step_1_create_menu_offers_the_duplicate_transfer_choice():
 def test_duplicate_transfer_flow_is_imported_from_its_own_module():
     src = _read_app_py()
     assert "from flows.duplicate_transfer import render_duplicate_transfer_flow" in src
+
+
+# ---------------------------------------------------------------------------------------------
+# FOLLOW-UP (2026-09-16, product owner, after testing the swap+rewrite flow live): "Search by
+# departure/arrival can be delete in the transfer creation for swap. Not needed. the "Rewrite
+# with AI for the new direction" works perfectly, please automatically use that already - no
+# human must click additionally on this button. "duplicate Check" not needed, it is always safe
+# to duplicate."
+# ---------------------------------------------------------------------------------------------
+
+def test_search_by_departure_arrival_picker_is_removed():
+    src = _read_duplicate_transfer_flow()
+    assert "dtf_search_dep" not in src
+    assert "dtf_search_arr" not in src
+    assert "dtf_search_results" not in src
+    assert "suggest_existing_transfer_matches(" not in src
+
+
+def test_pick_source_keeps_only_the_manual_id_paste_path():
+    src = _read_duplicate_transfer_flow()
+    assert "dtf_manual_id" in src
+    assert "dtf_fetch_manual" in src
+    assert "pick_mode" not in src
+    pick_source_fn = src[src.index("def _render_pick_source("):src.index(
+        "def _render_review_and_publish(")]
+    assert "st.text_input(" in pick_source_fn
+    assert "st.text_input(\"Departure" not in pick_source_fn
+    assert "st.text_input(\"Arrival" not in pick_source_fn
+    assert pick_source_fn.count("st.button(") == 1
+
+
+def test_duplicate_check_section_is_removed():
+    src = _read_duplicate_transfer_flow()
+    assert "dtf_checkmatch" not in src
+    assert "resolve_transfer_match(" not in src
+    assert "match_checked" not in src
+    assert "blocks_as_duplicate" not in src
+    assert "dtf_match_result" not in src
+    assert "dtf_match_route_fingerprint" not in src
+
+
+def test_publish_disabled_only_checks_dates_and_geolocation_now():
+    src = _read_duplicate_transfer_flow()
+    assert "publish_disabled = not dates_ok or not geoloc_ok" in src
+
+
+def test_session_state_reset_lists_no_longer_reference_removed_duplicate_check_keys():
+    src = _read_duplicate_transfer_flow()
+    assert "dtf_match_result" not in src
+    assert "dtf_match_route_fingerprint" not in src
+    assert "dtf_search_results" not in src
+    # the core keys must still be reset everywhere
+    for key in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info"):
+        assert src.count(key) >= 2
