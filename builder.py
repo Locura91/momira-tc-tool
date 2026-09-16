@@ -5018,6 +5018,21 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     existing_rooms = (existing_hotel_snapshot or {}).get("rooms") or []
     existing_meal_plans = (existing_hotel_snapshot or {}).get("mealPlans") or []
 
+    def _basic_info_on_update(existing_val, doc_val):
+        """Field priority for hotel IDENTITY info (name/address/category/chain/images -
+        geolocation has its own copy of this same rule further down, since it needs the
+        lat/lng pair kept together). CONFIRMED PRODUCT-OWNER DECISION (2026-09-16): "the
+        information already provided by Travel C is great and no rewrite needed. We shall focus
+        only on prices, supplement, room types, meal types and offers." On an UPDATE, the
+        existing Travel Compositor record wins outright, so a fresh rate-sheet document that
+        happens to also restate the hotel's name/address/category slightly differently can't
+        quietly drift it away from data that's already correct. On a brand-new CREATE
+        (existing_val is always empty, since there's no existing_hotel_snapshot yet) this always
+        falls through to doc_val, so create behaviour is unchanged."""
+        if is_update and existing_val not in (None, "", []):
+            return existing_val
+        return doc_val if doc_val not in (None, "", []) else existing_val
+
     # ---- Rooms: merge new/updated rooms with any existing rooms the fresh document doesn't mention ----
     document_rooms = extracted.get("rooms") or []
     # CONFIRMED FIX (2026-08-30 audit): track which EXISTING rooms were matched by OBJECT
@@ -5132,10 +5147,24 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     master_lng = extracted.get("master_longitude")
     existing_lat = (existing_hotel_snapshot or {}).get("latitude")
     existing_lng = (existing_hotel_snapshot or {}).get("longitude")
+    # UPDATE PRIORITY FLIP (product owner, 2026-09-16, follow-up to the master-data-seeded
+    # create-then-update workflow discussed the same day): "the information already provided by
+    # Travel C is great and no rewrite needed. We shall focus only on prices, supplement, room
+    # types, meal types and offers." Once a hotel already EXISTS (is_update), a fresh rate-sheet
+    # document restating a slightly different address/coordinates must not silently drift the
+    # hotel away from its already-correct Travel Compositor record - so on an update, the existing
+    # snapshot's own coordinates outrank the document's, right under an explicit manual override.
+    # On a brand-new create (existing_hotel_snapshot is None) this branch can never match, so the
+    # document/master-data/geocode chain below is completely unaffected there.
     if manual_lat is not None and manual_lng is not None:
         resolved_latitude = _safe_float(manual_lat)
         resolved_longitude = _safe_float(manual_lng)
         geolocation_source = "manual override"
+        geolocation_valid = True
+    elif is_update and existing_lat is not None and existing_lng is not None:
+        resolved_latitude = existing_lat
+        resolved_longitude = existing_lng
+        geolocation_source = "existing hotel record"
         geolocation_valid = True
     elif doc_lat is not None and doc_lng is not None:
         resolved_latitude = doc_lat
@@ -5146,11 +5175,6 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         resolved_latitude = _safe_float(master_lat)
         resolved_longitude = _safe_float(master_lng)
         geolocation_source = GEOLOCATION_SOURCE_CONFIRMED_MASTER
-        geolocation_valid = True
-    elif existing_lat is not None and existing_lng is not None:
-        resolved_latitude = existing_lat
-        resolved_longitude = existing_lng
-        geolocation_source = "existing hotel record"
         geolocation_valid = True
     else:
         place_name = address_data.get("location_name") or existing_address.get("locationName") or ""
@@ -5177,7 +5201,7 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     # same as tickets and closedtours", every image is now checked in advance and a confirmed-
     # too-small one is dropped rather than ever reaching Travel Compositor; if nothing is left,
     # the shared FALLBACK_IMAGE placeholder is used instead of blocking the publish.
-    _hotel_images_raw = extracted.get("images") or (existing_hotel_snapshot or {}).get("images") or []
+    _hotel_images_raw = _basic_info_on_update((existing_hotel_snapshot or {}).get("images"), extracted.get("images")) or []
     if _hotel_images_raw:
         # Only fall back to the placeholder when there WERE images and every single one failed
         # the size check - a hotel with genuinely zero images picked yet still hits the existing
@@ -5189,20 +5213,20 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     hotel_kwargs = dict(
         providerCode=pre_config.provider_code,
-        hotelname=strip_stray_html(extracted.get("hotelname") or (existing_hotel_snapshot or {}).get("hotelname") or ""),
+        hotelname=strip_stray_html(_basic_info_on_update((existing_hotel_snapshot or {}).get("hotelname"), extracted.get("hotelname")) or ""),
         latitude=resolved_latitude,
         longitude=resolved_longitude,
         address=HotelAddressVO(
-            address=address_data.get("address") or existing_address.get("address"),
-            locationName=address_data.get("location_name") or existing_address.get("locationName"),
-            postalCode=address_data.get("postal_code") or existing_address.get("postalCode"),
-            country=address_data.get("country") or existing_address.get("country"),
-            phone=address_data.get("phone") or existing_address.get("phone"),
-            fax=address_data.get("fax") or existing_address.get("fax"),
-            email=address_data.get("email") or existing_address.get("email"),
+            address=_basic_info_on_update(existing_address.get("address"), address_data.get("address")),
+            locationName=_basic_info_on_update(existing_address.get("locationName"), address_data.get("location_name")),
+            postalCode=_basic_info_on_update(existing_address.get("postalCode"), address_data.get("postal_code")),
+            country=_basic_info_on_update(existing_address.get("country"), address_data.get("country")),
+            phone=_basic_info_on_update(existing_address.get("phone"), address_data.get("phone")),
+            fax=_basic_info_on_update(existing_address.get("fax"), address_data.get("fax")),
+            email=_basic_info_on_update(existing_address.get("email"), address_data.get("email")),
         ),
-        category=extracted.get("category") or (existing_hotel_snapshot or {}).get("category") or "",
-        chain=extracted.get("chain") or (existing_hotel_snapshot or {}).get("chain"),
+        category=_basic_info_on_update((existing_hotel_snapshot or {}).get("category"), extracted.get("category")) or "",
+        chain=_basic_info_on_update((existing_hotel_snapshot or {}).get("chain"), extracted.get("chain")),
         # A live hotel contract's currency is already set; the Step-2 dropdown must not
         # re-denominate it. See _locked_on_update.
         currency=_locked_on_update(existing_hotel_snapshot, "currency", pre_config.currency)[0],

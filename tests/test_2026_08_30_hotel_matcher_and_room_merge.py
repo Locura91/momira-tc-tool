@@ -230,9 +230,15 @@ def test_latitude_longitude_fall_back_to_existing_snapshot_when_extraction_has_n
     assert result["hotel_payload"]["longitude"] == 31.2357
 
 
-def test_latitude_longitude_from_extraction_wins_when_present():
+def test_latitude_longitude_from_existing_snapshot_wins_on_update():
+    # SUPERSEDES the original version of this test ("extraction wins when present"). CONFIRMED
+    # PRODUCT-OWNER DECISION (2026-09-16): "the information already provided by Travel C is great
+    # and no rewrite needed" - on an UPDATE, the existing snapshot's coordinates now outrank a
+    # freshly-extracted one, so a rate-sheet document can't silently drift an already-correct
+    # hotel record. See test_2026_09_06_hotel_manual_geolocation.py's own version of this same
+    # priority flip, and builder.py's "UPDATE PRIORITY FLIP" comment.
     existing_snapshot = {"rooms": [], "latitude": 30.0444, "longitude": 31.2357}
     extracted = {"hotelname": "Test Hotel", "rooms": [_room("Deluxe Room")], "latitude": 29.9, "longitude": 31.1}
     result = build_hotel_contract_payload(make_pre_config(), extracted, existing_hotel_snapshot=existing_snapshot)
-    assert result["hotel_payload"]["latitude"] == 29.9
-    assert result["hotel_payload"]["longitude"] == 31.1
+    assert result["hotel_payload"]["latitude"] == 30.0444
+    assert result["hotel_payload"]["longitude"] == 31.2357

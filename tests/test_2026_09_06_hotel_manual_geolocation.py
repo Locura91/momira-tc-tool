@@ -63,10 +63,27 @@ def test_manual_override_wins_over_document_and_existing_snapshot():
     assert result["geolocation"]["source"] == "manual override"
 
 
-def test_document_coordinates_win_over_existing_snapshot_when_no_manual_override():
+def test_existing_snapshot_coordinates_win_over_document_on_update():
+    # SUPERSEDES the original 2026-09-06 version of this test ("document wins over existing").
+    # CONFIRMED PRODUCT-OWNER DECISION (2026-09-16): "the information already provided by Travel
+    # C is great and no rewrite needed. We shall focus only on prices, supplement, room types,
+    # meal types and offers." A fresh rate-sheet document restating a slightly different
+    # coordinate must not silently drift an already-existing hotel record - so on an UPDATE, the
+    # existing snapshot now outranks the document (see test_2026_09_16_master_data_geolocation_
+    # auto_confirm.py for the parallel master-data-vs-existing case, and builder.py's own
+    # "UPDATE PRIORITY FLIP" comment).
     existing_snapshot = {"rooms": [], "latitude": 30.0444, "longitude": 31.2357}
     extracted = {"hotelname": "Test Hotel", "rooms": [_room()], "latitude": 27.0, "longitude": 33.0}
     result = build_hotel_contract_payload(make_pre_config(), extracted, existing_hotel_snapshot=existing_snapshot)
+    assert result["hotel_payload"]["latitude"] == 30.0444
+    assert result["hotel_payload"]["longitude"] == 31.2357
+    assert result["geolocation"]["source"] == "existing hotel record"
+    assert result["geolocation"]["valid"] is True
+
+
+def test_document_coordinates_still_used_on_a_brand_new_create_with_no_existing_snapshot():
+    extracted = {"hotelname": "Test Hotel", "rooms": [_room()], "latitude": 27.0, "longitude": 33.0}
+    result = build_hotel_contract_payload(make_pre_config(), extracted, existing_hotel_snapshot=None)
     assert result["hotel_payload"]["latitude"] == 27.0
     assert result["hotel_payload"]["longitude"] == 33.0
     assert result["geolocation"]["source"] == "document"

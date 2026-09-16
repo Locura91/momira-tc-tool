@@ -81,7 +81,13 @@ def test_manual_override_still_wins_over_master_data():
     assert result["geolocation"]["source"] == "manual override"
 
 
-def test_master_data_wins_over_existing_snapshot():
+def test_existing_snapshot_wins_over_master_data_on_update():
+    # SUPERSEDES the original version of this test ("master data wins over existing"). CONFIRMED
+    # PRODUCT-OWNER DECISION (2026-09-16, same day, follow-up): "the information already provided
+    # by Travel C is great and no rewrite needed." An already-existing hotel's own record now
+    # outranks even a confirmed master-data seed - in real usage this exact combination can't
+    # actually happen (the master-data search step is skipped entirely once a hotel already
+    # exists - see app_helpers.py), but the priority order is still locked down here defensively.
     existing_snapshot = {"rooms": [], "latitude": 30.0444, "longitude": 31.2357}
     extracted = {
         "hotelname": "Test Hotel", "rooms": [_room()],
@@ -89,9 +95,9 @@ def test_master_data_wins_over_existing_snapshot():
         "master_latitude": 27.394900, "master_longitude": 33.678400,
     }
     result = build_hotel_contract_payload(make_pre_config(), extracted, existing_hotel_snapshot=existing_snapshot)
-    assert result["hotel_payload"]["latitude"] == 27.394900
-    assert result["hotel_payload"]["longitude"] == 33.678400
-    assert result["geolocation"]["source"] == GEOLOCATION_SOURCE_CONFIRMED_MASTER
+    assert result["hotel_payload"]["latitude"] == 30.0444
+    assert result["hotel_payload"]["longitude"] == 31.2357
+    assert result["geolocation"]["source"] == "existing hotel record"
 
 
 def test_no_master_data_falls_through_unaffected():
