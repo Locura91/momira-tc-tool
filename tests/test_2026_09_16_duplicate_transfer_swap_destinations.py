@@ -227,11 +227,11 @@ def test_name_swaps_using_the_bare_place_name_when_the_parenthetical_code_differ
     source["arrival"]["name"] = "Cairo City"
     source["datasheets"]["EN"]["name"] = source["name"]
     swapped, report, _route_info = build_transfer_swap_payload(source)
-    # Only the literal "Cairo Airport" token is swapped - the "(CAI or SPX)" annotation stays
-    # positionally where it was, now trailing the swapped-in "Cairo City" (the same accepted
-    # trade-off as Transport's identical alias fix: good enough for a human to fine-tune on the
-    # review screen, never worse than the old "(return)" fallback that changed nothing at all).
-    assert swapped["name"] == "One-way transfer from Cairo City (CAI or SPX) to Cairo Airport Hotel"
+    # CONFIRMED REAL BUG (product owner, 2026-09-16, screenshot): swapping just the bare "Cairo
+    # Airport" token stranded "(CAI or SPX)"/"Hotel" on the wrong location ("...Cairo City (CAI
+    # or SPX) to Cairo Airport Hotel"). _expand_alias_to_chunk now extends each match to its full
+    # descriptive phrase - the parenthetical/suffix word travels WITH its own location.
+    assert swapped["name"] == "One-way transfer from Cairo City Hotel to Cairo Airport (CAI or SPX)"
     assert report["name"] is True
 
 
@@ -243,10 +243,27 @@ def test_description_swaps_using_the_bare_place_name_when_the_parenthetical_code
         "A private transfer is available from Cairo Airport (CAI or SPX) to your booked "
         "accommodation in Cairo City. This service is available 24/7.")
     swapped, report, _route_info = build_transfer_swap_payload(source)
+    # "Cairo City" here has no trailing descriptor word to expand into (it's followed by "."),
+    # so only the departure side's parenthetical travels with it - correctly, since there's
+    # nothing else attached to the arrival mention in this text.
     assert swapped["datasheets"]["EN"]["description"] == (
-        "A private transfer is available from Cairo City (CAI or SPX) to your booked "
-        "accommodation in Cairo Airport. This service is available 24/7.")
+        "A private transfer is available from Cairo City to your booked "
+        "accommodation in Cairo Airport (CAI or SPX). This service is available 24/7.")
     assert report["description"] is True
+
+
+def test_name_swap_keeps_the_hotel_suffix_attached_to_its_own_location():
+    # A second, more direct check of the exact chunk-expansion mechanism (not just the end-to-end
+    # name swap above): the "Hotel" suffix must travel with "Cairo City", never get left behind
+    # or attached to the other location.
+    source = _real_transfer_get_response()
+    source["name"] = "Transfer Cairo City Hotel to Cairo Airport (CAI or SPX)"
+    source["departure"]["name"] = "Cairo City"
+    source["arrival"]["name"] = "Cairo Airport (CAI)"
+    source["datasheets"]["EN"]["name"] = source["name"]
+    swapped, report, _route_info = build_transfer_swap_payload(source)
+    assert swapped["name"] == "Transfer Cairo Airport (CAI or SPX) to Cairo City Hotel"
+    assert report["name"] is True
 
 
 def test_full_parenthetical_name_is_still_preferred_over_the_bare_alias_when_present():

@@ -3381,6 +3381,46 @@ def _swap_route_text_if_found(text, old_departure_name, old_arrival_name):
     return text, False
 
 
+# Generic descriptor words that commonly trail a location's bare name in real supplier/Travel
+# Compositor text - when swapping a route's wording, these need to travel WITH their location
+# (see _expand_alias_to_chunk's own docstring for why).
+_LOCATION_TRAILING_DESCRIPTOR_WORDS = [
+    "hotel", "resort", "villa", "villas", "apartment", "apartments", "airport", "station",
+    "terminal", "port", "harbour", "harbor", "house", "riad", "lodge", "camp", "hostel", "inn",
+]
+
+
+def _expand_alias_to_chunk(text: str, alias: str) -> str:
+    """CONFIRMED REAL BUG (product owner, 2026-09-16, live "One-way transfer from Cairo Airport
+    (CAI or SPX) to Cairo City Hotel" duplicate, screenshot): even after the alias-matching fix
+    (_location_name_aliases), swapping just the bare matched alias ("Cairo Airport") produced
+    "One-way transfer from Cairo City to Cairo Airport (CAI or SPX) Hotel" - technically correct
+    per-word, but the "(CAI or SPX)"/" Hotel" descriptors got stranded on the WRONG location
+    because only the bare alias substring was swapped, not the whole descriptive phrase. Product
+    owner's own fix: "the App must build a title and description suitable from the Departure and
+    arrival" - each location's own qualifier (the airport's own parenthetical code list, the
+    hotel's own "Hotel" suffix) describes THAT location regardless of direction, so it must swap
+    together with it as one unit, never get left behind or picked up by the other location.
+
+    Given the text position where `alias` was matched, extends the match forward to also consume
+    an immediately-following parenthetical group ("Cairo Airport" + " (CAI or SPX)") OR a single
+    immediately-following generic descriptor word ("Cairo City" + " Hotel") - never both (real
+    examples only ever show one or the other), and only the FIRST occurrence in text (matching
+    _swap_route_text's own convention of swapping every occurrence of the returned chunk)."""
+    idx = text.find(alias)
+    if idx < 0:
+        return alias
+    end = idx + len(alias)
+    paren_match = re.match(r"\s*\([^)]*\)", text[end:])
+    if paren_match:
+        return text[idx:end + paren_match.end()]
+    word_pattern = "|".join(re.escape(w) for w in _LOCATION_TRAILING_DESCRIPTOR_WORDS)
+    word_match = re.match(rf"\s+(?:{word_pattern})\b", text[end:], re.IGNORECASE)
+    if word_match:
+        return text[idx:end + word_match.end()]
+    return alias
+
+
 def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
     """Given a full existing ContractTransferVO payload (exactly what GET /transfer/{supplierId}/{id}
     returns), builds a payload for the OPPOSITE direction of the SAME route - same vehicle,
@@ -3464,14 +3504,20 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
 
     def _swap_with_aliases(text: str):
         pair = _find_present_location_aliases(text, departure_aliases, arrival_aliases)
-        dep, arr = pair if pair else (old_departure_name, old_arrival_name)
-        return _swap_route_text(text, dep, arr)
+        if pair:
+            dep_chunk = _expand_alias_to_chunk(text, pair[0])
+            arr_chunk = _expand_alias_to_chunk(text, pair[1])
+        else:
+            dep_chunk, arr_chunk = old_departure_name, old_arrival_name
+        return _swap_route_text(text, dep_chunk, arr_chunk)
 
     def _swap_with_aliases_if_found(text: str):
         pair = _find_present_location_aliases(text, departure_aliases, arrival_aliases)
         if not pair:
             return text, False
-        return _swap_route_text_if_found(text, pair[0], pair[1])
+        dep_chunk = _expand_alias_to_chunk(text, pair[0])
+        arr_chunk = _expand_alias_to_chunk(text, pair[1])
+        return _swap_route_text_if_found(text, dep_chunk, arr_chunk)
 
     swap_report = {"name": None, "datasheet_name": None, "description": None, "pickupDescription": None}
     if payload.get("name"):
