@@ -1950,6 +1950,67 @@ def apply_clarification(raw_text: str, current_data: dict, instruction: str, mod
         return {"summary": f"Couldn't process that request - {friendly_error_message(e)}", "changes": {}}
 
 
+def rewrite_route_description_for_new_direction(
+    plain_text: str, old_departure_name: str, old_arrival_name: str,
+    new_departure_name: str, new_arrival_name: str, model: str = HAIKU_MODEL,
+) -> str:
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), following the duplicate-Transfer/Transport
+    name+description swap feature: a literal text-swap (builder._swap_route_text_if_found, even
+    with the chunk-expansion fix) can only rewrite a description that names BOTH the old
+    departure and arrival PLACES verbatim. A real example showed why that's not enough: "A
+    private transfer is available from Cairo Airport (CAI) to your booked accommodation in Cairo
+    or Giza by air-conditioned vehicle." never names the drop-off point by its own name at all -
+    it describes it by ROLE ("your booked accommodation"), so there is no arrival name to swap in
+    the first place. Chris, verifying the swapped review screen: "We must rewrite the description
+    and the description must understand its meaning. How could we improve that?" - the fix is to
+    stop pattern-matching literal place names and instead have the model genuinely understand and
+    rewrite the sentence for the new direction, the same way a human editor would.
+
+    Deliberately a SEPARATE, human-triggered step (a button on the review screen), not run
+    automatically on every load - this is an extra API call with real (if small) cost and
+    latency, and the existing literal-swap path already succeeds silently and for free whenever
+    the source text is well-formed enough for it; this only needs to run for the minority of
+    descriptions that path couldn't confidently handle. Uses HAIKU_MODEL (see its own module-
+    level rationale) since this is a small, single-paragraph rewrite, not a document extraction.
+
+    Returns the rewritten plain text (same paragraph/bullet plain-text convention as
+    ui_components._html_to_plain_for_editing/_plain_to_html_for_saving - the caller converts
+    to/from HTML exactly as it already does for the human-edited version), or the ORIGINAL text
+    unchanged if the call fails for any reason (never worse than what the human already sees)."""
+    plain_text = (plain_text or "").strip()
+    if not plain_text:
+        return plain_text
+    system_prompt = (
+        "You rewrite ONE short travel-transfer description so it describes the OPPOSITE "
+        "direction of the same route, for a human travel-product editor. You are given the "
+        "original text (which describes a transfer from an OLD departure point to an OLD "
+        "arrival point) and the NEW departure/arrival point names for the reversed direction. "
+        "Rewrite the text so it reads naturally and correctly for the NEW direction - actually "
+        "understand what each sentence is describing (a pickup point, a drop-off point, a "
+        "role like 'your booked accommodation') rather than only swapping place names that "
+        "happen to appear literally. Keep every other factual detail EXACTLY as stated (vehicle "
+        "type, service availability, included amenities, any codes or qualifiers like airport "
+        "codes) - do not invent, drop, or embellish anything. Keep the same tone, length, and "
+        "paragraph/list structure as the original (plain text: a blank line between paragraphs, "
+        "one item per line for a list - no HTML tags). Output ONLY the rewritten text, nothing "
+        "else - no preamble, no explanation, no quotation marks around it."
+    )
+    user_content = (
+        f"OLD departure point: {old_departure_name}\n"
+        f"OLD arrival point: {old_arrival_name}\n"
+        f"NEW departure point: {new_departure_name}\n"
+        f"NEW arrival point: {new_arrival_name}\n\n"
+        f"Original text (describes OLD departure -> OLD arrival):\n{plain_text}"
+    )
+    try:
+        client = _get_anthropic_client()
+        raw_response, _stop_reason = _stream_claude_message(client, model, 1024, system_prompt, user_content)
+        rewritten = raw_response.strip()
+        return rewritten or plain_text
+    except Exception:
+        return plain_text
+
+
 def answer_clarification_question(raw_text: str, current_data: dict, question: str, model: str = "claude-sonnet-5") -> str:
     """
     Answers a human's free-text question about the source document/current

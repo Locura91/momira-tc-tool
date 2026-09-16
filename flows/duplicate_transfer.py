@@ -30,6 +30,7 @@ import streamlit as st
 from builder import build_transfer_swap_payload
 import transfer_matcher
 from geocoding_client import geocode
+from ai_extractor import rewrite_route_description_for_new_direction
 from ui_components import (editable_table, _safe_float, _safe_int,
                             _html_to_plain_for_editing, _plain_to_html_for_saving)
 
@@ -232,6 +233,20 @@ def _render_review_and_publish(client, supplier_id):
             st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
                       "both original location names, so it's copied unchanged below. Check it "
                       "reads correctly for the new direction before publishing.")
+            # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): a real description never
+            # named the arrival point at all - "your booked accommodation in Cairo or Giza"
+            # describes it by ROLE, not by place name, so there was nothing for the literal swap
+            # to find. "We must rewrite the description and the description must understand its
+            # meaning." - a genuine AI rewrite (ai_extractor.rewrite_route_description_for_new_
+            # direction), triggered by this button rather than run automatically on every load
+            # (an extra API call, only needed for the minority the literal swap couldn't handle).
+            if st.button("🤖 Rewrite with AI for the new direction", key="dtf_ai_rewrite_description"):
+                with st.spinner("Rewriting..."):
+                    st.session_state["dtf_description"] = rewrite_route_description_for_new_direction(
+                        _html_to_plain_for_editing(en.get("description", "")),
+                        route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+                st.rerun()
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
                   "plain text, with a blank line between paragraphs and one item per line for a "
                   "list.")
@@ -244,6 +259,13 @@ def _render_review_and_publish(client, supplier_id):
             st.warning("⚠️ Couldn't auto-swap the pickup information - it doesn't literally "
                       "contain both original location names, so it's copied unchanged below. "
                       "Check it reads correctly for the new direction before publishing.")
+            if st.button("🤖 Rewrite with AI for the new direction", key="dtf_ai_rewrite_pickup"):
+                with st.spinner("Rewriting..."):
+                    st.session_state["dtf_pickup_description"] = rewrite_route_description_for_new_direction(
+                        _html_to_plain_for_editing(en.get("pickupDescription", "")),
+                        route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+                st.rerun()
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
                   "plain text, with a blank line between paragraphs and one item per line for a "
                   "list.")
