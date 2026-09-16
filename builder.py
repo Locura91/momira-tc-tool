@@ -63,6 +63,12 @@ _MAX_OCCUPANCY_PAX = 9
 # else on purpose.
 _MIN_FULL_REFUND_NOTICE_DAYS = 30
 
+# Geolocation source label for a hotel seeded from a human-confirmed Travel Compositor
+# master-data record (see build_hotel_contract_payload's own "MASTER-DATA COORDINATES" comment,
+# 2026-09-16). Shared with flows/hotel.py, which auto-confirms the geolocation checkbox when it
+# sees this exact source string - keep the two in sync rather than duplicating the literal.
+GEOLOCATION_SOURCE_CONFIRMED_MASTER = "confirmed master data"
+
 
 def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, vehicle_capacity=None,
                                              max_cap=_MAX_OCCUPANCY_PAX):
@@ -5103,13 +5109,27 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     # capability Ticket already has (build_ticket_payloads above): a human-entered
     # manual_latitude/manual_longitude ALWAYS wins, since only a human can judge whether TC's
     # destination boundaries actually contain a given point. Short of a manual override, fall back
-    # to the document's own stated coordinates, then an existing live snapshot's, then a free
+    # to the document's own stated coordinates, then a CONFIRMED master-data record's own
+    # coordinates (2026-09-16 addition - see below), then an existing live snapshot's, then a free
     # OpenStreetMap geocode of the hotel's own address as a last resort - same provider/fallback
     # chain Ticket uses, just keyed off the hotel's location name + country instead of a "city".
+    #
+    # MASTER-DATA COORDINATES (product owner, 2026-09-16): "I am not even sure, when creating a
+    # new hotel, why humans must confirm the geolocation. this information is coming from the
+    # hotel information already." Correct for the specific case of a hotel seeded from a
+    # human-CONFIRMED Travel Compositor master-data record (see the destination-confirmed search
+    # in app_helpers.py and hotel_automap.py's own docstring on why that confirmation matters) -
+    # those coordinates are Travel Compositor's own data about that exact property, not a
+    # geocoder's best guess from an address string, so there's nothing left for a human to verify
+    # against a map. Kept as its own master_latitude/master_longitude field (never folded into
+    # manual_latitude) specifically so an explicit document-stated coordinate still wins over it -
+    # the supplier's own contract is still the most authoritative source when it states one.
     manual_lat = extracted.get("manual_latitude")
     manual_lng = extracted.get("manual_longitude")
     doc_lat = extracted.get("latitude")
     doc_lng = extracted.get("longitude")
+    master_lat = extracted.get("master_latitude")
+    master_lng = extracted.get("master_longitude")
     existing_lat = (existing_hotel_snapshot or {}).get("latitude")
     existing_lng = (existing_hotel_snapshot or {}).get("longitude")
     if manual_lat is not None and manual_lng is not None:
@@ -5121,6 +5141,11 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         resolved_latitude = doc_lat
         resolved_longitude = doc_lng
         geolocation_source = "document"
+        geolocation_valid = True
+    elif master_lat is not None and master_lng is not None:
+        resolved_latitude = _safe_float(master_lat)
+        resolved_longitude = _safe_float(master_lng)
+        geolocation_source = GEOLOCATION_SOURCE_CONFIRMED_MASTER
         geolocation_valid = True
     elif existing_lat is not None and existing_lng is not None:
         resolved_latitude = existing_lat
