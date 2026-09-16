@@ -183,8 +183,11 @@ def render_hotel_flow(client):
 
     existing_snapshot = st.session_state.get("hp_existing_snapshot")
 
-    if existing_snapshot:
-        service_notes.render_standing_note_editor(supplier_id, "Hotel", key_suffix="_setup")
+    # 2026-09-16 (product owner, "No need to include Standing note — applies to EVERY Hotel from
+    # this supplier"): removed both here and from the Manual notes block further down (see the
+    # show_standing_note=False review-screen call) - a supplier's already-saved standing note
+    # still gets folded into the voucher automatically either way (service_notes.compose_manual_
+    # notes), this only drops the editor UI for setting/changing one from inside Hotel's flow.
     cancellation_links.render_cancellation_link_editor(supplier_id, "Hotel", key_suffix="_setup")
 
     if "hp_phase" not in st.session_state:
@@ -482,33 +485,47 @@ def render_hotel_flow(client):
         _render_hotel_price_audit_section(data, primary=True)
 
     # ---- Hotel basics ----
-    st.markdown("#### Property")
-    bcol1, bcol2, bcol3 = st.columns(3)
-    with bcol1:
-        editable_field("Hotel name", data, "hotelname")
-    with bcol2:
-        editable_field("Category", data, "category")
-    with bcol3:
-        editable_field("Chain", data, "chain")
-
+    # 2026-09-16 (product owner): "the information already provided by Travel C is great and no
+    # rewrite needed... no need to add additional images, no need to review the Description - we
+    # are only focusing on price, supplement, meal type, offer, stop sale... We must keep the app
+    # simple." Once a hotel already exists (existing_snapshot), builder.py's own "existing wins on
+    # update" priority (see build_hotel_contract_payload's _basic_info_on_update) already means
+    # none of this can be overwritten by the document any more - so showing the full edit UI for
+    # it here was asking for a review that could no longer change anything, just noise in the way
+    # of the fields that matter. A brand-new hotel (no existing_snapshot yet) still needs all of
+    # it, since there's nothing else for this information to come from.
     address = data.get("address") or {}
     data["address"] = address
-    acol1, acol2, acol3 = st.columns(3)
-    with acol1:
-        editable_field("Street address", address, "address")
-    with acol2:
-        editable_field("City / location", address, "location_name")
-    with acol3:
-        editable_field("Postal code", address, "postal_code")
-    acol4, acol5, acol6 = st.columns(3)
-    with acol4:
-        editable_field("Country", address, "country")
-    with acol5:
-        editable_field("Phone", address, "phone")
-    with acol6:
-        editable_field("Email", address, "email")
+    if not existing_snapshot:
+        st.markdown("#### Property")
+        bcol1, bcol2, bcol3 = st.columns(3)
+        with bcol1:
+            editable_field("Hotel name", data, "hotelname")
+        with bcol2:
+            editable_field("Category", data, "category")
+        with bcol3:
+            editable_field("Chain", data, "chain")
 
-    editable_field("Description", data, "description", widget="text_area", height=110)
+        acol1, acol2, acol3 = st.columns(3)
+        with acol1:
+            editable_field("Street address", address, "address")
+        with acol2:
+            editable_field("City / location", address, "location_name")
+        with acol3:
+            editable_field("Postal code", address, "postal_code")
+        acol4, acol5, acol6 = st.columns(3)
+        with acol4:
+            editable_field("Country", address, "country")
+        with acol5:
+            editable_field("Phone", address, "phone")
+        with acol6:
+            editable_field("Email", address, "email")
+
+        editable_field("Description", data, "description", widget="text_area", height=110)
+    else:
+        st.caption(f"ℹ️ Using **{existing_snapshot.get('hotelname') or data.get('hotelname') or provider_code}**'s "
+                   f"existing name, address, category, chain, description and images from Travel "
+                   f"Compositor unchanged - only the pricing and inventory below come from this document.")
 
     gcol1, gcol2, gcol3, gcol4 = st.columns(4)
     with gcol1:
@@ -530,61 +547,62 @@ def render_hotel_flow(client):
     st.caption("This API supports only ONE children age range (unlike the Travel Compositor admin screen's "
               "up-to-4-range widget), so infants and children share one combined band - 0-12 by default.")
 
-    st.markdown("#### Images")
-    st.caption("Travel Compositor requires at least one image to publish a hotel - paste a URL below, or "
-              "use one of the pickers to add a photo found on the hotel's page/document or a free stock photo.")
-    img_df = pd.DataFrame({"url": data.get("images") or [""]})
+    if not existing_snapshot:
+        st.markdown("#### Images")
+        st.caption("Travel Compositor requires at least one image to publish a hotel - paste a URL below, or "
+                  "use one of the pickers to add a photo found on the hotel's page/document or a free stock photo.")
+        img_df = pd.DataFrame({"url": data.get("images") or [""]})
 
-    def _hp_save_images(edited_df):
-        data["images"] = [str(u).strip() for u in edited_df["url"].tolist() if str(u or "").strip()]
+        def _hp_save_images(edited_df):
+            data["images"] = [str(u).strip() for u in edited_df["url"].tolist() if str(u or "").strip()]
 
-    editable_table("Image URLs", img_df, "hp_images", on_save=_hp_save_images)
+        editable_table("Image URLs", img_df, "hp_images", on_save=_hp_save_images)
 
-    default_hp_img_query = data.get("hotelname", "")
+        default_hp_img_query = data.get("hotelname", "")
 
-    def _hp_add_pexels():
-        selected = render_stock_photo_picker("Pexels", search_images, default_hp_img_query, "hp_pexels")
-        if selected:
-            data["images"] = (data.get("images") or []) + selected
-            return len(selected)
-        return 0
+        def _hp_add_pexels():
+            selected = render_stock_photo_picker("Pexels", search_images, default_hp_img_query, "hp_pexels")
+            if selected:
+                data["images"] = (data.get("images") or []) + selected
+                return len(selected)
+            return 0
 
-    render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "hp_pexels_closed", _hp_add_pexels)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pexels)", "hp_pexels_closed", _hp_add_pexels)
 
-    def _hp_add_pixabay():
-        selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_hp_img_query, "hp_pixabay")
-        if selected:
-            data["images"] = (data.get("images") or []) + selected
-            return len(selected)
-        return 0
+        def _hp_add_pixabay():
+            selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_hp_img_query, "hp_pixabay")
+            if selected:
+                data["images"] = (data.get("images") or []) + selected
+                return len(selected)
+            return 0
 
-    render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "hp_pixabay_closed", _hp_add_pixabay)
+        render_closable_image_section(True, "🖼️ Search free stock photos (Pixabay)", "hp_pixabay_closed", _hp_add_pixabay)
 
-    def _hp_add_url_images():
-        selected = render_url_image_picker(st.session_state.get("hp_hosted_image_candidates"), "hp_found_images")
-        if selected:
-            data["images"] = (data.get("images") or []) + selected
-            return len(selected)
-        return 0
+        def _hp_add_url_images():
+            selected = render_url_image_picker(st.session_state.get("hp_hosted_image_candidates"), "hp_found_images")
+            if selected:
+                data["images"] = (data.get("images") or []) + selected
+                return len(selected)
+            return 0
 
-    render_closable_image_section(
-        bool(st.session_state.get("hp_hosted_image_candidates")),
-        f"🖼️ Images found ({len(st.session_state.get('hp_hosted_image_candidates') or [])}) - from the page/document",
-        "hp_found_images_closed", _hp_add_url_images
-    )
+        render_closable_image_section(
+            bool(st.session_state.get("hp_hosted_image_candidates")),
+            f"🖼️ Images found ({len(st.session_state.get('hp_hosted_image_candidates') or [])}) - from the page/document",
+            "hp_found_images_closed", _hp_add_url_images
+        )
 
-    def _hp_add_doc_image():
-        added = render_doc_image_picker(st.session_state.get("hp_doc_raw_images"), "hp_doc_images")
-        if added:
-            data["images"] = (data.get("images") or []) + [added]
-            return 1
-        return 0
+        def _hp_add_doc_image():
+            added = render_doc_image_picker(st.session_state.get("hp_doc_raw_images"), "hp_doc_images")
+            if added:
+                data["images"] = (data.get("images") or []) + [added]
+                return 1
+            return 0
 
-    render_closable_image_section(
-        bool(st.session_state.get("hp_doc_raw_images")),
-        f"📥 Images extracted from your document(s) ({len(st.session_state.get('hp_doc_raw_images') or [])}) - need hosting",
-        "hp_doc_images_closed", _hp_add_doc_image
-    )
+        render_closable_image_section(
+            bool(st.session_state.get("hp_doc_raw_images")),
+            f"📥 Images extracted from your document(s) ({len(st.session_state.get('hp_doc_raw_images') or [])}) - need hosting",
+            "hp_doc_images_closed", _hp_add_doc_image
+        )
 
     # ---- Rooms ----
     st.markdown("#### Rooms")
@@ -903,7 +921,7 @@ def render_hotel_flow(client):
                    widget="text_area", height=90)
 
     if existing_snapshot:
-        service_notes.render_notes_editor(supplier_id, "Hotel", data)
+        service_notes.render_notes_editor(supplier_id, "Hotel", data, show_standing_note=False)
 
     pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
                                       currency=currency, days_available_before_release=release_days)
@@ -913,108 +931,113 @@ def render_hotel_flow(client):
         st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")
         return
 
-    # ---- Geolocation (product owner, 2026-09-06): CONFIRMED REAL PUBLISH FAILURE - Travel
-    # Compositor rejected the first-ever hotel (HRG-H1) with "The hotel is not located inside any
-    # destination, please check the coordinates". Per the explicit instruction "same issue as with
-    # tickets, human must select the coordinates", Hotel now gets the same manual-coordinate
-    # review/override UI Ticket already has (see the "mt_" Ticket geolocation section above) -
-    # search for a better match, paste a Google Maps link, or type coordinates directly, then
-    # confirm before publish is allowed.
-    st.markdown("#### Geolocation")
+    # ---- Geolocation (2026-09-06): Travel Compositor rejects a hotel whose coordinates fall
+    # outside any known destination - search for a better match, paste a Google Maps link, or
+    # type coordinates directly, then confirm before publish is allowed.
     hp_geo = contract_result.get("geolocation") or {}
-    if hp_geo.get("valid"):
+
+    # 2026-09-16: an existing hotel's own coordinates already published successfully once, so
+    # nothing new to check - one-line confirmation, not the full search/checkbox UI below. Falls
+    # through to that full UI if the existing record is somehow missing coordinates.
+    if existing_snapshot and hp_geo.get("valid"):
+        st.session_state.hp_geo_confirmed = True
         hp_lat, hp_lng = hp_geo["latitude"], hp_geo["longitude"]
-        hp_maps_link = f"https://www.google.com/maps?q={hp_lat},{hp_lng}"
-        st.markdown(
-            f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
-            f"border-radius:4px;'>📍 Resolved: <strong>{data.get('hotelname') or provider_code}</strong>"
-            f"<br>Coordinates: {hp_lat:.6f}, {hp_lng:.6f} (source: {hp_geo.get('source')}) — "
-            f"<a href='{hp_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
-            unsafe_allow_html=True
-        )
-        if hp_geo.get("source") not in ("manual override", "document", "existing hotel record",
-                                         GEOLOCATION_SOURCE_CONFIRMED_MASTER, None):
-            st.caption("Geocoding data © OpenStreetMap contributors")
+        st.caption(f"📍 Location **{hp_lat:.6f}, {hp_lng:.6f}** — already confirmed when this "
+                   f"hotel was created in Travel Compositor.")
+    else:
+        st.markdown("#### Geolocation")
+        if hp_geo.get("valid"):
+            hp_lat, hp_lng = hp_geo["latitude"], hp_geo["longitude"]
+            hp_maps_link = f"https://www.google.com/maps?q={hp_lat},{hp_lng}"
+            st.markdown(
+                f"<div style='background-color:#d4edda; color:#155724; padding:8px 12px; "
+                f"border-radius:4px;'>📍 Resolved: <strong>{data.get('hotelname') or provider_code}</strong>"
+                f"<br>Coordinates: {hp_lat:.6f}, {hp_lng:.6f} (source: {hp_geo.get('source')}) — "
+                f"<a href='{hp_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
+                unsafe_allow_html=True
+            )
+            if hp_geo.get("source") not in ("manual override", "document", "existing hotel record",
+                                             GEOLOCATION_SOURCE_CONFIRMED_MASTER, None):
+                st.caption("Geocoding data © OpenStreetMap contributors")
+            if hp_geo.get("source") == GEOLOCATION_SOURCE_CONFIRMED_MASTER:
+                st.caption("✅ Auto-confirmed — Travel Compositor's own master-data coordinates, not a "
+                           "geocoder guess. Search below if this looks wrong.")
+        else:
+            st.markdown(
+                "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                "border-radius:4px;'>❌ Geolocation NOT resolved - Travel Compositor will reject this hotel "
+                "without valid coordinates. Search below or enter coordinates manually.</div>",
+                unsafe_allow_html=True
+            )
+
+        with st.expander("🔍 Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
+            if st.session_state.get("hp_geo_link_note"):
+                st.info(st.session_state.hp_geo_link_note)
+                st.session_state.hp_geo_link_note = None
+            hp_geo_default_query = (data.get("address") or {}).get("location_name") or data.get("hotelname") or ""
+            hp_geo_query = st.text_input("Search for a location", value=hp_geo_default_query, key="hp_geo_query")
+            if st.button("🔎 Search", key="hp_geo_search_btn"):
+                with st.spinner("Searching..."):
+                    st.session_state.hp_geo_search_results = geocode_search(hp_geo_query, limit=5)
+            if st.session_state.get("hp_geo_search_results"):
+                for gi, candidate in enumerate(st.session_state.hp_geo_search_results):
+                    hgcol1, hgcol2 = st.columns([4, 1])
+                    with hgcol1:
+                        st.write(f"**{candidate['display_name']}**")
+                        st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
+                    with hgcol2:
+                        if st.button("Use this", key=f"hp_geo_pick_{gi}"):
+                            data["manual_latitude"] = candidate["latitude"]
+                            data["manual_longitude"] = candidate["longitude"]
+                            st.session_state.hp_geo_confirmed = False
+                            st.session_state.hp_geo_search_results = None
+                            st.rerun()
+
+            st.markdown("**Or paste a Google Maps link:**")
+            st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
+                      "it here - coordinates are read out automatically, or geocoded from the place "
+                      "name if the link itself has none (common for a mobile Share link).")
+            hp_maps_url = st.text_input("Google Maps link", key="hp_geo_maps_url", placeholder="https://maps.google.com/...")
+            if st.button("🔗 Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
+                with st.spinner("Reading coordinates from the link..."):
+                    hp_url_geo = parse_google_maps_url(hp_maps_url)
+                if hp_url_geo["valid"]:
+                    data["manual_latitude"] = hp_url_geo["latitude"]
+                    data["manual_longitude"] = hp_url_geo["longitude"]
+                    st.session_state.hp_geo_confirmed = False
+                    # A message set here would be wiped by the rerun below before it's ever seen -
+                    # stash it in session_state instead, shown once at the top of this expander.
+                    st.session_state.hp_geo_link_note = (
+                        f"ℹ️ That link had no coordinates of its own - geocoded its place name instead "
+                        f"({hp_url_geo.get('name') or 'match found'}). Double-check the pin above looks "
+                        f"right before confirming."
+                    ) if hp_url_geo.get("source") == "geocoded from link" else None
+                    st.rerun()
+                else:
+                    st.error(hp_url_geo["error"])
+
+        # 2026-09-16: master-data-sourced coordinates need no human check (see builder.py's
+        # "MASTER-DATA COORDINATES" comment) - pre-ticks below, once per resolution, without
+        # overriding a deliberate uncheck on a later rerun (hp_geo_auto_confirmed_for tracks that).
         if hp_geo.get("source") == GEOLOCATION_SOURCE_CONFIRMED_MASTER:
-            st.caption("✅ Auto-confirmed — Travel Compositor's own master-data coordinates, not a "
-                       "geocoder guess. Search below if this looks wrong.")
-    else:
-        st.markdown(
-            "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-            "border-radius:4px;'>❌ Geolocation NOT resolved - Travel Compositor will reject this hotel "
-            "without valid coordinates. Search below or enter coordinates manually.</div>",
-            unsafe_allow_html=True
+            if st.session_state.get("hp_geo_auto_confirmed_for") != GEOLOCATION_SOURCE_CONFIRMED_MASTER:
+                st.session_state.hp_geo_confirmed = True
+                st.session_state.hp_geo_auto_confirmed_for = GEOLOCATION_SOURCE_CONFIRMED_MASTER
+        else:
+            st.session_state.hp_geo_auto_confirmed_for = None
+
+        # CONFIRMED REAL BUG (reported 2026-09-06): this used to pass BOTH `key="hp_geo_confirmed"`
+        # AND `value=...` to the checkbox - unlike Ticket's own, already-proven tk_geo_confirmed
+        # checkbox (which never combines a widget key with an explicit value=), that combination
+        # can leave the checkbox stuck showing its stale/disabled state on some Streamlit versions.
+        # Matching Ticket's exact pattern: no key on the widget itself, read/write the confirmed
+        # flag through session_state explicitly instead.
+        st.session_state.hp_geo_confirmed = st.checkbox(
+            "✅ I've checked this location on the map and it's correct for this hotel",
+            value=st.session_state.get("hp_geo_confirmed", False),
+            disabled=not hp_geo.get("valid"),
         )
-
-    with st.expander("🔍 Search for a better match / fix this location", expanded=not hp_geo.get("valid")):
-        if st.session_state.get("hp_geo_link_note"):
-            st.info(st.session_state.hp_geo_link_note)
-            st.session_state.hp_geo_link_note = None
-        hp_geo_default_query = (data.get("address") or {}).get("location_name") or data.get("hotelname") or ""
-        hp_geo_query = st.text_input("Search for a location", value=hp_geo_default_query, key="hp_geo_query")
-        if st.button("🔎 Search", key="hp_geo_search_btn"):
-            with st.spinner("Searching..."):
-                st.session_state.hp_geo_search_results = geocode_search(hp_geo_query, limit=5)
-        if st.session_state.get("hp_geo_search_results"):
-            for gi, candidate in enumerate(st.session_state.hp_geo_search_results):
-                hgcol1, hgcol2 = st.columns([4, 1])
-                with hgcol1:
-                    st.write(f"**{candidate['display_name']}**")
-                    st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
-                with hgcol2:
-                    if st.button("Use this", key=f"hp_geo_pick_{gi}"):
-                        data["manual_latitude"] = candidate["latitude"]
-                        data["manual_longitude"] = candidate["longitude"]
-                        st.session_state.hp_geo_confirmed = False
-                        st.session_state.hp_geo_search_results = None
-                        st.rerun()
-
-        st.markdown("**Or paste a Google Maps link:**")
-        st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and paste "
-                  "it here - the coordinates are read out of the link automatically. If the link "
-                  "itself has none (common for a mobile Share link), the place name in it is "
-                  "looked up instead - manual lat/long entry is no longer needed, this covers it.")
-        hp_maps_url = st.text_input("Google Maps link", key="hp_geo_maps_url", placeholder="https://maps.google.com/...")
-        if st.button("🔗 Use this link's coordinates", key="hp_geo_maps_url_btn", disabled=not hp_maps_url.strip()):
-            with st.spinner("Reading coordinates from the link..."):
-                hp_url_geo = parse_google_maps_url(hp_maps_url)
-            if hp_url_geo["valid"]:
-                data["manual_latitude"] = hp_url_geo["latitude"]
-                data["manual_longitude"] = hp_url_geo["longitude"]
-                st.session_state.hp_geo_confirmed = False
-                # A message set here would be wiped by the rerun below before it's ever seen -
-                # stash it in session_state instead, shown once at the top of this expander.
-                st.session_state.hp_geo_link_note = (
-                    f"ℹ️ That link had no coordinates of its own - geocoded its place name instead "
-                    f"({hp_url_geo.get('name') or 'match found'}). Double-check the pin above looks "
-                    f"right before confirming."
-                ) if hp_url_geo.get("source") == "geocoded from link" else None
-                st.rerun()
-            else:
-                st.error(hp_url_geo["error"])
-
-    # 2026-09-16: master-data-sourced coordinates need no human check (see builder.py's
-    # "MASTER-DATA COORDINATES" comment) - pre-ticks below, once per resolution, without
-    # overriding a deliberate uncheck on a later rerun (hp_geo_auto_confirmed_for tracks that).
-    if hp_geo.get("source") == GEOLOCATION_SOURCE_CONFIRMED_MASTER:
-        if st.session_state.get("hp_geo_auto_confirmed_for") != GEOLOCATION_SOURCE_CONFIRMED_MASTER:
-            st.session_state.hp_geo_confirmed = True
-            st.session_state.hp_geo_auto_confirmed_for = GEOLOCATION_SOURCE_CONFIRMED_MASTER
-    else:
-        st.session_state.hp_geo_auto_confirmed_for = None
-
-    # CONFIRMED REAL BUG (reported 2026-09-06): this used to pass BOTH `key="hp_geo_confirmed"`
-    # AND `value=...` to the checkbox - unlike Ticket's own, already-proven tk_geo_confirmed
-    # checkbox (which never combines a widget key with an explicit value=), that combination
-    # can leave the checkbox stuck showing its stale/disabled state on some Streamlit versions.
-    # Matching Ticket's exact pattern: no key on the widget itself, read/write the confirmed
-    # flag through session_state explicitly instead.
-    st.session_state.hp_geo_confirmed = st.checkbox(
-        "✅ I've checked this location on the map and it's correct for this hotel",
-        value=st.session_state.get("hp_geo_confirmed", False),
-        disabled=not hp_geo.get("valid"),
-    )
-    hp_geo_confirmed = st.session_state.hp_geo_confirmed
+    hp_geo_confirmed = st.session_state.get("hp_geo_confirmed", False)
 
     # PRICE AUDIT (product owner, 2026-09-12) - secondary placement. When the human is CHECKING
     # the current period (see the contract-purpose question above), this same tool was already

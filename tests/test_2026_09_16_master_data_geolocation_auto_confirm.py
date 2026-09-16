@@ -132,7 +132,11 @@ def test_checkbox_auto_confirms_exactly_once_for_the_master_data_source():
     src = _read_hotel_flow()
     assert "hp_geo_auto_confirmed_for" in src
     auto_confirm_idx = src.index("hp_geo.get(\"source\") == GEOLOCATION_SOURCE_CONFIRMED_MASTER")
-    checkbox_idx = src.index('st.checkbox(\n        "✅ I\'ve checked this location')
+    # 2026-09-16 "keep the app simple" simplification nested the whole search/checkbox UI one
+    # level deeper inside an `else:` (see test_2026_09_16_hotel_simplified_update_screen.py), so
+    # this no longer sits at a fixed 8-space indent - match on the checkbox call's own text
+    # instead of the exact indentation of its first argument.
+    checkbox_idx = src.index("I've checked this location", auto_confirm_idx)
     # the auto-confirm block must run BEFORE the checkbox widget renders, so its pre-tick value
     # is what the widget actually reads on this render.
     assert auto_confirm_idx < checkbox_idx

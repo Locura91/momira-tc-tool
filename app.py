@@ -1203,33 +1203,17 @@ if st.session_state.active_tool is None:
     # real tools above, instead of getting their own full-width cards - same expandable-menu
     # pattern as Step 1 of Upload & Update, so a prototype only takes up screen space once
     # someone actually opens it.
-    # Outstanding back-office automaps. A hotel published without its master mapping looks
-    # completely fine from inside this app - the duplicate only appears on the Travel Compositor
-    # surface - so this is the one place the outstanding work can become visible again to someone
-    # who isn't already looking for it.
-    # CONFIRMED BUG FIX (product owner, 2026-09-16): "the Hotel review for automap can't be done
-    # after the hotel has been published. If we cannot do it from the beginning, the button is
-    # unable." Root cause: this button only rendered at all when hotel_automap already had a
-    # pending entry - which only ever got created by going through the masterdata step during a
-    # brand-new hotel's create flow (see flows/hotel.py, gated on `not existing_snapshot`). A
-    # hotel published before that entry got made (any hotel from before this feature existed, or
-    # an existing/already-published hotel, which never reaches that step at all) had NO way back
-    # into this screen - the button simply never appeared. Now always shown, and the screen itself
-    # (render_hotel_automap_review) offers a manual "search master data for a hotel" section so
-    # any hotel - already published or not, tracked or not - can be checked/linked at any time,
-    # not just the moment it's first created.
-    _automap_pending = hotel_automap.pending_count()
-    st.write("")
-    if _automap_pending:
-        st.warning(f"🔗 **{_automap_pending} hotel(s) still need \"Automap with master\" set in "
-                   f"Travel Compositor.** Until that's done they can show up as duplicate properties.")
-        _automap_label = f"Review {_automap_pending} hotel(s) awaiting automap"
-    else:
-        _automap_label = "🔗 Hotels awaiting automap"
-    if st.button(_automap_label, key="tool_btn_automap", use_container_width=True):
-        st.session_state.active_tool = TOOL_HOTEL_AUTOMAP
-        st.rerun()
-
+    # REMOVED (product owner, 2026-09-16): "this information is useless now as we map the hotels
+    # differently. The hint can be deleted." Since hotels are now created directly in Travel
+    # Compositor via "New hotel using master data" (setting automap correctly at creation - see
+    # claude/hotel-automap-no-retroactive-mapping-confirmed-2026-09-16.md) and this app only adds
+    # pricing/inventory to the already-existing record afterward (see builder.py's "UPDATE
+    # PRIORITY FLIP"), the create-here-then-remember-to-automap-later failure mode this checklist
+    # existed for no longer happens in normal use. hotel_automap.py itself, and the review screen
+    # it feeds (TOOL_HOTEL_AUTOMAP), are left in place rather than deleted - any pending/dismissed
+    # entries already on record stay visible if that screen is ever reopened another way - only
+    # this home-screen banner+button entry point is gone, so it no longer competes for attention
+    # in the normal day-to-day workflow.
     st.write("")
     with st.expander("🧪 Prototypes — not part of the regular workflow yet"):
         st.caption("Early, not-yet-finished tools. Safe to try - see each one's own warning "

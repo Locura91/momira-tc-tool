@@ -263,12 +263,28 @@ def test_pending_is_ordered_oldest_first(monkeypatch):
 # ======================================================================
 def test_publish_records_the_reminder_only_for_a_brand_new_hotel():
     """An existing hotel was already mapped (or deliberately not) when it was first created;
-    re-raising this on every price update is how a notice becomes wallpaper."""
+    re-raising this on every price update is how a notice becomes wallpaper.
+
+    UPDATED 2026-09-16: a second, standalone hotel_automap.record_pending(...) call site was
+    added (app_helpers.py's manual "search master data for a hotel" tool - see
+    render_hotel_automap_review's own comment) that is deliberately NOT gated on
+    existing_snapshot, since its whole purpose is letting an already-published hotel be checked
+    too. So this test now checks that AT LEAST ONE call site (the publish-time one, in
+    flows/hotel.py) is still gated the original way, rather than assuming there's only one."""
     src = _app_source()
     assert "hotel_automap.record_pending(" in src
-    idx = src.index("hotel_automap.record_pending(")
-    preceding = src[max(0, idx - 1200):idx]
-    assert "if not existing_snapshot:" in preceding
+    found_gated_call = False
+    search_from = 0
+    while True:
+        idx = src.find("hotel_automap.record_pending(", search_from)
+        if idx == -1:
+            break
+        preceding = src[max(0, idx - 1200):idx]
+        if "if not existing_snapshot:" in preceding:
+            found_gated_call = True
+            break
+        search_from = idx + 1
+    assert found_gated_call
 
 
 def test_publish_shows_the_accommodation_id_on_screen_not_only_in_the_store():
@@ -278,16 +294,36 @@ def test_publish_shows_the_accommodation_id_on_screen_not_only_in_the_store():
 
 def test_the_review_screen_exists_and_is_reachable():
     src = _app_source()
-    assert "def render_hotel_automap_review():" in src
+    assert "def render_hotel_automap_review(client):" in src
     assert "TOOL_HOTEL_AUTOMAP" in src
-    assert "render_hotel_automap_review()" in src
+    assert "render_hotel_automap_review(client)" in src
 
 
-def test_the_home_screen_entry_appears_only_when_something_is_outstanding():
-    """A checklist that shows '0 items' every day is one people stop reading."""
+def test_the_home_screen_banner_and_button_have_been_removed():
+    """SUPERSEDES test_the_home_screen_button_is_always_reachable_not_only_when_something_is_
+    outstanding (2026-09-16, originally written the same day as the "always reachable" fix this
+    replaces). Product owner, 2026-09-16, looking at the home screen: "this information is
+    useless now as we map the hotels differently. The hint can be deleted."
+
+    Hotels are now created directly in Travel Compositor via "New hotel using master data",
+    which sets automap correctly at creation time (see
+    claude/hotel-automap-no-retroactive-mapping-confirmed-2026-09-16.md) - this app only adds
+    pricing/inventory to the already-existing record afterward (see builder.py's "UPDATE
+    PRIORITY FLIP"). So the create-here-then-remember-to-automap-later failure mode the
+    banner/button existed to catch no longer happens in the normal workflow, and product owner
+    asked for the hint to be deleted.
+
+    hotel_automap.py itself and the review screen it feeds (TOOL_HOTEL_AUTOMAP) are deliberately
+    left in place - see test_the_review_screen_exists_and_is_reachable and
+    test_publish_records_the_reminder_only_for_a_brand_new_hotel - only this home-screen entry
+    point is gone."""
     src = _app_source()
-    assert "_automap_pending = hotel_automap.pending_count()" in src
-    assert "if _automap_pending:" in src
+    assert "_automap_pending = hotel_automap.pending_count()" not in src
+    assert 'st.button(_automap_label, key="tool_btn_automap"' not in src
+    assert '_automap_label = f"Review {_automap_pending} hotel(s) awaiting automap"' not in src
+    # the dispatch/constant/review-screen wiring stays - only the home-screen entry point is gone
+    assert "TOOL_HOTEL_AUTOMAP" in src
+    assert "render_hotel_automap_review(client)" in src
 
 
 def test_module_carries_a_build_stamp_matching_the_app():

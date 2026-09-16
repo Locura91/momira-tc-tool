@@ -135,12 +135,20 @@ def render_standing_note_editor(supplier_id: str, product_type: str,
     return existing_text
 
 
-def render_notes_editor(supplier_id: str, product_type: str, data: dict, key_suffix: str = "") -> str:
+def render_notes_editor(supplier_id: str, product_type: str, data: dict, key_suffix: str = "",
+                        show_standing_note: bool = True) -> str:
     """Renders the manual-notes block and writes the composed result onto `data` under
     'manual_notes', which is where builder._with_manual_notes() picks it up.
 
     Called by every Upload & Update flow, so the two note types look and behave the same
     everywhere. Returns the composed text as well, for a caller that wants to show it.
+
+    show_standing_note=False (2026-09-16, Hotel's own simplified-update screen) skips
+    re-rendering the standing-note editor here specifically - Hotel already shows it once, at
+    Step 2 right after the supplier is picked (see flows/hotel.py), so showing it a SECOND time
+    on every single review screen was pure redundancy, not a second capability. A supplier's
+    already-saved standing note still gets composed into the voucher below either way - this
+    only hides the second copy of the editor UI, never the note itself.
 
     Imported inside the function so this module stays importable without Streamlit -
     the builders and tests use compose_manual_notes() with no UI involved."""
@@ -151,7 +159,8 @@ def render_notes_editor(supplier_id: str, product_type: str, data: dict, key_suf
               "**added to** the Voucher Remarks — they never replace the cancellation policy or "
               "anything else extracted from the document.")
 
-    render_standing_note_editor(supplier_id, product_type, key_suffix=key_suffix)
+    if show_standing_note:
+        render_standing_note_editor(supplier_id, product_type, key_suffix=key_suffix)
 
     one_off = st.text_area(
         "Note for this service only", value=data.get("one_off_note", ""), height=80,
