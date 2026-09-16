@@ -3,6 +3,7 @@
 # surface only as a traceback whose line numbers pointed at unrelated code.
 MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 
+import copy
 import math
 import datetime
 import re
@@ -3341,6 +3342,78 @@ def build_transfer_payload(
         "expired_validity_error": expired_validity_window(
             extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),
     }
+
+
+def _swap_route_text(text, old_departure_name, old_arrival_name):
+    """Rewrite text (a transfer's name/datasheet name) so it reads in the other direction, by
+    swapping every occurrence of the OLD departure/arrival names. Falls back to appending
+    "(return)" rather than guessing wrong - a name that states the opposite of what it does is
+    worse than one that's merely unpolished and needs a human's edit.
+
+    Same swap-with-placeholder approach as app_helpers._swapped_label (candidate-list "Add the
+    return direction" button) - duplicated here in builder.py rather than imported, since
+    app_helpers.py already imports FROM builder.py and importing the other way would be
+    circular."""
+    text = text or ""
+    if old_departure_name and old_arrival_name and old_departure_name in text and old_arrival_name in text:
+        placeholder = "\x00"
+        return (text.replace(old_departure_name, placeholder)
+                    .replace(old_arrival_name, old_departure_name)
+                    .replace(placeholder, old_arrival_name))
+    return f"{text} (return)".strip()
+
+
+def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Given a full existing ContractTransferVO payload (exactly what GET /transfer/{supplierId}/{id}
+    returns), builds a payload for the OPPOSITE direction of the SAME route - same vehicle,
+    price, cancellation text, images, properties, everything - with only departure and arrival
+    swapped. Always a CREATE (the 'id' field is dropped) - this never updates the original.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "when human create a new transfer or
+    transport, could the app simple copy the product and just swap the destinations?" A large
+    share of new Transfer/Transport creation really is exactly this - the SAME route sold in
+    reverse (Hotel -> Airport once Airport -> Hotel already exists), priced identically. Since
+    2026-08-12's redesign removed AI-document creation for Transfer/Transport entirely
+    ("Transfer and Transport are not possible to automatically Import/upload" - see
+    render_update_refresh_flow's own docstring), this is now the intended way a brand-new
+    Transfer gets created in this app at all: clone a real, already-published, human-verified
+    record instead of re-inventing one from a document.
+
+    Swapping the departure/arrival OBJECTS wholesale (not re-typing/re-geocoding a name from
+    scratch) is deliberate: the existing record's location data is already fully resolved to
+    real coordinates/zone ids by Travel Compositor, so reusing it is safer than asking the
+    geocoder to resolve a freshly typed name and risking it landing on the wrong spot. The
+    calling screen still lets a human edit the route names afterward and re-resolve them if the
+    swap default isn't exactly right (e.g. a one-way-only pickup point that genuinely differs
+    from the drop-off).
+
+    Duplicate-safety (is a transfer for this new route already live?) is the CALLING screen's
+    job, not this function's - same "Check for a matching existing transfer" requirement every
+    other create flow in this app already enforces before Publish is enabled."""
+    payload = copy.deepcopy(existing_transfer_payload or {})
+    payload.pop("id", None)
+    payload["active"] = True
+
+    old_departure = payload.get("departure") or {}
+    old_arrival = payload.get("arrival") or {}
+    payload["departure"] = old_arrival
+    payload["arrival"] = old_departure
+    payload["departureLocationId"], payload["arrivalLocationId"] = (
+        payload.get("arrivalLocationId"), payload.get("departureLocationId"))
+
+    old_departure_name = str(old_departure.get("name") or "").strip()
+    old_arrival_name = str(old_arrival.get("name") or "").strip()
+    if payload.get("name"):
+        payload["name"] = _swap_route_text(payload["name"], old_departure_name, old_arrival_name)
+
+    datasheets = dict(payload.get("datasheets") or {})
+    en = dict(datasheets.get("EN") or {})
+    if en.get("name"):
+        en["name"] = _swap_route_text(en["name"], old_departure_name, old_arrival_name)
+    datasheets["EN"] = en
+    payload["datasheets"] = datasheets
+
+    return payload
 
 
 # ==========================================

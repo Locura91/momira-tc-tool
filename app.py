@@ -639,6 +639,11 @@ from flows.ticket import render_ticket_flow
 
 from flows.multi_transfer import render_multi_transfer_flow
 
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16) - see DUPLICATE_TRANSFER_CHOICE's own comment
+# further down for the full reasoning: the create path for a brand-new Transfer that's really
+# just the SAME route sold the other way.
+from flows.duplicate_transfer import render_duplicate_transfer_flow
+
 
 # ======================================================================
 # TRANSPORT FLOW
@@ -1089,6 +1094,16 @@ MIGRATE_SUPPLIER_CHOICE = "Move a Supplier's Services to another Supplier"
 # inside Update/Refresh, since it acts on a whole supplier's worth of one product type at once,
 # not one already-identified record - see render_cancellation_bulk_flow's docstring.
 CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "when human create a new transfer or transport,
+# could the app simple copy the product and just swap the destinations?" 2026-08-12's redesign
+# removed AI-document creation for Transfer/Transport entirely ("Transfer and Transport are not
+# possible to automatically Import/upload"), leaving no way at all in this app to create a
+# brand-new one - only price_refresh.py's update-existing-only flow remained. This is that
+# missing create path, scoped to Transfer only for now (Transport is the natural next step):
+# pick an existing, already-published, human-verified Transfer and clone it with departure and
+# arrival swapped - see builder.build_transfer_swap_payload's own docstring for the full
+# reasoning. A Step 1 "Create a new product" destination, alongside ClosedTour/Ticket/Hotel.
+DUPLICATE_TRANSFER_CHOICE = "Transfer (duplicate an existing one & swap destinations)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -1289,6 +1304,13 @@ if st.session_state.product_type is None:
             st.rerun()
         st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
                   "rate seasons.")
+        if st.button(DUPLICATE_TRANSFER_CHOICE, key="pt_choice_duplicate_transfer", use_container_width=True):
+            st.session_state.product_type = DUPLICATE_TRANSFER_CHOICE
+            st.rerun()
+        st.caption("For a brand-new Transfer that's really the SAME route in the other "
+                  "direction (e.g. Hotel → Airport once Airport → Hotel already exists) - picks "
+                  "an existing published Transfer and clones it with departure/arrival swapped, "
+                  "instead of re-entering everything from a document.")
 
     with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
@@ -1333,6 +1355,10 @@ if st.session_state.product_type == MANUAL_INFO_CHOICE:
 
 if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
     render_supplier_migration_flow(client)
+    st.stop()
+
+if st.session_state.product_type == DUPLICATE_TRANSFER_CHOICE:
+    render_duplicate_transfer_flow(client)
     st.stop()
 
 if st.session_state.product_type == "Ticket":
