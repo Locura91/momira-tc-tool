@@ -3345,10 +3345,12 @@ def build_transfer_payload(
 
 
 def _swap_route_text(text, old_departure_name, old_arrival_name):
-    """Rewrite text (a transfer's name/datasheet name) so it reads in the other direction, by
-    swapping every occurrence of the OLD departure/arrival names. Falls back to appending
-    "(return)" rather than guessing wrong - a name that states the opposite of what it does is
-    worse than one that's merely unpolished and needs a human's edit.
+    """Rewrite a SHORT text (a transfer's name/datasheet name) so it reads in the other
+    direction, by swapping every occurrence of the OLD departure/arrival names. Falls back to
+    appending "(return)" rather than guessing wrong - a name that states the opposite of what it
+    does is worse than one that's merely unpolished and needs a human's edit. Only right for a
+    short label - see _swap_route_text_if_found for prose fields (description/pickup info),
+    where appending "(return)" to a paragraph would look broken rather than helpful.
 
     Same swap-with-placeholder approach as app_helpers._swapped_label (candidate-list "Add the
     return direction" button) - duplicated here in builder.py rather than imported, since
@@ -3363,11 +3365,37 @@ def _swap_route_text(text, old_departure_name, old_arrival_name):
     return f"{text} (return)".strip()
 
 
-def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]) -> Dict[str, Any]:
+def _swap_route_text_if_found(text, old_departure_name, old_arrival_name):
+    """Same swap as _swap_route_text, for PROSE fields (description, pickup information) where
+    the "(return)" fallback would look broken rather than helpful glued onto a paragraph.
+    Returns (new_text, swapped: bool) - when both old location names aren't found in the text
+    (a description that doesn't happen to name the route in words, or phrases it differently),
+    the text is returned UNCHANGED and swapped=False, so the caller can flag it for a human to
+    check by eye rather than silently leaving stale direction text in a way nobody notices."""
+    text = text or ""
+    if old_departure_name and old_arrival_name and old_departure_name in text and old_arrival_name in text:
+        placeholder = "\x00"
+        return (text.replace(old_departure_name, placeholder)
+                    .replace(old_arrival_name, old_departure_name)
+                    .replace(placeholder, old_arrival_name)), True
+    return text, False
+
+
+def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
     """Given a full existing ContractTransferVO payload (exactly what GET /transfer/{supplierId}/{id}
     returns), builds a payload for the OPPOSITE direction of the SAME route - same vehicle,
     price, cancellation text, images, properties, everything - with only departure and arrival
-    swapped. Always a CREATE (the 'id' field is dropped) - this never updates the original.
+    swapped (and the name/description/pickup text rewritten to match - see below). Always a
+    CREATE (the 'id' field is dropped) - this never updates the original.
+
+    Returns (payload, swap_report): swap_report is a dict {"name": bool, "datasheet_name": bool,
+    "description": bool or None, "pickupDescription": bool or None} recording whether each prose
+    field was confidently auto-swapped (True), left unchanged because the old location names
+    weren't both found in the text (False - needs a human to check/edit it), or wasn't present in
+    the source at all (None). name/datasheet_name always fall back to appending "(return)" rather
+    than reporting False (see _swap_route_text) since a short label always needs SOME wording;
+    description/pickupDescription use _swap_route_text_if_found instead since a paragraph of
+    prose can't get the same "(return)" fallback without looking broken.
 
     CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "when human create a new transfer or
     transport, could the app simple copy the product and just swap the destinations?" A large
@@ -3378,6 +3406,12 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]) -> Di
     render_update_refresh_flow's own docstring), this is now the intended way a brand-new
     Transfer gets created in this app at all: clone a real, already-published, human-verified
     record instead of re-inventing one from a document.
+
+    FOLLOW-UP CONFIRMED (2026-09-16, product owner, verifying the feature): "does the App
+    currently also correct the Name and the description? ... Also the Description must be
+    switched, is that already within the app?" Name/datasheet-name swapping was already correct;
+    description/pickupDescription were being copied byte-identical from the source (unswapped) -
+    this is the fix for that gap.
 
     Swapping the departure/arrival OBJECTS wholesale (not re-typing/re-geocoding a name from
     scratch) is deliberate: the existing record's location data is already fully resolved to
@@ -3403,17 +3437,26 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]) -> Di
 
     old_departure_name = str(old_departure.get("name") or "").strip()
     old_arrival_name = str(old_arrival.get("name") or "").strip()
+    swap_report = {"name": None, "datasheet_name": None, "description": None, "pickupDescription": None}
     if payload.get("name"):
         payload["name"] = _swap_route_text(payload["name"], old_departure_name, old_arrival_name)
+        swap_report["name"] = True
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     if en.get("name"):
         en["name"] = _swap_route_text(en["name"], old_departure_name, old_arrival_name)
+        swap_report["datasheet_name"] = True
+    if en.get("description"):
+        en["description"], swapped = _swap_route_text_if_found(en["description"], old_departure_name, old_arrival_name)
+        swap_report["description"] = swapped
+    if en.get("pickupDescription"):
+        en["pickupDescription"], swapped = _swap_route_text_if_found(en["pickupDescription"], old_departure_name, old_arrival_name)
+        swap_report["pickupDescription"] = swapped
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
-    return payload
+    return payload, swap_report
 
 
 # ==========================================

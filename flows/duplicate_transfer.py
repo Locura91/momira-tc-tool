@@ -83,8 +83,8 @@ def render_duplicate_transfer_flow(client):
     if st.session_state.get("dtf_supplier_id") != supplier_id:
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.
-        for k in ("dtf_source", "dtf_payload", "dtf_match_result", "dtf_match_route_fingerprint",
-                  "dtf_search_results"):
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
+                  "dtf_match_route_fingerprint", "dtf_search_results"):
             st.session_state.pop(k, None)
         st.session_state.dtf_supplier_id = supplier_id
 
@@ -154,17 +154,18 @@ def _render_pick_source(client, supplier_id):
 def _render_review_and_publish(client, supplier_id):
     source = st.session_state.dtf_source
     if "dtf_payload" not in st.session_state:
-        st.session_state.dtf_payload = build_transfer_swap_payload(source)
+        st.session_state.dtf_payload, st.session_state.dtf_swap_report = build_transfer_swap_payload(source)
 
     payload = st.session_state.dtf_payload
+    swap_report = st.session_state.get("dtf_swap_report") or {}
     src_dep = (source.get("departure") or {}).get("name", "?")
     src_arr = (source.get("arrival") or {}).get("name", "?")
     st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}): "
               f"**{src_dep} → {src_arr}**.")
 
     if st.button("↩️ Pick a different Transfer to duplicate", key="dtf_restart"):
-        for k in ("dtf_source", "dtf_payload", "dtf_match_result", "dtf_match_route_fingerprint",
-                  "dtf_search_results"):
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
+                  "dtf_match_route_fingerprint", "dtf_search_results"):
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -194,6 +195,21 @@ def _render_review_and_publish(client, supplier_id):
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     en["name"] = st.text_input("Datasheet name (customer-facing)", value=en.get("name", ""), key="dtf_datasheet_name")
+
+    if en.get("description") is not None or swap_report.get("description") is not None:
+        if swap_report.get("description") is False:
+            st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
+                      "both original location names, so it's copied unchanged below. Check it "
+                      "reads correctly for the new direction before publishing.")
+        en["description"] = st.text_area("Description", value=en.get("description", ""), key="dtf_description")
+
+    if en.get("pickupDescription") is not None or swap_report.get("pickupDescription") is not None:
+        if swap_report.get("pickupDescription") is False:
+            st.warning("⚠️ Couldn't auto-swap the pickup information - it doesn't literally "
+                      "contain both original location names, so it's copied unchanged below. "
+                      "Check it reads correctly for the new direction before publishing.")
+        en["pickupDescription"] = st.text_area("Pickup information", value=en.get("pickupDescription", ""), key="dtf_pickup_description")
+
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
@@ -308,7 +324,7 @@ def _render_review_and_publish(client, supplier_id):
                     if new_id:
                         transfer_matcher.remember_transfer_id(supplier_id, new_dep_name, new_arr_name, new_id)
                     st.success(f"✅ Published successfully (id: {new_id or 'unknown'}).")
-                    for k in ("dtf_source", "dtf_payload", "dtf_match_result",
+                    for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
                               "dtf_match_route_fingerprint", "dtf_search_results"):
                         st.session_state.pop(k, None)
             except Exception as e:
