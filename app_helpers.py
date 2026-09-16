@@ -3138,9 +3138,30 @@ def render_hotel_automap_review(client):
                            if entry.get("skip_reason") else "")
                     )
             with cols[1]:
-                if st.button("Mark as done", key=f"automap_done_{entry.get('supplier_id')}_{entry.get('provider_code')}"):
+                if st.button("✅ Mark as done", key=f"automap_done_{entry.get('supplier_id')}_{entry.get('provider_code')}"):
                     hotel_automap.mark_mapped(entry.get("supplier_id"), entry.get("provider_code"))
                     st.rerun()
+                # CONFIRMED REAL CASE (product owner, 2026-09-16): published a test hotel, then
+                # deleted it directly in Travel Compositor because "the prices were wrong and the
+                # matches not included - therefore it was useless data" - but the app kept
+                # showing "1 hotel(s) still need attention" for it regardless, since nothing here
+                # can see a deletion that happened entirely on Travel Compositor's side. This is
+                # a DIFFERENT resolution than "Mark as done" (mark_mapped) - the hotel was never
+                # actually mapped, it stopped existing - so it needs its own action and its own
+                # timestamp (hotel_automap.dismiss), not a reuse of "mapped".
+                with st.popover("🗑️ No longer applicable"):
+                    st.caption("For a hotel that was deleted in Travel Compositor (or otherwise "
+                              "no longer exists) rather than mapped - keeps this off the pending "
+                              "list without falsely recording it as mapped.")
+                    dismiss_reason = st.text_input(
+                        "Why (optional)", value="",
+                        key=f"automap_dismiss_reason_{entry.get('supplier_id')}_{entry.get('provider_code')}",
+                        placeholder="e.g. deleted in Travel Compositor - prices were wrong")
+                    if st.button("Confirm — dismiss",
+                                 key=f"automap_dismiss_{entry.get('supplier_id')}_{entry.get('provider_code')}"):
+                        hotel_automap.dismiss(entry.get("supplier_id"), entry.get("provider_code"),
+                                              reason=dismiss_reason)
+                        st.rerun()
 
     mapped = hotel_automap.list_mapped()
     if mapped:
@@ -3152,6 +3173,18 @@ def render_hotel_automap_review(client):
                 when = datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M") if done else "—"
                 st.markdown(f"- **{entry.get('provider_code')}** — {entry.get('hotel_name') or ''} "
                             f"(marked done {when})")
+
+    dismissed = hotel_automap.list_dismissed()
+    if dismissed:
+        with st.expander(f"Dismissed — no longer applicable ({len(dismissed)})"):
+            st.caption("Not mapped - these were deleted in Travel Compositor or otherwise stopped "
+                       "needing a mapping. Kept as a record of what was checked and why.")
+            for entry in dismissed:
+                done = entry.get("dismissed_at")
+                when = datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M") if done else "—"
+                reason_bit = f" — _{entry.get('dismiss_reason')}_" if entry.get("dismiss_reason") else ""
+                st.markdown(f"- **{entry.get('provider_code')}** — {entry.get('hotel_name') or ''} "
+                            f"(dismissed {when}){reason_bit}")
 
     # CONFIRMED BUG FIX (product owner, 2026-09-16): "the Hotel review for automap can't be done
     # after the hotel has been published. If we cannot do it from the beginning, the button is

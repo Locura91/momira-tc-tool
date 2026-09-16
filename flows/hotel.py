@@ -18,6 +18,7 @@ from builder import (
     build_hotel_contract_payload, resolve_room_provider_codes, build_hotel_offer_payloads,
     build_hotel_supplement_payloads, build_hotel_rate_payloads,
     _APPLY_TYPE_VALUES as HOTEL_APPLY_VALUES,
+    GEOLOCATION_SOURCE_CONFIRMED_MASTER,
 )
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
@@ -306,6 +307,18 @@ def render_hotel_flow(client):
 
                     st.session_state.hp_raw_text = raw_text
                     st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=hp_hint)
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "why must humans confirm the
+                    # geolocation ... this information is coming from the hotel information
+                    # already." When this hotel was seeded from a human-CONFIRMED Travel
+                    # Compositor master-data record (the destination-confirmed search above),
+                    # that record's own coordinates are Travel Compositor's own data - stashed
+                    # under master_latitude/master_longitude (never manual_latitude, so an
+                    # explicit document-stated coordinate still wins - see
+                    # build_hotel_contract_payload's own priority order in builder.py).
+                    _hp_md_geo = (_hp_md_seed or {}).get("geolocation") or {}
+                    if _hp_md_geo.get("latitude") is not None and _hp_md_geo.get("longitude") is not None:
+                        st.session_state.hp_data["master_latitude"] = _hp_md_geo["latitude"]
+                        st.session_state.hp_data["master_longitude"] = _hp_md_geo["longitude"]
                     # Only fills in when this document didn't state its own cancellation
                     # terms - see apply_cancellation_link_default's docstring. Runs once,
                     # here at extraction time, not inside the review widgets.
@@ -919,8 +932,12 @@ def render_hotel_flow(client):
             f"<a href='{hp_maps_link}' target='_blank'>Open in Google Maps to verify</a></div>",
             unsafe_allow_html=True
         )
-        if hp_geo.get("source") not in ("manual override", "document", "existing hotel record", None):
+        if hp_geo.get("source") not in ("manual override", "document", "existing hotel record",
+                                         GEOLOCATION_SOURCE_CONFIRMED_MASTER, None):
             st.caption("Geocoding data © OpenStreetMap contributors")
+        if hp_geo.get("source") == GEOLOCATION_SOURCE_CONFIRMED_MASTER:
+            st.caption("✅ Auto-confirmed — Travel Compositor's own master-data coordinates, not a "
+                       "geocoder guess. Search below if this looks wrong.")
     else:
         st.markdown(
             "<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
@@ -975,6 +992,16 @@ def render_hotel_flow(client):
                 st.rerun()
             else:
                 st.error(hp_url_geo["error"])
+
+    # 2026-09-16: master-data-sourced coordinates need no human check (see builder.py's
+    # "MASTER-DATA COORDINATES" comment) - pre-ticks below, once per resolution, without
+    # overriding a deliberate uncheck on a later rerun (hp_geo_auto_confirmed_for tracks that).
+    if hp_geo.get("source") == GEOLOCATION_SOURCE_CONFIRMED_MASTER:
+        if st.session_state.get("hp_geo_auto_confirmed_for") != GEOLOCATION_SOURCE_CONFIRMED_MASTER:
+            st.session_state.hp_geo_confirmed = True
+            st.session_state.hp_geo_auto_confirmed_for = GEOLOCATION_SOURCE_CONFIRMED_MASTER
+    else:
+        st.session_state.hp_geo_auto_confirmed_for = None
 
     # CONFIRMED REAL BUG (reported 2026-09-06): this used to pass BOTH `key="hp_geo_confirmed"`
     # AND `value=...` to the checkbox - unlike Ticket's own, already-proven tk_geo_confirmed

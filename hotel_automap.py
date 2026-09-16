@@ -36,6 +36,12 @@ different things from a human:
     check whether the property really was absent from master data, since a wrong call at that
     moment is exactly what creates a duplicate.
 
+A pending entry can be resolved two ways, and they are NOT interchangeable: `mark_mapped()` for
+a hotel a human actually set "Automap with master" for, and `dismiss()` (2026-09-16 addition,
+see its own docstring) for one that stopped needing that entirely - most commonly because the
+human deleted the hotel from Travel Compositor directly instead of mapping it. Recording a
+dismissal as "mapped" would leave the audit trail claiming a mapping happened that never did.
+
 Storage: platform_store (Postgres when DATABASE_URL is set), NOT a local file - the same reasoning
 as transfer_matcher.py's own store. Streamlit Cloud wipes the local filesystem on every redeploy,
 and a reminder that silently disappears on the next deploy is worse than no reminder at all,
@@ -126,9 +132,37 @@ def mark_mapped(supplier_id: Any, provider_code: str) -> bool:
     return platform_store.set(_NAMESPACE, key, record)
 
 
+def dismiss(supplier_id: Any, provider_code: str, reason: str = "") -> bool:
+    """Marks a pending entry as no longer relevant - NOT because it was mapped, but because
+    there's nothing left to map any more.
+
+    CONFIRMED REAL CASE (product owner, 2026-09-16): published a test hotel (Steigenberger Golf
+    Resort El Gouna), then deleted it directly in Travel Compositor because "the prices were
+    wrong and the matches not included - therefore it was useless data" - but the automap
+    checklist kept nagging about it regardless, since nothing here can see a deletion that
+    happened entirely on Travel Compositor's side (same read-only-API constraint as the rest of
+    this module - there's no way to detect it automatically, only a human saying so). "Mark as
+    done" (mark_mapped) would be a LIE in the audit trail here - the hotel was never mapped, it
+    stopped existing - so this is a separate action with its own timestamp/reason, not a reuse of
+    mapped_at.
+
+    Kept in the store (unlike forget(), which hard-deletes) specifically so the audit trail still
+    answers "was this one ever dealt with, and how" for this case too - a duplicate turning up
+    later under the same provider code shouldn't require re-investigating whether anyone ever
+    looked at it."""
+    key = _key(supplier_id, provider_code)
+    record = platform_store.get(_NAMESPACE, key)
+    if not record:
+        return False
+    record["dismissed_at"] = time.time()
+    record["dismiss_reason"] = (reason or "").strip() or None
+    return platform_store.set(_NAMESPACE, key, record)
+
+
 def forget(supplier_id: Any, provider_code: str) -> bool:
     """Removes an entry entirely - for one recorded by mistake (e.g. a test publish). Prefer
-    mark_mapped() for a hotel that was genuinely dealt with."""
+    mark_mapped() for a hotel that was genuinely dealt with, or dismiss() for one that no longer
+    exists in Travel Compositor but is still worth a trace of having been checked."""
     return platform_store.delete(_NAMESPACE, _key(supplier_id, provider_code))
 
 
@@ -143,13 +177,22 @@ def _all_records() -> List[Dict[str, Any]]:
 
 
 def list_pending() -> List[Dict[str, Any]]:
-    """Every hotel still awaiting a back-office automap, oldest first."""
-    return [r for r in _all_records() if not r.get("mapped_at")]
+    """Every hotel still awaiting a back-office automap, oldest first. Excludes anything already
+    mapped OR dismissed (no longer exists in Travel Compositor) - both are resolved, just for
+    different reasons."""
+    return [r for r in _all_records() if not r.get("mapped_at") and not r.get("dismissed_at")]
 
 
 def list_mapped() -> List[Dict[str, Any]]:
     """Every hotel a human has confirmed as mapped, oldest first - the audit trail."""
     return [r for r in _all_records() if r.get("mapped_at")]
+
+
+def list_dismissed() -> List[Dict[str, Any]]:
+    """Every hotel dismissed as no-longer-relevant (deleted in Travel Compositor, or otherwise
+    moot) rather than mapped, oldest first - a separate audit trail from list_mapped() so the two
+    outcomes are never conflated."""
+    return [r for r in _all_records() if r.get("dismissed_at")]
 
 
 def pending_count() -> int:
