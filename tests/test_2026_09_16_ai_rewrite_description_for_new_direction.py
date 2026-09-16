@@ -122,46 +122,33 @@ def _read_duplicate_transfer_flow():
         return f.read()
 
 
-def test_flow_imports_the_ai_rewrite_function():
-    src = _read_duplicate_transfer_flow()
-    assert "from ai_extractor import rewrite_route_description_for_new_direction" in src
-
+# FOLLOW-UP (2026-09-16, later the same day): the automatic-rewrite wiring (previously
+# inline in this flow) was extracted into transfer_gap_finder.build_and_rewrite_transfer_swap_payload
+# so it can be shared with the new flows/missing_transfers.py flow - see
+# tests/test_2026_09_16_missing_transfers.py for the direct unit tests of that shared helper's
+# behavior (guarded by "is False:", sets swap_report[field] = "ai", etc). These tests just check
+# the wiring: the flow calls the shared helper instead of duplicating the AI-rewrite logic.
 
 def test_flow_no_longer_offers_a_manual_ai_rewrite_button():
     # 2026-09-16 follow-up: Chris confirmed the AI rewrite "works perfectly, please automatically
-    # use that already - no human must click additionally on this button." The button is gone;
-    # the rewrite now runs unconditionally (for fields the literal swap couldn't handle) the first
-    # time the payload is built.
+    # use that already - no human must click additionally on this button." The button is gone.
     src = _read_duplicate_transfer_flow()
     assert 'st.button("🤖 Rewrite with AI for the new direction"' not in src
-    assert 'rewrite_route_description_for_new_direction(' in src
 
 
-def test_flow_only_calls_the_ai_rewrite_when_the_literal_swap_failed():
-    # The rewrite call must stay guarded by the "couldn't auto-swap" (swap_report.get(field) is
-    # False) check, not run unconditionally on every field - it's meant for the minority case the
-    # free literal swap can't handle.
+def test_flow_uses_the_shared_build_and_rewrite_helper():
     src = _read_duplicate_transfer_flow()
-    call_positions = [i for i in range(len(src)) if src.startswith(
-        'rewrite_route_description_for_new_direction(', i)]
-    assert len(call_positions) >= 1
-    for call_pos in call_positions:
-        preceding_is_false = src.rfind("is False:", 0, call_pos)
-        assert preceding_is_false != -1
-        assert call_pos - preceding_is_false < 1200, (
-            "the AI-rewrite call isn't closely guarded by its 'is False:' swap-failed check")
+    assert "from transfer_gap_finder import build_and_rewrite_transfer_swap_payload" in src
+    assert "build_and_rewrite_transfer_swap_payload(source)" in src
+    # the old inline AI-rewrite logic must not be duplicated here any more
+    assert "rewrite_route_description_for_new_direction(" not in src
 
 
-def test_flow_marks_the_swap_report_as_ai_after_a_successful_rewrite():
-    src = _read_duplicate_transfer_flow()
-    assert 'swap_report[field] = "ai"' in src
-
-
-def test_flow_runs_the_rewrite_inside_the_initial_payload_build_not_a_button_callback():
-    # The rewrite must happen once, the first time the payload is built for this source (guarded
-    # by "dtf_payload" not in st.session_state), not re-triggered by a widget click.
+def test_flow_runs_the_shared_helper_inside_the_initial_payload_build_not_a_button_callback():
+    # Must happen once, the first time the payload is built for this source (guarded by
+    # "dtf_payload" not in st.session_state), not re-triggered by a widget click.
     src = _read_duplicate_transfer_flow()
     build_block_start = src.index('if "dtf_payload" not in st.session_state:')
-    rewrite_call = src.index('rewrite_route_description_for_new_direction(')
-    next_top_level_marker = src.index('st.session_state.dtf_payload = payload', build_block_start)
-    assert build_block_start < rewrite_call < next_top_level_marker
+    helper_call = src.index('build_and_rewrite_transfer_swap_payload(source)')
+    next_top_level_marker = src.index('payload = st.session_state.dtf_payload', build_block_start)
+    assert build_block_start < helper_call < next_top_level_marker

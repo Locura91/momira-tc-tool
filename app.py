@@ -647,6 +647,10 @@ from flows.duplicate_transfer import render_duplicate_transfer_flow
 # Same feature, for Transport - see DUPLICATE_TRANSPORT_CHOICE's own comment further down.
 from flows.duplicate_transport import render_duplicate_transport_flow
 
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), the natural next step after the two duplicate
+# flows above were proven out - see MISSING_TRANSFERS_CHOICE's own comment further down.
+from flows.missing_transfers import render_missing_transfers_flow
+
 
 # ======================================================================
 # TRANSPORT FLOW
@@ -1113,6 +1117,15 @@ DUPLICATE_TRANSFER_CHOICE = "Transfer (duplicate an existing one & swap destinat
 # problem as Transfer did - see builder.build_transport_swap_payload's own docstring for the
 # swap logic (and why it needs an extra api_client lookup Transfer's version doesn't).
 DUPLICATE_TRANSPORT_CHOICE = "Transport (duplicate an existing one & swap destinations)"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), the natural next step once DUPLICATE_TRANSFER_CHOICE
+# was proven out and simplified: "Goal with the duplicate must be, that humans create one way
+# transfers, then the app must be controlled by human and human adds the supplier as usually,
+# the app checks is there are missing transfers and then provides a list with all possible
+# missing transfers. The style can be similar to the bulk price transfer update." Scans a whole
+# supplier's live Transfer list for routes with no reverse-direction pair and lets a human batch
+# -create the missing ones - see flows/missing_transfers.py's own docstring for the full
+# reasoning (including the confirmed pairing rule and the AI-cost safety guarantee).
+MISSING_TRANSFERS_CHOICE = "Transfer (find & create missing reverse-direction transfers)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -1325,6 +1338,12 @@ if st.session_state.product_type is None:
             st.rerun()
         st.caption("Same idea, for Transport - clones an existing published Transport (parent "
                   "record AND every occupancy bracket) with the route swapped.")
+        if st.button(MISSING_TRANSFERS_CHOICE, key="pt_choice_missing_transfers", use_container_width=True):
+            st.session_state.product_type = MISSING_TRANSFERS_CHOICE
+            st.rerun()
+        st.caption("Guided version of the same idea for a whole supplier at once: scans every "
+                  "live Transfer for that supplier, lists every route with no reverse-direction "
+                  "pair yet, and lets you tick which ones to create as a batch.")
 
     with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
@@ -1373,6 +1392,10 @@ if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
 
 if st.session_state.product_type == DUPLICATE_TRANSFER_CHOICE:
     render_duplicate_transfer_flow(client)
+    st.stop()
+
+if st.session_state.product_type == MISSING_TRANSFERS_CHOICE:
+    render_missing_transfers_flow(client)
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:

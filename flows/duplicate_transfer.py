@@ -31,10 +31,9 @@ the per-occupancy price table before publishing, since the new direction may gen
 import pandas as pd
 import streamlit as st
 
-from builder import build_transfer_swap_payload
 import transfer_matcher
 from geocoding_client import geocode
-from ai_extractor import rewrite_route_description_for_new_direction
+from transfer_gap_finder import build_and_rewrite_transfer_swap_payload
 from ui_components import (editable_table, _safe_float, _safe_int,
                             _html_to_plain_for_editing, _plain_to_html_for_saving)
 
@@ -119,33 +118,16 @@ def _render_pick_source(client, supplier_id):
 def _render_review_and_publish(client, supplier_id):
     source = st.session_state.dtf_source
     if "dtf_payload" not in st.session_state:
-        payload, swap_report, route_info = build_transfer_swap_payload(source)
-
         # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): "the 'Rewrite with AI for the new
         # direction' works perfectly, please automatically use that already - no human must
-        # click additionally on this button." Runs once, right here, for any field the literal
-        # swap couldn't confidently handle (swap_report[field] is False) - never for a field
-        # that already swapped cleanly for free. swap_report[field] becomes "ai" (distinct from
-        # True/False) only when the rewrite genuinely changed the text, so the review screen can
-        # tell the human it was AI-rewritten rather than silently leaving the old "couldn't
-        # auto-swap" warning up when it no longer applies; if the AI call itself fails or returns
-        # the text unchanged (rewrite_route_description_for_new_direction's own documented
-        # fallback), swap_report[field] stays False and the original warning still shows, so nothing
-        # is silently lost.
-        datasheets = dict(payload.get("datasheets") or {})
-        en = dict(datasheets.get("EN") or {})
-        for field in ("description", "pickupDescription"):
-            if swap_report.get(field) is False:
-                plain = _html_to_plain_for_editing(en.get(field, ""))
-                with st.spinner(f"Rewriting {'description' if field == 'description' else 'pickup information'} with AI for the new direction..."):
-                    rewritten = rewrite_route_description_for_new_direction(
-                        plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
-                        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
-                if rewritten.strip() and rewritten.strip() != plain.strip():
-                    en[field] = _plain_to_html_for_saving(rewritten)
-                    swap_report[field] = "ai"
-        datasheets["EN"] = en
-        payload["datasheets"] = datasheets
+        # click additionally on this button." transfer_gap_finder.build_and_rewrite_transfer_swap_payload
+        # (shared with flows/missing_transfers.py) runs the swap AND, for any field the literal
+        # swap couldn't confidently handle, the AI rewrite - never for a field that already
+        # swapped cleanly for free. If the AI call itself fails or returns the text unchanged,
+        # swap_report[field] stays False and the original "couldn't auto-swap" warning still
+        # shows, so nothing is silently lost.
+        with st.spinner("Building the swapped payload (rewriting with AI where the literal swap couldn't confidently handle it)..."):
+            payload, swap_report, route_info = build_and_rewrite_transfer_swap_payload(source)
 
         st.session_state.dtf_payload = payload
         st.session_state.dtf_swap_report = swap_report
