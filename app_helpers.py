@@ -2923,6 +2923,11 @@ def _render_hotel_masterdata_step(client):
                         st.markdown(f"**{cand.get('name') or '(unnamed)'}**  \n"
                                     f"Country: {cand.get('countryCode') or '—'}{giata_note} · "
                                     f"Match confidence: {confidence}{geo_note}")
+                        if cand.get("country_mismatch"):
+                            st.caption("⚠️ Outside the country you searched for - shown because no "
+                                      "strong match was found inside it. Travel Compositor's own "
+                                      "record for this property may have the wrong/blank country "
+                                      "code - check the name/location before using it.")
                     with cols[1]:
                         if st.button("Use this hotel", key=f"hp_md_pick_{i}"):
                             with st.spinner("Fetching this hotel's content from Travel Compositor..."):
@@ -3179,6 +3184,11 @@ def _render_hotel_automap_manual_search(client, supplier_id, provider_code, hote
                         st.markdown(f"**{cand.get('name') or '(unnamed)'}**  \n"
                                     f"Country: {cand.get('countryCode') or '—'}{giata_note} · "
                                     f"Match confidence: {confidence}")
+                        if cand.get("country_mismatch"):
+                            st.caption("⚠️ Outside the country you searched for - shown because no "
+                                      "strong match was found inside it. Travel Compositor's own "
+                                      "record for this property may have the wrong/blank country "
+                                      "code - check the name/location before using it.")
                     with cols[1]:
                         if st.button("Use this", key=f"ham_md_pick_{provider_code}_{i}"):
                             hotel_automap.record_pending(

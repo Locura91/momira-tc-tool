@@ -58,10 +58,27 @@ def test_close_name_match_ranks_first_without_geo():
     assert results[0]["score"] > 0.9
 
 
-def test_country_filter_excludes_records_from_other_countries():
+def test_country_filter_prefers_in_country_records_when_a_strong_match_exists():
+    # DR has its own real match here (Riu Palace Bavaro) once queried by its own name - a strong
+    # in-country match, so no need to widen the search outside the filter at all.
+    results = mm.find_candidates("Riu Palace Bavaro", _INDEX, country_code="DO")
+    assert results[0]["id"] == "TC-3"
+    assert results[0]["countryCode"] == "DO"
+    assert not any(r.get("country_mismatch") for r in results)
+
+
+def test_country_filter_falls_back_outside_when_nothing_strong_matches_inside_it():
+    # CONFIRMED REAL BUG (product owner, 2026-09-16): searching "Steigenberger" restricted to DO
+    # (a country this name has nothing to do with) used to just come back empty/wrong rather than
+    # surfacing the real EG hotels a human is clearly looking for - exactly what happened live
+    # with "Siwa Shali Resort" filtered to EG, where the master record's own countryCode was the
+    # actual problem, not the hotel's name. The fallback pass now finds them, flagged so the
+    # mismatch is visible rather than silently hidden.
     results = mm.find_candidates("Steigenberger", _INDEX, country_code="DO")
-    assert all(r["countryCode"] == "DO" for r in results)
-    assert not any(r["id"] in ("TC-1", "TC-2") for r in results)
+    assert any(r["id"] == "TC-1" for r in results)
+    matched = next(r for r in results if r["id"] == "TC-1")
+    assert matched["country_mismatch"] is True
+    assert matched["countryCode"] == "EG"
 
 
 def test_country_filter_is_case_insensitive():
@@ -82,11 +99,29 @@ def test_geolocation_boosts_score_for_the_nearby_record_over_a_similarly_named_o
     assert with_geo_gap > no_geo_gap
 
 
-def test_far_away_geolocation_gives_no_boost():
+def test_moderately_far_geolocation_gives_no_boost_but_no_penalty_either():
+    # Between the boost radius and the penalty radius, geo distance is simply not informative
+    # enough either way - score should equal the plain name score, same as always.
+    index = [{"id": "TC-4", "giataId": 444, "name": "Steigenberger Golf Resort El Gouna",
+              "geolocation": {"latitude": 27.394, "longitude": 33.679}, "countryCode": "EG"}]
+    # ~150km away - past the 50km boost radius, well short of the 300km penalty radius.
+    results = mm.find_candidates("Steigenberger Golf Resort El Gouna", index, lat=28.6, lon=33.6)
+    top = results[0]
+    assert mm._GEO_BOOST_RADIUS_KM < top["geo_km"] < mm._GEO_PENALTY_RADIUS_KM
+    assert top["score"] == top["name_score"]
+
+
+def test_very_far_geolocation_penalizes_score_instead_of_just_withholding_the_boost():
+    # CONFIRMED FIX (2026-09-16, alongside the country-filter fallback): a name-only match
+    # thousands of km from the given destination is very unlikely to really be the same
+    # property - previously this left the score untouched (same as a next-door match with no
+    # geo data at all), letting a coincidentally-similar far-away name rank as confidently as a
+    # real nearby one. Now it's penalized instead.
     results = mm.find_candidates("Steigenberger Golf Resort El Gouna", _INDEX, lat=18.7, lon=-68.4)
     top = results[0]
-    assert top["geo_km"] is not None and top["geo_km"] > mm._GEO_BOOST_RADIUS_KM
-    assert top["score"] == top["name_score"]
+    assert top["geo_km"] is not None and top["geo_km"] > mm._GEO_PENALTY_RADIUS_KM
+    assert top["score"] == round(max(0.0, top["name_score"] - mm._GEO_PENALTY_WEIGHT), 4)
+    assert top["score"] < top["name_score"]
 
 
 def test_blank_query_or_empty_index_returns_nothing_and_never_raises():

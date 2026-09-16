@@ -42,6 +42,17 @@ _MIN_NAME_SCORE = 0.45
 _GEO_BOOST_RADIUS_KM = 50.0
 _GEO_BOOST_WEIGHT = 0.15
 
+# Beyond this distance, a candidate is very unlikely to genuinely be the searched-for property -
+# a name-only match that far away gets a confidence PENALTY rather than nothing, so it doesn't
+# quietly outrank a real nearby candidate in the country-mismatch fallback below.
+_GEO_PENALTY_RADIUS_KM = 300.0
+_GEO_PENALTY_WEIGHT = 0.25
+
+# A country-filtered top match at or above this is trusted outright - no need to also search
+# outside the filter. Below it, the country filter itself might be the problem (see the
+# fallback pass in find_candidates) rather than the hotel genuinely being a weak match.
+_STRONG_MATCH_THRESHOLD = 0.80
+
 
 def _name_score(query: str, candidate: str) -> float:
     return SequenceMatcher(None, _norm(query), _norm(candidate)).ratio()
@@ -54,6 +65,43 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _score_records(query: str, records: List[Dict[str, Any]], lat: Optional[float],
+                    lon: Optional[float], have_geo: bool, flag_country_mismatch: bool = False
+                    ) -> List[Dict[str, Any]]:
+    """Scores one pool of records against `query` (+ optional geolocation). Shared by
+    find_candidates' primary (country-filtered) and fallback (whole-index) passes below, so the
+    same name/geo scoring logic is never duplicated between them."""
+    scored = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name_score = _name_score(query, record.get("name") or "")
+        if name_score < _MIN_NAME_SCORE:
+            continue
+
+        geo_km = None
+        score = name_score
+        if have_geo:
+            geoloc = record.get("geolocation") or {}
+            r_lat, r_lon = geoloc.get("latitude"), geoloc.get("longitude")
+            if isinstance(r_lat, (int, float)) and isinstance(r_lon, (int, float)):
+                geo_km = _haversine_km(lat, lon, r_lat, r_lon)
+                if geo_km <= _GEO_BOOST_RADIUS_KM:
+                    score = min(1.0, score + _GEO_BOOST_WEIGHT * (1 - geo_km / _GEO_BOOST_RADIUS_KM))
+                elif geo_km > _GEO_PENALTY_RADIUS_KM:
+                    # A name-only match this far from the given destination is very unlikely to
+                    # genuinely be the property being searched for - penalized, not just left
+                    # unboosted, so it can't quietly outrank a real nearby candidate.
+                    score = max(0.0, score - _GEO_PENALTY_WEIGHT)
+
+        entry = {**record, "score": round(score, 4), "name_score": round(name_score, 4),
+                 "geo_km": round(geo_km, 1) if geo_km is not None else None}
+        if flag_country_mismatch:
+            entry["country_mismatch"] = True
+        scored.append(entry)
+    return scored
 
 
 def find_candidates(
@@ -69,6 +117,20 @@ def find_candidates(
     ranked by match confidence, each with a 'score' (0-1) and 'name_score'/'geo_km' attached for
     the UI to show its reasoning. Empty list if hotel_name is blank or index is empty - never
     raises, since this backs an interactive search box a human can retype at any time.
+
+    CONFIRMED REAL BUG (product owner, 2026-09-16, real example): searching "Siwa Shali Resort"
+    with country code EG returned 8 candidates - none of them the actual hotel, even though
+    Travel Compositor's own "Automap with master" search found it immediately by name. The
+    country filter used to be a HARD exclude on the record's own countryCode field, which can be
+    missing/blank/wrong on a specific Travel Compositor master-data record even when the hotel
+    itself is genuinely in that country - a data-quality gap on Travel Compositor's side, but one
+    that was silently hiding an otherwise-perfect name match rather than surfacing it, which is
+    exactly the "a human decides" philosophy this module's own docstring commits to. Fixed by
+    treating the country filter as a first, fast PASS rather than an absolute one: when its best
+    result isn't convincingly strong (or it finds nothing at all), a second pass searches the
+    WHOLE index by name (+ geo boost/penalty) too, and any good match found that way is merged in
+    - flagged with country_mismatch=True so the UI can show a human why a hotel from an
+    unexpected country showed up, rather than hiding it from them entirely.
     """
     query = (hotel_name or "").strip()
     if not query or not index:
@@ -77,31 +139,23 @@ def find_candidates(
     country_filter = (country_code or "").strip().upper() or None
     have_geo = lat is not None and lon is not None
 
-    scored = []
-    for record in index:
-        if not isinstance(record, dict):
-            continue
-        if country_filter and (record.get("countryCode") or "").strip().upper() != country_filter:
-            continue
+    if country_filter:
+        primary_pool = [r for r in index if isinstance(r, dict)
+                        and (r.get("countryCode") or "").strip().upper() == country_filter]
+    else:
+        primary_pool = index
 
-        name_score = _name_score(query, record.get("name") or "")
-        if name_score < _MIN_NAME_SCORE:
-            continue
-
-        geo_km = None
-        score = name_score
-        if have_geo:
-            geoloc = record.get("geolocation") or {}
-            r_lat, r_lon = geoloc.get("latitude"), geoloc.get("longitude")
-            if isinstance(r_lat, (int, float)) and isinstance(r_lon, (int, float)):
-                geo_km = _haversine_km(lat, lon, r_lat, r_lon)
-                if geo_km <= _GEO_BOOST_RADIUS_KM:
-                    score = min(1.0, score + _GEO_BOOST_WEIGHT * (1 - geo_km / _GEO_BOOST_RADIUS_KM))
-
-        scored.append({**record, "score": round(score, 4), "name_score": round(name_score, 4),
-                        "geo_km": round(geo_km, 1) if geo_km is not None else None})
-
+    scored = _score_records(query, primary_pool, lat, lon, have_geo)
     scored.sort(key=lambda r: r["score"], reverse=True)
+
+    if country_filter and (not scored or scored[0]["score"] < _STRONG_MATCH_THRESHOLD):
+        already_ids = {r.get("id") for r in scored}
+        fallback_pool = [r for r in index if isinstance(r, dict) and r.get("id") not in already_ids
+                        and (r.get("countryCode") or "").strip().upper() != country_filter]
+        fallback_scored = _score_records(query, fallback_pool, lat, lon, have_geo, flag_country_mismatch=True)
+        scored.extend(fallback_scored)
+        scored.sort(key=lambda r: r["score"], reverse=True)
+
     return scored[:limit]
 
 
