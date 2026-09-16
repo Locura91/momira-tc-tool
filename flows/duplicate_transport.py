@@ -30,7 +30,7 @@ import streamlit as st
 
 from builder import build_transport_swap_payload, build_transport_option_swap_payload
 import transport_matcher
-from ui_components import editable_table, _safe_float, _safe_int
+from ui_components import editable_table, _safe_float, _safe_int, _html_to_plain_for_editing, _plain_to_html_for_saving
 
 from app_helpers import _ur_pick_momira_supplier, show_publish_error
 
@@ -149,20 +149,41 @@ def _render_review_and_publish(client, supplier_id):
         st.session_state.dtp_payload = payload
         st.session_state.dtp_swap_report = swap_report
         st.session_state.dtp_route_info = route_info
-        st.session_state.dtp_options = [
+        duplicated_options = [
             build_transport_option_swap_payload(
                 opt, route_info["new_departure_name"], route_info["new_arrival_name"])
             for opt in source_options
         ]
+        st.session_state.dtp_options = duplicated_options
+        # CONFIRMED REAL PRODUCTION ERROR (product owner, 2026-09-16): "java.lang.
+        # IllegalArgumentException: An instance of a null PK has been incorrectly provided for
+        # this find operation" on the PARENT create call. Root cause: the deepcopy in
+        # build_transport_swap_payload carries over the OLD transport's optionCodes (e.g.
+        # ["AC First Class Seat"], a code that belongs to the OLD transport id and will never
+        # exist under the brand-new one about to be created) unchanged - Travel Compositor tries
+        # to resolve that stale reference on create and fails. build_transport_payloads' own
+        # create path (the normal, non-duplicate way a Transport gets built in this app) never
+        # hits this because it always sets optionCodes to the SAME freshly-generated codes it's
+        # about to create as Options right after - matching that here fixes it the same way.
+        payload["optionCodes"] = [opt.get("code") for opt in duplicated_options if opt.get("code")]
+        st.session_state.dtp_payload = payload
 
     payload = st.session_state.dtp_payload
     swap_report = st.session_state.get("dtp_swap_report") or {}
     route_info = st.session_state.get("dtp_route_info") or {}
     options = st.session_state.dtp_options
 
-    st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}): "
-              f"**{route_info.get('old_departure_name', '?')} → {route_info.get('old_arrival_name', '?')}** "
-              f"({len(options)} occupancy bracket(s)).")
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16): the original wording here showed the
+    # UNCHANGED original route ("Aswan Train Station → Alexandria Train Station"), which read as
+    # if nothing had actually been swapped yet - "wrong in the order as nothing changed in this
+    # field, which could cause a misunderstanding". Now states both directions explicitly, with
+    # an arrow icon on the new one so it's unmistakable which is which.
+    st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}) "
+              f"({len(options)} occupancy bracket(s)).\n\n"
+              f"Original route: {route_info.get('old_departure_name', '?')} → "
+              f"{route_info.get('old_arrival_name', '?')}\n\n"
+              f"🔁 New route being created: **{route_info.get('new_departure_name', '?')} → "
+              f"{route_info.get('new_arrival_name', '?')}**")
 
     if st.button("↩️ Pick a different Transport to duplicate", key="dtp_restart"):
         for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
@@ -222,7 +243,19 @@ def _render_review_and_publish(client, supplier_id):
             st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
                       "both original location names, so it's copied unchanged below. Check it "
                       "reads correctly for the new direction before publishing.")
-        en["description"] = st.text_area("Description", value=en.get("description", ""), key="dtp_description")
+        # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): the stored description is
+        # real HTML (<p>, <ul><li>, ...) - showing that raw markup in the box read as "coding
+        # lines" a non-technical human wouldn't understand. Same fix already used everywhere else
+        # in this app for an HTML-backed description field (see ui_components.editable_field's
+        # own "html_text_area" widget and its docstring for the full history): show/edit plain,
+        # human-friendly text, and convert it back to the same HTML shape automatically on save -
+        # the human never sees or types a tag.
+        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
+                  "plain text, with a blank line between paragraphs and one item per line for a "
+                  "list.")
+        new_plain_description = st.text_area(
+            "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtp_description")
+        en["description"] = _plain_to_html_for_saving(new_plain_description)
 
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
