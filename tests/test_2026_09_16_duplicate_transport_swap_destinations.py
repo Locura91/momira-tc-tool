@@ -309,6 +309,24 @@ def test_missing_airline_code_is_defaulted_to_empty_string():
     assert payload["airlineCode"] == ""
 
 
+def test_missing_company_name_is_defaulted_to_empty_string():
+    # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-16): the SAME "java.lang.
+    # IllegalArgumentException: An instance of a null PK has been incorrectly provided for this
+    # find operation" error was still happening on a genuinely redeployed build, even after the
+    # optionCodes fix (diagnosed live via screen-share - the actual submitted payload's
+    # optionCodes matched correctly, so that wasn't it this time). companyName was the one field
+    # missing ENTIRELY (not present at all, not even as null) from the real payload - and the
+    # admin UI has a "Transport Company" DROPDOWN for this exact field, suggesting it's a real
+    # entity reference rather than a plain string. Same fixture as the airlineCode test above
+    # (the real GET response never included companyName either) - the fix must add it as an
+    # explicit "" key, matching what the working, non-duplicate create path already always sends.
+    source = _real_train_ticket_get_response()
+    assert "companyName" not in source  # sanity-check the fixture matches the real bug report
+    payload, _report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())
+    assert payload["companyName"] == ""
+    assert "companyName" in payload  # must be an explicit key, not merely absent-and-falsy
+
+
 def test_name_swaps_using_the_bare_place_name_when_the_formal_name_never_appears():
     source = _real_train_ticket_get_response()
     payload, report, _route_info = build_transport_swap_payload(source, _TrainStationApiClient())

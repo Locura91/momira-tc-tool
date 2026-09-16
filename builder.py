@@ -4561,6 +4561,24 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     if not payload.get("airlineCode"):
         payload["airlineCode"] = ""
 
+    # SECOND SUSPECT for the "java.lang.IllegalArgumentException: An instance of a null PK has
+    # been incorrectly provided for this find operation" error the product owner kept hitting
+    # even AFTER the optionCodes fix below (confirmed still failing on a genuinely redeployed
+    # build, 2026-09-16 - diagnosed live by screen-sharing his browser: the actual submitted
+    # payload had a correct, matching optionCodes, so that wasn't it this time). The one field
+    # missing ENTIRELY from that real payload - not merely empty, not present as null, just
+    # absent as a key - was companyName. The admin UI's own "Basic" tab has a "Transport Company"
+    # DROPDOWN for this exact field (confirmed via the same screen-share), strongly suggesting
+    # it is a genuine entity reference on Travel Compositor's side rather than a plain string -
+    # exactly the shape that produces a "null PK" error when completely absent, as opposed to
+    # airlineCode's different, explicit "must not be null" message when merely empty. The
+    # working, non-duplicate build_transport_payloads path always sends companyName explicitly
+    # (defaulting to "" - see ContractTransportVO's own docstring) and has never hit this error,
+    # so matching that here (an explicit "" key, not a missing one) is the fix, same pattern as
+    # airlineCode just above.
+    if "companyName" not in payload or payload.get("companyName") is None:
+        payload["companyName"] = ""
+
     segments = payload.get("segments") or []
     old_departure_code = (segments[0].get("departureLocationCode") if segments else "") or ""
     old_arrival_code = (segments[-1].get("arrivalLocationCode") if segments else "") or ""
