@@ -666,6 +666,16 @@ class ContractTransferVO(BaseModel):
     vehicleType: str = "CAR"
     departure: TransferLocationVO
     arrival: TransferLocationVO
+    # CONFIRMED REAL FIELD (product owner, 2026-09-16, pasted the real Contract - Transfer
+    # Swagger): the admin UI's "Transfer IN" checkbox. True = a transfer TO the accommodation
+    # (arrival direction); False = FROM the accommodation ("Transfer OUT" - the admin UI itself
+    # doesn't use that second label, but that's the logical opposite). Defaults True since every
+    # real Swagger example shown so far has it true and this app's own builder never had a reason
+    # to set it any other way historically. IMPORTANT for the duplicate-and-swap feature: if the
+    # ORIGINAL transfer heads TO the accommodation, the swapped-direction duplicate necessarily
+    # heads AWAY from it - this must be INVERTED on swap, never copied through unchanged. See
+    # build_transfer_swap_payload's own comment for where that inversion happens.
+    transferToHotel: bool = True
     departureLocationId: Optional[int] = None  # Transfer Zone id - populated for zone-based (area) routing
     arrivalLocationId: Optional[int] = None
     pickupInformation: Optional[str] = None

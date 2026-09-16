@@ -30,7 +30,8 @@ import streamlit as st
 from builder import build_transfer_swap_payload
 import transfer_matcher
 from geocoding_client import geocode
-from ui_components import editable_table, _safe_float, _safe_int
+from ui_components import (editable_table, _safe_float, _safe_int,
+                            _html_to_plain_for_editing, _plain_to_html_for_saving)
 
 from app_helpers import _ur_pick_momira_supplier, show_publish_error
 
@@ -83,7 +84,7 @@ def render_duplicate_transfer_flow(client):
     if st.session_state.get("dtf_supplier_id") != supplier_id:
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.
-        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
                   "dtf_match_route_fingerprint", "dtf_search_results"):
             st.session_state.pop(k, None)
         st.session_state.dtf_supplier_id = supplier_id
@@ -154,17 +155,26 @@ def _render_pick_source(client, supplier_id):
 def _render_review_and_publish(client, supplier_id):
     source = st.session_state.dtf_source
     if "dtf_payload" not in st.session_state:
-        st.session_state.dtf_payload, st.session_state.dtf_swap_report = build_transfer_swap_payload(source)
+        (st.session_state.dtf_payload, st.session_state.dtf_swap_report,
+         st.session_state.dtf_route_info) = build_transfer_swap_payload(source)
 
     payload = st.session_state.dtf_payload
     swap_report = st.session_state.get("dtf_swap_report") or {}
-    src_dep = (source.get("departure") or {}).get("name", "?")
-    src_arr = (source.get("arrival") or {}).get("name", "?")
-    st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}): "
-              f"**{src_dep} → {src_arr}**.")
+    route_info = st.session_state.get("dtf_route_info") or {}
+
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): this banner used to show the
+    # UNCHANGED original route ("Cairo Airport (CAI) → Cairo City"), reading as if nothing had
+    # actually been swapped yet - same "wrong in the order... could cause a misunderstanding"
+    # issue already fixed for Transport's own success banner (flows/duplicate_transport.py). Now
+    # states both directions explicitly, matching that fix.
+    st.success(f"Duplicating **{source.get('name') or '(unnamed)'}** ({source.get('id')}).\n\n"
+              f"Original route: {route_info.get('old_departure_name', '?')} → "
+              f"{route_info.get('old_arrival_name', '?')}\n\n"
+              f"🔁 New route being created: **{route_info.get('new_departure_name', '?')} → "
+              f"{route_info.get('new_arrival_name', '?')}**")
 
     if st.button("↩️ Pick a different Transfer to duplicate", key="dtf_restart"):
-        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
+        for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
                   "dtf_match_route_fingerprint", "dtf_search_results"):
             st.session_state.pop(k, None)
         st.rerun()
@@ -190,25 +200,57 @@ def _render_review_and_publish(client, supplier_id):
     payload.setdefault("departure", {})["name"] = new_dep_name
     payload.setdefault("arrival", {})["name"] = new_arr_name
 
+    # CONFIRMED REAL FIELD (product owner, 2026-09-16, pasted the real Contract - Transfer
+    # Swagger): "transferToHotel" is the admin UI's "Transfer IN" checkbox - true = a transfer TO
+    # the accommodation. build_transfer_swap_payload already INVERTS it automatically (a transfer
+    # that heads to the accommodation necessarily heads away from it once the direction is
+    # swapped) - surfaced here explicitly, not left buried in the "Everything else" JSON dump,
+    # since a wrong direction on this specific field is exactly the kind of mistake that's easy
+    # to miss and matters operationally (product owner: "very important").
+    payload["transferToHotel"] = st.checkbox(
+        "Transfer IN (heads to the accommodation)", value=bool(payload.get("transferToHotel", True)),
+        key="dtf_transfer_to_hotel",
+        help="Automatically flipped from the original (a transfer that headed to the "
+             "accommodation now heads away from it, in the swapped direction) - double-check "
+             "this reads correctly before publishing.")
+
     st.markdown("#### Name")
     payload["name"] = st.text_input("Transfer name", value=payload.get("name", ""), key="dtf_name")
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     en["name"] = st.text_input("Datasheet name (customer-facing)", value=en.get("name", ""), key="dtf_datasheet_name")
 
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot, red-circled): the stored
+    # description/pickup text is real HTML ("<p>...</p>") - showing that raw markup read as
+    # "coding lines" a non-technical human wouldn't understand. Same fix already used everywhere
+    # else in this app for an HTML-backed field (see ui_components.editable_field's own
+    # "html_text_area" widget, and flows/duplicate_transport.py's own identical fix): show/edit
+    # plain, human-friendly text and convert it back to the same HTML shape automatically on
+    # save - the human never sees or types a tag.
     if en.get("description") is not None or swap_report.get("description") is not None:
         if swap_report.get("description") is False:
             st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
                       "both original location names, so it's copied unchanged below. Check it "
                       "reads correctly for the new direction before publishing.")
-        en["description"] = st.text_area("Description", value=en.get("description", ""), key="dtf_description")
+        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
+                  "plain text, with a blank line between paragraphs and one item per line for a "
+                  "list.")
+        new_plain_description = st.text_area(
+            "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtf_description")
+        en["description"] = _plain_to_html_for_saving(new_plain_description)
 
     if en.get("pickupDescription") is not None or swap_report.get("pickupDescription") is not None:
         if swap_report.get("pickupDescription") is False:
             st.warning("⚠️ Couldn't auto-swap the pickup information - it doesn't literally "
                       "contain both original location names, so it's copied unchanged below. "
                       "Check it reads correctly for the new direction before publishing.")
-        en["pickupDescription"] = st.text_area("Pickup information", value=en.get("pickupDescription", ""), key="dtf_pickup_description")
+        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
+                  "plain text, with a blank line between paragraphs and one item per line for a "
+                  "list.")
+        new_plain_pickup = st.text_area(
+            "Pickup information", value=_html_to_plain_for_editing(en.get("pickupDescription", "")),
+            key="dtf_pickup_description")
+        en["pickupDescription"] = _plain_to_html_for_saving(new_plain_pickup)
 
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
@@ -257,7 +299,8 @@ def _render_review_and_publish(client, supplier_id):
     with st.expander("🔎 Everything else, copied exactly from the original (edit later in Travel "
                      "Compositor if the new direction genuinely differs)"):
         st.json({k: v for k, v in payload.items()
-                if k not in ("departure", "arrival", "name", "datasheets", "basePrice", "pricesByOccupancy")})
+                if k not in ("departure", "arrival", "name", "datasheets", "basePrice",
+                             "pricesByOccupancy", "transferToHotel")})
 
     st.markdown("#### Duplicate check")
     st.caption("Same safeguard every other create flow here has - confirms a Transfer for THIS "
@@ -324,7 +367,7 @@ def _render_review_and_publish(client, supplier_id):
                     if new_id:
                         transfer_matcher.remember_transfer_id(supplier_id, new_dep_name, new_arr_name, new_id)
                     st.success(f"✅ Published successfully (id: {new_id or 'unknown'}).")
-                    for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_match_result",
+                    for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info", "dtf_match_result",
                               "dtf_match_route_fingerprint", "dtf_search_results"):
                         st.session_state.pop(k, None)
             except Exception as e:

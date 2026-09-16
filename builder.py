@@ -3388,14 +3388,17 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
     swapped (and the name/description/pickup text rewritten to match - see below). Always a
     CREATE (the 'id' field is dropped) - this never updates the original.
 
-    Returns (payload, swap_report): swap_report is a dict {"name": bool, "datasheet_name": bool,
-    "description": bool or None, "pickupDescription": bool or None} recording whether each prose
-    field was confidently auto-swapped (True), left unchanged because the old location names
-    weren't both found in the text (False - needs a human to check/edit it), or wasn't present in
-    the source at all (None). name/datasheet_name always fall back to appending "(return)" rather
-    than reporting False (see _swap_route_text) since a short label always needs SOME wording;
-    description/pickupDescription use _swap_route_text_if_found instead since a paragraph of
-    prose can't get the same "(return)" fallback without looking broken.
+    Returns (payload, swap_report, route_info): swap_report is a dict {"name": bool,
+    "datasheet_name": bool, "description": bool or None, "pickupDescription": bool or None}
+    recording whether each prose field was confidently auto-swapped (True), left unchanged
+    because the old location names weren't both found in the text (False - needs a human to
+    check/edit it), or wasn't present in the source at all (None). name/datasheet_name always
+    fall back to appending "(return)" rather than reporting False (see _swap_route_text) since a
+    short label always needs SOME wording; description/pickupDescription use
+    _swap_route_text_if_found instead since a paragraph of prose can't get the same "(return)"
+    fallback without looking broken. route_info: {"old_departure_name", "old_arrival_name",
+    "new_departure_name", "new_arrival_name"} - same shape as build_transport_swap_payload's own
+    route_info, for the calling screen's success banner to state both directions explicitly.
 
     CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "when human create a new transfer or
     transport, could the app simple copy the product and just swap the destinations?" A large
@@ -3435,28 +3438,70 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
     payload["departureLocationId"], payload["arrivalLocationId"] = (
         payload.get("arrivalLocationId"), payload.get("departureLocationId"))
 
+    # CONFIRMED REAL FIELD (product owner, 2026-09-16, pasted the real Contract - Transfer
+    # Swagger): "transferToHotel" is the admin UI's "Transfer IN" checkbox - true = a transfer TO
+    # the accommodation. If the ORIGINAL transfer headed to the accommodation, the swapped
+    # (reverse-direction) duplicate necessarily heads AWAY from it, and vice versa - this is a
+    # genuine logical inversion, never a value that can just be copied through unchanged the way
+    # every other field on this payload is. Defaults to True (schemas.py's own default) when the
+    # source record predates this field ever being read/stored, same as any other missing field.
+    payload["transferToHotel"] = not bool(payload.get("transferToHotel", True))
+
     old_departure_name = str(old_departure.get("name") or "").strip()
     old_arrival_name = str(old_arrival.get("name") or "").strip()
+
+    # CONFIRMED REAL BUG (product owner, 2026-09-16, live "One-way transfer from Cairo Airport
+    # (CAI or SPX) to Cairo City Hotel" duplicate): departure.name was the shorter "Cairo Airport
+    # (CAI)" - NOT a literal substring of the transfer's own name/description text, which said
+    # "(CAI or SPX)" - so the swap fell through to the "(return)" fallback and left the
+    # description unswapped. Same alias-matching fix already used for Transport (see
+    # _location_name_aliases' own docstring) - tries the full location name first, then a
+    # generic-suffix-stripped and/or parenthetical-stripped alias, before falling back to the
+    # bare old_departure_name/old_arrival_name pair (which still behaves exactly as before for
+    # any text that never needed an alias in the first place).
+    departure_aliases = _location_name_aliases(old_departure_name)
+    arrival_aliases = _location_name_aliases(old_arrival_name)
+
+    def _swap_with_aliases(text: str):
+        pair = _find_present_location_aliases(text, departure_aliases, arrival_aliases)
+        dep, arr = pair if pair else (old_departure_name, old_arrival_name)
+        return _swap_route_text(text, dep, arr)
+
+    def _swap_with_aliases_if_found(text: str):
+        pair = _find_present_location_aliases(text, departure_aliases, arrival_aliases)
+        if not pair:
+            return text, False
+        return _swap_route_text_if_found(text, pair[0], pair[1])
+
     swap_report = {"name": None, "datasheet_name": None, "description": None, "pickupDescription": None}
     if payload.get("name"):
-        payload["name"] = _swap_route_text(payload["name"], old_departure_name, old_arrival_name)
+        payload["name"] = _swap_with_aliases(payload["name"])
         swap_report["name"] = True
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     if en.get("name"):
-        en["name"] = _swap_route_text(en["name"], old_departure_name, old_arrival_name)
+        en["name"] = _swap_with_aliases(en["name"])
         swap_report["datasheet_name"] = True
     if en.get("description"):
-        en["description"], swapped = _swap_route_text_if_found(en["description"], old_departure_name, old_arrival_name)
+        en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
     if en.get("pickupDescription"):
-        en["pickupDescription"], swapped = _swap_route_text_if_found(en["pickupDescription"], old_departure_name, old_arrival_name)
+        en["pickupDescription"], swapped = _swap_with_aliases_if_found(en["pickupDescription"])
         swap_report["pickupDescription"] = swapped
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
-    return payload, swap_report
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, same live screenshot): the calling screen's
+    # success banner showed the UNCHANGED original route ("Cairo Airport (CAI) → Cairo City"),
+    # reading as if nothing had been swapped - the exact same misleading-banner bug already fixed
+    # for Transport (build_transport_swap_payload's own route_info). Returned here now too so
+    # flows/duplicate_transfer.py can state both directions explicitly the same way.
+    route_info = {
+        "old_departure_name": old_departure_name, "old_arrival_name": old_arrival_name,
+        "new_departure_name": old_arrival_name, "new_arrival_name": old_departure_name,
+    }
+    return payload, swap_report, route_info
 
 
 # ==========================================
@@ -4475,11 +4520,20 @@ _TRANSPORT_BASE_NAME_SUFFIXES = [
 ]
 
 
-def _transport_location_name_aliases(name: str) -> List[str]:
-    """Candidate names to try when swapping route text for Transport, longest/most specific
-    first: the full formal Transport Base name, then (if it ends with a generic location-type
-    word like "Train Station"/"Airport") the bare place name with that suffix stripped. Only one
-    suffix is ever stripped, to avoid over-shortening a genuinely compound place name."""
+def _location_name_aliases(name: str) -> List[str]:
+    """Candidate names to try when swapping a route's name/description text, longest/most
+    specific first. Originally Transport-only (formal Transport Base name -> bare place name
+    with a generic location-type suffix like "Train Station"/"Airport" stripped), GENERALIZED
+    2026-09-16 to also cover Transfer, after the exact same class of bug showed up there too:
+    CONFIRMED REAL BUG (product owner, live "One-way transfer from Cairo Airport (CAI or SPX) to
+    Cairo City Hotel" duplicate) - the transfer's departure.name field was the shorter "Cairo
+    Airport (CAI)", which is NOT a literal substring of the transfer's own name/description text
+    ("Cairo Airport (CAI or SPX)" - the parenthetical diverges after "CAI"), so the swap fell
+    through to the "(return)" fallback / left the description unswapped, exactly like the earlier
+    Transport "Aswan" vs "Aswan Train Station" bug. Adds a THIRD alias tier for this: stripping a
+    trailing parenthetical annotation ("Cairo Airport (CAI)" -> "Cairo Airport") in addition to
+    the existing generic-suffix-word stripping. Only one of each is ever stripped, to avoid
+    over-shortening a genuinely compound place name."""
     name = (name or "").strip()
     if not name:
         return []
@@ -4491,10 +4545,19 @@ def _transport_location_name_aliases(name: str) -> List[str]:
             if core and core not in aliases:
                 aliases.append(core)
             break
+    if name.endswith(")") and "(" in name:
+        paren_core = name[: name.rfind("(")].strip(" -,")
+        if paren_core and paren_core not in aliases:
+            aliases.append(paren_core)
     return aliases
 
 
-def _find_present_transport_aliases(text: str, departure_aliases: List[str], arrival_aliases: List[str]):
+# Kept as an alias for the old, Transport-only name - nothing outside this module should need
+# it, but this avoids a needless rename risk for any external reference.
+_transport_location_name_aliases = _location_name_aliases
+
+
+def _find_present_location_aliases(text: str, departure_aliases: List[str], arrival_aliases: List[str]):
     """Returns the first (departure_alias, arrival_alias) pair that BOTH appear literally in
     text, trying aliases longest/most-formal first so an exact full-name match always wins over
     the shortened fallback. None if no pair is found in this text at all."""
@@ -4504,6 +4567,10 @@ def _find_present_transport_aliases(text: str, departure_aliases: List[str], arr
             if dep_alias and arr_alias and dep_alias in text and arr_alias in text:
                 return dep_alias, arr_alias
     return None
+
+
+# Kept as an alias for the old, Transport-only name.
+_find_present_transport_aliases = _find_present_location_aliases
 
 
 def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api_client: TravelCompositorAPI):
