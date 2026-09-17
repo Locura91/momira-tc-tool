@@ -1448,7 +1448,7 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     clamp_notes = []
     preview_rows = normalize_price_list(
         data.get("price_list"), currency, fallback_child_discount_percentage=new_value,
-        notes=clamp_notes)
+        notes=clamp_notes, max_occupancy=data.get("max_occupancy"))
     if clamp_notes:
         st.warning("⚠️ " + " ".join(clamp_notes))
     lines = []

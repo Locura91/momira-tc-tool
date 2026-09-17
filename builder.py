@@ -232,6 +232,13 @@ def _safe_supplement_price(value, fallback=0.0):
 
 _MONEY_KEYS = ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice")
 
+# How many people physically occupy the room/cabin for each price key - used by
+# normalize_price_list's max_occupancy guard (product owner, 2026-09-18: "if Occupancy is max 2,
+# there can never be triple or quadruple prices"). singlePrice/doublePrice have no entry here
+# because they're never dropped by that guard - even a 2-person max occupancy still sells single
+# and double.
+_MONEY_KEY_REQUIRED_OCCUPANCY = {"triplePrice": 3, "quadruplePrice": 4}
+
 
 def _money_or_none(value, currency):
     """A MoneyVO-shaped dict, or None when the occupancy simply isn't sold.
@@ -300,12 +307,28 @@ def _clamp_child_discount_percentage(value):
     return clamped, clamped != pct
 
 
-def normalize_price_list(rows, currency, fallback_child_discount_percentage=None, notes=None):
+def normalize_price_list(rows, currency, fallback_child_discount_percentage=None, notes=None, max_occupancy=None):
     """Make a price list safe to validate, without changing what it says.
 
     Every occupancy that is priced keeps its number; every one that is blank becomes None
     rather than {}. Rows with no usable price at all are dropped, since a season row that
     prices nothing cannot be published and would only produce the same error later.
+
+    max_occupancy: CONFIRMED HOUSE RULE (product owner, 2026-09-18, verbatim: "if Occupancy is
+    max 2, there can never be triple or quadruple prices") - when this Modality's own stated
+    physical capacity is known (extracted from the source document, e.g. "Twin cabin, max 2
+    guests"), a 3rd/4th occupant is not merely unpriced, it's IMPOSSIBLE - the room/cabin cannot
+    physically hold them. This is a harder rule than the ordinary "blank becomes None" case above:
+    triplePrice/quadruplePrice (and their tripleChildPercentageDiscount/
+    quadrupleChildPercentageDiscount) are dropped from every row whenever max_occupancy rules
+    that occupancy out, EVEN IF the extraction (or a human) put a real number there - a
+    contradiction between a document's own stated capacity and a stray table value is exactly the
+    kind of AI misread this guards against, and Travel Compositor has no way to reject "this cabin
+    sleeps 2 but you're selling it to 3 people" on its own. max_occupancy=2 drops triplePrice AND
+    quadruplePrice; max_occupancy=3 drops only quadruplePrice; max_occupancy>=4 or None (not
+    stated - the common case) changes nothing, same as before this rule existed. Every drop is
+    recorded in `notes` (when given), same "flag it, don't silently change it" convention as the
+    child-discount clamp below.
 
     fallback_child_discount_percentage: CONFIRMED HOUSE RULE (product owner, 2026-08-24) - Travel
     Compositor's ONLY child-price mechanism on a Closed Tour price list entry is
@@ -324,6 +347,7 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     review screen (see ui_components.render_child_discount_editor) can surface the correction
     instead of it happening invisibly. Left as an opt-in output parameter, not a return-value
     change, so every existing direct call/test keeps working unchanged."""
+    max_occupancy_int = _safe_int(max_occupancy, fallback=None) if max_occupancy not in (None, "") else None
     out = []
     for row in (rows or []):
         if not isinstance(row, dict):
@@ -337,6 +361,15 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
         price = dict(price) if isinstance(price, dict) else {}
         cleaned = {}
         for key in _MONEY_KEYS:
+            required_occupancy = _MONEY_KEY_REQUIRED_OCCUPANCY.get(key)
+            if (max_occupancy_int is not None and required_occupancy is not None
+                    and max_occupancy_int < required_occupancy):
+                if price.get(key) not in (None, "", {}) and notes is not None:
+                    notes.append(
+                        f"{key} was dropped - this Modality's own stated max occupancy is "
+                        f"{max_occupancy_int}, which cannot sell a {required_occupancy}-person "
+                        f"occupancy at all.")
+                continue
             money = _money_or_none(price.get(key), currency)
             if money is not None:
                 cleaned[key] = money
@@ -344,6 +377,17 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
             ("tripleChildPercentageDiscount", "triplePrice"),
             ("quadrupleChildPercentageDiscount", "quadruplePrice"),
         ):
+            # NEW, 2026-09-18: when max_occupancy has ruled this occupancy out entirely (a
+            # physical impossibility, not merely "unpriced"), a discount for it can never apply
+            # either - checked first so a row's own stray discount value can't resurrect an
+            # occupancy this room/cabin genuinely cannot sell. Deliberately narrower than "any
+            # occupancy that isn't sold" (which would also exclude a row's own explicit discount
+            # whenever the price itself was simply left blank) - that broader question is
+            # unchanged from before this rule existed.
+            required_occupancy = _MONEY_KEY_REQUIRED_OCCUPANCY.get(occupancy_key)
+            if (max_occupancy_int is not None and required_occupancy is not None
+                    and max_occupancy_int < required_occupancy):
+                continue
             source_value = None
             if price.get(extra) not in (None, ""):
                 source_value = price[extra]
@@ -2090,7 +2134,8 @@ def build_closed_tour_payloads(
         _consistent_supplements, _supplement_notes = strip_unsold_supplement_occupancies(
             extracted_dmc_data.get("supplements", []),
             normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
-                                  fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage")))
+                                  fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
+                                  max_occupancy=extracted_dmc_data.get("max_occupancy")))
         supplements_list = build_supplement_vos(_consistent_supplements)
 
         # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
@@ -2210,7 +2255,8 @@ def build_closed_tour_payloads(
     _tour_price_list_sorted = sorted(
         normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
                               fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
-                              notes=_child_discount_clamp_notes),
+                              notes=_child_discount_clamp_notes,
+                              max_occupancy=extracted_dmc_data.get("max_occupancy")),
         key=lambda p: p.get("startDate", ""))
     tet_overlap = None
     if is_vietnam and _tour_price_list_sorted:
@@ -5021,12 +5067,30 @@ def _build_meal_plan_payload(mp_data):
     )
 
 
+def _room_pax_cap(room_data):
+    """The effective distributions cap for one room: the ordinary 9-pax system cap
+    (_MAX_OCCUPANCY_PAX), tightened to this room's OWN stated max_occupancy when the source
+    document explicitly gives one and it's smaller. CONFIRMED HOUSE RULE (product owner,
+    2026-09-18, verbatim: "if Occupancy is max 2, there can never be triple or quadruple
+    prices") - the same "a room can't sell more people than it can physically hold" rule already
+    enforced on ClosedTour price_list (see normalize_price_list's max_occupancy parameter),
+    applied here to Hotel room distributions. A room's own distributions are already meant to
+    come straight from the document's own occupancy table (see the extraction prompt), so this is
+    a defense-in-depth safety net against a stray/misread combination, not the primary guard."""
+    stated = _safe_int((room_data or {}).get("max_occupancy"), fallback=None) \
+        if (room_data or {}).get("max_occupancy") not in (None, "") else None
+    if stated is not None and stated > 0:
+        return min(_MAX_OCCUPANCY_PAX, stated)
+    return _MAX_OCCUPANCY_PAX
+
+
 def _build_room_payload(room_data, existing_room=None):
     """Builds a ContractRoomVO. If `existing_room` (a matched real room dict from
     hotel_matcher.match_room_by_name) is given, reuses its providerCode so Travel Compositor
     recognizes this as the SAME room rather than creating a duplicate - CONFIRMED (product
     owner): a room's providerCode is system-generated (AUTO_...) and never set by this tool."""
-    distributions = _clip_distributions_to_pax_cap((room_data or {}).get("distributions") or [])
+    distributions = _clip_distributions_to_pax_cap(
+        (room_data or {}).get("distributions") or [], max_cap=_room_pax_cap(room_data))
     return ContractRoomVO(
         name=(room_data or {}).get("name"),
         typeId=(room_data or {}).get("type_id"),
@@ -5688,7 +5752,7 @@ def _hotel_rate_payload_unchanged(rate_payload, existing_rate):
 
 def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer_name_to_provider_code,
                                supplement_name_to_provider_code, existing_hotel_snapshot=None,
-                               room_name_to_distributions=None):
+                               room_name_to_distributions=None, room_name_to_max_occupancy=None):
     """
     PHASE 2 (rates) - the last step. Builds one ContractHotelRateVO payload per extracted rate-
     group (each with its nested seasons/seasonRoomPrices/stopSales), ready for
@@ -5709,6 +5773,12 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
     fill in a season's missing distribution-price combos (see _fill_missing_distribution_prices) -
     CONFIRMED REAL BUG, 2026-09-11, HRG-H1: Travel Compositor rejects a rate outright if any
     combo a room allows has no price at all for a season it's sold in.
+
+    `room_name_to_max_occupancy`: {room_name: int|None} - each room's own stated max_occupancy
+    (see _room_pax_cap), when the source document gives one. CONFIRMED HOUSE RULE (product owner,
+    2026-09-18): a room's PRICED distribution combos here are clipped to this same cap, not just
+    the 9-pax system cap - the primary guard is at extraction (never invent a combo a room's
+    capacity rules out), this is the same defense-in-depth safety net as Phase 1's room payload.
 
     CONFIRMED REAL RULE (product owner): no deactivation/deletion logic needed for stale
     seasons/rates - "no deleting needed for rates, if the time window is closed, it is done then
@@ -5733,6 +5803,7 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
     """
     existing_rates = (existing_hotel_snapshot or {}).get("rates") or []
     room_name_to_distributions = room_name_to_distributions or {}
+    room_name_to_max_occupancy = room_name_to_max_occupancy or {}
     results = []
 
     for rate_data in extracted_rates or []:
@@ -5774,13 +5845,19 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 provider_room_code = room_name_to_provider_code.get(room_name)
                 if not provider_room_code:
                     continue
-                distribution_prices_data = _clip_distributions_to_pax_cap_priced((rp_data or {}).get("distribution_prices") or [])
+                _room_stated_cap = _safe_int(room_name_to_max_occupancy.get(room_name), fallback=None) \
+                    if room_name_to_max_occupancy.get(room_name) not in (None, "") else None
+                _room_cap = min(_MAX_OCCUPANCY_PAX, _room_stated_cap) \
+                    if _room_stated_cap is not None and _room_stated_cap > 0 else _MAX_OCCUPANCY_PAX
+                distribution_prices_data = _clip_distributions_to_pax_cap_priced(
+                    (rp_data or {}).get("distribution_prices") or [], max_cap=_room_cap)
                 # CONFIRMED REAL BUG (2026-09-11, HRG-H1): Travel Compositor rejects the whole
                 # rate if this room allows an occupancy combo (its own `distributions`) that has
                 # no price at all here - fill any gap safely (same total-pax price) before it
                 # ever reaches the API; anything that can't be safely filled blocks this rate
                 # with a clear, editable message instead of Travel Compositor's raw exception.
-                allowed_distributions = _clip_distributions_to_pax_cap(room_name_to_distributions.get(room_name) or [])
+                allowed_distributions = _clip_distributions_to_pax_cap(
+                    room_name_to_distributions.get(room_name) or [], max_cap=_room_cap)
                 distribution_prices_data, still_missing, fill_notes = _fill_missing_distribution_prices(
                     distribution_prices_data, allowed_distributions)
                 if fill_notes:

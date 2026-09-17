@@ -434,6 +434,18 @@ Rules:
   for a specific bracket (e.g. "up to 2 children can share a double room", "no extra child in a triple
   cabin") - then set just that bracket's number, leaving the others null so the house default still
   applies to them. Never invent a number that isn't actually stated.
+- max_occupancy: CONFIRMED HOUSE RULE (product owner, 2026-09-18, verbatim: "if Occupancy is max 2,
+  there can never be triple or quadruple prices") - the maximum number of PEOPLE (adults) this specific
+  room/cabin/unit can physically hold, ONLY if the document explicitly states a capacity limit for it
+  (e.g. "Twin cabin, max 2 guests", "sleeps up to 2", "Double Room - maximum occupancy 2 adults", "this
+  cabin category accommodates a maximum of 2 passengers"). Set to null if the document does not state an
+  explicit capacity for this room/cabin/unit - do NOT infer one from the room/cabin NAME alone (a "Double"
+  or "Twin" name alone is a hint, not a stated number) and do NOT guess. When set, this is a hard physical
+  ceiling: NEVER populate triplePrice/quadruplePrice in price_list for a Modality whose max_occupancy is
+  2, and never populate quadruplePrice when max_occupancy is 3, even if a pricing table nearby appears to
+  show a price for that occupancy - a stray/misread table value can never make a room hold more people
+  than the document itself says it can. This is enforced again downstream regardless of what you extract
+  here, but get it right at the source rather than relying on that.
 - start_time, end_time: if the source states a specific departure/start time and/or end/return time for the tour (e.g. "Starting Time: 8:00 a.m.", "returns around 6pm"), extract as "HH:MM:SS" (24-hour, e.g. "08:00:00" - CONFIRMED via a real API error that seconds are required, not just HH:MM).
   CONFIRMED RULE - start_time: if the source gives an actual pick-up/collection time for Day 1 (e.g. "Pick-up
   at 07:30", "collection between 6:00-6:30am" - use the earlier/first time given for a range), always use
@@ -581,6 +593,7 @@ Output this exact JSON structure:
   "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12, "child_discount_percentage": null,
   "extra_child_allowed": true,
   "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
+  "max_occupancy": null,
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "schedule_notes": "",
   "pricing_notes": "",
@@ -658,6 +671,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "child_discount_percentage": {"type": ["number", "null"]},
         "extra_child_allowed": {"type": "boolean"},
         "extra_child_max_overrides": {"type": "object", "additionalProperties": True},
+        "max_occupancy": {"type": ["integer", "null"]},
         "operational_days": {"type": "array", "items": {"type": "string"}},
         "schedule_notes": {"type": "string"},
         "pricing_notes": {"type": "string"},
@@ -672,7 +686,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "excluded", "meeting_point", "policy_remarks", "what_to_bring", "cancellation_policy_tiers",
         "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
         "min_child_age", "max_child_age", "child_discount_percentage", "extra_child_allowed",
-        "extra_child_max_overrides", "operational_days",
+        "extra_child_max_overrides", "max_occupancy", "operational_days",
         "schedule_notes", "pricing_notes", "stop_sales", "price_list", "release_days_mentions",
         "guaranteed_departure_rule", "fixed_departure_dates",
     ],
@@ -2425,6 +2439,13 @@ Extract ONLY:
   default max extra children per bracket is Single=1, Double=2, Triple=2, Quadruple=0 (only used when
   extra_child_allowed is true). Leave every value null UNLESS the source EXPLICITLY states a different
   number for a specific bracket - never invent one.
+- max_occupancy: CONFIRMED HOUSE RULE (product owner, 2026-09-18, verbatim: "if Occupancy is max 2, there
+  can never be triple or quadruple prices") - the maximum number of people this specific room/cabin/unit
+  can physically hold, ONLY if the document explicitly states a capacity limit (e.g. "Twin cabin, max 2
+  guests", "sleeps up to 2"). null if not stated - do not infer from the room/cabin name alone and do not
+  guess. When set, NEVER populate triplePrice/quadruplePrice above for an occupancy this capacity rules
+  out (max_occupancy 2 -> no triplePrice/quadruplePrice; max_occupancy 3 -> no quadruplePrice), even if a
+  nearby table appears to show a price for it - the room cannot hold more people than the document says.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
@@ -2434,6 +2455,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "child_discount_percentage": null,
   "extra_child_allowed": true,
   "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
+  "max_occupancy": null,
   "pricing_notes": "",
   "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
@@ -2609,6 +2631,13 @@ Extract:
   default max extra children per bracket is Single=1, Double=2, Triple=2, Quadruple=0 (only used when
   extra_child_allowed is true). Leave every value null UNLESS the source EXPLICITLY states a different
   number for a specific bracket - never invent one.
+- max_occupancy: CONFIRMED HOUSE RULE (product owner, 2026-09-18, verbatim: "if Occupancy is max 2, there
+  can never be triple or quadruple prices") - the maximum number of people THIS Modality's room/cabin/unit
+  can physically hold, ONLY if the document explicitly states a capacity limit (e.g. "Twin cabin, max 2
+  guests", "sleeps up to 2"). null if not stated - do not infer from the room/cabin name alone and do not
+  guess. When set, NEVER populate triplePrice/quadruplePrice above for an occupancy this capacity rules
+  out (max_occupancy 2 -> no triplePrice/quadruplePrice; max_occupancy 3 -> no quadruplePrice), even if a
+  nearby table appears to show a price for it.
 
 Never invent numbers or dates not actually present in the source. If pricing is vague or absent, return an empty price_list rather than guessing.
 
@@ -2617,6 +2646,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "price_list": [], "supplements": [], "child_discount_percentage": null,
   "extra_child_allowed": true,
   "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
+  "max_occupancy": null,
   "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "stop_sales": [], "guaranteed_departure_rule": null, "fixed_departure_dates": null,
@@ -2678,6 +2708,7 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
         "child_discount_percentage": None,
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
+        "max_occupancy": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None, "fixed_departure_dates": None,
         "min_pax_guaranteed_departure": None,
@@ -2727,6 +2758,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
         "price_list": [], "pricing_notes": "", "schedule_notes": "", "child_discount_percentage": None,
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
+        "max_occupancy": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "stop_sales": [], "guaranteed_departure_rule": None, "fixed_departure_dates": None,
         "min_pax_guaranteed_departure": None,
@@ -2794,6 +2826,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "child_discount_percentage": None,
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
+        "max_occupancy": None,
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": [],
         "guaranteed_departure_rule": None, "fixed_departure_dates": None,
@@ -5087,7 +5120,15 @@ STOP SALES (blackout dates for a specific room).
 
 === ROOMS ===
 "rooms": one entry per distinct room type (e.g. "Superior Room", "Premium Superior Room", "Deluxe Sea View"):
-  {"name": "", "type_id": null, "distributions": [{"adults": <int>=1, "children": <int>=0}, ...]}
+  {"name": "", "type_id": null, "max_occupancy": null, "distributions": [{"adults": <int>=1, "children": <int>=0}, ...]}
+max_occupancy: CONFIRMED HOUSE RULE (product owner, 2026-09-18, verbatim: "if Occupancy is max 2, there can
+never be triple or quadruple prices") - the maximum number of PEOPLE (adults+children combined) this room
+can physically hold, ONLY if the document explicitly states a capacity limit for it (e.g. "Max Occupancy: 2",
+"sleeps up to 2 guests", "this room accommodates a maximum of 2 persons"). null if not stated - do not infer
+from the room name alone (a "Double Room" name alone is a hint, not a stated number) and do not guess. This
+is a safety net, not the primary rule - the primary rule is still "do NOT invent combinations the document
+doesn't show pricing/availability for" below; max_occupancy exists so a wrongly-invented or misread 3+-person
+combination can be caught and dropped even if it slips past that.
 distributions = every ALLOWED adult+children occupancy combination for that room, exactly as the document's own
 occupancy table/grid states (e.g. a table with columns "1 Adult", "2 Adults", "2 Adults + 1 Child" becomes
 three distribution entries: {"adults":1,"children":0}, {"adults":2,"children":0}, {"adults":2,"children":1}).
@@ -5327,7 +5368,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "infants_allowed": 2, "min_children_age": 0, "max_children_age": 12,
   "minimum_stay": null, "maximum_stay": null, "release_days": null,
   "cancellation_policy_tiers": [], "cancellation_policy_text": "",
-  "rooms": [{"name": "", "type_id": null, "distributions": []}],
+  "rooms": [{"name": "", "type_id": null, "max_occupancy": null, "distributions": []}],
   "breakfast_included_in_rate": false,
   "meal_plans": [{"meal_plan_hint": "", "base_price": 0.0, "adult_prices": [], "child_prices": []}],
   "offers": [],

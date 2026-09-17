@@ -1591,9 +1591,19 @@ def render_hotel_flow(client):
                 (r or {}).get("name"): (r or {}).get("distributions") or []
                 for r in data.get("rooms") or [] if (r or {}).get("name")
             })
+            # CONFIRMED HOUSE RULE (product owner, 2026-09-18): "if Occupancy is max 2, there can
+            # never be triple or quadruple prices" - see builder._room_pax_cap. Only this
+            # document's OWN rooms can carry a max_occupancy (it's an extraction-only concept,
+            # never part of Travel Compositor's own room payload, so the existing live snapshot
+            # has nothing to seed it from).
+            room_name_to_max_occupancy = {
+                (r or {}).get("name"): (r or {}).get("max_occupancy")
+                for r in data.get("rooms") or [] if (r or {}).get("name")
+            }
             rate_results = build_hotel_rate_payloads(data.get("rates") or [], room_map, offer_map,
                                                       supplement_map, existing_hotel_snapshot=existing_snapshot,
-                                                      room_name_to_distributions=room_name_to_distributions)
+                                                      room_name_to_distributions=room_name_to_distributions,
+                                                      room_name_to_max_occupancy=room_name_to_max_occupancy)
             rate_failures = []
             rate_warnings_all = []
             rate_unchanged_names = []
