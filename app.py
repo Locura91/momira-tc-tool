@@ -639,17 +639,16 @@ from flows.ticket import render_ticket_flow
 
 from flows.multi_transfer import render_multi_transfer_flow
 
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16) - see DUPLICATE_TRANSFER_CHOICE's own comment
-# further down for the full reasoning: the create path for a brand-new Transfer that's really
-# just the SAME route sold the other way.
-from flows.duplicate_transfer import render_duplicate_transfer_flow
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17) - see TRANSFER_DUPLICATE_AND_CREATE_CHOICE's own
+# comment further down for the full reasoning: ONE combined Step 1 destination for both the
+# automated missing-reverse-direction scan and the manual duplicate-by-id flow, sharing a single
+# supplier picker (flows/transfer_duplicate_and_create.py). render_duplicate_transfer_flow and
+# render_missing_transfers_flow themselves are kept importable for their own test suites even
+# though app.py no longer wires them as separate Step 1 destinations.
+from flows.transfer_duplicate_and_create import render_transfer_duplicate_and_create_flow
 
 # Same feature, for Transport - see DUPLICATE_TRANSPORT_CHOICE's own comment further down.
 from flows.duplicate_transport import render_duplicate_transport_flow
-
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), the natural next step after the two duplicate
-# flows above were proven out - see MISSING_TRANSFERS_CHOICE's own comment further down.
-from flows.missing_transfers import render_missing_transfers_flow
 
 
 # ======================================================================
@@ -1101,31 +1100,33 @@ MIGRATE_SUPPLIER_CHOICE = "Move a Supplier's Services to another Supplier"
 # inside Update/Refresh, since it acts on a whole supplier's worth of one product type at once,
 # not one already-identified record - see render_cancellation_bulk_flow's docstring.
 CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "when human create a new transfer or transport,
-# could the app simple copy the product and just swap the destinations?" 2026-08-12's redesign
-# removed AI-document creation for Transfer/Transport entirely ("Transfer and Transport are not
-# possible to automatically Import/upload"), leaving no way at all in this app to create a
-# brand-new one - only price_refresh.py's update-existing-only flow remained. This is that
-# missing create path, scoped to Transfer only for now (Transport is the natural next step):
-# pick an existing, already-published, human-verified Transfer and clone it with departure and
-# arrival swapped - see builder.build_transfer_swap_payload's own docstring for the full
-# reasoning. A Step 1 "Create a new product" destination, alongside ClosedTour/Ticket/Hotel.
-DUPLICATE_TRANSFER_CHOICE = "Transfer (duplicate an existing one & swap destinations)"
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), same day as DUPLICATE_TRANSFER_CHOICE above:
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16, combined 2026-09-17): "when human create a new
+# transfer or transport, could the app simple copy the product and just swap the destinations?"
+# 2026-08-12's redesign removed AI-document creation for Transfer/Transport entirely ("Transfer
+# and Transport are not possible to automatically Import/upload"), leaving no way at all in this
+# app to create a brand-new Transfer - only price_refresh.py's update-existing-only flow
+# remained. The natural next step, once that duplicate-by-id path was proven out: "Goal with the
+# duplicate must be, that humans create one way transfers, then the app must be controlled by
+# human and human adds the supplier as usually, the app checks is there are missing transfers
+# and then provides a list with all possible missing transfers." And then, 2026-09-17, combining
+# the two: "the transfer duplicate section shall be combined with transfer find & create. We
+# must put them together. Long term Goal for this section is, that human selects the correct
+# supplier, the app checks all transfers and identifies missing duplicates in a list for
+# example. Then the human reviews all possible duplicates and can say 'select all' or 'select
+# none' for auto creation." ONE Step 1 "Create a new product" destination now covers both: pick
+# a supplier once, the app scans and lists every missing reverse-direction route with select-
+# all/select-none batch creation (the primary path), with the manual "duplicate one specific
+# Transfer by id" flow kept underneath for a record the automatic scan doesn't catch - see
+# flows/transfer_duplicate_and_create.py's own docstring.
+TRANSFER_DUPLICATE_AND_CREATE_CHOICE = "Transfer (duplicate & create missing reverse-direction transfers)"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), same day as the Transfer duplicate flow above:
 # "can we do the same for Transport. Changing the Destination of the original Transport ID,
 # adopting the Name and adopting the Description." Transport has the same missing-create-path
 # problem as Transfer did - see builder.build_transport_swap_payload's own docstring for the
-# swap logic (and why it needs an extra api_client lookup Transfer's version doesn't).
+# swap logic (and why it needs an extra api_client lookup Transfer's version doesn't). Transport
+# has no missing-reverse-direction scan yet, so it stays its own single-record duplicate-by-id
+# destination for now (the natural next step once the combined Transfer screen is proven out).
 DUPLICATE_TRANSPORT_CHOICE = "Transport (duplicate an existing one & swap destinations)"
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16), the natural next step once DUPLICATE_TRANSFER_CHOICE
-# was proven out and simplified: "Goal with the duplicate must be, that humans create one way
-# transfers, then the app must be controlled by human and human adds the supplier as usually,
-# the app checks is there are missing transfers and then provides a list with all possible
-# missing transfers. The style can be similar to the bulk price transfer update." Scans a whole
-# supplier's live Transfer list for routes with no reverse-direction pair and lets a human batch
-# -create the missing ones - see flows/missing_transfers.py's own docstring for the full
-# reasoning (including the confirmed pairing rule and the AI-cost safety guarantee).
-MISSING_TRANSFERS_CHOICE = "Transfer (find & create missing reverse-direction transfers)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -1310,24 +1311,19 @@ if st.session_state.product_type is None:
             st.rerun()
         st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
                   "rate seasons.")
-        if st.button(DUPLICATE_TRANSFER_CHOICE, key="pt_choice_duplicate_transfer", use_container_width=True):
-            st.session_state.product_type = DUPLICATE_TRANSFER_CHOICE
+        if st.button(TRANSFER_DUPLICATE_AND_CREATE_CHOICE, key="pt_choice_transfer_duplicate_and_create", use_container_width=True):
+            st.session_state.product_type = TRANSFER_DUPLICATE_AND_CREATE_CHOICE
             st.rerun()
         st.caption("For a brand-new Transfer that's really the SAME route in the other "
-                  "direction (e.g. Hotel → Airport once Airport → Hotel already exists) - picks "
-                  "an existing published Transfer and clones it with departure/arrival swapped, "
-                  "instead of re-entering everything from a document.")
+                  "direction (e.g. Hotel → Airport once Airport → Hotel already exists). Pick a "
+                  "supplier: the app scans every live Transfer and lists every route with no "
+                  "reverse-direction pair yet, so you can Select all/Select none and create "
+                  "them as a batch - or duplicate one specific Transfer by id instead.")
         if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
             st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
             st.rerun()
         st.caption("Same idea, for Transport - clones an existing published Transport (parent "
                   "record AND every occupancy bracket) with the route swapped.")
-        if st.button(MISSING_TRANSFERS_CHOICE, key="pt_choice_missing_transfers", use_container_width=True):
-            st.session_state.product_type = MISSING_TRANSFERS_CHOICE
-            st.rerun()
-        st.caption("Guided version of the same idea for a whole supplier at once: scans every "
-                  "live Transfer for that supplier, lists every route with no reverse-direction "
-                  "pair yet, and lets you tick which ones to create as a batch.")
 
     with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
@@ -1374,12 +1370,8 @@ if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
     render_supplier_migration_flow(client)
     st.stop()
 
-if st.session_state.product_type == DUPLICATE_TRANSFER_CHOICE:
-    render_duplicate_transfer_flow(client)
-    st.stop()
-
-if st.session_state.product_type == MISSING_TRANSFERS_CHOICE:
-    render_missing_transfers_flow(client)
+if st.session_state.product_type == TRANSFER_DUPLICATE_AND_CREATE_CHOICE:
+    render_transfer_duplicate_and_create_flow(client)
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:

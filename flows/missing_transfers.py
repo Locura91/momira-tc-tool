@@ -57,6 +57,12 @@ def _extract_transfer_list(result):
 
 
 def render_missing_transfers_flow(client):
+    """Standalone entry point - picks its own supplier, then renders the scan/select/batch-
+    create body below. Kept for backward compatibility with this module's own test suite; the
+    combined Step 1 menu entry (flows/transfer_duplicate_and_create.py, 2026-09-17) instead picks
+    ONE supplier shared with the manual duplicate-by-id flow and calls
+    _render_missing_transfers_body(client, supplier_id) directly, so the human never sees two
+    separate supplier pickers on what is now one screen."""
     st.subheader("🔍 Missing Transfers")
     st.caption(
         "Scans one supplier's whole live Transfer list and flags every route with no exact "
@@ -69,6 +75,13 @@ def render_missing_transfers_flow(client):
     if not supplier_id:
         return
 
+    _render_missing_transfers_body(client, supplier_id)
+
+
+def _render_missing_transfers_body(client, supplier_id):
+    """Everything after the supplier is already known - split out (2026-09-17) so the combined
+    Transfer create screen can share ONE supplier pick with the manual duplicate-by-id flow
+    instead of rendering two separate pickers. See render_missing_transfers_flow's own docstring."""
     if st.button("🔍 Scan this supplier for missing transfers", type="primary", key="mtf_scan"):
         with st.spinner(f"Reading every Transfer for supplier {supplier_id}..."):
             result = client.get_transfers(supplier_id)

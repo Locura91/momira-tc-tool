@@ -14,8 +14,11 @@ Fix: builder.build_transfer_swap_payload(existing_transfer_payload) takes a real
 payload for the reverse direction of the same route (same vehicle/price/cancellation/images,
 departure and arrival objects swapped wholesale (not re-geocoded), id dropped, name/datasheet
 name rewritten to read in the new direction) plus a report of which prose fields were
-confidently auto-swapped. flows/duplicate_transfer.py wires this into a new Step 1 "Create a
-new product" destination, wired at DUPLICATE_TRANSFER_CHOICE in app.py.
+confidently auto-swapped. flows/duplicate_transfer.py wires this into a Step 1 "Create a new
+product" destination - as of 2026-09-17, combined with flows/missing_transfers.py's scan behind
+ONE shared supplier picker (see flows/transfer_duplicate_and_create.py and
+TRANSFER_DUPLICATE_AND_CREATE_CHOICE in app.py); render_duplicate_transfer_flow itself is still
+directly importable/callable (see its own docstring) for standalone use and this test suite.
 
 FOLLOW-UP (2026-09-16, product owner, verifying the feature): "does the App currently also
 correct the Name and the description? ... Also the Description must be switched, is that
@@ -368,16 +371,29 @@ def test_success_banner_states_both_the_original_and_the_new_route():
     assert "New route being created:" in src
 
 
-def test_step_1_create_menu_offers_the_duplicate_transfer_choice():
+def test_step_1_create_menu_offers_the_combined_transfer_duplicate_and_create_choice():
+    # 2026-09-17: "the transfer duplicate section shall be combined with transfer find & create.
+    # We must put them together." - the standalone DUPLICATE_TRANSFER_CHOICE Step 1 button is
+    # gone; app.py now wires ONE combined destination that shares a supplier picker with the
+    # missing-transfers scan (see flows/transfer_duplicate_and_create.py).
     src = _read_app_py()
-    assert "DUPLICATE_TRANSFER_CHOICE" in src
-    assert 'pt_choice_duplicate_transfer' in src
-    assert "render_duplicate_transfer_flow(client)" in src
+    assert "TRANSFER_DUPLICATE_AND_CREATE_CHOICE" in src
+    assert 'pt_choice_transfer_duplicate_and_create' in src
+    assert "render_transfer_duplicate_and_create_flow(client)" in src
+    assert "DUPLICATE_TRANSFER_CHOICE" not in src
 
 
-def test_duplicate_transfer_flow_is_imported_from_its_own_module():
-    src = _read_app_py()
-    assert "from flows.duplicate_transfer import render_duplicate_transfer_flow" in src
+def test_duplicate_transfer_body_is_reused_by_the_combined_flow():
+    # render_duplicate_transfer_flow (the standalone, self-picks-a-supplier entry point) stays
+    # importable for this test suite, but app.py itself now reaches the same logic through the
+    # combined flow's import of _render_duplicate_transfer_body - see
+    # flows/transfer_duplicate_and_create.py.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    combined_flow_py = os.path.join(os.path.dirname(_here), "flows", "transfer_duplicate_and_create.py")
+    with open(combined_flow_py, "r", encoding="utf-8") as f:
+        combined_src = f.read()
+    assert "from flows.duplicate_transfer import _render_duplicate_transfer_body" in combined_src
+    assert "_render_duplicate_transfer_body(client, supplier_id)" in combined_src
 
 
 # ---------------------------------------------------------------------------------------------

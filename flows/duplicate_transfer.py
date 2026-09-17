@@ -71,6 +71,12 @@ def _resolve_route_location(client, supplier_id, place_name, is_zone_based):
 
 
 def render_duplicate_transfer_flow(client):
+    """Standalone entry point - picks its own supplier, then renders the pick/review/publish
+    body below. Kept for backward compatibility with this module's own test suite; the combined
+    Step 1 menu entry (flows/transfer_duplicate_and_create.py, 2026-09-17) instead picks ONE
+    supplier shared with the automated missing-transfers scan and calls
+    _render_duplicate_transfer_body(client, supplier_id) directly, so the human never sees two
+    separate supplier pickers on what is now one screen."""
     st.header("🧬 New Transfer — duplicate an existing one & swap destinations")
     if st.button("🔙 Back to Step 1", key="dtf_back"):
         st.session_state.product_type = None
@@ -85,6 +91,14 @@ def render_duplicate_transfer_flow(client):
     if not supplier_id:
         return
 
+    _render_duplicate_transfer_body(client, supplier_id)
+
+
+def _render_duplicate_transfer_body(client, supplier_id):
+    """Everything after the supplier is already known - split out (2026-09-17) so the combined
+    Transfer create screen can share ONE supplier pick with the automated missing-transfers scan
+    instead of rendering two separate pickers. See render_duplicate_transfer_flow's own
+    docstring."""
     if st.session_state.get("dtf_supplier_id") != supplier_id:
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.

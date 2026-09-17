@@ -19,7 +19,15 @@ Follow-up clarifications (AskUserQuestion round-trip, same day):
 Covers: transfer_gap_finder.find_missing_reverse_transfers (pure pairing logic),
 transfer_gap_finder.build_and_rewrite_transfer_swap_payload (the shared AI-rewrite helper now
 used by both flows/duplicate_transfer.py and flows/missing_transfers.py), and
-flows/missing_transfers.py's wiring (app.py menu entry, pagination, batch-create).
+flows/missing_transfers.py's wiring (pagination, batch-create).
+
+UPDATE (2026-09-17): "the transfer duplicate section shall be combined with transfer find &
+create. We must put them together." - app.py no longer wires this module's own
+render_missing_transfers_flow as a separate Step 1 menu entry; it's combined with
+flows/duplicate_transfer.py behind ONE shared supplier picker in
+flows/transfer_duplicate_and_create.py, which calls this module's
+_render_missing_transfers_body(client, supplier_id) directly. render_missing_transfers_flow
+itself is kept importable (self-picks a supplier) for standalone use and this test suite.
 """
 import os
 
@@ -217,16 +225,28 @@ def _read_missing_transfers_flow():
         return f.read()
 
 
-def test_step_1_create_menu_offers_the_missing_transfers_choice():
+def test_step_1_create_menu_offers_the_combined_transfer_duplicate_and_create_choice():
+    # 2026-09-17: the standalone MISSING_TRANSFERS_CHOICE Step 1 button is gone - app.py now
+    # wires ONE combined destination shared with the duplicate-by-id flow (see
+    # flows/transfer_duplicate_and_create.py).
     src = _read_app_py()
-    assert "MISSING_TRANSFERS_CHOICE" in src
-    assert 'pt_choice_missing_transfers' in src
-    assert "render_missing_transfers_flow(client)" in src
+    assert "TRANSFER_DUPLICATE_AND_CREATE_CHOICE" in src
+    assert 'pt_choice_transfer_duplicate_and_create' in src
+    assert "render_transfer_duplicate_and_create_flow(client)" in src
+    assert "MISSING_TRANSFERS_CHOICE" not in src
 
 
-def test_missing_transfers_flow_is_imported_from_its_own_module():
-    src = _read_app_py()
-    assert "from flows.missing_transfers import render_missing_transfers_flow" in src
+def test_missing_transfers_body_is_reused_by_the_combined_flow():
+    # render_missing_transfers_flow (the standalone, self-picks-a-supplier entry point) stays
+    # importable for this test suite, but app.py itself now reaches the same logic through the
+    # combined flow's import of _render_missing_transfers_body - see
+    # flows/transfer_duplicate_and_create.py.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    combined_flow_py = os.path.join(os.path.dirname(_here), "flows", "transfer_duplicate_and_create.py")
+    with open(combined_flow_py, "r", encoding="utf-8") as f:
+        combined_src = f.read()
+    assert "from flows.missing_transfers import _render_missing_transfers_body" in combined_src
+    assert "_render_missing_transfers_body(client, supplier_id)" in combined_src
 
 
 def test_flow_uses_the_shared_build_and_rewrite_helper_not_a_duplicated_copy():
