@@ -2915,7 +2915,10 @@ def _render_hotel_masterdata_step(client):
                       "free-text guess. The hotel name search only becomes available once one "
                       "of these is confirmed.")
             dest_query = st.text_input(
-                "Destination (e.g. \"El Gouna, Egypt\")", value="", key="hp_md_dest_query")
+                "Destination, Country (e.g. \"El Gouna, Egypt\")", value="", key="hp_md_dest_query",
+                help="Including the country narrows the search to that country and avoids "
+                     "matching a same-named destination in the wrong place - e.g. \"Cairo, "
+                     "Egypt\". The country is optional; a bare city name still works.")
             if st.button("🔎 Find destination", key="hp_md_dest_search_btn",
                          disabled=not dest_query.strip()):
                 with st.spinner(f"Looking up \"{dest_query.strip()}\" in Travel Compositor..."):

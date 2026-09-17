@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

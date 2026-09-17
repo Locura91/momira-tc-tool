@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 import os
 import re
@@ -841,7 +841,7 @@ def compute_non_guaranteed_stop_sales(rule: dict) -> list:
     return non_guaranteed
 
 
-def compute_stop_sales_from_fixed_departure_dates(dates, today=None) -> list:
+def compute_stop_sales_from_fixed_departure_dates(dates, today=None, valid_until=None) -> list:
     """
     CONFIRMED PRODUCT-OWNER RULE (2026-09-17, real example: "Movenpick MS Darakum Long Cruise
     Sailing Dates 2027" - a table of specific sailing dates like 12 Feb, 10 Mar, 5 Apr, 1 May,
@@ -858,16 +858,33 @@ def compute_stop_sales_from_fixed_departure_dates(dates, today=None) -> list:
     gap from `today` up to the day before the first departure date, then the gap from the day
     after each departure date up to the day before the next one, for every consecutive pair -
     same "block everything except the guaranteed dates" idea as compute_non_guaranteed_stop_sales
-    above, just driven by an explicit list instead of a weekly/ordinal rule. Nothing is added
-    after the LAST departure date - the source only states specific dates up to some point (often
-    "for this season"/"for this year"), and blocking indefinitely into the future past the last
-    stated date would silently prevent a later document (next season's dates) from ever being
-    bookable again without a human noticing and undoing this.
+    above, just driven by an explicit list instead of a weekly/ordinal rule.
+
+    CONFIRMED REAL BUG FIX (product owner, 2026-09-17, follow-up - a screenshot of Travel
+    Compositor's own live booking widget for this exact Movenpick cruise): the FIRST version of
+    this function deliberately added nothing after the LAST departure date, reasoning that
+    blocking indefinitely into the future could hide a later season's dates from ever becoming
+    bookable again. That left every date AFTER the last announced sailing (23 Oct 2027) - still
+    well inside the Modality's own priced validity window - open, and Travel Compositor's
+    calendar showed them as seemingly-bookable/priced days that don't actually correspond to any
+    real departure: "after the last available departure date, we must add stop sales until the
+    modality is valid. So one day after last departure day until end of modality max length must
+    be last stop sale." Fixed with a BOUNDED trailing block instead of an indefinite one:
+    `valid_until` - the Modality's own priced validity end (its price_list's furthest endDate;
+    see _apply_fixed_departure_dates, which derives this automatically) - caps the block, so next
+    season's dates in a LATER document (with their own, later price_list) are never silently
+    hidden by this one.
 
     dates: list of "YYYY-MM-DD" strings (or date objects) - deduplicated and sorted here, so
     order/duplicates in the source extraction don't matter.
     today: the date to anchor the very first gap from - defaults to date.today() when not given
     (a caller passes an explicit date for deterministic behavior/tests).
+    valid_until: "YYYY-MM-DD" string or date - the last date this Modality is actually priced/
+    valid for (see this function's own docstring above). When given and later than the last
+    departure date, one final range from the day after the last departure through valid_until
+    (inclusive) is appended, closing the exact gap the real bug report above describes. Omit (or
+    pass a date on/before the last departure) to skip this trailing block entirely - the original,
+    more conservative behavior.
 
     Returns a list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} entries, one per gap. A gap of
     zero or negative length (e.g. two departure dates on consecutive days, or a departure date
@@ -896,7 +913,38 @@ def compute_stop_sales_from_fixed_departure_dates(dates, today=None) -> list:
         if gap_end >= gap_start:
             ranges.append({"start": gap_start.isoformat(), "end": gap_end.isoformat()})
         gap_start = departure + datetime.timedelta(days=1)
+
+    if valid_until is not None:
+        try:
+            until = valid_until if isinstance(valid_until, datetime.date) else \
+                datetime.date.fromisoformat(str(valid_until).strip())
+        except (ValueError, TypeError):
+            until = None
+        # gap_start is now "the day after the LAST departure date" - block through valid_until
+        # if that's actually later (a valid_until on/before the last departure means the season
+        # already ends there, so there's nothing trailing left to block).
+        if until is not None and until >= gap_start:
+            ranges.append({"start": gap_start.isoformat(), "end": until.isoformat()})
+
     return ranges
+
+
+def _max_price_list_end_date(price_list):
+    """The furthest "endDate" across a raw price_list (the same extracted rows builder.py later
+    normalizes) - this IS the Modality's own priced validity end: Travel Compositor has no
+    separate field for "how far into the future is this Modality active" (confirmed - see
+    _apply_fixed_departure_dates's own docstring), so the pricing table's own coverage is the
+    closest real proxy for it. Returns None if price_list is empty/missing or has no parseable
+    endDate anywhere, so callers can tell "no bound available" apart from a genuine date."""
+    ends = []
+    for row in (price_list or []):
+        if not isinstance(row, dict):
+            continue
+        end = row.get("endDate")
+        if _is_parseable_iso_date(end):
+            ends.append(end if isinstance(end, datetime.date) else
+                        datetime.date.fromisoformat(str(end).strip()))
+    return max(ends) if ends else None
 
 
 def _apply_fixed_departure_dates(data: dict, today=None) -> None:
@@ -910,6 +958,14 @@ def _apply_fixed_departure_dates(data: dict, today=None) -> None:
     what was inferred and why before publishing. No-op if fixed_departure_dates is missing/empty
     or doesn't compute to anything.
 
+    CONFIRMED REAL BUG FIX (product owner, 2026-09-17, follow-up - a screenshot of Travel
+    Compositor's live booking calendar showing dates after the last announced sailing as still
+    seemingly bookable): also blocks the trailing gap after the LAST departure date, bounded by
+    this Modality's own priced validity end (the furthest endDate across data["price_list"] - see
+    _max_price_list_end_date and compute_stop_sales_from_fixed_departure_dates's own docstring
+    for exactly why THAT bound, not an indefinite one). Silently skipped if price_list has no
+    usable endDate to bound it with - never blocks indefinitely into the future.
+
     `today` is passed straight through to compute_stop_sales_from_fixed_departure_dates - see its
     own docstring.
     """
@@ -917,7 +973,8 @@ def _apply_fixed_departure_dates(data: dict, today=None) -> None:
     if not raw_dates:
         return
 
-    computed = compute_stop_sales_from_fixed_departure_dates(raw_dates, today=today)
+    valid_until = _max_price_list_end_date(data.get("price_list"))
+    computed = compute_stop_sales_from_fixed_departure_dates(raw_dates, today=today, valid_until=valid_until)
     if not computed:
         return
 
@@ -952,6 +1009,14 @@ def _apply_fixed_departure_dates(data: dict, today=None) -> None:
         f"Everything in between has been added to Stop Sales below so only these exact dates "
         f"remain bookable - please review before publishing."
     )
+    if valid_until is not None and valid_until > sorted_dates[-1]:
+        _trailing_start = sorted_dates[-1] + datetime.timedelta(days=1)
+        note += (
+            f" Also blocked: {_trailing_start.isoformat()} (day after the last departure) "
+            f"through {valid_until.isoformat()} (this Modality's own priced validity end), so "
+            f"no date past the last announced sailing shows as bookable in Travel Compositor's "
+            f"own calendar."
+        )
     existing_notes = str(data.get("schedule_notes") or "").strip()
     data["schedule_notes"] = f"{existing_notes} {note}".strip() if existing_notes else note
 

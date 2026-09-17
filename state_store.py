@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 _NAMESPACE = "translation_state"
 

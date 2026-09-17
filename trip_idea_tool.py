@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 _PHASE_KEY = "ti_phase"
 

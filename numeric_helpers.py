@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 
 def _safe_float(value, fallback=0.0):

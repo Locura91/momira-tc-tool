@@ -635,6 +635,21 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if midx > 0 and modalities[0]["data"]:
                     mod["data"]["supplements"] = copy.deepcopy(modalities[0]["data"].get("supplements", []))
 
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18): "the child discount must be
+                # added to all modality fields" - each Modality is extracted independently by
+                # its own AI call against the SAME source document, and doesn't always
+                # re-detect a document-wide child_discount_percentage on every single Modality
+                # even when the source states it once for the whole tour - the exact same class
+                # of gap just fixed for supplements above. Falls back to Modality 1's own value
+                # ONLY when THIS Modality's own extraction came back with none at all - a
+                # Modality that DID detect its own (possibly genuinely different) discount keeps
+                # it; nothing here can silently overwrite a real per-Modality value. Still fully
+                # editable/removable per Modality below via render_child_discount_editor.
+                if (midx > 0 and modalities[0]["data"]
+                        and mod["data"].get("child_discount_percentage") is None):
+                    mod["data"]["child_discount_percentage"] = \
+                        modalities[0]["data"].get("child_discount_percentage")
+
         if st.button("🔄 Re-extract with updated hint", key=f"mct_mod_reextract_{midx}"):
             mod["data"] = None
             # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): re-extraction replaces

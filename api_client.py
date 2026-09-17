@@ -7,6 +7,8 @@ import requests
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 
+from geocoding_client import country_display_name
+
 load_dotenv()
 
 # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): this module - the actual publish path
@@ -16,7 +18,24 @@ load_dotenv()
 # consequential file to have out of sync (every publish call goes through it). Stamped now, and
 # the detector's module list is auto-discovered (see app.py) so any future module that adds a
 # MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
+
+
+def _destination_country_matches(dest: dict, country_query_lower: str) -> bool:
+    """True if a typed country (already lowercased) matches a destination's own `country` value
+    - which Travel Compositor may return as either a 2-letter ISO code ("EG") or a full name
+    ("Egypt") depending on account/version (see geocoding_client.country_display_name). Checked
+    both ways, case-insensitively, as a substring: against the raw value as stored (so typing
+    "EG" still matches a record already storing "EG"), and against that value's normalized
+    display name (so typing "Egypt" matches a record storing the raw code "EG"). Used by
+    find_destination_candidates' new "City, Country" search format."""
+    raw = (dest.get("country") or "").strip().lower()
+    if not raw:
+        return False
+    if country_query_lower in raw or raw in country_query_lower:
+        return True
+    display = country_display_name(dest.get("country")).strip().lower()
+    return bool(display) and (country_query_lower in display or display in country_query_lower)
 
 
 def _extract_destination_coords(d: dict):
@@ -411,6 +430,25 @@ class TravelCompositorAPI:
         step), this returns EVERY destination whose name contains the query so a human can pick
         the one they actually mean - e.g. "Faiyum" may match both "Faiyum" and "Faiyum City".
 
+        CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-17): "when searching for destinations in
+        Travel C, please search with destination, Country. Like Cairo, Egypt. So we can avoid to
+        include a false destination." The calling screen's own placeholder already suggested this
+        "City, Country" format (e.g. "El Gouna, Egypt"), but until this fix the country part was
+        never actually parsed out - it stayed glued to the name and broke the match entirely
+        (typing exactly what the placeholder suggested returned zero results). Now an optional
+        ", Country" suffix (split on the LAST comma, so a destination name that itself contains a
+        comma is unaffected) is parsed out and used as an extra filter on the destination's own
+        `country` field - matched case-insensitively as a substring in EITHER direction (against
+        both the raw country value, which Travel Compositor may return as a 2-letter ISO code or
+        a full name - see geocoding_client.country_display_name - and that value's normalized
+        display name), so "Cairo, Egypt" matches a destination whose own country is "EG" just as
+        well as one whose own country is already "Egypt". This is the real fix for "avoid to
+        include a false destination": without it, typing a bare city name that exists in more
+        than one country (a real risk - many city names repeat) surfaces every same-named
+        destination worldwide with no way to narrow it down before confirming. No country part
+        typed at all (the plain "Faiyum" case from the original 2026-09-16 request) is completely
+        unaffected - name-only matching, exactly as before.
+
         Returns up to `max_results` destinations, exact name matches first, then substring
         matches, each: {"code": str, "name": str, "country": str|None,
         "latitude": float|None, "longitude": float|None} - includes Travel Compositor's own
@@ -428,11 +466,27 @@ class TravelCompositorAPI:
         except requests.RequestException:
             return []
 
-        query_lower = clean_query.lower()
+        name_query, country_query = clean_query, ""
+        if "," in clean_query:
+            name_part, _, country_part = clean_query.rpartition(",")
+            if name_part.strip() and country_part.strip():
+                # "City, Country" was typed - split into the two parts.
+                name_query, country_query = name_part.strip(), country_part.strip()
+            elif name_part.strip():
+                # A trailing comma with nothing usable after it (e.g. "Cairo,   ") - just the
+                # name part, stripped of the stray comma.
+                name_query = name_part.strip()
+            # else: a comma with nothing usable before it (e.g. ",Egypt") - falls through to the
+            # clean_query/"" default above, exactly as before this fix.
+        query_lower = name_query.lower()
+        country_query_lower = country_query.lower()
+
         exact, partial = [], []
         for dest in destinations:
             name = (dest.get("name") or "").strip()
             if not name:
+                continue
+            if country_query_lower and not _destination_country_matches(dest, country_query_lower):
                 continue
             name_lower = name.lower()
             if name_lower == query_lower:

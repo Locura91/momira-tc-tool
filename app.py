@@ -114,6 +114,7 @@ from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
 from date_format import to_iso_date as _iso, to_display_date as _disp, DISPLAY_HINT as _DATE_HINT
+import draft_autosave
 
 
 from app_helpers import (
@@ -763,6 +764,13 @@ st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 # default 16px browser base up to ~17px.
 st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
 
+# CONFIRMED REAL PRODUCT-OWNER REQUEST (2026-09-17): "if the human reloads the page all
+# information is gone ... general issue" across every flow, not just one. Runs BEFORE any
+# flow-specific state is touched below, so a returning tab either gets its unfinished work back
+# (Restore/Discard banner, then st.stop()s until the human picks) or, on a clean run, quietly
+# keeps re-saving the current session_state as it goes - see draft_autosave.py's own docstring.
+draft_autosave.restore_and_autosave()
+
 _defaults = {
     "client": None, "extracted": None, "raw_preview": "", "payloads": None,
     "suppliers_cache": None, "step1_confirmed": False, "step2_confirmed": False,
@@ -778,7 +786,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+BUILD_VERSION = "2026-09-17-general-draft-autosave"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2998,6 +3006,11 @@ if st.session_state.extracted:
 # Post-publish follow-up: what next?
 # ----------------------------------------------------------------------
 if st.session_state.get("just_published_tour_code"):
+    # This tab's saved draft (see draft_autosave.py) exists purely to protect UNFINISHED work
+    # against a reload - a tour that has already published successfully has nothing left to
+    # protect, and leaving the draft behind would just get offered back as "unfinished work" the
+    # next time this tab/URL is reopened. Safe to call on every render of this success screen.
+    draft_autosave.clear_on_publish_success()
     st.divider()
     st.subheader("✅ ClosedTour published — what would you like to do next?")
     st.write(f"Just published: **{st.session_state.just_published_tour_code}** "

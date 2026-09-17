@@ -35,7 +35,7 @@ key/value write has to carry the entire ~30-50MB payload at once.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
+MODULE_BUILD = "2026-09-17-general-draft-autosave"
 
 import time
 from typing import Any, Callable, Dict, List, Optional

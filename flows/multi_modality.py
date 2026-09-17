@@ -202,6 +202,24 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
             with st.spinner(f"Extracting pricing/schedule focused on '{current['hint'] or current['code']}'..."):
                 current["data"] = extract_option_only_data(st.session_state.mm_raw_text, human_hint=current["hint"])
 
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18): "the child discount must be added to
+            # all modality fields" - same gap as flows/multi_tour.py (see its own comment for the
+            # full reasoning): each Modality in this queue is extracted independently by its own
+            # AI call against the SAME shared source document, and doesn't always re-detect a
+            # document-wide child_discount_percentage on every single item even when the source
+            # states it once for the whole tour. Unlike multi_tour.py there's no dedicated "first
+            # Modality" - this flow is a flat queue - so the earliest already-reviewed item that
+            # actually HAS a value (queue[0] once it's been extracted, by construction the first
+            # one reviewed) is used as the fallback source. Falls back ONLY when THIS item's own
+            # extraction came back with none at all - an item that DID detect its own (possibly
+            # genuinely different) discount keeps it; nothing here can silently overwrite a real
+            # per-Modality value. Still fully editable/removable per Modality below via
+            # render_child_discount_editor.
+            if (idx > 0 and queue[0]["data"]
+                    and current["data"].get("child_discount_percentage") is None):
+                current["data"]["child_discount_percentage"] = \
+                    queue[0]["data"].get("child_discount_percentage")
+
         data = current["data"]
 
         if data.get("schedule_notes"):

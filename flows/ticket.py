@@ -26,6 +26,7 @@ from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from geocoding_client import geocode_search, parse_google_maps_url
 import price_validity
 import cancellation_links
+import draft_autosave
 from image_dimensions import FALLBACK_IMAGE
 from ui_components import (
     editable_table, editable_field, merge_what_to_bring_into_voucher_remarks,
@@ -1564,6 +1565,10 @@ def render_ticket_flow(client):
                         f"use **'Add another Modality to this same Ticket'** below to retry just the option "
                         f"against the ticket that already exists, or start a completely fresh import.")
         else:
+            # This tab's saved draft (see draft_autosave.py) exists purely to protect UNFINISHED
+            # work against a reload - a ticket that has already published successfully has
+            # nothing left to protect. Safe to call on every render of this success screen.
+            draft_autosave.clear_on_publish_success()
             st.subheader("✅ Ticket published — what would you like to do next?")
             st.write(f"Just published: **{st.session_state.tk_just_published_code}** "
                     f"(Supplier {st.session_state.tk_just_published_supplier_id})")
