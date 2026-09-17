@@ -37,7 +37,7 @@ MODULE_BUILD = "2026-09-16-dmy-date-field-widget-instantiated-fix"
 from typing import Any, Dict, List, Optional
 
 from text_normalize import normalize_name
-from builder import build_transfer_swap_payload
+from builder import build_transfer_swap_payload, build_transport_swap_payload
 from ai_extractor import rewrite_route_description_for_new_direction
 from ui_components import _html_to_plain_for_editing, _plain_to_html_for_saving
 
@@ -117,6 +117,48 @@ def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
             if rewritten.strip() and rewritten.strip() != plain.strip():
                 en[field] = _plain_to_html_for_saving(rewritten)
                 swap_report[field] = "ai"
+    datasheets["EN"] = en
+    payload["datasheets"] = datasheets
+
+    return payload, swap_report, route_info
+
+
+def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client):
+    """Transport counterpart to build_and_rewrite_transfer_swap_payload, wired in the same place
+    (flows/duplicate_transport.py) for the same reason.
+
+    CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-17, Transport duplicate screenshots): "same issues
+    as with transfer: Name is wrong and description must be rewritten by AI." The description
+    half is a confirmed, exact analog of the Transfer gap this module already closed on 2026-09-16
+    ("the 'Rewrite with AI for the new direction' works perfectly, please automatically use that
+    already") - builder.build_transport_swap_payload's own description swap only ever had the
+    literal/alias text match (_swap_with_aliases_if_found), with no AI fallback at all, unlike
+    Transfer's build_transfer_swap_payload which already got this exact treatment. Wiring the same
+    already-proven rewrite_route_description_for_new_direction helper here closes that gap instead
+    of building a second, divergent implementation.
+
+    Transport's own name/datasheet_name swap (builder.build_transport_swap_payload's own
+    docstring) already uses the SAME "always append (return) as a last resort" fallback that
+    Transfer's name/datasheet_name swap uses, and that fallback was already confirmed correct by
+    the product owner for Transfer ("Name/datasheet-name swapping was already correct") - so it is
+    not re-touched here. Transport has no pickupDescription field (that is Transfer-only), so only
+    'description' is a candidate for the AI rewrite.
+
+    Returns (payload, swap_report, route_info) - same shape as build_transport_swap_payload
+    itself, with swap_report['description'] becoming "ai" (like the Transfer version) only when
+    the rewrite genuinely changed the text."""
+    payload, swap_report, route_info = build_transport_swap_payload(source, api_client)
+
+    datasheets = dict(payload.get("datasheets") or {})
+    en = dict(datasheets.get("EN") or {})
+    if swap_report.get("description") is False:
+        plain = _html_to_plain_for_editing(en.get("description", ""))
+        rewritten = rewrite_route_description_for_new_direction(
+            plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+            route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+        if rewritten.strip() and rewritten.strip() != plain.strip():
+            en["description"] = _plain_to_html_for_saving(rewritten)
+            swap_report["description"] = "ai"
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 

@@ -28,7 +28,8 @@ the NEW swapped route doesn't already exist - see transport_matcher.suggest_exis
 import pandas as pd
 import streamlit as st
 
-from builder import build_transport_swap_payload, build_transport_option_swap_payload
+from builder import build_transport_option_swap_payload
+from transfer_gap_finder import build_and_rewrite_transport_swap_payload
 import transport_matcher
 from ui_components import editable_table, _safe_float, _safe_int, _html_to_plain_for_editing, _plain_to_html_for_saving
 
@@ -145,7 +146,7 @@ def _render_review_and_publish(client, supplier_id):
     source = st.session_state.dtp_source
     source_options = st.session_state.get("dtp_source_options") or []
     if "dtp_payload" not in st.session_state:
-        payload, swap_report, route_info = build_transport_swap_payload(source, client)
+        payload, swap_report, route_info = build_and_rewrite_transport_swap_payload(source, client)
         st.session_state.dtp_payload = payload
         st.session_state.dtp_swap_report = swap_report
         st.session_state.dtp_route_info = route_info
@@ -239,10 +240,22 @@ def _render_review_and_publish(client, supplier_id):
     en["name"] = st.text_input("Datasheet name (customer-facing)", value=en.get("name", ""), key="dtp_datasheet_name")
 
     if en.get("description") is not None or swap_report.get("description") is not None:
-        if swap_report.get("description") is False:
-            st.warning("⚠️ Couldn't auto-swap the description - it doesn't literally contain "
-                      "both original location names, so it's copied unchanged below. Check it "
-                      "reads correctly for the new direction before publishing.")
+        # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-17): "description must be rewritten by AI" -
+        # same gap Transfer's duplicate flow already closed on 2026-09-16 (its own docstring has
+        # the full history). The AI rewrite now runs automatically (see
+        # transfer_gap_finder.build_and_rewrite_transport_swap_payload, called by the payload-
+        # build block above) whenever the literal swap couldn't confidently handle this field -
+        # swap_report["description"] == "ai" means that already happened, so this just informs
+        # the human rather than asking them to click a button. Only the rare case where the AI
+        # rewrite ITSELF made no change (still False) shows the original "couldn't auto-swap"
+        # warning, so nothing is silently lost.
+        if swap_report.get("description") == "ai":
+            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
+                    "reads correctly before publishing.")
+        elif swap_report.get("description") is False:
+            st.warning("⚠️ Couldn't auto-swap the description (even the AI rewrite made no "
+                      "change) - check it reads correctly for the new direction before "
+                      "publishing.")
         # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): the stored description is
         # real HTML (<p>, <ul><li>, ...) - showing that raw markup in the box read as "coding
         # lines" a non-technical human wouldn't understand. Same fix already used everywhere else
@@ -262,35 +275,75 @@ def _render_review_and_publish(client, supplier_id):
 
     st.markdown("#### Price")
     currency = payload.get("currency", "EUR")
-    pcol1, pcol2, pcol3 = st.columns(3)
-    with pcol1:
-        payload["baseAdultPrice"] = st.number_input(
-            f"Base adult price ({currency})", min_value=0.0,
-            value=_safe_float(payload.get("baseAdultPrice", 0.0)), key="dtp_base_adult")
-    with pcol2:
-        payload["baseChildrenPrice"] = st.number_input(
-            f"Base children price ({currency})", min_value=0.0,
-            value=_safe_float(payload.get("baseChildrenPrice", 0.0)), key="dtp_base_children")
-    with pcol3:
-        payload["baseInfantPrice"] = st.number_input(
-            f"Base infant price ({currency})", min_value=0.0,
-            value=_safe_float(payload.get("baseInfantPrice", 0.0)), key="dtp_base_infant")
-    st.caption("Copied from the original - edit if the new direction is genuinely priced "
-              "differently. Every occupancy bracket below is an ADDITIONAL supplement on top of "
-              "this base, same as the original.")
+    # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-17, screenshots comparing a real
+    # per-vehicle Transport in Travel Compositor's admin UI - "Vehicle: 220.00 USD" - against this
+    # screen): "In travel c is per vehicle 220 USD and a supplement. But on the app nothing is
+    # seen and all prices are 0 USD, which is the biggest issue." Root cause: this section only
+    # ever showed baseAdultPrice/baseChildrenPrice/baseInfantPrice, which are legitimately 0.0 for
+    # a per-vehicle transport (pricePerPax=False) - the real price lives in the SEPARATE
+    # vehiclePrice field instead (schemas.py's ContractTransportVO docstring; same pricePerPax
+    # convention already established and relied on elsewhere in this app - price_refresh.py,
+    # bulk_notes.py both branch on `bool(payload.get("pricePerPax", True))` the same way), which
+    # this screen never displayed anywhere except buried, unlabeled, inside the "Everything else"
+    # JSON expander further down. build_transport_swap_payload/build_transport_option_swap_payload
+    # both deepcopy the source untouched, so vehiclePrice and every occupancy bracket's supplement
+    # WERE already correct in the payload the whole time - this was purely a display gap, not a
+    # data-loss bug. Fixed by branching the same way the rest of the app already does: show
+    # vehiclePrice as the one editable price for a per-vehicle transport, the three base fields
+    # for a per-pax one.
+    per_pax = bool(payload.get("pricePerPax", True))
+    if per_pax:
+        pcol1, pcol2, pcol3 = st.columns(3)
+        with pcol1:
+            payload["baseAdultPrice"] = st.number_input(
+                f"Base adult price ({currency})", min_value=0.0,
+                value=_safe_float(payload.get("baseAdultPrice", 0.0)), key="dtp_base_adult")
+        with pcol2:
+            payload["baseChildrenPrice"] = st.number_input(
+                f"Base children price ({currency})", min_value=0.0,
+                value=_safe_float(payload.get("baseChildrenPrice", 0.0)), key="dtp_base_children")
+        with pcol3:
+            payload["baseInfantPrice"] = st.number_input(
+                f"Base infant price ({currency})", min_value=0.0,
+                value=_safe_float(payload.get("baseInfantPrice", 0.0)), key="dtp_base_infant")
+        st.caption("Copied from the original - edit if the new direction is genuinely priced "
+                  "differently. Every occupancy bracket below is an ADDITIONAL supplement on top "
+                  "of this base, same as the original.")
+    else:
+        payload["vehiclePrice"] = st.number_input(
+            f"Vehicle price ({currency})", min_value=0.0,
+            value=_safe_float(payload.get("vehiclePrice", 0.0)), key="dtp_vehicle_price")
+        st.caption("This is a per-vehicle transport (\"Price Per Pax\" is off) - the whole "
+                  "vehicle is priced once here, copied from the original. Every occupancy "
+                  "bracket below is an ADDITIONAL supplement on top of this vehicle price, same "
+                  "as the original.")
 
     opt_rows = []
     for opt in options:
         first_price = next(iter(opt.get("prices") or []), {})
-        opt_rows.append({
-            "min_passengers": opt.get("minPassengers"), "max_passengers": opt.get("maxPassengers"),
-            "adult_supplement": first_price.get("adultPriceSupplement", 0.0),
-            "children_supplement": first_price.get("childrenPriceSupplement", 0.0),
-            "infant_supplement": first_price.get("infantPriceSupplement", 0.0),
-        })
-    opt_df = pd.DataFrame(opt_rows or [{"min_passengers": 1, "max_passengers": 1,
+        if per_pax:
+            opt_rows.append({
+                "min_passengers": opt.get("minPassengers"), "max_passengers": opt.get("maxPassengers"),
+                "adult_supplement": first_price.get("adultPriceSupplement", 0.0),
+                "children_supplement": first_price.get("childrenPriceSupplement", 0.0),
+                "infant_supplement": first_price.get("infantPriceSupplement", 0.0),
+            })
+        else:
+            # CONFIRMED CONVENTION (builder.build_transport_payloads' own docstring):
+            # ContractTransportOptionPriceVO has no generic "vehicle" supplement field, so a
+            # per-vehicle bracket's delta is written into adultPriceSupplement the same way a
+            # per-pax bracket's is - it's the only numeric delta field the schema offers. Shown
+            # here as a single "price_supplement" column instead of three identical-looking ones,
+            # so it doesn't look like a per-passenger price that was never meant to exist.
+            opt_rows.append({
+                "min_passengers": opt.get("minPassengers"), "max_passengers": opt.get("maxPassengers"),
+                "price_supplement": first_price.get("adultPriceSupplement", 0.0),
+            })
+    opt_df = pd.DataFrame(opt_rows or ([{"min_passengers": 1, "max_passengers": 1,
                                         "adult_supplement": 0.0, "children_supplement": 0.0,
-                                        "infant_supplement": 0.0}])
+                                        "infant_supplement": 0.0}] if per_pax else
+                                       [{"min_passengers": 1, "max_passengers": 1,
+                                        "price_supplement": 0.0}]))
 
     def _save_options(edited_df):
         rows = list(edited_df.to_dict("records"))
@@ -298,9 +351,16 @@ def _render_review_and_publish(client, supplier_id):
             if i >= len(rows):
                 break
             row = rows[i]
-            adult = _safe_float(row.get("adult_supplement"), fallback=0.0)
-            children = _safe_float(row.get("children_supplement"), fallback=0.0)
-            infant = _safe_float(row.get("infant_supplement"), fallback=0.0)
+            if per_pax:
+                adult = _safe_float(row.get("adult_supplement"), fallback=0.0)
+                children = _safe_float(row.get("children_supplement"), fallback=0.0)
+                infant = _safe_float(row.get("infant_supplement"), fallback=0.0)
+            else:
+                # Per-vehicle: one number, written into adultPriceSupplement (see the matching
+                # comment above building opt_rows for why).
+                adult = _safe_float(row.get("price_supplement"), fallback=0.0)
+                children = 0.0
+                infant = 0.0
             # CONFIRMED CONVENTION (see builder.build_transport_payloads): a bracket that costs
             # exactly the base rate has NO price entries at all, never a redundant zero entry.
             if adult == 0 and children == 0 and infant == 0:
@@ -330,7 +390,7 @@ def _render_review_and_publish(client, supplier_id):
                      "Compositor if the new direction genuinely differs)"):
         st.json({k: v for k, v in payload.items()
                 if k not in ("segments", "name", "datasheets", "baseAdultPrice",
-                             "baseChildrenPrice", "baseInfantPrice")})
+                             "baseChildrenPrice", "baseInfantPrice", "vehiclePrice")})
 
     st.markdown("#### Duplicate check")
     st.caption("Same safeguard every other create flow here has - confirms a Transport for THIS "
