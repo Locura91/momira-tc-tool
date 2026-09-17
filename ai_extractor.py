@@ -469,7 +469,31 @@ Rules:
   start_time) one of the two defaults above applies.
 - schedule_notes: if the source describes WHEN this tour departs (e.g. "departs every Tuesday and Saturday", "departs only on the first Monday of each month", "daily departures"), summarize that in plain English here. Do NOT try to convert this into operational_days or specific dates yourself - just describe what you found, a human will translate it into the actual schedule fields.
 - operational_days must be a list of weekday NAME strings in uppercase English (e.g. "MONDAY", "TUESDAY"), not numbers. If not specified in the document, use all seven days.
-- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this tour genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. CONFIRMED RULE (product owner, real live example: EXC-073, a Christmas/Easter peak-period supplement was correctly added AND a stop_sales block for those exact same dates was ALSO added - "When we have a supplement already added, no need to add stop sale. that is useless"): if you are ADDING a peak-period/holiday supplement for a date range (per the rule above), do NOT ALSO add a stop_sales entry covering that same range, or any part of it, unless the source SEPARATELY and explicitly states bookings are refused/sold out during that window - a supplement existing for a period is itself proof the period is still sellable, so the two are contradictory outputs for the same dates and the stop_sales one must be left out. Empty list if genuinely none.
+- stop_sales: array of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} - dates when this tour genuinely CANNOT be booked/does not operate, even though they'd otherwise fall inside the normal schedule. This is COMMON in real contracts but easy to under-recognize because DMC documents rarely use the literal words "stop sale" - watch for ANY of these real-world phrasings instead: "not available on/between", "not operating", "no departures", "closed for maintenance/dry-dock/renovation", "excluded dates", "blackout dates", "suspended between", "unavailable", "closed on [a named holiday]", a sold-out period, or a table of "operating dates" that has GAPS between the listed ranges. CRITICAL: this can be MULTIPLE separate, non-contiguous date ranges (e.g. two different maintenance closures plus a holiday closure) - include EVERY one you find as its own entry in the array, don't stop after the first match. Do NOT invent one if the source is simply silent about closures - only include a range the source actually states or clearly implies. IMPORTANT: a holiday/peak-period SURCHARGE (a supplement that costs MORE during that window - a Christmas surcharge, a Tet holiday surcharge, a high-season rate) is NOT a stop sale by itself and must NOT also be added here - a period that is priced higher is still bookable. Only add a stop_sales range when the source separately and explicitly states the product is unavailable/not operating/sold out during that period, never just because a supplement or higher price applies then. CONFIRMED RULE (product owner, real live example: EXC-073, a Christmas/Easter peak-period supplement was correctly added AND a stop_sales block for those exact same dates was ALSO added - "When we have a supplement already added, no need to add stop sale. that is useless"): if you are ADDING a peak-period/holiday supplement for a date range (per the rule above), do NOT ALSO add a stop_sales entry covering that same range, or any part of it, unless the source SEPARATELY and explicitly states bookings are refused/sold out during that window - a supplement existing for a period is itself proof the period is still sellable, so the two are contradictory outputs for the same dates and the stop_sales one must be left out. Empty list if genuinely none. NEVER use a stop_sales entry to represent an enumerated list of specific departure/sailing dates (e.g. a cruise's own sailing-dates table) - those are NOT closures, and a half-known entry here (a date with no matching start/end) will make the payload fail validation. That pattern belongs in fixed_departure_dates below instead - see its own rule for exactly when to use it.
+- guaranteed_departure_rule: CONFIRMED REAL PATTERN - some contracts state that a weekly departure normally
+  needs a minimum passenger count to run, EXCEPT specific ordinal occurrences of that weekday each month
+  which are "guaranteed" to operate regardless of passenger count (e.g. "need a minimum of 4 clients to
+  guarantee operation, except for departures which can be operated without minimum of passengers on the 1st
+  and 3rd Monday of every month during November 2026 - October 2027"). If the source states a rule like
+  this, extract it as: {"weekday": "MONDAY", "ordinals": [1, 3], "range_start": "YYYY-MM-DD",
+  "range_end": "YYYY-MM-DD", "min_pax_otherwise": 4} - weekday is the single uppercase weekday name that
+  departs weekly, ordinals is the list of 1-based occurrence-within-month numbers that are guaranteed (1st
+  = 1, 2nd = 2, 3rd = 3, etc.), range_start/range_end is the date range the stated rule covers (use the
+  full stated validity window - if unstated, use a wide default), min_pax_otherwise is the minimum
+  passenger count required for the non-guaranteed occurrences. Set this to null if the source does not
+  describe this specific pattern (a plain weekly schedule with no guaranteed-vs-not distinction is NOT
+  this - leave null in that ordinary case). Never invent a rule that isn't actually stated.
+- fixed_departure_dates: CONFIRMED REAL PATTERN (product owner, 2026-09-17, a Nile cruise sailing-dates
+  table: "Movenpick MS Darakum Long Cruise Sailing Dates 2027" listing specific dates like "12th
+  February", "10th March", "5th April" with NO weekly/ordinal pattern connecting them) - some contracts
+  (river cruises especially) state a short, IRREGULAR list of the exact dates this tour departs, rather
+  than a weekly schedule. If the source gives a table or list of specific individual departure/sailing
+  dates for this tour (not a weekly day-of-week pattern, not a guaranteed_departure_rule's ordinal-weekday
+  pattern), extract every one as a plain list of "YYYY-MM-DD" strings, e.g. ["2027-02-12", "2027-03-10",
+  "2027-04-05"]. Resolve day-ordinal suffixes (12th, 3rd) and any year stated in the table's own heading.
+  Set to null/empty if the source describes a regular weekly/daily schedule instead - this field is ONLY
+  for a genuinely irregular, explicitly enumerated date list. A human tool will turn this into the actual
+  blocked-date (stop_sales) ranges between departures - do not also try to do that yourself in stop_sales.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
   {
     "name": "optional label, e.g. the season or date range description",
@@ -561,7 +585,9 @@ Output this exact JSON structure:
   "schedule_notes": "",
   "pricing_notes": "",
   "price_list": [],
-  "release_days_mentions": []
+  "release_days_mentions": [],
+  "guaranteed_departure_rule": null,
+  "fixed_departure_dates": null
 }"""
 
 
@@ -638,6 +664,8 @@ EXTRACTION_TOOL_SCHEMA = {
         "stop_sales": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "price_list": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "release_days_mentions": {"type": "array"},
+        "guaranteed_departure_rule": {"type": ["object", "null"], "additionalProperties": True},
+        "fixed_departure_dates": {"type": ["array", "null"], "items": {"type": "string"}},
     },
     "required": [
         "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
@@ -646,6 +674,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "min_child_age", "max_child_age", "child_discount_percentage", "extra_child_allowed",
         "extra_child_max_overrides", "operational_days",
         "schedule_notes", "pricing_notes", "stop_sales", "price_list", "release_days_mentions",
+        "guaranteed_departure_rule", "fixed_departure_dates",
     ],
 }
 
@@ -810,6 +839,170 @@ def compute_non_guaranteed_stop_sales(rule: dict) -> list:
         current += datetime.timedelta(days=7)
 
     return non_guaranteed
+
+
+def compute_stop_sales_from_fixed_departure_dates(dates, today=None) -> list:
+    """
+    CONFIRMED PRODUCT-OWNER RULE (2026-09-17, real example: "Movenpick MS Darakum Long Cruise
+    Sailing Dates 2027" - a table of specific sailing dates like 12 Feb, 10 Mar, 5 Apr, 1 May,
+    1 Sep, 27 Sep, 23 Oct, with no weekly/ordinal pattern connecting them - see
+    fixed_departure_dates in MODALITY_EXTRACTION_SYSTEM_PROMPT/OPTION_ONLY_SYSTEM_PROMPT for the
+    extraction side): "we must then include stop sales from today until one day before the first
+    starting date; then next stop sales one day after first starting date until one day before
+    next starting date and so on."
+
+    Travel Compositor's ContractClosedTourOptionVO has no "only these specific dates are
+    bookable" concept - only operationalDays (a plain weekday set, useless here since an
+    irregular date list can fall on a different weekday every time) and stopSales (blocked date
+    ranges). So the Modality is left open every day, and this instead computes what to BLOCK: the
+    gap from `today` up to the day before the first departure date, then the gap from the day
+    after each departure date up to the day before the next one, for every consecutive pair -
+    same "block everything except the guaranteed dates" idea as compute_non_guaranteed_stop_sales
+    above, just driven by an explicit list instead of a weekly/ordinal rule. Nothing is added
+    after the LAST departure date - the source only states specific dates up to some point (often
+    "for this season"/"for this year"), and blocking indefinitely into the future past the last
+    stated date would silently prevent a later document (next season's dates) from ever being
+    bookable again without a human noticing and undoing this.
+
+    dates: list of "YYYY-MM-DD" strings (or date objects) - deduplicated and sorted here, so
+    order/duplicates in the source extraction don't matter.
+    today: the date to anchor the very first gap from - defaults to date.today() when not given
+    (a caller passes an explicit date for deterministic behavior/tests).
+
+    Returns a list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} entries, one per gap. A gap of
+    zero or negative length (e.g. two departure dates on consecutive days, or a departure date
+    that's today or already in the past relative to `today`) is skipped rather than producing an
+    invalid/backwards range. Returns an empty list if `dates` has no usable (parseable) entries.
+    """
+    parsed = set()
+    for d in (dates or []):
+        try:
+            if isinstance(d, datetime.date):
+                parsed.add(d)
+            else:
+                parsed.add(datetime.date.fromisoformat(str(d).strip()))
+        except (ValueError, TypeError):
+            continue
+    if not parsed:
+        return []
+
+    sorted_dates = sorted(parsed)
+    anchor = today if isinstance(today, datetime.date) else datetime.date.today()
+
+    ranges = []
+    gap_start = anchor
+    for departure in sorted_dates:
+        gap_end = departure - datetime.timedelta(days=1)
+        if gap_end >= gap_start:
+            ranges.append({"start": gap_start.isoformat(), "end": gap_end.isoformat()})
+        gap_start = departure + datetime.timedelta(days=1)
+    return ranges
+
+
+def _apply_fixed_departure_dates(data: dict, today=None) -> None:
+    """
+    Applies data["fixed_departure_dates"] (if the AI extracted one - see
+    MODALITY_EXTRACTION_SYSTEM_PROMPT / OPTION_ONLY_SYSTEM_PROMPT) to the rest of `data` in
+    place: merges the computed between-departures stop_sales into data["stop_sales"] (skipping
+    any day already covered by an AI-extracted range, same overlap-avoidance as
+    _apply_guaranteed_departure_rule above), and appends a plain-English note to schedule_notes
+    listing the actual departure dates found, so the human reviewing the Modality can see exactly
+    what was inferred and why before publishing. No-op if fixed_departure_dates is missing/empty
+    or doesn't compute to anything.
+
+    `today` is passed straight through to compute_stop_sales_from_fixed_departure_dates - see its
+    own docstring.
+    """
+    raw_dates = data.get("fixed_departure_dates")
+    if not raw_dates:
+        return
+
+    computed = compute_stop_sales_from_fixed_departure_dates(raw_dates, today=today)
+    if not computed:
+        return
+
+    existing = [r for r in (data.get("stop_sales") or []) if isinstance(r, dict)]
+
+    def _overlaps_existing(start_str: str, end_str: str) -> bool:
+        try:
+            start = datetime.date.fromisoformat(start_str)
+            end = datetime.date.fromisoformat(end_str)
+        except ValueError:
+            return False
+        for r in existing:
+            try:
+                r_start = datetime.date.fromisoformat(str(r.get("start", "")))
+                r_end = datetime.date.fromisoformat(str(r.get("end", "")))
+            except ValueError:
+                continue
+            if start <= r_end and r_start <= end:
+                return True
+        return False
+
+    new_entries = [c for c in computed if not _overlaps_existing(c["start"], c["end"])]
+    data["stop_sales"] = existing + new_entries
+
+    sorted_dates = sorted({
+        datetime.date.fromisoformat(str(d).strip()) for d in raw_dates
+        if _is_parseable_iso_date(d)
+    })
+    dates_label = ", ".join(d.isoformat() for d in sorted_dates)
+    note = (
+        f"Fixed departure dates detected: this Modality only departs on {dates_label}. "
+        f"Everything in between has been added to Stop Sales below so only these exact dates "
+        f"remain bookable - please review before publishing."
+    )
+    existing_notes = str(data.get("schedule_notes") or "").strip()
+    data["schedule_notes"] = f"{existing_notes} {note}".strip() if existing_notes else note
+
+
+def _is_parseable_iso_date(value) -> bool:
+    if isinstance(value, datetime.date):
+        return True
+    try:
+        datetime.date.fromisoformat(str(value).strip())
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _drop_incomplete_stop_sales_entries(data: dict) -> None:
+    """
+    CONFIRMED REAL BUG FIX (product owner, 2026-09-17, real publish failure on ClosedTour ASW-12/
+    Movenpick MS Darakum): despite the prompt's own instructions, the AI can still occasionally
+    put a half-formed entry straight into stop_sales - most often when it spots a table of
+    specific dates (e.g. a sailing-dates table) it doesn't otherwise have a proper field for, and
+    tries to represent it there anyway (missing "start", missing "end", or one/both not a real
+    ISO date). A raw, unvalidated dict like that sails through extraction with no error, then
+    fails Travel Compositor's payload validation at PUBLISH time with a cryptic "Stop sales row 1
+    - 'start'/'end' was left blank" - far too late for a human to make sense of.
+
+    Called near the end of every ClosedTour extraction path (create/add_option/update_option), a
+    defensive net independent of _apply_fixed_departure_dates/_apply_guaranteed_departure_rule
+    (which only ever produce well-formed entries themselves): drops any data["stop_sales"] entry
+    that isn't a dict with a genuinely parseable ISO "start" and "end", and - only when something
+    was actually dropped - appends a note to schedule_notes so it's visible on the review screen
+    instead of silently vanishing.
+    """
+    raw = data.get("stop_sales") or []
+    kept, dropped = [], 0
+    for entry in raw:
+        if (isinstance(entry, dict) and _is_parseable_iso_date(entry.get("start"))
+                and _is_parseable_iso_date(entry.get("end"))):
+            kept.append(entry)
+        else:
+            dropped += 1
+    if not dropped:
+        return
+    data["stop_sales"] = kept
+    note = (
+        f"⚠️ {dropped} incomplete Stop Sales entry(ies) from the AI extraction were dropped "
+        f"(missing/invalid start or end date) - if the source lists specific irregular departure "
+        f"dates (e.g. a sailing-dates table), re-extract or check the Fixed Departure Dates "
+        f"handling; if it was a genuine closure, add it back manually in Stop Sales below."
+    )
+    existing_notes = str(data.get("schedule_notes") or "").strip()
+    data["schedule_notes"] = f"{existing_notes} {note}".strip() if existing_notes else note
 
 
 def _ordinal_label(n) -> str:
@@ -2134,6 +2327,16 @@ Extract ONLY:
   passenger count required for the non-guaranteed occurrences. Set this to null if the source does not
   describe this specific pattern (a plain weekly schedule with no guaranteed-vs-not distinction is NOT
   this - leave null in that ordinary case). Never invent a rule that isn't actually stated.
+- fixed_departure_dates: CONFIRMED REAL PATTERN (product owner, 2026-09-17, a Nile cruise sailing-dates
+  table: "Movenpick MS Darakum Long Cruise Sailing Dates 2027" listing specific dates like "12th
+  February", "10th March", "5th April" with NO weekly/ordinal pattern connecting them) - some contracts
+  (river cruises especially) state a short, IRREGULAR list of the exact dates this Modality departs,
+  rather than a weekly schedule. If the source gives a table or list of specific individual departure/
+  sailing dates for THIS Modality (not a weekly day-of-week pattern, not a guaranteed_departure_rule's
+  ordinal-weekday pattern), extract every one as a plain list of "YYYY-MM-DD" strings, e.g. ["2027-02-12",
+  "2027-03-10", "2027-04-05"]. Resolve day-ordinal suffixes (12th, 3rd) and any year stated in the
+  table's own heading. Set to null/empty if the source describes a regular weekly/daily schedule instead
+  - this field is ONLY for a genuinely irregular, explicitly enumerated date list.
 - min_pax_guaranteed_departure: a SIMPLER, more common pattern than guaranteed_departure_rule above - a
   flat statement that a minimum number of passengers is needed to guarantee this Modality departs/
   operates, with NO specific weekly/ordinal calendar exception attached (e.g. "Minimum 3 pax required
@@ -2171,6 +2374,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
   "stop_sales": [],
   "guaranteed_departure_rule": null,
+  "fixed_departure_dates": null,
   "min_pax_guaranteed_departure": null
 }"""
 
@@ -2306,6 +2510,17 @@ Extract:
   plain weekly schedule with no guaranteed-vs-not distinction is NOT this - leave null in that ordinary
   case, and null if this rule clearly belongs to a DIFFERENT Modality than the one you're extracting).
   Never invent a rule that isn't actually stated.
+- fixed_departure_dates: CONFIRMED REAL PATTERN (product owner, 2026-09-17, a Nile cruise sailing-dates
+  table: "Movenpick MS Darakum Long Cruise Sailing Dates 2027" listing specific dates like "12th
+  February", "10th March", "5th April" with NO weekly/ordinal pattern connecting them) - some contracts
+  (river cruises especially) state a short, IRREGULAR list of the exact dates THIS Modality departs,
+  rather than a weekly schedule. If the source gives a table or list of specific individual departure/
+  sailing dates for THIS Modality (not a weekly day-of-week pattern, not a guaranteed_departure_rule's
+  ordinal-weekday pattern), extract every one as a plain list of "YYYY-MM-DD" strings, e.g. ["2027-02-12",
+  "2027-03-10", "2027-04-05"]. Resolve day-ordinal suffixes (12th, 3rd) and any year stated in the
+  table's own heading. Set to null/empty if the source describes a regular weekly/daily schedule instead,
+  or if this date list clearly belongs to a DIFFERENT Modality than the one you're extracting - this
+  field is ONLY for a genuinely irregular, explicitly enumerated date list for THIS Modality.
 - min_pax_guaranteed_departure: a SIMPLER, more common pattern than guaranteed_departure_rule above - a
   flat statement that a minimum number of passengers is needed to guarantee THIS Modality departs/
   operates, with NO specific weekly/ordinal calendar exception attached (e.g. "Minimum 3 pax required
@@ -2339,7 +2554,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "extra_child_max_overrides": {"single": null, "double": null, "triple": null, "quadruple": null},
   "pricing_notes": "", "schedule_notes": "",
   "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-  "stop_sales": [], "guaranteed_departure_rule": null, "min_pax_guaranteed_departure": null
+  "stop_sales": [], "guaranteed_departure_rule": null, "fixed_departure_dates": null,
+  "min_pax_guaranteed_departure": null
 }"""
 
 
@@ -2398,7 +2614,8 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [], "guaranteed_departure_rule": None, "min_pax_guaranteed_departure": None,
+        "stop_sales": [], "guaranteed_departure_rule": None, "fixed_departure_dates": None,
+        "min_pax_guaranteed_departure": None,
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -2415,6 +2632,8 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
                 _s[_occ_key] = _flat_price
 
     _apply_guaranteed_departure_rule(data)
+    _apply_fixed_departure_dates(data)
+    _drop_incomplete_stop_sales_entries(data)
 
     return data
 
@@ -2444,7 +2663,8 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "stop_sales": [], "guaranteed_departure_rule": None, "min_pax_guaranteed_departure": None,
+        "stop_sales": [], "guaranteed_departure_rule": None, "fixed_departure_dates": None,
+        "min_pax_guaranteed_departure": None,
         # Defensive: fields builder.py's main_tour_payload construction still
         # reads, even though it's unused/not sent for option-only actions.
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1,
@@ -2456,6 +2676,8 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
             data[key] = default
 
     _apply_guaranteed_departure_rule(data)
+    _apply_fixed_departure_dates(data)
+    _drop_incomplete_stop_sales_entries(data)
 
     return data
 
@@ -2508,7 +2730,8 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "extra_child_allowed": True,
         "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
-        "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": []
+        "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": [],
+        "guaranteed_departure_rule": None, "fixed_departure_dates": None,
     }
     # CONFIRMED REAL BUG: this used to be defaults.update(data), which is NOT None-safe - any
     # field Claude returns as JSON null OVERWRITES the safe default instead of falling back to
@@ -2520,6 +2743,24 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         if key not in data or data[key] is None:
             data[key] = default
     defaults = data
+
+    # CONFIRMED REAL BUG FIX (product owner, 2026-09-17, real publish failure on ClosedTour
+    # ASW-12/Movenpick MS Darakum): this "create" extraction never wired the guaranteed-departure/
+    # fixed-departure-dates mechanisms that extract_modality_data/extract_option_only_data already
+    # have (see their own calls to the same two functions below) - so when a document's irregular
+    # sailing-dates table reached the AI here, it had no proper field to put those dates in and
+    # tried to represent them directly in stop_sales itself, producing an entry with a missing
+    # start/end that passed extraction but failed Travel Compositor's payload validation at
+    # publish time ("Stop sales row 1 - 'start'/'end' was left blank"). Applying the same two
+    # deterministic-Python helpers here closes the gap: any guaranteed_departure_rule or
+    # fixed_departure_dates the AI now extracts (see the new prompt bullets above) gets turned
+    # into real, fully-populated stop_sales ranges instead of being left for the AI to guess at.
+    _apply_guaranteed_departure_rule(defaults)
+    _apply_fixed_departure_dates(defaults)
+    # Belt-and-braces: catches a malformed stop_sales entry the AI slipped straight into
+    # stop_sales itself (bypassing the two mechanisms above), the exact real-world failure mode
+    # this whole fix responds to - see _drop_incomplete_stop_sales_entries's own docstring.
+    _drop_incomplete_stop_sales_entries(defaults)
 
     # Deterministic double-check of the Nights-vs-Days naming rule (see
     # _fix_days_count_in_tour_name's docstring) - catches the AI copying a

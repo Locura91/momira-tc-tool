@@ -277,7 +277,17 @@ ACTION_FIELDS = {
     # to type it here in Step 3 AND again in Step 4 - pure double work, since
     # Step 3's value was never even used).
     "create": ["provider_code", "min_pax", "max_pax", "currency", "on_request", "release_days"],
-    "add_option": ["existing_tour_code", "modality_code", "on_request"],
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "If we select the supplier and if we select
+    # the ClosedTour Code, we just want to add a new Modality, regardless what is already
+    # online." Used to rely on "Check what's already online for this code" (a live GET fetch) to
+    # supply currency, the same "an UPDATE never asks for things the live record already has"
+    # rule update_option/update_tour use - but the product owner reversed that specifically for
+    # add_option: adding a Modality shouldn't depend on a successful fetch of the CURRENT tour
+    # state at all. "currency" is asked directly here instead (same as "create"), and Step 3/4's
+    # "must have fetched the live tour first" gate no longer applies to this action - see app.py's
+    # own comments at the Step 3 Continue-button gate and the Step 4+ currency/min/max override
+    # block for the matching removal.
+    "add_option": ["existing_tour_code", "modality_code", "currency", "on_request"],
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28), identical fix to Ticket's "update_ticket"
     # above: "3" used to always run the full, expensive extraction (name/description/
     # cancellation AND pricing/schedule) even though it only ever published the non-pricing

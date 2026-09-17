@@ -1533,6 +1533,14 @@ else:
             "if the first attempt doesn't work."
         )
 
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "If we select the supplier and if we select
+    # the ClosedTour Code, we just want to add a new Modality, regardless what is already
+    # online." add_option no longer fetches/compares against the tour's current live state at
+    # all - Currency is asked directly above (see ACTION_FIELDS's own comment), and the new
+    # Modality simply gets added under whatever code was typed. The "Check what's already
+    # online" button/results below (existing modality codes, live pricing lookup) stay available
+    # for update_tour/update_option, which genuinely need to inherit live data.
+    if "existing_tour_code" in needed and action != "add_option":
         if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
             with st.spinner("Fetching from Travel Compositor..."):
                 fetched, working_code = try_code_variants(
@@ -1700,7 +1708,12 @@ else:
     # could click Continue having never checked what's online, and every price row would
     # publish under whatever cfg_currency last held (blank on a fresh session, which the
     # downstream builder defaults to EUR) - silently re-denominating a non-EUR tour.
-    if action in ("update_tour", "add_option", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" removed from this gate - it no
+    # longer requires (or even offers) the "Check what's already online" fetch at all, see
+    # ACTION_FIELDS's own comment. Still gated by "existing_tour_code"/"currency" being filled in
+    # (the generic required_ok checks above already cover both, now that "currency" is in
+    # add_option's own ACTION_FIELDS list).
+    if action in ("update_tour", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):
         required_ok = False
         st.info("Click 'Check what's already online for this code' above first (or again, if you "
                "changed the code) - this fetches the existing tour's Currency (and for updates, "
@@ -1710,8 +1723,6 @@ else:
         if action == "update_tour":
             min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
             max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
-            currency_in = st.session_state.get("fetched_tour_currency") or ""
-        elif action == "add_option":
             currency_in = st.session_state.get("fetched_tour_currency") or ""
         st.session_state.cfg_provider_code = provider_code_in or ""
         st.session_state.cfg_min_pax = min_pax_in or 1
@@ -1753,12 +1764,16 @@ existing_tour_code = st.session_state.cfg_existing_tour_code
 # these globals must ALSO be re-validated here against the tour actually being worked on
 # (cfg_existing_tour_code). Otherwise a stale fetch left over from a previous tour (or one that
 # failed silently) keeps being blended in on every single render of this tour's own screens.
-if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code):
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" removed from both branches below -
+# it no longer fetches the live tour at all (see ACTION_FIELDS's own comment), so there is
+# nothing to warn about or blend in here; its own currency comes straight from cfg_currency
+# (the Step 3 selectbox), already set above.
+if action in ("update_tour", "update_option") and not fetched_tour_matches_code(existing_tour_code):
     st.warning("⚠️ The tour data fetched by 'Check what's already online' doesn't match this "
               "tour's code (or was never fetched / failed) - go back to Step 3 and re-check "
               "before continuing, to avoid publishing with another tour's currency, pax limits, "
               "or code.")
-if action in ("update_tour", "update_option", "add_option") and fetched_tour_matches_code(existing_tour_code):
+if action in ("update_tour", "update_option") and fetched_tour_matches_code(existing_tour_code):
     _live_currency = st.session_state.get("fetched_tour_currency")
     _live_min = st.session_state.get("fetched_tour_min_pax")
     _live_max = st.session_state.get("fetched_tour_max_pax")
@@ -2846,14 +2861,30 @@ if st.session_state.extracted:
                             new_supplements = data.get("supplements") or []
                             if new_supplements:
                                 with st.spinner(f"Adding '{modality_code}''s supplements to the tour..."):
+                                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" no
+                                    # longer requires the human to click "Check what's already
+                                    # online" in Step 3 first (see ACTION_FIELDS's own comment) -
+                                    # so st.session_state.fetched_tour is typically empty now.
+                                    # Merging a new supplement into the tour's existing list still
+                                    # genuinely needs the tour's CURRENT live data (to avoid wiping
+                                    # out supplements that already belong to other Modalities) - so
+                                    # fetch it here, automatically, only in this one case where a
+                                    # fetch is actually needed, rather than making the human do it
+                                    # up front for every add_option run (most of which have no new
+                                    # supplements at all and never needed this data).
                                     old_tour = st.session_state.get("fetched_tour")
+                                    if not isinstance(old_tour, dict) or "error" in old_tour:
+                                        old_tour, _fresh_code = try_code_variants(
+                                            lambda c: client.get_closed_tour(payloads["supplier_id"], c),
+                                            target_tour_code
+                                        )
                                     if not isinstance(old_tour, dict) or "error" in old_tour:
                                         st.warning(
                                             f"⚠️ '{modality_code}' was created, but its {len(new_supplements)} "
-                                            f"supplement(s) were NOT added - couldn't find the tour's current "
-                                            f"live data. Go back to Step 3, click 'Check what's already online "
-                                            f"for this code', then use 'Update an existing tour's details' to "
-                                            f"add the supplements separately."
+                                            f"supplement(s) were NOT added - couldn't fetch the tour's current "
+                                            f"live data ({old_tour.get('message', old_tour) if isinstance(old_tour, dict) else old_tour}). "
+                                            f"Use 'Update an existing tour's details' to add the supplements "
+                                            f"separately."
                                         )
                                     else:
                                         # CONFIRMED PRODUCT-OWNER CORRECTION: a ClosedTour
