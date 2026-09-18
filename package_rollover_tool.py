@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-18-transport-create-modality-active-fix"
+MODULE_BUILD = "2026-09-18-holiday-package-fetch-failed-diagnostics"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-18-transport-create-modality-active-fix"
+MODULE_BUILD = "2026-09-18-holiday-package-fetch-failed-diagnostics"
 
 import os
 import re

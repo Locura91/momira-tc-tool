@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-18-transport-create-modality-active-fix"
+MODULE_BUILD = "2026-09-18-holiday-package-fetch-failed-diagnostics"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

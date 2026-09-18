@@ -119,26 +119,55 @@ def build_updated_package_payload(original_entry: Dict[str, Any],
 
 
 def fetch_holiday_package_by_id(api, microsite_id: str, package_id: str,
-                                lang: str = "EN", page_size: int = 100) -> Optional[Dict[str, Any]]:
-    """Fetch a specific holiday package by ID (paging through the list)."""
+                                lang: str = "EN", page_size: int = 100):
+    """Fetch a specific holiday package by ID (paging through the list).
+
+    Returns (entry, error_detail): `entry` is the matched package dict, or None if it
+    couldn't be found. `error_detail` is None on success, or a dict explaining WHY it
+    failed - there are two genuinely different situations, and callers/humans need to
+    tell them apart:
+      - {"reason": "api_error", "detail": <the raw Travel Compositor error dict>} - the
+        GET /package/{microsite_id} call itself failed (wrong/inactive microsite ID,
+        auth problem, network error, ...).
+      - {"reason": "not_found", "packages_seen": N, "note": "..."} - every page of this
+        microsite's own package list was read successfully, all N of them, and none had
+        this package_id. By far the more common real case: a mistyped ID, or an ID that
+        genuinely belongs to a DIFFERENT microsite.
+
+    CONFIRMED REAL PRODUCTION GAP (product owner, 2026-09-18): a failed single-package
+    translate used to report only {"status": "fetch_failed", "package_id": ...} with
+    nothing else - completely undiagnosable from the result alone, whichever of the two
+    situations above actually happened. sync_holiday_package merges this dict's content
+    straight into its own returned result so the human sees it without any extra
+    plumbing (the review screen already renders the raw result JSON)."""
     first_result = 0
     seen = 0
     while True:
         data = api.get_holiday_packages(microsite_id, lang=lang, firstResult=first_result, pageResults=page_size)
         if isinstance(data, dict) and "error" in data:
-            return None
+            return None, {"reason": "api_error", "detail": data}
         packages = data.get("package", []) if isinstance(data, dict) else []
         for p in packages:
             if str(p.get("id")) == str(package_id):
-                return p
+                return p, None
         if not packages:
-            return None
+            return None, {
+                "reason": "not_found", "packages_seen": seen,
+                "note": (f"Checked every Holiday Package in microsite {microsite_id!r} ({seen} "
+                         f"total) - none has id {package_id!r}. Double-check the package ID and "
+                         f"the microsite ID."),
+            }
         pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
         total = pagination.get("totalResults", len(packages))
         seen += len(packages)
         first_result += page_size
         if seen >= total:
-            return None
+            return None, {
+                "reason": "not_found", "packages_seen": seen,
+                "note": (f"Checked every Holiday Package in microsite {microsite_id!r} ({seen} "
+                         f"total) - none has id {package_id!r}. Double-check the package ID and "
+                         f"the microsite ID."),
+            }
 
 
 def fetch_all_holiday_packages(api, microsite_id: str, lang: str = "EN",
@@ -264,9 +293,12 @@ def sync_holiday_package(api, translator, store: StateStore,
                          target_languages: List[str],
                          dry_run: bool = True, force: bool = False) -> Dict[str, Any]:
     """Sync a single holiday package by ID."""
-    entry = fetch_holiday_package_by_id(api, microsite_id, package_id)
+    entry, error_detail = fetch_holiday_package_by_id(api, microsite_id, package_id)
     if entry is None:
-        return {"status": "fetch_failed", "package_id": package_id}
+        result = {"status": "fetch_failed", "package_id": package_id}
+        if error_detail:
+            result.update(error_detail)
+        return result
     return sync_one_package_entry(api, translator, store, microsite_id, entry,
                                   target_languages, dry_run=dry_run, force=force)
 
