@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
+MODULE_BUILD = "2026-09-18-closedtour-season-date-range-fixes"
 
 import copy
 import math
@@ -409,6 +409,182 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
         row["price"] = cleaned
         out.append(row)
     return out
+
+
+def _parse_price_list_date(row, key):
+    """datetime.date, or None if the row is missing/unparseable at `key` ('startDate'/'endDate') -
+    the shared guard fix_touching_season_boundaries and split_nested_price_list_seasons both use
+    before doing any date arithmetic on a price_list row."""
+    if not isinstance(row, dict):
+        return None
+    try:
+        return datetime.date.fromisoformat(str(row.get(key) or ""))
+    except ValueError:
+        return None
+
+
+def fix_touching_season_boundaries(price_list):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, with a real live Travel Compositor
+    screenshot showing consecutive seasons on a published Modality sharing a boundary date - e.g.
+    one row ending "21/12/2026" immediately followed by the next starting "21/12/2026"): "End
+    date must be one day before next season start date." When two price_list entries for the SAME
+    Modality are sorted by date and one row's endDate lands on the exact SAME calendar day as the
+    next row's startDate, that single day is ambiguously claimed by both seasons at once - Travel
+    Compositor's real behavior on this is exactly the kind of silent data corruption this app
+    exists to prevent. Confirmed via follow-up (AskUserQuestion) to auto-fix this SILENTLY, with
+    no note: shifting the earlier row's endDate back one calendar day is pure date housekeeping,
+    not a content correction the human needs to be told about (unlike normalize_price_list's
+    clamps/drops, which change what gets published and are always flagged via `notes`).
+
+    Deliberately narrow: only fixes an EXACT boundary match between two rows that are otherwise
+    consecutive in sorted-by-startDate order. A deeper/partial overlap - one season's dates
+    genuinely CONTAINED WITHIN or crossing another's, not just touching at a shared edge - is a
+    different, harder problem with no single correct date to shift; see
+    split_nested_price_list_seasons for that case, which this function does not attempt and
+    leaves completely untouched (its own containment check only ever look at rows that are
+    strictly adjacent once sorted, and two rows where one contains the other are not "adjacent"
+    in any useful sense - the container's start is normally far earlier than the nested row's).
+
+    Rows with no parseable startDate/endDate are left exactly as given, appended at the end (same
+    "never crash on bad data, just don't touch what can't be understood" convention as the rest
+    of this module)."""
+    parseable, unparseable = [], []
+    for row in (price_list or []):
+        if isinstance(row, dict) and _parse_price_list_date(row, "startDate") and _parse_price_list_date(row, "endDate"):
+            parseable.append(dict(row))
+        else:
+            unparseable.append(row)
+    parseable.sort(key=lambda r: r["startDate"])
+    for i in range(len(parseable) - 1):
+        if parseable[i]["endDate"] == parseable[i + 1]["startDate"]:
+            fixed_end = _parse_price_list_date(parseable[i], "endDate") - datetime.timedelta(days=1)
+            parseable[i]["endDate"] = fixed_end.isoformat()
+    return parseable + unparseable
+
+
+def split_nested_price_list_seasons(price_list):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, same real Travel Compositor screenshot
+    as fix_touching_season_boundaries above): a "Peak Season (Excluding period within High
+    Season)" row, 19/03/2027-29/03/2027, sat entirely INSIDE a separate "High Season" row,
+    04/01/2027-30/04/2027, on the same Modality. His exact words: "If are two modalities in the
+    same time, travel c gives an error, an extra modality has to be build." Two price_list rows
+    on ONE Modality can never legitimately cover overlapping dates at different prices - Travel
+    Compositor has no way to express "this window, nested inside a longer season, costs more" as
+    a single option's price list (see normalize_price_list's own note on same-date-range rows
+    being ADDED together, not chosen between) - so a genuinely nested sub-period has to become an
+    entirely separate Modality/option of its own, with the containing season's price_list cut to
+    leave a gap where the nested dates sit. Confirmed via follow-up (AskUserQuestion) to
+    auto-split this rather than just flag it - the caller (flows/multi_tour.py) is the one that
+    actually builds the new Modality object, since a price_list-only function like this one has
+    no concept of Modality codes/hints/other Modality-level settings.
+
+    Containment (not mere overlap) is the trigger: row B is "nested" inside row A when
+    A.startDate <= B.startDate and B.endDate <= A.endDate and the two rows are not the identical
+    range. A genuine partial overlap that ISN'T full containment (e.g. one season's dates run
+    past the end of another without either fully containing the other) has no single obviously
+    correct way to carve either side and is deliberately left alone here - not detected, not
+    split, not even flagged by this function (the caller's own price_list still contains both
+    rows unchanged, exactly as extracted, so nothing is silently lost; a human reviewing the
+    Prices tab would still see the overlap and can fix it manually, same as before this feature).
+
+    Multi-level nesting (a nested row that is ITSELF a container for a deeper-nested row) is also
+    deliberately declined here - carving a hole out of a row that is itself about to be carved
+    out and turned into a whole new Modality is a real, if rare, case, but getting the two cuts
+    consistent with each other adds a lot of risk for a shape that hasn't actually been seen in a
+    real document yet. Any row caught up in a multi-level chain like this is left in `remaining`
+    completely untouched (as if it had never been examined at all) and reported by name/dates in
+    the third return value, `unhandled_notes`, so the caller can warn a human instead of silently
+    mishandling it.
+
+    Returns (remaining, removed_nested, unhandled_notes):
+      - remaining: the price_list with every genuinely-nested row's dates cut out of its
+        container (a container can end up as 0, 1, or 2 rows depending on whether the nested
+        window sits in the middle, or against one edge, of the container), sorted by startDate,
+        with rows this function couldn't parse a startDate/endDate from passed through untouched
+        at the end.
+      - removed_nested: the nested rows themselves, completely unmodified (same startDate/
+        endDate/price/name as extracted) - these are what the caller turns into a new Modality's
+        own price_list.
+      - unhandled_notes: human-readable strings describing any multi-level nesting chain this
+        function declined to touch, empty in the overwhelming common case.
+    """
+    rows = list(price_list or [])
+    parsed = []
+    for idx, row in enumerate(rows):
+        s, e = _parse_price_list_date(row, "startDate"), _parse_price_list_date(row, "endDate")
+        if s is not None and e is not None:
+            parsed.append((idx, row, s, e))
+    by_idx = {idx: (row, s, e) for idx, row, s, e in parsed}
+
+    # For every row, find the SMALLEST other row that fully contains it (smallest = most
+    # specific container, in case of odd multi-container overlaps in the source data).
+    container_of = {}
+    for idx, row, s, e in parsed:
+        best_idx, best_span = None, None
+        for jdx, jrow, js, je in parsed:
+            if jdx == idx or not (js <= s and e <= je and (js, je) != (s, e)):
+                continue
+            span = (je - js).days
+            if best_span is None or span < best_span:
+                best_idx, best_span = jdx, span
+        if best_idx is not None:
+            container_of[idx] = best_idx
+
+    nested_by_container = {}
+    for nested_idx, container_idx in container_of.items():
+        nested_by_container.setdefault(container_idx, []).append(nested_idx)
+
+    # Multi-level chains (a nested row that is also itself a container) are declined entirely -
+    # every row in the chain (the deepest nested row, every intermediate container-that-is-also-
+    # nested, and the outermost container) is pulled out of consideration and reported instead.
+    declined_idx = set()
+    unhandled_notes = []
+    for idx in list(container_of.keys()):
+        if idx in nested_by_container:  # idx is nested AND itself contains something -> a chain
+            chain = {idx, container_of[idx]} | set(nested_by_container[idx])
+            if not chain & declined_idx:  # report each chain once
+                names = ", ".join(
+                    f"'{by_idx[c][0].get('name') or (by_idx[c][1].isoformat() + ' to ' + by_idx[c][2].isoformat())}'"
+                    for c in sorted(chain)
+                )
+                unhandled_notes.append(
+                    f"Seasons {names} are nested more than one level deep - this needs a human "
+                    f"to split manually, the app only auto-splits a single level of nesting.")
+            declined_idx |= chain
+
+    remaining, removed_nested = [], []
+    for idx, row, s, e in parsed:
+        if idx in declined_idx:
+            remaining.append(row)
+            continue
+        if idx in container_of:
+            removed_nested.append(row)
+            continue
+        nested_here = sorted(
+            (n for n in nested_by_container.get(idx, []) if n not in declined_idx),
+            key=lambda n: by_idx[n][1]
+        )
+        if not nested_here:
+            remaining.append(row)
+            continue
+        cursor = s
+        for n in nested_here:
+            _, ns, ne = by_idx[n][0], by_idx[n][1], by_idx[n][2]
+            if cursor < ns:
+                piece_end = ns - datetime.timedelta(days=1)
+                if cursor <= piece_end:
+                    piece = dict(row)
+                    piece["startDate"], piece["endDate"] = cursor.isoformat(), piece_end.isoformat()
+                    remaining.append(piece)
+            cursor = max(cursor, ne + datetime.timedelta(days=1))
+        if cursor <= e:
+            piece = dict(row)
+            piece["startDate"], piece["endDate"] = cursor.isoformat(), e.isoformat()
+            remaining.append(piece)
+
+    unparseable = [row for i, row in enumerate(rows) if i not in by_idx]
+    remaining = sorted(remaining, key=lambda r: r.get("startDate", "")) + unparseable
+    return remaining, removed_nested, unhandled_notes
 
 
 _TRANSFER_MAX_END_DATE = "2049-12-31"   # the house "runs indefinitely" date, as used for inventory
@@ -2313,8 +2489,31 @@ def build_closed_tour_payloads(
     # the review screen below as child_discount_clamp_notes, same "flag it, don't silently
     # change it" convention as pricing_notes/supplement_occupancy_notes.
     _child_discount_clamp_notes = []
+    # CONFIRMED PRODUCT-OWNER RULE (2026-09-18) - belt-and-braces safety net. The primary fix
+    # for both problems lives in flows/multi_tour.py, right after extraction (touching
+    # boundaries silently corrected there, nested seasons auto-split into a new Modality) - but
+    # build_closed_tour_payloads is also called from other paths (the legacy add-option flow in
+    # app.py, price refreshes, etc) that never go through that wiring, so the same silent
+    # touching-boundary fix is re-applied here as a final safety net before every publish,
+    # regardless of source. A genuine nested/overlapping season that reaches this point (should
+    # be rare - the earlier fix normally already caught it) can't be silently auto-split here,
+    # since this function has no access to the tour's other Modalities to append a new one to -
+    # it's flagged instead via price_list_overlap_notes, same "flag it, don't silently drop it"
+    # convention as every other notes list in this function.
+    _price_list_overlap_notes = []
+    _, _still_nested, _deep_nesting_notes = split_nested_price_list_seasons(
+        fix_touching_season_boundaries(extracted_dmc_data.get("price_list", [])))
+    for _nested_row in _still_nested:
+        _price_list_overlap_notes.append(
+            f"'{_nested_row.get('name') or 'A season'}' ({_nested_row.get('startDate')} - "
+            f"{_nested_row.get('endDate')}) overlaps with another season on this Modality - "
+            f"Travel Compositor will reject two overlapping price windows on one Modality. This "
+            f"should have been auto-split into its own Modality already; if you're seeing this, "
+            f"please split it manually before publishing.")
+    _price_list_overlap_notes.extend(_deep_nesting_notes)
     _tour_price_list_sorted = sorted(
-        normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
+        normalize_price_list(fix_touching_season_boundaries(extracted_dmc_data.get("price_list", [])),
+                              pre_config.currency,
                               fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
                               notes=_child_discount_clamp_notes,
                               max_occupancy=extracted_dmc_data.get("max_occupancy")),
@@ -2359,6 +2558,12 @@ def build_closed_tour_payloads(
         # normalize_price_list's own docstring for why this can never be skipped, whatever the
         # source of the value.
         "child_discount_clamp_notes": _child_discount_clamp_notes,
+        # Season date ranges that still overlap after the silent touching-boundary fix and the
+        # single-level auto-split have both already run - see the block above for why this can
+        # only be flagged here, never auto-split (this function has no access to the tour's
+        # other Modalities). Should normally be empty; flows/multi_tour.py's extraction-time
+        # wiring is the primary fix and catches this long before publish.
+        "price_list_overlap_notes": _price_list_overlap_notes,
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing

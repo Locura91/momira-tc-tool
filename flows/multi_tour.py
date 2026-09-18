@@ -22,7 +22,8 @@ import pandas as pd
 import streamlit as st
 
 from schemas import HumanPreConfig
-from builder import build_closed_tour_payloads, coerce_price_list_shape
+from builder import (build_closed_tour_payloads, coerce_price_list_shape,
+                     fix_touching_season_boundaries, split_nested_price_list_seasons)
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import (
@@ -56,6 +57,28 @@ from app import (
     render_house_rule_shortcut, render_supplement_zero_price_notes, reset_child_age_band_widgets,
     reset_stale_editable_field_widgets, show_publish_error, try_code_variants, with_learned_guidance,
 )
+
+
+def _mct_generate_split_modality_code(parent_code, nested_row, existing_codes):
+    """A unique Modality Code for a season auto-split out of `parent_code` by
+    split_nested_price_list_seasons (see its docstring in builder.py, and the CONFIRMED
+    PRODUCT-OWNER RULE - 2026-09-18 - it implements). Built from the nested season's own name
+    when it has one (e.g. "Peak Season" -> "CABIN-PEAKSEASON"), falling back to its date range
+    when it doesn't, run through the same _clean_modality_code sanitizing every other
+    AI-suggested code in this app already goes through so it can't fail the same way a stray "."
+    or "/" would. A numeric suffix is appended only if that exact code is somehow already taken
+    (belt-and-braces - collisions should be rare given the season name is normally unique per
+    Modality) so this never silently reuses another Modality's code."""
+    season_label = (nested_row or {}).get("name") or (
+        f"{(nested_row or {}).get('startDate', '')}-{(nested_row or {}).get('endDate', '')}")
+    base = _clean_modality_code(f"{parent_code}{season_label}".replace(" ", ""))[:40] or f"{parent_code}SPLIT"
+    existing = set(existing_codes or [])
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}{n}" in existing:
+        n += 1
+    return f"{base}{n}"
 
 
 def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files,
@@ -632,6 +655,50 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     _apply_min_pax_guaranteed_departure_note(
                         tour["main_data"], ("policy_remarks",),
                         mod["data"].get("min_pax_guaranteed_departure"), label=mod["code"])
+
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, from a real live
+                    # Travel Compositor screenshot of a published Modality's Prices tab): "End
+                    # date must be one day before next season start date. If are two modalities
+                    # in the same time, travel c gives an error, an extra modality has to be
+                    # build." Two fixes, applied once here right after extraction - see
+                    # fix_touching_season_boundaries and split_nested_price_list_seasons's own
+                    # docstrings in builder.py for the full reasoning and their deliberate
+                    # limits:
+                    #   1. Two seasons sharing an exact boundary date are silently pulled one
+                    #      day apart - pure date housekeeping, no note needed.
+                    #   2. A season nested entirely inside another becomes its own new
+                    #      Modality (appended to `modalities`, so it gets its own turn in this
+                    #      same one-Modality-at-a-time review wizard), with the containing
+                    #      season's price_list cut to leave a gap - Travel Compositor cannot
+                    #      publish two overlapping price windows on one Modality.
+                    mod["data"]["price_list"] = fix_touching_season_boundaries(mod["data"].get("price_list"))
+                    _remaining_price_list, _nested_seasons, _unhandled_nesting_notes = \
+                        split_nested_price_list_seasons(mod["data"]["price_list"])
+                    mod["data"]["price_list"] = _remaining_price_list
+                    for _nesting_note in _unhandled_nesting_notes:
+                        st.warning(f"⚠️ {_nesting_note}")
+                    for _nested_row in _nested_seasons:
+                        _new_code = _mct_generate_split_modality_code(
+                            mod["code"], _nested_row, [m["code"] for m in modalities])
+                        _new_data = copy.deepcopy(mod["data"])
+                        _new_data["price_list"] = [_nested_row]
+                        modalities.append({
+                            "code": _new_code,
+                            "hint": (f"Auto-split from '{mod['code']}' for the overlapping "
+                                     f"period {_nested_row.get('startDate')} to "
+                                     f"{_nested_row.get('endDate')} - originally: "
+                                     f"{mod['hint'] or mod['code']}"),
+                            "data": _new_data,
+                            "confirmed": False,
+                        })
+                        st.warning(
+                            f"⚠️ **'{_nested_row.get('name') or 'A season'}'** "
+                            f"({_nested_row.get('startDate')} – {_nested_row.get('endDate')}) "
+                            f"overlapped with another season on **'{mod['code']}'** - Travel "
+                            f"Compositor can't publish two overlapping price windows on one "
+                            f"Modality, so it's been split out into a new Modality, "
+                            f"**'{_new_code}'**, which you'll review right after this one. "
+                            f"Check its Code, name and settings before publishing.")
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key=f"mct_mod_retry_{midx}"):
@@ -737,10 +804,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if name:
                     entry["name"] = name
                 return entry
-            data["price_list"] = sorted(
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-18) - see the extraction-time wiring above
+            # for the full quote/reasoning. Applied here too so a human manually editing this
+            # table into a touching boundary gets the same silent fix, not just AI-extracted
+            # data. Nested/overlapping seasons introduced by a manual edit are NOT auto-split
+            # here (this callback only has this one Modality's data in scope, not the tour's
+            # full Modality list needed to append a new one) - build_closed_tour_payloads has
+            # its own belt-and-braces check for that case at publish time instead.
+            data["price_list"] = fix_touching_season_boundaries(sorted(
                 [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
                 key=lambda e: e.get("startDate", "")
-            )
+            ))
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
         render_extra_child_notice(data, f"mct_mod_{midx}")
         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the Child Discount % widget
@@ -987,6 +1061,16 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 # already uses.
                 if preview_payloads:
                     render_supplement_zero_price_notes(preview_payloads, key="supplement_occupancy_notes")
+
+                # CONFIRMED PRODUCT-OWNER RULE (2026-09-18): season date ranges that still
+                # overlap after both the silent touching-boundary fix and the single-level
+                # auto-split into a new Modality have already run (see builder.py's
+                # build_closed_tour_payloads) - should normally never fire, since the extraction
+                # -time wiring above already catches this before the human ever reaches this
+                # screen, but shown here as a final visible safety net rather than a silently
+                # populated field nobody reads, same convention as every other *_notes field.
+                if preview_payloads:
+                    render_supplement_zero_price_notes(preview_payloads, key="price_list_overlap_notes")
 
                 # CONFIRMED FIX: a human used to be stuck here with no way to fix an
                 # unresolved destination short of abandoning the whole tour ("Start a
