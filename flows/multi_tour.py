@@ -53,8 +53,8 @@ from app import (
     bump_widget_generation, check_code_availability, check_duplicate_tour_name,
     clarify_supplier_id, flow_widget_key, mark_code_as_taken, remember_clarification,
     remember_memory_panel, render_candidate_filter, render_clarify_result,
-    render_house_rule_shortcut, reset_child_age_band_widgets, reset_stale_editable_field_widgets,
-    show_publish_error, try_code_variants, with_learned_guidance,
+    render_house_rule_shortcut, render_supplement_zero_price_notes, reset_child_age_band_widgets,
+    reset_stale_editable_field_widgets, show_publish_error, try_code_variants, with_learned_guidance,
 )
 
 
@@ -260,7 +260,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 try:
                     tour["main_data"] = extract_structured_data(
                         st.session_state.mct_raw_text, variant_hint=variant_hint,
-                        human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint)
+                        human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint),
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18): "human selects max
+                        # occupancy by 2 or 3 pax for example, we must make sure that the
+                        # contracts reads max double or triple occupancy for supplements and
+                        # modalities... saves time and AI reader time." max_pax is the Max Pax
+                        # already chosen in app.py's Step 3, before this extraction ever runs.
+                        # 9 is that selector's unconstrained default (list(range(2,10)),
+                        # index=7) - only a genuinely narrowed choice (2-4) is worth passing
+                        # through; see _max_occupancy_focus_clause's own docstring for why this
+                        # is a reading-effort hint, not the same thing as the separate,
+                        # document-derived max_occupancy extraction field.
+                        max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
                     tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
                     reset_child_age_band_widgets("mct_main")
@@ -608,7 +619,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         st.session_state.mct_raw_text, tour_nights=tour_nights,
                         human_hint=with_learned_guidance(
                             clarify_supplier_id(supplier_id), "ClosedTour",
-                            mod["hint"] or mod["code"])
+                            mod["hint"] or mod["code"]),
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18) - see the matching
+                        # extract_structured_data call above for the full quote and reasoning.
+                        max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
                     # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "add to remarks, if there is a
                     # minimum pax number needed for guaranteed departure." ClosedTour's only
@@ -962,6 +976,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                 f"NOT FOUND in Travel Compositor</div>",
                                 unsafe_allow_html=True
                             )
+
+                # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can
+                # never be 0 Euro. If so, then there is a mistake... does not need to be
+                # included." build_supplement_vos (via build_closed_tour_payloads) already drops
+                # any supplement priced at 0 in every occupancy before it ever reaches the
+                # payload - this is where that removal (and the occupancy-stripping notes it
+                # shares a list with) is actually shown to the human, matching the "flag it,
+                # don't silently change it" convention every other *_notes field in this app
+                # already uses.
+                if preview_payloads:
+                    render_supplement_zero_price_notes(preview_payloads, key="supplement_occupancy_notes")
 
                 # CONFIRMED FIX: a human used to be stuck here with no way to fix an
                 # unresolved destination short of abandoning the whole tour ("Start a

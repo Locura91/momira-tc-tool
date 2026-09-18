@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
 
 import math
 from difflib import SequenceMatcher

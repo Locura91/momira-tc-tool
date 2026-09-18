@@ -54,7 +54,7 @@ from app import (
     get_existing_ticket_codes, mark_code_as_taken, remember_clarification,
     remember_memory_panel, render_candidate_filter, render_clarify_result,
     render_house_rule_shortcut, render_publish_blockers, render_skip_item_button,
-    render_ticket_language_options, reset_child_age_band_widgets,
+    render_supplement_zero_price_notes, render_ticket_language_options, reset_child_age_band_widgets,
     reset_stale_editable_field_widgets, show_publish_error, with_learned_guidance,
 )
 
@@ -1025,6 +1025,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                             st.error(f"🚫 **{q['ticket_code']}**: skipped - see the error(s) above.")
                             _park_for_recovery()
                             continue
+                        render_supplement_zero_price_notes(payloads)
 
                         creation_payload = dict(payloads["main_ticket_payload"])
                         creation_payload["active"] = True
@@ -1084,6 +1085,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                     if not render_publish_blockers(mod_payloads):
                                         st.error(f"🚫 **{q['ticket_code']}** modality '{mod['code']}': skipped - see the error(s) above.")
                                         continue
+                                    render_supplement_zero_price_notes(mod_payloads)
                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                     if "error" in mod_option_result:
                                         show_publish_error(f"create **{q['ticket_code']}** modality '{mod['code']}'", mod_option_result)
@@ -2159,6 +2161,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                             st.error(f"🚫 **{q['target_ticket_code']}**: skipped - see the error(s) above.")
                             _park_update_failure()
                             continue
+                        render_supplement_zero_price_notes(payloads)
 
                         mtu_update_payload = dict(payloads["main_ticket_payload"])
                         mtu_update_payload["code"] = q["target_ticket_code"]

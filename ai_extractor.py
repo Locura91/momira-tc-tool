@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
 
 import os
 import re
@@ -1390,6 +1390,60 @@ def _stream_claude_tool_call(client, model: str, max_tokens: int, system_prompt:
     )
 
 
+_OCCUPANCY_WORDS = {1: "single", 2: "double", 3: "triple", 4: "quadruple"}
+
+
+def _max_occupancy_focus_clause(max_occupancy_hint) -> str:
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18, verbatim): "Within creating a new product,
+    human selects max occupancy by 2 or 3 pax for example, we must make sure that the contracts
+    reads max double or triple occupancy for supplements and modalities - it saves time and AI
+    reader time, becuase it focuses only on the occupancy and can ignore the rest." Confirmed
+    via follow-up (AskUserQuestion) to inject the human's ALREADY-CHOSEN Max Pax straight into
+    the extraction prompt itself (not just enforced afterward as a safety net), scoped to
+    ClosedTour only - the only product where this Max Pax choice already exists as an upfront
+    step before extraction (see app.py's Step 3 "Max Pax" selectbox, wired through
+    render_multi_tour_flow's max_pax parameter).
+
+    Returns an empty string when max_occupancy_hint is falsy/out of the 2-4 range this app's
+    occupancy columns actually cover (callers pass None/omit entirely once the human leaves Max
+    Pax at its unconstrained default of 9 - see the call sites in flows/multi_tour.py).
+
+    IMPORTANT DISTINCTION from the separate, pre-existing `max_occupancy` EXTRACTION-OUTPUT
+    field (2026-09-18, "if Occupancy is max 2, there can never be triple or quadruple prices"):
+    that field is the AI's OWN reading of what the SOURCE DOCUMENT states a room/cabin can
+    physically hold, and builder.py enforces it as a hard cap regardless of this hint. This
+    clause is the opposite direction - a hint FROM the human, chosen before the AI ever reads
+    the document, telling it which occupancy columns are worth the effort to look for. The two
+    can legitimately disagree (a human picks "Max 2" for the tour's booking party size while a
+    document separately states a specific cabin sleeps 4) - this clause explicitly says so, and
+    never tells the AI to STOP extracting max_occupancy itself from what the document states.
+    """
+    if not max_occupancy_hint:
+        return ""
+    try:
+        capped_at = int(max_occupancy_hint)
+    except (TypeError, ValueError):
+        return ""
+    if capped_at not in _OCCUPANCY_WORDS:
+        return ""
+    occupancy_word = _OCCUPANCY_WORDS[capped_at]
+    skip_words = [w for n, w in _OCCUPANCY_WORDS.items() if n > capped_at]
+    skip_clause = (f" You can skip/ignore any {', '.join(skip_words)}-occupancy pricing you see "
+                    f"in the source - it will never be used." if skip_words else "")
+    return (
+        f"MAX OCCUPANCY FOR THIS TOUR: the human creating this product has already set Max Pax "
+        f"to {capped_at} ({occupancy_word} occupancy). This means Supplements' Single/Double/"
+        f"Triple/Quadruple price columns and each Modality's price_list singlePrice/doublePrice/"
+        f"triplePrice/quadruplePrice only need to be read/populated up to {occupancy_word} "
+        f"occupancy - you do not need to spend time locating or transcribing pricing for a "
+        f"larger group size than that.{skip_clause} This is a reading-effort shortcut ONLY: it "
+        f"does NOT change the separate max_occupancy field below, which must still reflect "
+        f"whatever room/cabin CAPACITY the source document itself states (or null if it states "
+        f"none) - the human's Max Pax choice and a document's stated room capacity are "
+        f"independent facts and can genuinely differ."
+    )
+
+
 def _call_claude(system_prompt: str, user_content: str, model: str, max_tokens: int = 4096,
                  input_schema: dict = None) -> dict:
     """
@@ -2657,7 +2711,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 _MODALITY_MAX_OUTPUT_TOKENS = 32768
 
 
-def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None, tour_nights=None) -> dict:
+def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_hint: str = None, tour_nights=None,
+                           max_occupancy_hint=None) -> dict:
     """
     Focused per-Modality extraction for the NEW single-tour ClosedTour create
     flow (each Modality reviewed individually - see app.py's render_multi_tour_flow):
@@ -2673,11 +2728,16 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
     context so "per night" surcharge math is anchored to the real tour
     length instead of the AI having to (potentially wrongly) re-derive it
     from a pricing-only source snippet.
+
+    max_occupancy_hint: the human's already-chosen Max Pax (2-4), when set - see
+    _max_occupancy_focus_clause's own docstring.
     """
     tour_nights_clause = f" (this tour is confirmed to be {tour_nights} nights long)" if tour_nights else ""
     system_prompt = MODALITY_EXTRACTION_SYSTEM_PROMPT.replace("{tour_nights_clause}", tour_nights_clause)
 
-    user_content = raw_text
+    _occupancy_clause = _max_occupancy_focus_clause(max_occupancy_hint)
+    user_content = (f"{_occupancy_clause}\n\n--- Source content ---\n{raw_text}"
+                     if _occupancy_clause else raw_text)
     if human_hint:
         user_content = (
             f"WHICH MODALITY TO EXTRACT - read this first, and re-read it before you answer.\n"
@@ -2692,7 +2752,8 @@ def extract_modality_data(raw_text: str, model: str = "claude-sonnet-5", human_h
             f"     under the same heading - a missed period is the commonest failure on rate sheets.\n"
             f"  3. That the figures are totals for the whole stay, not per-night rates left "
             f"     unmultiplied.\n\n"
-            f"--- Source content ---\n{raw_text}"
+            + (f"{_occupancy_clause}\n\n" if _occupancy_clause else "")
+            + f"--- Source content ---\n{raw_text}"
         )
 
     # CONFIRMED PRODUCT-OWNER COMPLAINT: "The AI must spend more time for the modality, as it is
@@ -2779,7 +2840,8 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     return data
 
 
-def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None, human_hint: str = None) -> dict:
+def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None,
+                             human_hint: str = None, max_occupancy_hint=None) -> dict:
     """
     Sends raw document text to Claude and returns structured, English,
     JSON-parsed tour data. Raises RuntimeError with a clear message if the
@@ -2794,6 +2856,12 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     "use the German-language pricing table, not the English one" or
     "focus on the Superior room category". Passed through as-is - keep it
     short and specific for best results.
+
+    max_occupancy_hint: the human's already-chosen Max Pax (2-4), when set - see
+    _max_occupancy_focus_clause's own docstring for the confirmed 2026-09-18 request this
+    implements and its deliberate distinction from the separate `max_occupancy` extraction
+    field. None/omitted (the normal case once Max Pax is left at its unconstrained default)
+    adds nothing here.
     """
     user_content = raw_text
     prefix_parts = []
@@ -2803,6 +2871,9 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
             f"Extract ONLY the following variant, and completely ignore any other "
             f"variant/itinerary mentioned elsewhere in the text: {variant_hint}"
         )
+    _occupancy_clause = _max_occupancy_focus_clause(max_occupancy_hint)
+    if _occupancy_clause:
+        prefix_parts.append(_occupancy_clause)
     if human_hint:
         prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
     if prefix_parts:

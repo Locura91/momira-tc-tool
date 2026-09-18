@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
 
 
 def _safe_float(value, fallback=0.0):

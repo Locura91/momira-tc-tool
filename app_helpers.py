@@ -954,6 +954,32 @@ def render_publish_blockers(payloads):
     return ok
 
 
+def render_supplement_zero_price_notes(payloads, key="supplement_zero_price_notes"):
+    """Shows every supplement dropped for having no real price, as a non-blocking warning.
+
+    CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro. If so, then there is a mistake. In short, a supplement with 0 Euro costs does not
+    exist and does not need to be included." Confirmed to apply across Hotel/ClosedTour/Ticket/
+    Transfer (via AskUserQuestion), to replace the earlier "free supplement" concept entirely,
+    and to be a DROP + a visible note - not a silent drop, and not a hard publish block (unlike
+    render_publish_blockers' own zero-priced-occupancy rule just above, which blocks - a
+    supplement is optional add-on inventory, not the base product itself, so nothing here
+    prevents publishing).
+
+    A dropped supplement's build function (build_supplement_vos / build_ticket_supplement_vos /
+    build_transfer_supplement_vos / build_hotel_supplement_payloads) always names WHICH
+    supplement and WHY in the note it appends - see each function's own docstring - so this is
+    just the one shared place every flow shows them, same "flag it, don't silently change it"
+    convention as render_publish_blockers itself.
+
+    `key` lets a caller whose payloads dict uses a different field name for this list (e.g.
+    ClosedTour's build_closed_tour_payloads reuses the pre-existing "supplement_occupancy_notes"
+    list, since a zero-price drop and an unsold-occupancy strip are both "a supplement was
+    removed before publish, here's why") point this at it instead of adding a second list."""
+    for note in (payloads or {}).get(key) or []:
+        st.warning(f"⚠️ {note}")
+
+
 def reset_child_age_band_widgets(key_prefix):
     """CONFIRMED REAL BUG (product owner, 2026-08-24): "the child age is not really working for
     ClosedTours, it always gives me the default age from 2 to 12, even though the document and

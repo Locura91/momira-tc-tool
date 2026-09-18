@@ -50,7 +50,7 @@ from app import (
     remember_memory_panel, render_candidate_filter, render_clarify_result,
     render_code_availability_check, render_house_rule_shortcut, render_modalities_review,
     render_modality_code_availability_check, render_multi_ticket_flow,
-    render_multi_ticket_update_flow, render_publish_blockers,
+    render_multi_ticket_update_flow, render_publish_blockers, render_supplement_zero_price_notes,
     render_ticket_language_options, render_ticket_update_comparison,
     reset_stale_editable_field_widgets, show_publish_error, widget_generation,
     with_learned_guidance,
@@ -1315,6 +1315,10 @@ def render_ticket_flow(client):
             #     5-9 bookable for free. Hotel already hard-blocks this; Ticket was the last product
             #     that didn't.
             can_publish = can_publish and render_publish_blockers(payloads)
+            # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never
+            # be 0 Euro" - a non-blocking note (not a can_publish gate, unlike the blockers
+            # above), see render_supplement_zero_price_notes' own docstring.
+            render_supplement_zero_price_notes(payloads)
             if not tk_is_option_only:
                 can_publish = can_publish and payloads.get("geolocation_resolved") and st.session_state.get("tk_geo_confirmed", False)
                 if payloads.get("geolocation_resolved") and not st.session_state.get("tk_geo_confirmed", False):
@@ -1401,6 +1405,7 @@ def render_ticket_flow(client):
                                                         continue
                                                     if not render_publish_blockers(mod_payloads):
                                                         continue
+                                                    render_supplement_zero_price_notes(mod_payloads)
                                                     mod_option_result = client.create_ticket_option(supplier_id, real_code, mod_payloads["ticket_option_payload"])
                                                     if "error" in mod_option_result:
                                                         show_publish_error(f"create modality '{mod['code']}'", mod_option_result, flow="ticket_legacy")

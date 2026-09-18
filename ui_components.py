@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
 
 import re
 import math
@@ -1221,6 +1221,30 @@ def render_closedtour_supplements(data, key_prefix):
     if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):
         st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement "
                    "needs a clear Name.")
+
+    # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    # Euro." build_supplement_vos already drops a 0-priced row at publish time with a note - but
+    # a human staring at THIS review grid deserves to see it right here too, not buried until
+    # after clicking Publish. Computed straight from `data["supplements"]` (not from a save
+    # callback) so it's visible on the very first render, before anyone has opened the editor at
+    # all - exactly the "just-extracted, never touched" state a real 0-Euro AI misread shows up
+    # in first.
+    zero_price_names = [
+        s.get("name") or "(unnamed)" for s in (data.get("supplements") or [])
+        if isinstance(s, dict) and s.get("name")
+        and _safe_float(s.get("price", 0)) == 0
+        and _safe_float(s.get("single_price", s.get("price", 0))) == 0
+        and _safe_float(s.get("double_price", s.get("price", 0))) == 0
+        and _safe_float(s.get("triple_price", 0)) == 0
+        and _safe_float(s.get("quadruple_price", 0)) == 0
+    ]
+    if zero_price_names:
+        st.warning(
+            "⚠️ **A supplement can never be 0 Euro** - " + ", ".join(f"'{n}'" for n in zero_price_names)
+            + (" has " if len(zero_price_names) == 1 else " have ")
+            + "no price in Price/Single/Double/Triple/Quadruple. If this is a real charge, fill "
+              "in the price; if it's genuinely free, remove the row - it will otherwise be "
+              "dropped automatically at publish, not sent to Travel Compositor.")
 
 
 DURATION_UNIT_OPTIONS = ["HOURS", "DAYS", "MINUTES"]

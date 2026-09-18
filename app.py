@@ -164,6 +164,7 @@ from app_helpers import (
     flow_widget_key,
     _stamp_proposal_widget_tokens,
     render_publish_blockers,
+    render_supplement_zero_price_notes,
     reset_child_age_band_widgets,
     floor_start_date_for_new_data,
     apply_clarify_changes,
@@ -786,7 +787,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-18-r2-public-url-verification"
+BUILD_VERSION = "2026-09-18-max-occupancy-extraction-hint"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2900,7 +2901,16 @@ if st.session_state.extracted:
                                         # the tour unscoped. Scoping it to the Modality being
                                         # added would have made it unbuyable for everyone already
                                         # booked on the tour's other Modalities.
-                                        new_vos = [v.dict() for v in build_supplement_vos(new_supplements)]
+                                        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18):
+                                        # "a supplement can never be 0 Euro" - dropped, with a
+                                        # note, by build_supplement_vos itself (see its own
+                                        # docstring); surfaced here too since this legacy
+                                        # add-Modality path has no other review screen for it.
+                                        _new_supplement_notes = []
+                                        new_vos = [v.dict() for v in build_supplement_vos(
+                                            new_supplements, notes=_new_supplement_notes)]
+                                        render_supplement_zero_price_notes(
+                                            {"supplement_zero_price_notes": _new_supplement_notes})
                                         update_payload = dict(old_tour)
                                         update_payload["supplements"] = (old_tour.get("supplements") or []) + new_vos
                                         update_payload["modalityCodes"] = list(dict.fromkeys(

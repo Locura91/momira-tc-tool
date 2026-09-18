@@ -42,15 +42,16 @@ def test_never_refundable_regardless_of_input():
 
 
 def test_missing_price_fields_default_sensibly():
-    """A supplement with nothing but a name must not raise - every price field should fall
-    back to 0/the flat price, per _safe_supplement_price's fallback chain."""
-    vos = build_supplement_vos([{"name": "Mystery add-on"}])
-    vo = vos[0]
-    assert vo.price.singlePrice == 0.0
-    assert vo.price.doublePrice == 0.0
-    assert vo.price.triplePrice == 0.0
-    assert vo.price.quadruplePrice == 0.0
-    assert vo.free is True  # price_val == 0
+    """A supplement with nothing but a name must not raise. With every price field falling
+    back to 0 (per _safe_supplement_price's fallback chain), it is entirely zero-priced, so per
+    the CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18, "a supplement can never be 0
+    Euro") it is dropped rather than published - see test_zero_price_supplement_is_dropped_not_
+    built below for the drop+note behavior itself."""
+    notes = []
+    vos = build_supplement_vos([{"name": "Mystery add-on"}], notes=notes)
+    assert vos == []
+    assert len(notes) == 1
+    assert "Mystery add-on" in notes[0]
 
 
 def test_single_and_double_fall_back_to_the_flat_price_when_not_given_separately():
@@ -88,10 +89,16 @@ def test_travel_window_only_set_when_both_dates_present():
     assert with_one.travelWindows == []
 
 
-def test_free_flag_tracks_whether_the_flat_price_is_zero():
-    free = build_supplement_vos([{"name": "Free room upgrade", "price": 0}])[0]
+def test_zero_price_supplement_is_dropped_not_built():
+    """CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro" - this REPLACES the earlier `free` flag concept entirely. A 0 Euro supplement (even
+    one explicitly called "free") is dropped, not published with free=True; a genuinely paid
+    supplement is published and its `free` field is always False."""
+    notes = []
+    free = build_supplement_vos([{"name": "Free room upgrade", "price": 0}], notes=notes)
     paid = build_supplement_vos([{"name": "Paid upgrade", "price": 10}])[0]
-    assert free.free is True
+    assert free == []
+    assert len(notes) == 1 and "Free room upgrade" in notes[0]
     assert paid.free is False
 
 
@@ -109,12 +116,14 @@ def test_free_flag_is_false_when_only_per_occupancy_prices_carry_a_real_charge()
     assert vo.free is False
 
 
-def test_free_flag_is_true_only_when_every_priced_field_is_genuinely_zero():
-    vo = build_supplement_vos([{
+def test_supplement_is_dropped_only_when_every_priced_field_is_genuinely_zero():
+    notes = []
+    vos = build_supplement_vos([{
         "name": "Genuinely free upgrade", "price": 0, "single_price": 0, "double_price": 0,
         "triple_price": 0, "quadruple_price": 0,
-    }])[0]
-    assert vo.free is True
+    }], notes=notes)
+    assert vos == []
+    assert len(notes) == 1 and "Genuinely free upgrade" in notes[0]
 
 
 def test_free_flag_is_false_when_only_triple_or_quadruple_price_carries_a_charge():

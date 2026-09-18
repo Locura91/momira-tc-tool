@@ -1565,12 +1565,20 @@ def render_hotel_flow(client):
                                                             hotel_provider_code=provider_code)
             supp_failures = []
             supplements_skipped_past = []
+            supplements_skipped_zero_price = []
             with st.spinner("Phase 2 of 2 — publishing supplements..."):
                 for supp_data, res in zip(data.get("supplements") or [], supp_results):
                     name = supp_data.get("name")
                     if res["action"] == "skipped_past":
                         # Same "ignore what's already in the past" rule as offers above.
                         supplements_skipped_past.append(name)
+                        continue
+                    if res["action"] == "skipped_zero_price":
+                        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement
+                        # can never be 0 Euro" - see build_hotel_supplement_payloads' own
+                        # docstring. Collected separately from supp_failures (which reads as a
+                        # real error) since this is an expected, non-blocking drop.
+                        supplements_skipped_zero_price.append(res.get("skip_reason") or name)
                         continue
                     if res["action"] == "skip_duplicate":
                         supplement_map[name] = res.get("matched_provider_code")
@@ -1703,6 +1711,12 @@ def render_hotel_flow(client):
             except Exception:
                 pass  # best-effort - a failed refresh just means the OLD snapshot is used next time,
                       # same as before this fix existed; never let this block the result being shown.
+
+            # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never
+            # be 0 Euro" - shown regardless of whether anything else failed, since this is an
+            # expected, non-blocking drop, not part of all_failures below.
+            for _skip_reason in supplements_skipped_zero_price:
+                st.warning(f"⚠️ {_skip_reason}")
 
             all_failures = offer_failures + supp_failures + rate_failures
             if all_failures:

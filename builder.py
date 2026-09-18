@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-18-max-occupancy-extraction-hint"
 
 import copy
 import math
@@ -434,7 +434,8 @@ def normalize_supplement_time(value):
     return f"{hour:02d}:{minute:02d}"
 
 
-def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_end_date=""):
+def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_end_date="",
+                                   notes: Optional[List[str]] = None):
     """Mandatory transfer surcharges, as PERCENT or ABSOLUTE, scoped to a time window.
 
     CONFIRMED PRODUCT-OWNER RULES:
@@ -450,7 +451,11 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
         property of the route for as long as the route is sold, not a separate season.
       - The time window may legitimately wrap past midnight (22:00 -> 08:00). That is stored as
         given; it is Travel Compositor's job to interpret it, and "fixing" it by splitting it into
-        two windows would double the surcharge for anyone travelling across midnight."""
+        two windows would double the surcharge for anyone travelling across midnight.
+      - CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+        Euro." A 0-amount supplement was already dropped here (the `amount == 0` check below
+        predates this rule), but silently - see build_supplement_vos' own docstring for the full
+        rule and its "drop with a visible note" handling, now matched here too via `notes`."""
     out = []
     for s in (supplements or []):
         if not isinstance(s, dict):
@@ -460,6 +465,10 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
         raw_type = str(s.get("type") or "").strip().upper()
         is_percent = raw_type in ("PERCENT", "PERCENTAGE", "%") or bool(s.get("is_percentage"))
         if not name or amount == 0:
+            if amount == 0 and name and notes is not None:
+                notes.append(f"'{name}' had no price (0 Euro) - a supplement can never be 0 Euro, "
+                             f"so it was dropped, not published. If this was meant to have a real "
+                             f"charge, add the price and re-add it.")
             continue
         out.append(TransferSupplementVO(
             name=name,
@@ -1501,7 +1510,7 @@ def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12
     return low, high
 
 
-def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
+def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List[str]] = None) -> List[SupplementVO]:
     """
     Converts the app's internal flat supplement dicts (name/price/single_price/
     double_price/triple_price/quadruple_price/mandatory/on_request/applies_to/
@@ -1512,6 +1521,26 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     tour: that Modality's own supplements need to be folded into the tour's
     existing (already-live) supplements list via a follow-up PUT, entirely
     independent of building a full ContractClosedTourVO payload.
+
+    CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro. If so, then there is a mistake. In short, a supplement with 0 Euro costs does not
+    exist and does not need to be included." Confirmed via follow-up (AskUserQuestion) to apply
+    across every product type that has a Supplement concept (Hotel/ClosedTour/Ticket/Transfer),
+    to supersede the earlier "free supplement" concept entirely (no more intentional 0-price
+    supplements, even ones a document explicitly calls "free"/"complimentary"), and to be
+    handled as drop-with-a-visible-note rather than a silent drop or a hard publish block. A
+    supplement where EVERY priced field (flat price, single/double/triple/quadruple) comes out
+    to 0 is therefore dropped here entirely - never built into a SupplementVO, never published -
+    with a human-readable reason appended to `notes` (when the caller passes a list) so nothing
+    disappears without the human being told which supplement and why, same "flag it, don't
+    silently change it" convention as strip_unsold_supplement_occupancies/pricing_notes/
+    child_discount_clamp_notes elsewhere in this file.
+
+    THIS REPLACES the earlier `free` flag on SupplementVO (the "free room upgrade" case is no
+    longer a supported outcome - it is now indistinguishable from a mis-extracted missing price,
+    per the product owner's own framing of the rule, and is dropped exactly the same way).
+    `notes` is optional and defaults to None (silently discarded) so existing callers that
+    don't care about the reason keep working unchanged; pass a list to collect them.
     """
     supplements_list = []
     for s in (supplements or []):
@@ -1520,6 +1549,15 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
         double_val = _safe_supplement_price(s.get("double_price", price_val), fallback=price_val)
         triple_val = _safe_supplement_price(s.get("triple_price", 0))
         quadruple_val = _safe_supplement_price(s.get("quadruple_price", 0))
+
+        if price_val == 0 and single_val == 0 and double_val == 0 and triple_val == 0 and quadruple_val == 0:
+            if notes is not None:
+                notes.append(f"'{s.get('name') or 'unnamed supplement'}' had no price (0 Euro) in any "
+                             f"occupancy - a supplement can never be 0 Euro, so it was dropped, not "
+                             f"published. If this was meant to have a real charge, add the price and "
+                             f"re-add it.")
+            continue
+
         # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
         # per-person amounts (that's what "per occupancy" means in this API).
         # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
@@ -1552,15 +1590,13 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
             # publishing every optional excursion and upgrade as refundable - the opposite of
             # the commercial terms. Set explicitly rather than relying on any default.
             refundable=False,
-            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:1137): a
-            # supplement priced ONLY via the per-occupancy columns (single/double/triple/
-            # quadruple - e.g. singlePrice=15, doublePrice=10, no flat "price" field at all)
-            # published as free=True, because only the flat price_val was checked here and an
-            # absent "price" key defaults to 0. free must reflect whichever of the actual priced
-            # fields Travel Compositor will read, not just the one this document happened not to
-            # use - a genuinely free supplement is one where NONE of them carry a real charge.
-            free=(price_val == 0 and single_val == 0 and double_val == 0
-                  and triple_val == 0 and quadruple_val == 0),
+            # CONFIRMED HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+            # Euro" - a genuinely all-zero supplement is now dropped above before ever reaching
+            # here (see this function's own docstring), so whatever survives to this point
+            # always carries a real charge in at least one occupancy. free is therefore always
+            # False now - kept as an explicit field (not just the schema default) so this isn't
+            # mistaken for an oversight.
+            free=False,
             travelWindows=travel_windows,
         ))
     return supplements_list
@@ -1617,11 +1653,19 @@ def sanitize_supplement_name(name):
 
 
 def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_start: str = "",
-                                 modality_end: str = "") -> List[TicketSupplementVO]:
+                                 modality_end: str = "", notes: Optional[List[str]] = None) -> List[TicketSupplementVO]:
     """
     Converts the app's internal flat Ticket-Modality supplement dicts (name/
     adult_price_supplement/children_price_supplement/infant_price_supplement/
     start_date/end_date) into the real TicketSupplementVO wire shape.
+
+    CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro. If so, then there is a mistake... does not need to be included." Applied here exactly
+    as in build_supplement_vos (ClosedTour) - see that function's own docstring for the full
+    rule and its "drop with a visible note, not a silent drop or a hard block" handling. A
+    supplement where adult/children/infant price supplements are ALL 0 is dropped before it
+    reaches this function's date-window logic below, with a human-readable reason appended to
+    `notes` when the caller passes a list.
 
     CORRECTED 2026-08-12 (product owner): an earlier version of this codebase
     treated Tickets as having no supplements at all - wrong. The main Ticket
@@ -1651,6 +1695,18 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
     m_end = (modality_end or "").strip()
     supplements_list = []
     for s in (supplements or []):
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - checked first, before any date-window logic, since a 0-priced row never
+        # needs those computed at all.
+        if (_safe_float(s.get("adult_price_supplement", 0)) == 0
+                and _safe_float(s.get("children_price_supplement", 0)) == 0
+                and _safe_float(s.get("infant_price_supplement", 0)) == 0):
+            if notes is not None:
+                notes.append(f"'{s.get('name') or 'unnamed supplement'}' had no price (0 Euro) for "
+                             f"adults, children or infants - a supplement can never be 0 Euro, so it "
+                             f"was dropped, not published. If this was meant to have a real charge, "
+                             f"add the price and re-add it.")
+            continue
         # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): `(value or "").strip()`
         # crashes with an uncaught AttributeError if `value` is a non-string truthy object (e.g.
         # a datetime.date the extractor or a merge produced instead of a string) - `value or ""`
@@ -2136,7 +2192,12 @@ def build_closed_tour_payloads(
             normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
                                   fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
                                   max_occupancy=extracted_dmc_data.get("max_occupancy")))
-        supplements_list = build_supplement_vos(_consistent_supplements)
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - dropped here, with the reason appended to the SAME notes list/review-screen
+        # field as the occupancy-stripping notes just above (both are "a supplement was removed
+        # before publish, and here's why" - see build_supplement_vos' own docstring for the
+        # full rule).
+        supplements_list = build_supplement_vos(_consistent_supplements, notes=_supplement_notes)
 
         # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
         # cancellation_policy_tiers is deliberately NOT read here anymore - see
@@ -2509,8 +2570,13 @@ def build_ticket_payloads(
         _all_modality_supplements = [
             s for s in (extracted_ticket_data.get("modality_supplements") or []) if isinstance(s, dict)
         ]
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_ticket_supplement_vos' own docstring. Collected here (not just
+        # discarded) so the review screen can tell the human which supplement(s) were dropped.
+        _ticket_supplement_zero_price_notes = []
         supplements_list = build_ticket_supplement_vos(
-            _all_modality_supplements, _modality_start, _modality_end)
+            _all_modality_supplements, _modality_start, _modality_end,
+            notes=_ticket_supplement_zero_price_notes)
 
         # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
         # an End date earlier than today's date." A dated supplement (a season, a holiday
@@ -2862,6 +2928,10 @@ def build_ticket_payloads(
         "ticket_option_error": ticket_option_error,
         # Named out loud rather than dropped in silence - see the supplements block above.
         "ignored_ticket_supplements": [n for n in _ignored_ticket_supplements if n],
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_ticket_supplement_vos' own docstring. Shown via
+        # render_supplement_zero_price_notes on the review screen.
+        "supplement_zero_price_notes": _ticket_supplement_zero_price_notes,
         # RETIRED (2026-09-15): "Needs own Modality?" / is_priced_choice no longer excludes
         # anything from supplements_list (see the comment above supplements_list), so there is
         # nothing left to report here. Kept as an always-empty list rather than removed outright,
@@ -3332,8 +3402,13 @@ def build_transfer_payload(
         # exception to the preserve-on-update rule the rest of this block follows.
         effective_images = _effective_images_for_update(extracted_transfer_data, existing_transfer_snapshot)
 
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_transfer_supplement_vos' own docstring. Collected here so the
+        # review screen can tell the human which supplement(s) were dropped.
+        _transfer_supplement_zero_price_notes = []
         supplements = build_transfer_supplement_vos(
-            raw_transfer_supplements, effective_start_date, effective_end_date)
+            raw_transfer_supplements, effective_start_date, effective_end_date,
+            notes=_transfer_supplement_zero_price_notes)
 
         transfer_kwargs = dict(
             active=True,
@@ -3393,6 +3468,10 @@ def build_transfer_payload(
         # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
         "expired_validity_error": expired_validity_window(
             extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_transfer_supplement_vos' own docstring. Shown via
+        # render_supplement_zero_price_notes on the review screen.
+        "supplement_zero_price_notes": _transfer_supplement_zero_price_notes,
     }
 
 
@@ -5646,6 +5725,22 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
         kwargs = _build_offer_or_supplement_common_kwargs(supp_data, room_codes, meal_plan_types,
                                                             provider_code=placeholder_code, apply_default=None)
         kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
+
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro. If so, then there is a mistake... does not need to be included." Confirmed
+        # (via AskUserQuestion) to be a drop-with-a-note, not a hard publish block - unlike the
+        # "no charging basis" case just below, which really does need a human decision. Uses the
+        # same "action" shape as the past-window skip above (skipped_past) so callers can treat
+        # both as "quietly not published, but tell the human" the same way.
+        if kwargs.get("value", 0) == 0 and kwargs.get("childValue", 0) == 0:
+            results.append({
+                "supplement_payload": None, "supplement_error": None, "action": "skipped_zero_price",
+                "matched_provider_code": None,
+                "skip_reason": (f"'{supp_name or '(unnamed)'}' had no price (0 Euro) - a supplement can "
+                                f"never be 0 Euro, so it was dropped, not published. If this was meant "
+                                f"to have a real charge, add the price and re-add it."),
+            })
+            continue
 
         # CONFIRMED PRODUCT-OWNER RULE: never guess a supplement's basis. Stop here with a
         # readable message instead of publishing a charge whose per-night/per-stay meaning

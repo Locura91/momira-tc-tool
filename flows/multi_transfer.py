@@ -35,7 +35,8 @@ from app import (
     _fetch_url_text_safe, _warn_stale_images, ensure_return_candidates,
     render_batch_bulk_controls, render_candidate_filter, render_detection_diagnosis,
     render_direction_image_section, render_empty_detection_retry, render_publish_blockers,
-    render_skip_item_button, show_publish_error, with_learned_guidance,
+    render_skip_item_button, render_supplement_zero_price_notes, show_publish_error,
+    with_learned_guidance,
 )
 
 
@@ -634,6 +635,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                           "already exists in Travel Compositor.")
 
             _warn_stale_images(data.get("image_urls"))
+            # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never
+            # be 0 Euro" - a non-blocking note (not a publish_disabled gate), see
+            # render_supplement_zero_price_notes' own docstring.
+            render_supplement_zero_price_notes(build_result)
 
             publish_label = (f"🚀 Publish — UPDATE existing transfer {chosen_existing_id}" if chosen_existing_id
                              else "🚀 Publish — CREATE new transfer")
