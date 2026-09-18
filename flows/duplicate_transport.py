@@ -470,8 +470,20 @@ def _render_review_and_publish(client, supplier_id):
         # PUT sets the parent's optionCodes to the now-real codes - same two-step shape Hotel's
         # two-phase build already uses for its own analogous forward-reference problem (room
         # providerCodes only exist after the parent's first create response).
+        # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-18): "Couldn't publish transport
+        # ... modalityAvailableWhenActive:You must add at least one modality!" - a SECOND, separate
+        # Travel Compositor validation rule from the null-PK one above, hit only once that one was
+        # fixed: a Transport parent create with active=true is rejected outright if it has zero
+        # Options (Modalities) yet - which every brand-new Transport genuinely does, at the exact
+        # moment of this first create call, since Options can only be created AFTER the parent has
+        # a real id. Same two-step shape as the optionCodes fix just above, extended one field
+        # further: the parent is created with active=FALSE (nothing to violate the "must have a
+        # modality" rule), Options are created under the new id exactly as before, and the SAME
+        # follow-up PUT that links their real optionCodes also flips active back to True - by then
+        # the Transport genuinely does have at least one modality, so Travel Compositor accepts it.
         create_payload = dict(payload)
         create_payload["optionCodes"] = []
+        create_payload["active"] = False
         with st.spinner("Publishing parent transport to Travel Compositor..."):
             try:
                 result = client.create_transport(supplier_id, create_payload)
@@ -500,6 +512,13 @@ def _render_review_and_publish(client, supplier_id):
                         link_payload = dict(payload)
                         link_payload["id"] = new_id
                         link_payload["optionCodes"] = created_codes
+                        # The parent was deliberately created with active=False above (see that
+                        # block's comment) because it had zero modalities at that point - now that
+                        # at least one Option genuinely exists, this same follow-up PUT that links
+                        # it also flips active back to True. `payload` already carries active=True
+                        # (build_transport_swap_payload's own default for a duplicated record), so
+                        # this is just making that explicit rather than relying on it silently.
+                        link_payload["active"] = True
                         link_result = client.update_transport(supplier_id, link_payload)
                     if isinstance(link_result, dict) and "error" in link_result:
                         st.warning(f"⚠️ Published (id: {new_id}) with {len(created_codes)} "
@@ -507,13 +526,22 @@ def _render_review_and_publish(client, supplier_id):
                                   f"record ({link_result.get('message', link_result)}) - open "
                                   f"the transport in Travel Compositor and set its optionCodes "
                                   f"manually: " + ", ".join(created_codes))
+                elif options:
+                    # Every occupancy bracket failed to publish - the parent is still sitting at
+                    # active=False (correctly, per Travel Compositor's own rule: it genuinely has
+                    # no modalities yet) and was never re-linked/activated. Say so explicitly, so
+                    # this doesn't look like a silently-broken, invisible-to-the-human record.
+                    st.warning(f"⚠️ Published (id: {new_id}), but every occupancy bracket failed - "
+                              f"the transport was left **inactive** in Travel Compositor (it can't "
+                              f"be active with no modalities). Add at least one occupancy bracket "
+                              f"manually in Travel Compositor, then activate it there.")
                 transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
                 if failed_options:
                     st.warning(f"⚠️ Published (id: {new_id}), but {len(failed_options)} of "
                               f"{len(options)} occupancy bracket(s) failed to publish - add "
                               f"them manually in Travel Compositor: " +
                               ", ".join(code or "?" for code, _err in failed_options))
-                else:
+                elif created_codes:
                     st.success(f"✅ Published successfully (id: {new_id}) with all {len(options)} "
                               f"occupancy bracket(s).")
                 for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",

@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-18-closedtour-season-date-range-fixes"
+MODULE_BUILD = "2026-09-18-transport-create-modality-active-fix"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

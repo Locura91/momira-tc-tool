@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-18-closedtour-season-date-range-fixes"
+MODULE_BUILD = "2026-09-18-transport-create-modality-active-fix"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -731,7 +731,27 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                         if chosen_existing_id:
                             result = client.update_transport(supplier_id, build_result["transport_payload"])
                         else:
-                            result = client.create_transport(supplier_id, build_result["transport_payload"])
+                            # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-18, discovered
+                            # via the duplicate-and-swap Transport flow - same root cause applies
+                            # here, this path had simply never been exercised for a genuinely new
+                            # Transport before): Travel Compositor rejects
+                            # "modalityAvailableWhenActive: You must add at least one modality!"
+                            # on any Transport create with active=true and zero Options - which
+                            # every brand-new Transport genuinely has at this exact moment, since
+                            # its Options can only be created AFTER the parent has a real id.
+                            # build_transport_payloads also already fills transport_payload's
+                            # optionCodes with the brand-new codes it's ABOUT to create (see its
+                            # own docstring) - sending those unresolved codes on a create risks a
+                            # separate "null PK" error, same class of problem
+                            # build_transport_swap_payload hit and fixed for the duplicate flow.
+                            # Same two-step fix here: create the parent with optionCodes EMPTY and
+                            # active=False (nothing to violate, nothing to resolve), create every
+                            # Option under the new id below, then a follow-up PUT (after Stage 2)
+                            # sets the real optionCodes and flips active back to True.
+                            create_payload = dict(build_result["transport_payload"])
+                            create_payload["optionCodes"] = []
+                            create_payload["active"] = False
+                            result = client.create_transport(supplier_id, create_payload)
 
                         if isinstance(result, dict) and "error" in result:
                             show_publish_error(f"publish transport **{current['label'] or '(unnamed)'}**", result)
@@ -745,6 +765,7 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                             else:
                                 # STAGE 2 - one Option per occupancy bracket, then deactivate stale ones.
                                 option_failures = []
+                                created_codes = []
                                 for a in option_actions:
                                     if not a.get("option_payload"):
                                         continue
@@ -754,11 +775,41 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
                                         opt_result = client.create_transport_option(supplier_id, final_id, a["option_payload"])
                                     if isinstance(opt_result, dict) and "error" in opt_result:
                                         option_failures.append((a["code"], opt_result))
+                                    else:
+                                        created_codes.append(a["code"])
 
                                 for stale in (build_result.get("options_to_deactivate") or []):
                                     stale_result = client.update_transport_option(supplier_id, final_id, stale)
                                     if isinstance(stale_result, dict) and "error" in stale_result:
                                         option_failures.append((stale.get("code"), stale_result))
+
+                                # STAGE 3 (fresh create only) - now that at least one Option
+                                # genuinely exists, link the real optionCodes and flip the parent
+                                # back to active=True. See STAGE 1's comment above for why it was
+                                # created inactive with no codes in the first place.
+                                if not chosen_existing_id:
+                                    if created_codes:
+                                        with st.spinner("Activating the new transport..."):
+                                            link_payload = dict(build_result["transport_payload"])
+                                            link_payload["id"] = final_id
+                                            link_payload["optionCodes"] = created_codes
+                                            link_payload["active"] = True
+                                            link_result = client.update_transport(supplier_id, link_payload)
+                                        if isinstance(link_result, dict) and "error" in link_result:
+                                            st.warning(f"⚠️ Published (id: {final_id}) with "
+                                                      f"{len(created_codes)} occupancy bracket(s), "
+                                                      f"but couldn't link/activate them "
+                                                      f"({link_result.get('message', link_result)}) "
+                                                      f"- open the transport in Travel Compositor "
+                                                      f"and set its optionCodes and active status "
+                                                      f"manually.")
+                                    else:
+                                        st.warning(f"⚠️ Published (id: {final_id}), but every "
+                                                  f"occupancy bracket failed - the transport was "
+                                                  f"left **inactive** in Travel Compositor (it "
+                                                  f"can't be active with no modalities). Add at "
+                                                  f"least one occupancy bracket manually in "
+                                                  f"Travel Compositor, then activate it there.")
 
                                 transport_matcher.remember_transport_id(
                                     supplier_id, data.get("departure_name", ""), data.get("arrival_name", ""), final_id
