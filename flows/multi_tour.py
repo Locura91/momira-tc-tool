@@ -866,294 +866,312 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         tour = st.session_state.mct_tour
         main_data = tour["main_data"]
         modalities = tour["modalities"]
-        st.subheader(f"Ready to publish: {main_data.get('tour_name') or tour['tour_code']}")
-
-        # CONFIRMED REAL COMPLAINT (product owner): "Only because I forgot to change the Code, I
-        # have to start all over ... the human must be able to change the code even at the last
-        # step before publishing." The early check added at the "reviewing_main" phase above
-        # catches most collisions before all of Steps 5/6's work happens, but that check can be
-        # INCONCLUSIVE (see check_code_availability's own docstring - a transient API failure or
-        # a code-variant mismatch means "couldn't verify", not "definitely free") - so a
-        # collision can still only surface here, at the actual Publish click. Editing right here
-        # (same pattern as the itinerary-destinations fix a few lines below) means a rejected
-        # "already exists" error is a one-field fix and a re-click, never a reason to abandon the
-        # whole tour and start over - every other Step 5/6 field (images, pricing, itinerary)
-        # stays exactly as entered.
-        tour["tour_code"] = st.text_input(
-            "Tour Code", value=tour["tour_code"], key="mct_publish_tour_code",
-            help="Change this here if Publish below rejects it as already taken - nothing else "
-                 "on this tour needs re-entering."
+        # CONFIRMED BUG FIX (2026-09-18, screenshot reported: "how can this error show up, even
+        # when the upload was working fine?" - the screen showed "Tour Code ASW-4 is ALREADY TAKEN
+        # by an existing tour" and a disabled Publish button, directly above "Just published:
+        # CLOSEDTOUR-425935" for that EXACT same tour/code): once this tour code has actually been
+        # published successfully this session, any LATER rerun of this phase (any widget
+        # interaction while still here - the tour code input, the itinerary table, anything) re-ran
+        # the duplicate-code check below against Travel Compositor. That check now, correctly,
+        # finds the code taken - because THIS tour is what just took it - but showed it as a
+        # blocking "change it before publishing" error, as if publishing had not happened yet. The
+        # whole pre-publish section (Tour Code input, duplicate check, destination preview, Publish
+        # button) has nothing left to do once this exact code is already published - it is skipped
+        # entirely on any such rerun, leaving only the "Just published" panel below (which already
+        # correctly displays either way).
+        _mct_already_published_this_code = (
+            st.session_state.get("just_published_tour_code") == tour["tour_code"]
+            and st.session_state.get("just_published_supplier_id") == supplier_id
         )
-        _mct_publish_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
-        if _mct_publish_code_check and _mct_publish_code_check["exists"]:
-            st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
-                     f"(\"{_mct_publish_code_check.get('name') or '(unnamed)'}\") - change it above "
-                     f"before publishing.")
+        if not _mct_already_published_this_code:
+            st.subheader(f"Ready to publish: {main_data.get('tour_name') or tour['tour_code']}")
 
-        # CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
-        # applies to ALL Modalities." So there is one list, taken from the main tour record, and
-        # nothing is tagged to a Modality. Modality data is merged in for pricing and schedule,
-        # which is why its own "supplements" key must not be allowed to overwrite the tour's.
-        combined_data = dict(main_data)
-        modality_zero = dict(modalities[0]["data"])
-        modality_zero.pop("supplements", None)
-        combined_data.update(modality_zero)
-        combined_data["supplements"] = main_data.get("supplements") or []
-
-        extra_note = f" + {len(modalities) - 1} more Modalit{'y' if len(modalities) == 2 else 'ies'}" if len(modalities) > 1 else ""
-        with st.expander(f"**{tour['tour_code']}** - Modality: {modalities[0]['code']}{extra_note}", expanded=True):
-            dup_warning = check_duplicate_tour_name(client, supplier_id, main_data.get("tour_name"))
-            if dup_warning:
-                st.warning(dup_warning)
-            preview_payloads = None
-            try:
-                preview_pre_config = HumanPreConfig(
-                    supplier_id=supplier_id, provider_code=tour["tour_code"],
-                    min_pax=min_pax, max_pax=max_pax, currency=currency,
-                    modality_code=modalities[0]["code"],
-                    on_request=on_request or min_pax_forces_on_request(combined_data.get("min_pax_guaranteed_departure")),
-                    days_available_before_release=release_days
-                )
-                preview_payloads = build_closed_tour_payloads(preview_pre_config, combined_data, client)
-            except Exception as e:
-                # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): a real Tour Code ("Rak-2") was
-                # rejected here for not matching a strict "XXX-Number" shape - "is not needed, it
-                # is just a style and the app must still be able to publish this tour." The
-                # underlying HumanPreConfig.provider_code validator (schemas.py) no longer
-                # enforces that shape (see its own comment), so this message no longer assumes
-                # that's the cause - a Tour Code just needs to be non-blank and free of '/'/'\\'
-                # now, matching every other product's code field.
-                st.error(f"⚠️ Couldn't preview this tour's destinations for Tour Code "
-                        f"`{tour['tour_code']}`. Details: {str(e)[:300]}. Publishing below will also "
-                        f"fail until fixed - go back and correct the Tour Code.")
-            mct_has_unresolved = False
-            if preview_payloads:
-                for res in preview_payloads.get("itinerary_resolution", []):
-                    if res["valid"]:
-                        st.markdown(
-                            f"<div style='background-color:#d4edda; color:#155724; padding:4px 10px; "
-                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>✅ <b>{res['input']}</b> → "
-                            f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        mct_has_unresolved = True
-                        st.markdown(
-                            f"<div style='background-color:#f8d7da; color:#721c24; padding:4px 10px; "
-                            f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>❌ <b>{res['input']}</b> → "
-                            f"NOT FOUND in Travel Compositor</div>",
-                            unsafe_allow_html=True
-                        )
-
-            # CONFIRMED FIX: a human used to be stuck here with no way to fix an
-            # unresolved destination short of abandoning the whole tour ("Start a
-            # new ClosedTour") - the itinerary is editable right on this screen
-            # now, and saving it immediately re-checks against Travel Compositor
-            # above (editable_table triggers a rerun on save, which rebuilds
-            # combined_data/preview_payloads fresh from the updated main_data).
-            if mct_has_unresolved:
-                st.warning("🚫 Fix the destination(s) marked NOT FOUND above before publishing - either "
-                          "correct the spelling/name, or replace it with the exact name Travel Compositor "
-                          "uses. Edit the itinerary below, then Save to re-check.")
-            mct_dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(main_data.get("itinerary_destinations", []))]
-            mct_dest_df = pd.DataFrame(mct_dest_rows) if mct_dest_rows else pd.DataFrame(columns=["#", "Destination"])
-
-            def _save_mct_publish_destinations(edited_df, main_data=main_data):
-                main_data["itinerary_destinations"] = [
-                    str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
-                    if _safe_cell_str(row.get("Destination")).strip()
-                ]
-
-            editable_table(
-                "Itinerary destinations (in visit order)", mct_dest_df, "mct_publish_destinations",
-                on_save=_save_mct_publish_destinations,
-                column_config={"#": st.column_config.NumberColumn(disabled=True)}
+            # CONFIRMED REAL COMPLAINT (product owner): "Only because I forgot to change the Code, I
+            # have to start all over ... the human must be able to change the code even at the last
+            # step before publishing." The early check added at the "reviewing_main" phase above
+            # catches most collisions before all of Steps 5/6's work happens, but that check can be
+            # INCONCLUSIVE (see check_code_availability's own docstring - a transient API failure or
+            # a code-variant mismatch means "couldn't verify", not "definitely free") - so a
+            # collision can still only surface here, at the actual Publish click. Editing right here
+            # (same pattern as the itinerary-destinations fix a few lines below) means a rejected
+            # "already exists" error is a one-field fix and a re-click, never a reason to abandon the
+            # whole tour and start over - every other Step 5/6 field (images, pricing, itinerary)
+            # stays exactly as entered.
+            tour["tour_code"] = st.text_input(
+                "Tour Code", value=tour["tour_code"], key="mct_publish_tour_code",
+                help="Change this here if Publish below rejects it as already taken - nothing else "
+                     "on this tour needs re-entering."
             )
+            _mct_publish_code_check = check_code_availability(client, "tour", supplier_id, tour["tour_code"])
+            if _mct_publish_code_check and _mct_publish_code_check["exists"]:
+                st.error(f"🚫 Tour Code `{tour['tour_code']}` is ALREADY TAKEN by an existing tour "
+                         f"(\"{_mct_publish_code_check.get('name') or '(unnamed)'}\") - change it above "
+                         f"before publishing.")
 
-        _warn_stale_images(main_data.get("image_urls"))
+            # CONFIRMED PRODUCT-OWNER CORRECTION: "Supplement within ClosedTour is set only once and
+            # applies to ALL Modalities." So there is one list, taken from the main tour record, and
+            # nothing is tagged to a Modality. Modality data is merged in for pricing and schedule,
+            # which is why its own "supplements" key must not be allowed to overwrite the tour's.
+            combined_data = dict(main_data)
+            modality_zero = dict(modalities[0]["data"])
+            modality_zero.pop("supplements", None)
+            combined_data.update(modality_zero)
+            combined_data["supplements"] = main_data.get("supplements") or []
 
-        mct_activation_choice = st.radio(
-            "After publishing, should this Tour be Active or Inactive (draft)?",
-            ["Inactive (draft) - recommended, review inside Travel Compositor before it goes live",
-             "Active - live immediately"],
-            index=0, key="mct_activation_choice"
-        )
-        mct_publish_as_active = mct_activation_choice.startswith("Active")
-
-        mct_code_taken = bool(_mct_publish_code_check and _mct_publish_code_check["exists"])
-        if mct_has_unresolved:
-            st.info("Publishing is disabled until every destination above resolves - fix them in the "
-                   "itinerary table above and re-check.")
-        if mct_code_taken:
-            st.info("Publishing is disabled until the Tour Code above is changed to one that isn't "
-                   "already taken.")
-        if st.button("🚀 Publish to Travel Compositor", type="primary", disabled=mct_has_unresolved or mct_code_taken):
-            with st.spinner(f"Publishing '{tour['tour_code']}'..."):
+            extra_note = f" + {len(modalities) - 1} more Modalit{'y' if len(modalities) == 2 else 'ies'}" if len(modalities) > 1 else ""
+            with st.expander(f"**{tour['tour_code']}** - Modality: {modalities[0]['code']}{extra_note}", expanded=True):
+                dup_warning = check_duplicate_tour_name(client, supplier_id, main_data.get("tour_name"))
+                if dup_warning:
+                    st.warning(dup_warning)
+                preview_payloads = None
                 try:
-                    pre_config = HumanPreConfig(
+                    preview_pre_config = HumanPreConfig(
                         supplier_id=supplier_id, provider_code=tour["tour_code"],
                         min_pax=min_pax, max_pax=max_pax, currency=currency,
                         modality_code=modalities[0]["code"],
-                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "If Ticket or Closedtour has
-                        # minimum of 3 pax or higher, we must set the ticket or closedtour on
-                        # request" - forced regardless of the human's own On Request checkbox.
                         on_request=on_request or min_pax_forces_on_request(combined_data.get("min_pax_guaranteed_departure")),
                         days_available_before_release=release_days
                     )
-                    payloads = build_closed_tour_payloads(pre_config, combined_data, client)
-                    if payloads.get("main_tour_error"):
-                        show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["main_tour_error"])
-                    elif payloads["tour_option_error"]:
-                        show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["tour_option_error"])
-                    elif payloads["unresolved_destinations"]:
-                        st.error(f"❌ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
-                                f"fix the itinerary destinations and try again.")
-                    else:
-                        # CONFIRMED ROOT CAUSE (3 real production failures, KNO-1 - traced against the
-                        # real Swagger, which shows modalityCodes/supplements[].modalityCodes as plain
-                        # freeform [string] with NO enum/pattern - so "not found in contract modalities"
-                        # is a runtime check, not a schema one. It kept failing even for a single, clean,
-                        # self-consistent Modality Code, which rules out "declare more codes" fixes - the
-                        # only reading left is that a code must correspond to an OPTION THAT ALREADY
-                        # EXISTS for this tour at the moment it's referenced. At tour-CREATE time NO
-                        # option exists yet for ANY Modality, so declaring modalityCodes (or supplements
-                        # referencing a Modality via SupplementVO.modalityCodes) at that point always
-                        # fails. FIX: mirror the existing "active" 2-phase pattern already used below -
-                        # create the tour bare (no modalityCodes, no supplements), create every option
-                        # (which is what actually registers each Modality code), THEN a follow-up PUT
-                        # declares modalityCodes + supplements now that they genuinely refer to options
-                        # that exist, and sets the final active/inactive state in the same call.
-                        creation_payload = dict(payloads["main_tour_payload"])
-                        creation_payload["active"] = True
-                        creation_payload["modalityCodes"] = []
-                        creation_payload["supplements"] = []
-                        result = client.create_closed_tour(supplier_id, creation_payload)
-                        if "error" in result:
-                            show_publish_error(f"create **{tour['tour_code']}**", result)
-                        else:
-                            real_code = result.get("code", payloads["main_tour_code"])
-                            # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
-                            # mark_code_as_taken's docstring - keeps the availability cache in
-                            # sync the instant this code goes live, not just after the next
-                            # full re-check.
-                            mark_code_as_taken("tour", supplier_id, tour["tour_code"], result.get("name"))
-                            if real_code and real_code != tour["tour_code"]:
-                                mark_code_as_taken("tour", supplier_id, real_code, result.get("name"))
-                            created_modality_codes = []
-
-                            # api_client.py's _request() already retries each individual POST
-                            # attempt up to 6 times internally - this loop just still tries BOTH
-                            # candidate codes (genuinely two different possible identifiers).
-                            option_result = None
-                            used_code = None
-                            for candidate_code in [tour["tour_code"], real_code]:
-                                option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
-                                if "error" not in option_result:
-                                    used_code = candidate_code
-                                    break
-                            if "error" in option_result:
-                                show_publish_error(f"create **{tour['tour_code']}**'s option (created as `{real_code}`)", option_result)
-                            else:
-                                st.success(f"✅ **{tour['tour_code']}**: base modality '{modalities[0]['code']}' created (option code used: `{used_code}`).")
-                                created_modality_codes.append(modalities[0]["code"])
-
-                            for m in modalities[1:]:
-                                with st.spinner(f"Creating '{tour['tour_code']}' modality '{m['code']}'..."):
-                                    try:
-                                        mod_pre_config = HumanPreConfig(
-                                            supplier_id=supplier_id, provider_code=tour["tour_code"],
-                                            min_pax=min_pax, max_pax=max_pax, currency=currency,
-                                            modality_code=m["code"],
-                                            on_request=on_request or min_pax_forces_on_request(m["data"].get("min_pax_guaranteed_departure")),
-                                            days_available_before_release=release_days
-                                        )
-                                        mod_payloads = build_closed_tour_payloads(mod_pre_config, m["data"], client)
-                                        if mod_payloads["tour_option_error"]:
-                                            show_publish_error(f"prepare **{tour['tour_code']}** modality '{m['code']}'", mod_payloads["tour_option_error"])
-                                            continue
-                                        mod_result, mod_used_code = try_code_variants(
-                                            lambda c: client.create_closed_tour_option(supplier_id, c, mod_payloads["tour_option_payload"]),
-                                            [tour["tour_code"], real_code]
-                                        )
-                                        if "error" in mod_result:
-                                            show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}'", mod_result)
-                                        else:
-                                            st.success(f"✅ **{tour['tour_code']}**: modality '{m['code']}' created (code used: `{mod_used_code}`).")
-                                            created_modality_codes.append(m["code"])
-                                    except Exception as e:
-                                        show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}' (unexpected error - skipped, rest continues)", str(e))
-                                        continue
-
-                            # Now that every successfully-created option genuinely exists, declare
-                            # modalityCodes for real and restore the (already correctly-scoped)
-                            # supplements list - but only keep supplements whose Modality actually
-                            # got created above, so a failed Modality can't drag this PUT down too.
-                            finalize_payload = dict(payloads["main_tour_payload"])
-                            finalize_payload["code"] = real_code
-                            finalize_payload["active"] = mct_publish_as_active
-                            finalize_payload["modalityCodes"] = created_modality_codes
-                            finalize_payload["supplements"] = [
-                                s for s in payloads["main_tour_payload"].get("supplements", [])
-                                if not s.get("modalityCodes") or all(c in created_modality_codes for c in s["modalityCodes"])
-                            ]
-                            if created_modality_codes:
-                                finalize_result = client.update_closed_tour(supplier_id, finalize_payload)
-                                if "error" in finalize_result:
-                                    st.warning(f"⚠️ **{tour['tour_code']}**: tour and option(s) were created, but the "
-                                              f"follow-up update (registering Modality codes/supplements and setting "
-                                              f"the final active state) failed - {finalize_result}. The tour exists "
-                                              f"in Travel Compositor but may need this finished manually.")
-                                else:
-                                    state_label = "ACTIVE" if mct_publish_as_active else "inactive/draft"
-                                    st.success(f"✅ **{tour['tour_code']}** published successfully as `{real_code}` ({state_label}).")
-                                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "after I created a new
-                                    # Closed Tour and I published it, I then want to start a new Batch...
-                                    # in none of the new stage can I add the new ClosedTour Code to the new
-                                    # batch. This causes always problems, if the human not automatically
-                                    # goes back to Step 3 and changes the ClosedTour Code manually." Before
-                                    # this, only the LEGACY update flow's own "add_option" success path (see
-                                    # just below, ~line 11430) remembered what it had just published - this
-                                    # CREATE flow's own success never did, so a code just created here was
-                                    # never available to prefill Step 3's "Existing Tour Code" for a follow-up
-                                    # action (add a Modality, update the tour, update a Modality's pricing) - the human had
-                                    # to remember and retype it by hand, exactly the "always problems" being
-                                    # reported. Recording it the same way the legacy flow already does.
-                                    st.session_state.just_published_tour_code = real_code
-                                    st.session_state.just_published_supplier_id = supplier_id
-                            else:
-                                # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the tour
-                                # ITSELF was already created above with `creation_payload["active"]
-                                # = True` hardcoded (necessary at create time, before any option
-                                # exists - see the "2-phase pattern" comment above) - so skipping
-                                # the follow-up update entirely, as this branch used to, left the
-                                # tour LIVE and ACTIVE on Travel Compositor with ZERO bookable
-                                # Modalities: a tour that looks published but can never actually be
-                                # booked, and whose Tour Code is now permanently taken (the tour DID
-                                # get created, even though every option attempt failed) - blocking a
-                                # simple retry under the same code. Explicitly deactivate it instead
-                                # of leaving that silent trap.
-                                deactivate_payload = dict(payloads["main_tour_payload"])
-                                deactivate_payload["code"] = real_code
-                                deactivate_payload["active"] = False
-                                deactivate_payload["modalityCodes"] = []
-                                deactivate_payload["supplements"] = []
-                                deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
-                                if "error" in deactivate_result:
-                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
-                                            f"successfully, AND the tour could not be deactivated afterward "
-                                            f"({deactivate_result}) - it is LIVE on Travel Compositor as "
-                                            f"`{real_code}` with zero bookable Modalities. Deactivate it "
-                                            f"manually in Travel Compositor, or finish it there directly. "
-                                            f"Its Tour Code is now taken.")
-                                else:
-                                    st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
-                                            f"successfully. The tour was created on Travel Compositor as "
-                                            f"`{real_code}` but has been deactivated since it has no "
-                                            f"bookable Modality - it will not be sold. Its Tour Code is now "
-                                            f"taken; fix the error(s) above and use 'Add a Modality' to "
-                                            f"finish it (a different Tour Code cannot reuse this one).")
+                    preview_payloads = build_closed_tour_payloads(preview_pre_config, combined_data, client)
                 except Exception as e:
-                    show_publish_error(f"publish **{tour['tour_code']}** (unexpected error)", str(e))
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): a real Tour Code ("Rak-2") was
+                    # rejected here for not matching a strict "XXX-Number" shape - "is not needed, it
+                    # is just a style and the app must still be able to publish this tour." The
+                    # underlying HumanPreConfig.provider_code validator (schemas.py) no longer
+                    # enforces that shape (see its own comment), so this message no longer assumes
+                    # that's the cause - a Tour Code just needs to be non-blank and free of '/'/'\\'
+                    # now, matching every other product's code field.
+                    st.error(f"⚠️ Couldn't preview this tour's destinations for Tour Code "
+                            f"`{tour['tour_code']}`. Details: {str(e)[:300]}. Publishing below will also "
+                            f"fail until fixed - go back and correct the Tour Code.")
+                mct_has_unresolved = False
+                if preview_payloads:
+                    for res in preview_payloads.get("itinerary_resolution", []):
+                        if res["valid"]:
+                            st.markdown(
+                                f"<div style='background-color:#d4edda; color:#155724; padding:4px 10px; "
+                                f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>✅ <b>{res['input']}</b> → "
+                                f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            mct_has_unresolved = True
+                            st.markdown(
+                                f"<div style='background-color:#f8d7da; color:#721c24; padding:4px 10px; "
+                                f"border-radius:4px; margin-bottom:2px; font-size:0.9em;'>❌ <b>{res['input']}</b> → "
+                                f"NOT FOUND in Travel Compositor</div>",
+                                unsafe_allow_html=True
+                            )
+
+                # CONFIRMED FIX: a human used to be stuck here with no way to fix an
+                # unresolved destination short of abandoning the whole tour ("Start a
+                # new ClosedTour") - the itinerary is editable right on this screen
+                # now, and saving it immediately re-checks against Travel Compositor
+                # above (editable_table triggers a rerun on save, which rebuilds
+                # combined_data/preview_payloads fresh from the updated main_data).
+                if mct_has_unresolved:
+                    st.warning("🚫 Fix the destination(s) marked NOT FOUND above before publishing - either "
+                              "correct the spelling/name, or replace it with the exact name Travel Compositor "
+                              "uses. Edit the itinerary below, then Save to re-check.")
+                mct_dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(main_data.get("itinerary_destinations", []))]
+                mct_dest_df = pd.DataFrame(mct_dest_rows) if mct_dest_rows else pd.DataFrame(columns=["#", "Destination"])
+
+                def _save_mct_publish_destinations(edited_df, main_data=main_data):
+                    main_data["itinerary_destinations"] = [
+                        str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
+                        if _safe_cell_str(row.get("Destination")).strip()
+                    ]
+
+                editable_table(
+                    "Itinerary destinations (in visit order)", mct_dest_df, "mct_publish_destinations",
+                    on_save=_save_mct_publish_destinations,
+                    column_config={"#": st.column_config.NumberColumn(disabled=True)}
+                )
+
+            _warn_stale_images(main_data.get("image_urls"))
+
+            mct_activation_choice = st.radio(
+                "After publishing, should this Tour be Active or Inactive (draft)?",
+                ["Inactive (draft) - recommended, review inside Travel Compositor before it goes live",
+                 "Active - live immediately"],
+                index=0, key="mct_activation_choice"
+            )
+            mct_publish_as_active = mct_activation_choice.startswith("Active")
+
+            mct_code_taken = bool(_mct_publish_code_check and _mct_publish_code_check["exists"])
+            if mct_has_unresolved:
+                st.info("Publishing is disabled until every destination above resolves - fix them in the "
+                       "itinerary table above and re-check.")
+            if mct_code_taken:
+                st.info("Publishing is disabled until the Tour Code above is changed to one that isn't "
+                       "already taken.")
+            if st.button("🚀 Publish to Travel Compositor", type="primary", disabled=mct_has_unresolved or mct_code_taken):
+                with st.spinner(f"Publishing '{tour['tour_code']}'..."):
+                    try:
+                        pre_config = HumanPreConfig(
+                            supplier_id=supplier_id, provider_code=tour["tour_code"],
+                            min_pax=min_pax, max_pax=max_pax, currency=currency,
+                            modality_code=modalities[0]["code"],
+                            # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "If Ticket or Closedtour has
+                            # minimum of 3 pax or higher, we must set the ticket or closedtour on
+                            # request" - forced regardless of the human's own On Request checkbox.
+                            on_request=on_request or min_pax_forces_on_request(combined_data.get("min_pax_guaranteed_departure")),
+                            days_available_before_release=release_days
+                        )
+                        payloads = build_closed_tour_payloads(pre_config, combined_data, client)
+                        if payloads.get("main_tour_error"):
+                            show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["main_tour_error"])
+                        elif payloads["tour_option_error"]:
+                            show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["tour_option_error"])
+                        elif payloads["unresolved_destinations"]:
+                            st.error(f"❌ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
+                                    f"fix the itinerary destinations and try again.")
+                        else:
+                            # CONFIRMED ROOT CAUSE (3 real production failures, KNO-1 - traced against the
+                            # real Swagger, which shows modalityCodes/supplements[].modalityCodes as plain
+                            # freeform [string] with NO enum/pattern - so "not found in contract modalities"
+                            # is a runtime check, not a schema one. It kept failing even for a single, clean,
+                            # self-consistent Modality Code, which rules out "declare more codes" fixes - the
+                            # only reading left is that a code must correspond to an OPTION THAT ALREADY
+                            # EXISTS for this tour at the moment it's referenced. At tour-CREATE time NO
+                            # option exists yet for ANY Modality, so declaring modalityCodes (or supplements
+                            # referencing a Modality via SupplementVO.modalityCodes) at that point always
+                            # fails. FIX: mirror the existing "active" 2-phase pattern already used below -
+                            # create the tour bare (no modalityCodes, no supplements), create every option
+                            # (which is what actually registers each Modality code), THEN a follow-up PUT
+                            # declares modalityCodes + supplements now that they genuinely refer to options
+                            # that exist, and sets the final active/inactive state in the same call.
+                            creation_payload = dict(payloads["main_tour_payload"])
+                            creation_payload["active"] = True
+                            creation_payload["modalityCodes"] = []
+                            creation_payload["supplements"] = []
+                            result = client.create_closed_tour(supplier_id, creation_payload)
+                            if "error" in result:
+                                show_publish_error(f"create **{tour['tour_code']}**", result)
+                            else:
+                                real_code = result.get("code", payloads["main_tour_code"])
+                                # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
+                                # mark_code_as_taken's docstring - keeps the availability cache in
+                                # sync the instant this code goes live, not just after the next
+                                # full re-check.
+                                mark_code_as_taken("tour", supplier_id, tour["tour_code"], result.get("name"))
+                                if real_code and real_code != tour["tour_code"]:
+                                    mark_code_as_taken("tour", supplier_id, real_code, result.get("name"))
+                                created_modality_codes = []
+
+                                # api_client.py's _request() already retries each individual POST
+                                # attempt up to 6 times internally - this loop just still tries BOTH
+                                # candidate codes (genuinely two different possible identifiers).
+                                option_result = None
+                                used_code = None
+                                for candidate_code in [tour["tour_code"], real_code]:
+                                    option_result = client.create_closed_tour_option(supplier_id, candidate_code, payloads["tour_option_payload"])
+                                    if "error" not in option_result:
+                                        used_code = candidate_code
+                                        break
+                                if "error" in option_result:
+                                    show_publish_error(f"create **{tour['tour_code']}**'s option (created as `{real_code}`)", option_result)
+                                else:
+                                    st.success(f"✅ **{tour['tour_code']}**: base modality '{modalities[0]['code']}' created (option code used: `{used_code}`).")
+                                    created_modality_codes.append(modalities[0]["code"])
+
+                                for m in modalities[1:]:
+                                    with st.spinner(f"Creating '{tour['tour_code']}' modality '{m['code']}'..."):
+                                        try:
+                                            mod_pre_config = HumanPreConfig(
+                                                supplier_id=supplier_id, provider_code=tour["tour_code"],
+                                                min_pax=min_pax, max_pax=max_pax, currency=currency,
+                                                modality_code=m["code"],
+                                                on_request=on_request or min_pax_forces_on_request(m["data"].get("min_pax_guaranteed_departure")),
+                                                days_available_before_release=release_days
+                                            )
+                                            mod_payloads = build_closed_tour_payloads(mod_pre_config, m["data"], client)
+                                            if mod_payloads["tour_option_error"]:
+                                                show_publish_error(f"prepare **{tour['tour_code']}** modality '{m['code']}'", mod_payloads["tour_option_error"])
+                                                continue
+                                            mod_result, mod_used_code = try_code_variants(
+                                                lambda c: client.create_closed_tour_option(supplier_id, c, mod_payloads["tour_option_payload"]),
+                                                [tour["tour_code"], real_code]
+                                            )
+                                            if "error" in mod_result:
+                                                show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}'", mod_result)
+                                            else:
+                                                st.success(f"✅ **{tour['tour_code']}**: modality '{m['code']}' created (code used: `{mod_used_code}`).")
+                                                created_modality_codes.append(m["code"])
+                                        except Exception as e:
+                                            show_publish_error(f"create **{tour['tour_code']}** modality '{m['code']}' (unexpected error - skipped, rest continues)", str(e))
+                                            continue
+
+                                # Now that every successfully-created option genuinely exists, declare
+                                # modalityCodes for real and restore the (already correctly-scoped)
+                                # supplements list - but only keep supplements whose Modality actually
+                                # got created above, so a failed Modality can't drag this PUT down too.
+                                finalize_payload = dict(payloads["main_tour_payload"])
+                                finalize_payload["code"] = real_code
+                                finalize_payload["active"] = mct_publish_as_active
+                                finalize_payload["modalityCodes"] = created_modality_codes
+                                finalize_payload["supplements"] = [
+                                    s for s in payloads["main_tour_payload"].get("supplements", [])
+                                    if not s.get("modalityCodes") or all(c in created_modality_codes for c in s["modalityCodes"])
+                                ]
+                                if created_modality_codes:
+                                    finalize_result = client.update_closed_tour(supplier_id, finalize_payload)
+                                    if "error" in finalize_result:
+                                        st.warning(f"⚠️ **{tour['tour_code']}**: tour and option(s) were created, but the "
+                                                  f"follow-up update (registering Modality codes/supplements and setting "
+                                                  f"the final active state) failed - {finalize_result}. The tour exists "
+                                                  f"in Travel Compositor but may need this finished manually.")
+                                    else:
+                                        state_label = "ACTIVE" if mct_publish_as_active else "inactive/draft"
+                                        st.success(f"✅ **{tour['tour_code']}** published successfully as `{real_code}` ({state_label}).")
+                                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26): "after I created a new
+                                        # Closed Tour and I published it, I then want to start a new Batch...
+                                        # in none of the new stage can I add the new ClosedTour Code to the new
+                                        # batch. This causes always problems, if the human not automatically
+                                        # goes back to Step 3 and changes the ClosedTour Code manually." Before
+                                        # this, only the LEGACY update flow's own "add_option" success path (see
+                                        # just below, ~line 11430) remembered what it had just published - this
+                                        # CREATE flow's own success never did, so a code just created here was
+                                        # never available to prefill Step 3's "Existing Tour Code" for a follow-up
+                                        # action (add a Modality, update the tour, update a Modality's pricing) - the human had
+                                        # to remember and retype it by hand, exactly the "always problems" being
+                                        # reported. Recording it the same way the legacy flow already does.
+                                        st.session_state.just_published_tour_code = real_code
+                                        st.session_state.just_published_supplier_id = supplier_id
+                                else:
+                                    # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the tour
+                                    # ITSELF was already created above with `creation_payload["active"]
+                                    # = True` hardcoded (necessary at create time, before any option
+                                    # exists - see the "2-phase pattern" comment above) - so skipping
+                                    # the follow-up update entirely, as this branch used to, left the
+                                    # tour LIVE and ACTIVE on Travel Compositor with ZERO bookable
+                                    # Modalities: a tour that looks published but can never actually be
+                                    # booked, and whose Tour Code is now permanently taken (the tour DID
+                                    # get created, even though every option attempt failed) - blocking a
+                                    # simple retry under the same code. Explicitly deactivate it instead
+                                    # of leaving that silent trap.
+                                    deactivate_payload = dict(payloads["main_tour_payload"])
+                                    deactivate_payload["code"] = real_code
+                                    deactivate_payload["active"] = False
+                                    deactivate_payload["modalityCodes"] = []
+                                    deactivate_payload["supplements"] = []
+                                    deactivate_result = client.update_closed_tour(supplier_id, deactivate_payload)
+                                    if "error" in deactivate_result:
+                                        st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
+                                                f"successfully, AND the tour could not be deactivated afterward "
+                                                f"({deactivate_result}) - it is LIVE on Travel Compositor as "
+                                                f"`{real_code}` with zero bookable Modalities. Deactivate it "
+                                                f"manually in Travel Compositor, or finish it there directly. "
+                                                f"Its Tour Code is now taken.")
+                                    else:
+                                        st.error(f"❌ **{tour['tour_code']}**: no Modality options were created "
+                                                f"successfully. The tour was created on Travel Compositor as "
+                                                f"`{real_code}` but has been deactivated since it has no "
+                                                f"bookable Modality - it will not be sold. Its Tour Code is now "
+                                                f"taken; fix the error(s) above and use 'Add a Modality' to "
+                                                f"finish it (a different Tour Code cannot reuse this one).")
+                    except Exception as e:
+                        show_publish_error(f"publish **{tour['tour_code']}** (unexpected error)", str(e))
 
         # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-26, see the docstring at just_published_tour_code
         # above): once a code has actually been published this run, offer real next steps that carry

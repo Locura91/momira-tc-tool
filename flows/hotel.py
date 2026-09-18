@@ -90,6 +90,35 @@ def render_hotel_flow(client):
     if "hp_step1_confirmed" not in st.session_state:
         st.session_state.hp_step1_confirmed = False
 
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18, verbatim): "when human creating a new hotel,
+    # add a workflow for the human after he klicks the button: Create a Hotel in Travel
+    # Compositor with Masterdata --> save it --> start uploading rooms, supplement, offers, rates
+    # with the App." Shown right after the human clicks "Hotel" on the product-type picker (this
+    # is the first screen of that flow), before Step 1 is even filled in, so the human knows the
+    # shape of what's about to happen before diving in. Deliberately just an explainer, not a
+    # change to how publishing itself works - the app already does exactly this sequence for a
+    # brand-new hotel in ONE flow: Travel Compositor's own master data (or a document) creates and
+    # saves the hotel + rooms + meal plans first (Phase 1), then this SAME flow immediately
+    # continues on to offers, supplements and rate seasons (Phase 2) once Phase 1 succeeds - no
+    # separate manual step or second click required in between. Collapsed by default once the
+    # human is past Step 1 (an existing/returning user doesn't need to see it every time), but
+    # always available to reopen.
+    if not st.session_state.hp_step1_confirmed:
+        with st.expander("📋 How creating a new Hotel works", expanded=True):
+            st.markdown(
+                "1. **Supplier & hotel code** (below), then choose Travel Compositor's own "
+                "**master data** as the source (recommended - pulls the property's real name, "
+                "description, images and location straight from Travel Compositor), or a "
+                "supplier document if it isn't listed there.\n"
+                "2. **Review everything on one screen** - rooms, meal plans, offers, supplements "
+                "and rate seasons - then click **Publish** once.\n"
+                "3. Publishing itself happens in two phases automatically, one after the other, "
+                "with no extra click needed: first the **Hotel is created and saved** in Travel "
+                "Compositor together with its **rooms**, then this same run immediately continues "
+                "to upload the **offers, supplements and rate seasons** on top of it.\n\n"
+                "Updating a hotel that already exists in Travel Compositor works the same way - "
+                "just re-use its existing hotel code below."
+            )
     st.header("Hotel — Step 2: Supplier & hotel code")
 
     if st.session_state.hp_step1_confirmed:

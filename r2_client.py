@@ -69,9 +69,10 @@ import os
 import time
 import uuid
 import mimetypes
+import requests
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-17-general-draft-autosave"
+MODULE_BUILD = "2026-09-18-r2-public-url-verification"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old
@@ -217,6 +218,76 @@ def upload_images(image_list: list) -> list:
     return urls
 
 
+def _looks_like_real_image_bytes(head: bytes) -> bool:
+    """Same magic-byte signature check web_extractor._looks_like_real_image uses (JPEG/PNG/GIF/
+    BMP/WEBP), duplicated here rather than imported - web_extractor.py pulls in api_client.py/
+    builder.py/ai_extractor.py, a much heavier import chain than this small, standalone module
+    should ever need just to check a handful of leading bytes."""
+    head = head or b""
+    if head.startswith(b"\xff\xd8\xff"):                # JPEG
+        return True
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):            # PNG
+        return True
+    if head.startswith((b"GIF87a", b"GIF89a")):          # GIF
+        return True
+    if head.startswith(b"BM"):                            # BMP
+        return True
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":     # WEBP
+        return True
+    return False
+
+
+_PUBLIC_ACCESS_HINT = (
+    "check your R2 bucket's Public Access setting in Cloudflare (R2 -> your bucket -> Settings "
+    "-> Public access - see this module's own setup docs, step 3)"
+)
+
+
+def verify_public_url(url: str, timeout: float = 8.0) -> tuple:
+    """
+    Confirms a URL this module just uploaded to R2 is actually publicly fetchable - not just
+    that the PUT itself succeeded.
+
+    CONFIRMED REAL BUG (reported, 2026-09-18, verbatim: "when adding pictures from the document,
+    it is still not working... But what should easier work are images coming from an URL, as
+    those images are already hosted. This is also not working so far" - a screenshot showed
+    "Images found in your document/page (24)" with all 24 thumbnails rendering as broken images,
+    no error shown anywhere): every upload in this module has always trusted boto3's
+    `put_object` succeeding as proof the image would actually be usable afterward, but a
+    successful PUT only proves the WRITE credentials work - it says nothing about whether the
+    bucket's PUBLIC ACCESS is enabled, which is a separate manual Cloudflare dashboard setting
+    (see this module's own setup docs, step 3). When it isn't enabled (or the wrong
+    R2_PUBLIC_BASE_URL is configured), every single upload still "succeeds" from this app's own
+    point of view - no exception raised, a real-looking URL returned - while every one of those
+    URLs 404s (or times out) for anyone who actually tries to fetch it, including the browser
+    rendering the picker. That's exactly the shape reported: not one bad image among many, but
+    ALL of them, with nothing surfaced anywhere pointing at why - because nothing had ever
+    actually tried fetching a URL back after minting it.
+
+    Returns (True, "") if the URL is fetchable and its body genuinely looks like an image (the
+    same magic-byte check web_extractor.py already uses server-side for page-scraped images -
+    not the server's own Content-Type header, which a misconfigured bucket/CDN can get wrong);
+    otherwise (False, "<human-readable reason>").
+    """
+    try:
+        resp = requests.get(url, timeout=timeout, stream=True)
+    except Exception as e:
+        return False, f"not reachable ({e}) - {_PUBLIC_ACCESS_HINT}"
+    try:
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code} - {_PUBLIC_ACCESS_HINT}"
+        head = b""
+        for chunk in resp.iter_content(chunk_size=32):
+            head += chunk
+            if len(head) >= 16:
+                break
+        if not _looks_like_real_image_bytes(head):
+            return False, f"responded but the body isn't a real image - {_PUBLIC_ACCESS_HINT}"
+        return True, ""
+    finally:
+        resp.close()
+
+
 def upload_images_with_errors(image_list: list) -> tuple:
     """
     Same upload as upload_images(), but returns (urls, errors) instead of discarding the reason
@@ -227,12 +298,24 @@ def upload_images_with_errors(image_list: list) -> tuple:
     the same generic "image.jpg" regardless of which one it actually was, so a batch with several
     failures gave no way to tell which image(s) failed. Each attempt is now numbered
     (1-based, matching the image's position in image_list) so failures are distinguishable.
+
+    CONFIRMED BUG FIX (2026-09-18, see verify_public_url's own docstring for the full report):
+    a successful upload is no longer trusted blindly - each resulting URL is fetched back once
+    before being handed to the caller. A URL that isn't actually publicly reachable is now
+    reported as a failure (with the Public Access hint) instead of silently landing in `urls`
+    and only showing up later as a broken thumbnail with no explanation anywhere.
     """
     urls, errors = [], []
     for idx, (img_bytes, ext) in enumerate(image_list, start=1):
         filename = f"image_{idx}.{ext or 'jpg'}"
         try:
-            urls.append(upload_image(img_bytes, filename=filename))
+            url = upload_image(img_bytes, filename=filename)
         except Exception as e:
             errors.append(f"{filename}: {e}")
+            continue
+        ok, reason = verify_public_url(url)
+        if not ok:
+            errors.append(f"{filename}: uploaded to R2, but {reason}")
+            continue
+        urls.append(url)
     return urls, errors

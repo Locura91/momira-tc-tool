@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-17-general-draft-autosave"
+MODULE_BUILD = "2026-09-18-r2-public-url-verification"
 
 _NAMESPACE = "translation_state"
 

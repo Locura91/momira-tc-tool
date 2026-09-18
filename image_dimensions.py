@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-17-general-draft-autosave"
+MODULE_BUILD = "2026-09-18-r2-public-url-verification"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

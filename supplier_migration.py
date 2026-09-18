@@ -74,7 +74,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-17-general-draft-autosave"
+MODULE_BUILD = "2026-09-18-r2-public-url-verification"
 
 import json
 from datetime import date

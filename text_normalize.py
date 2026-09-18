@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-17-general-draft-autosave"
+MODULE_BUILD = "2026-09-18-r2-public-url-verification"
 
 
 def normalize_name(s: Optional[str]) -> str:
