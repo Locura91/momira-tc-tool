@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-19-hotel-clarify-box-room-delete-and-occupancy-cap-confirmed"
+MODULE_BUILD = "2026-09-19-hotel-room-selection-gate-before-review"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

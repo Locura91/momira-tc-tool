@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-19-hotel-clarify-box-room-delete-and-occupancy-cap-confirmed"
+MODULE_BUILD = "2026-09-19-hotel-room-selection-gate-before-review"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

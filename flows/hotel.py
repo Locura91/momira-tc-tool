@@ -47,7 +47,7 @@ from app import (
     _warn_page_image_upload_errors, _warn_stale_images, show_publish_error,
     get_existing_hotel_names, apply_clarify_changes, clarify_supplier_id, remember_clarification,
     remember_memory_panel, render_clarify_result, render_house_rule_shortcut,
-    reset_stale_editable_field_widgets,
+    reset_stale_editable_field_widgets, render_candidate_filter,
 )
 
 
@@ -505,10 +505,71 @@ def render_hotel_flow(client):
                     if _hp_md_image_urls_list:
                         st.session_state.hp_data["images"] = list(dict.fromkeys(
                             (st.session_state.hp_data.get("images") or []) + _hp_md_image_urls_list))
-                    st.session_state.hp_phase = "reviewing"
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-19): "when creating new hotel room
+                    # types, ask human first which one he would like to add. Similar to the
+                    # modalities in closedtour, because we do not need to include all rooms that
+                    # are available." Forced to reinit from THIS fresh extraction rather than any
+                    # leftover candidates from an earlier run of this same session. Skipped
+                    # entirely when nothing was extracted (a rate-only update to an existing
+                    # hotel legitimately extracts zero rooms - see room_name_to_distributions'
+                    # own "seeded from existing" fix) - there's nothing to choose from.
+                    st.session_state.hp_room_candidates = None
+                    st.session_state.hp_phase = (
+                        "select_rooms" if (st.session_state.hp_data.get("rooms") or []) else "reviewing")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Extraction failed: {friendly_error_message(e)}")
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 1b: AI-detected room types - human confirms which to actually include (2026-09-19)
+    # Mirrors flows/multi_tour.py's select_modalities phase - see the CONFIRMED comment above
+    # where this phase is entered.
+    # ------------------------------------------------------------------
+    if st.session_state.hp_phase == "select_rooms":
+        st.header(f"Hotel — Room types for “{st.session_state.hp_data.get('hotelname') or '(unnamed)'}”")
+        if not st.session_state.get("hp_room_candidates"):
+            st.session_state.hp_room_candidates = [
+                {"name": r.get("name") or "", "distributions": r.get("distributions") or [],
+                 "type_id": r.get("type_id"), "selected": True}
+                for r in (st.session_state.hp_data.get("rooms") or [])
+            ]
+        candidates = st.session_state.hp_room_candidates
+        st.caption("Auto-detected from your document - untick any room type you don't want to add, or remove "
+                  "it outright. Leaving all unticked is fine for a rate-only update that doesn't add new "
+                  "rooms to an already-existing hotel.")
+        render_candidate_filter(candidates, "hp_roomcand", "room type")
+
+        for i, cand in enumerate(candidates):
+            c1, c2, c3 = st.columns([1, 3, 1])
+            with c1:
+                cand["selected"] = st.checkbox("Include", value=cand["selected"], key=f"hp_roomcand_sel_{i}")
+            with c2:
+                cand["name"] = st.text_input("Room name", value=cand["name"], key=f"hp_roomcand_name_{i}")
+            with c3:
+                st.write("")
+                if st.button("🗑️", key=f"hp_roomcand_remove_{i}", help="Remove this room type"):
+                    candidates.pop(i)
+                    # Widgets here are keyed by POSITION - after the pop the candidate that
+                    # shifts into slot i would re-render with the removed one's typed name, same
+                    # bug class ClosedTour's own modality-candidate remove button guards against.
+                    _clear_batch_widget_state(["hp_roomcand_"])
+                    st.rerun()
+            st.caption(_hp_dist_to_str(cand.get("distributions")) or "(no allowed occupancy extracted for this "
+                      "room yet - add it on the next screen)")
+
+        if st.button("➕ Add another room type manually"):
+            candidates.append({"name": "", "distributions": [], "type_id": None, "selected": True})
+            st.rerun()
+
+        if st.button("➡️ Continue to full review", type="primary"):
+            st.session_state.hp_data["rooms"] = [
+                {"name": c["name"], "type_id": c.get("type_id"), "distributions": c.get("distributions") or []}
+                for c in candidates if c["selected"] and (c["name"] or "").strip()
+            ]
+            st.session_state.hp_room_candidates = None
+            st.session_state.hp_phase = "reviewing"
+            st.rerun()
         return
 
     # ------------------------------------------------------------------
@@ -516,7 +577,8 @@ def render_hotel_flow(client):
     # ------------------------------------------------------------------
     data = st.session_state.hp_data
     HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked",
-                     "hp_cancellation_link_scope", "hp_price_audit_facts", "hp_contract_purpose"]
+                     "hp_cancellation_link_scope", "hp_price_audit_facts", "hp_contract_purpose",
+                     "hp_room_candidates"]
 
     st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
