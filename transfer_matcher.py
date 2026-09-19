@@ -34,7 +34,7 @@ always Travel Compositor itself (confirmed via get_transfer/get_transfers).
 # carried a build stamp before (2026-09-13, while consolidating name-normalization into
 # text_normalize.py) - a partial deploy that updated every other file but this one would have
 # gone undetected by app.py's own stale-module check.
-MODULE_BUILD = "2026-09-18-holiday-package-fetch-failed-diagnostics"
+MODULE_BUILD = "2026-09-19-hotel-clarify-box-room-delete-and-occupancy-cap-confirmed"
 
 import os
 import json
