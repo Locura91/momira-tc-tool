@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-holiday-package-fetch-failed-diagnostics"
+MODULE_BUILD = "2026-09-19-hotel-clarify-box-room-delete-and-occupancy-cap-confirmed"
 
 import copy
 import math
@@ -5383,7 +5383,8 @@ def _build_room_payload(room_data, existing_room=None):
     )
 
 
-def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None):
+def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None,
+                                  rooms_to_delete=None):
     """
     PHASE 1 of the two-phase Hotel build - see the section docstring above. Builds the hotel-
     level ContractHotelVO payload (hotel fields + rooms[] + mealPlans[] + descriptions +
@@ -5399,6 +5400,22 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     match is a brand-new room; any EXISTING room the fresh document doesn't mention at all is
     still carried forward unchanged, never dropped.
 
+    `rooms_to_delete` (CONFIRMED PRODUCT-OWNER REQUEST, 2026-09-19: "we must make it possible to
+    delete a complete room and not only occupancy") - an optional list of room names the human
+    has explicitly, deliberately chosen to remove entirely. This is DIFFERENT from a room simply
+    not being mentioned in a fresh document (which is always carried forward unchanged, by
+    design, precisely so an unrelated update - a new price period, a different room's fix -
+    can never accidentally drop a room nobody meant to touch). Only a name in this explicit list
+    skips the carry-forward step, so an existing room is removed from the PUT's rooms[] array -
+    the same "PUT replaces the whole array" mechanism already used to add/update rooms is what
+    actually deletes it, there is no separate delete endpoint (see api_client.py - only
+    create_hotel_room exists). Matched by the same name normalization as everything else here
+    (hotel_matcher.match_room_by_name), so case/whitespace differences still match. Does nothing
+    to any EXISTING rate/season pricing on Travel Compositor that already references this room -
+    those aren't rebuilt unless the same rate is itself part of this run's extracted_rates, so a
+    rate not touched here can still reference the now-deleted room server-side; the caller warns
+    about this on the review screen.
+
     Returns {"hotel_payload": dict|None, "hotel_error": str|None, "is_update": bool,
              "room_name_matches": {room_name: existing_providerCode_or_None}}.
     """
@@ -5406,6 +5423,11 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     is_update = existing_hotel_snapshot is not None
     existing_rooms = (existing_hotel_snapshot or {}).get("rooms") or []
     existing_meal_plans = (existing_hotel_snapshot or {}).get("mealPlans") or []
+    _rooms_to_delete_ids = set()
+    for _del_name in (rooms_to_delete or []):
+        _del_match = hotel_matcher.match_room_by_name(_del_name, existing_rooms)
+        if _del_match is not None:
+            _rooms_to_delete_ids.add(id(_del_match))
 
     def _basic_info_on_update(existing_val, doc_val):
         """Field priority for hotel IDENTITY info (name/address/category/chain/images -
@@ -5450,6 +5472,10 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     for existing_room in existing_rooms:
         if not isinstance(existing_room, dict):
+            continue
+        if id(existing_room) in _rooms_to_delete_ids:
+            # Explicitly deleted (see rooms_to_delete above) - the one case an existing room is
+            # deliberately left OUT of the rebuilt array rather than carried forward.
             continue
         if id(existing_room) not in matched_existing_room_ids:
             # Carried forward unchanged - not mentioned in this document, but never silently dropped.

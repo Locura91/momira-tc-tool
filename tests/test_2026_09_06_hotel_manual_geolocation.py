@@ -220,9 +220,10 @@ def test_hotel_geolocation_section_appears_before_the_publish_section():
     # Transport) - find the one that actually follows the Hotel Geolocation section.
     publish_idx = src.index("#### Publish", geo_idx)
     assert geo_idx < publish_idx
-    # Threshold raised 2026-09-16 (6000 -> 9000): the secondary Price Audit section (added when
-    # the contract-purpose question moved earlier in the flow) and the new missing-apply-basis
-    # publish gate both legitimately sit between Geolocation and Publish now - this check is only
-    # meant to catch Geolocation ending up far away from Publish entirely, not to cap organic
-    # growth of what's genuinely between them.
-    assert publish_idx - geo_idx < 9000
+    # Threshold raised 2026-09-16 (6000 -> 9000), then 2026-09-19 (9000 -> 12000): the "Delete an
+    # existing room entirely" section and the new "Tell AI what to fix" clarify box (Hotel never
+    # had one; matches Ticket/ClosedTour/Modality - see flows/hotel.py) both legitimately sit
+    # between Geolocation and Publish now - this check is only meant to catch Geolocation ending
+    # up far away from Publish entirely, not to cap organic growth of what's genuinely between
+    # them.
+    assert publish_idx - geo_idx < 12000

@@ -22,7 +22,7 @@ from builder import (
 )
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
-from ai_extractor import detect_hotel_products, extract_hotel_data, friendly_error_message
+from ai_extractor import detect_hotel_products, extract_hotel_data, friendly_error_message, apply_clarification
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
@@ -39,13 +39,15 @@ from ui_components import (
 )
 
 from app import (
-    CURRENCY_OPTIONS, SHARED_WIDGET_STATE_PREFIXES,
+    CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES,
     _clear_batch_widget_state, _extract_error_message_detail, _extract_rejected_image_url,
     _fetch_url_text_safe, _hp_dist_to_str, _hp_first_window, _hp_names_to_str, _hp_nums_to_str,
     _hp_str_to_dist, _hp_str_to_names, _hp_str_to_nums, _hp_window_list,
     _render_hotel_masterdata_step, _render_hotel_price_audit_section,
     _warn_page_image_upload_errors, _warn_stale_images, show_publish_error,
-    get_existing_hotel_names,
+    get_existing_hotel_names, apply_clarify_changes, clarify_supplier_id, remember_clarification,
+    remember_memory_panel, render_clarify_result, render_house_rule_shortcut,
+    reset_stale_editable_field_widgets,
 )
 
 
@@ -793,6 +795,34 @@ def render_hotel_flow(client):
     if rooms_missing_dist:
         st.warning(f"⚠️ These rooms have no allowed distributions and can't publish: {', '.join(rooms_missing_dist)}")
 
+    # ---- Delete an existing room entirely (2026-09-19) ----
+    # CONFIRMED PRODUCT-OWNER REQUEST: "we must make it possible to delete a complete room and
+    # not only occupancy." Removing a row from "Room types" above only removes it from THIS
+    # document - build_hotel_contract_payload always carries an existing room forward unchanged
+    # when this document doesn't mention it, by design (so an unrelated update - a new price
+    # period, a different room's fix - can never accidentally drop a room nobody meant to
+    # touch). Deleting a room already live in Travel Compositor needs this separate, explicit,
+    # deliberate action instead - see build_hotel_contract_payload's `rooms_to_delete` param.
+    if existing_snapshot and existing_snapshot.get("rooms"):
+        with st.expander("🗑️ Delete an existing room entirely"):
+            st.caption("Only for a room already live in Travel Compositor. Removing it from the table above "
+                      "isn't enough - an existing room this document doesn't mention is always kept, so an "
+                      "unrelated update can never accidentally drop it. Pick it here instead to actually "
+                      "remove it (it's simply left out of the next Publish, the same way rooms are normally "
+                      "added/updated - there's no separate delete step in Travel Compositor's API).")
+            _hp_existing_room_names = [r.get("name") for r in existing_snapshot.get("rooms") or [] if r.get("name")]
+            _hp_rooms_to_delete = st.multiselect(
+                "Room(s) to delete", options=_hp_existing_room_names,
+                default=[n for n in (data.get("rooms_to_delete") or []) if n in _hp_existing_room_names],
+                key="hp_rooms_to_delete_select")
+            data["rooms_to_delete"] = _hp_rooms_to_delete
+            if _hp_rooms_to_delete:
+                st.warning(f"⚠️ **{', '.join(_hp_rooms_to_delete)}** will be permanently removed from this "
+                           f"hotel on the next Publish. This does NOT touch any rate/season pricing already "
+                           f"live in Travel Compositor that references this room - if a rate you're not "
+                           f"otherwise editing in this run still prices it, fix or remove that pricing there "
+                           f"too.")
+
     # ---- Meal plans ----
     st.markdown("#### Meal plans")
     st.caption("Room Only is always added automatically at 0 cost - only list the paid add-ons here. "
@@ -1069,7 +1099,9 @@ def render_hotel_flow(client):
 
     pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
                                       currency=currency, days_available_before_release=release_days)
-    contract_result = build_hotel_contract_payload(pre_config, data, existing_hotel_snapshot=existing_snapshot)
+    contract_result = build_hotel_contract_payload(
+        pre_config, data, existing_hotel_snapshot=existing_snapshot,
+        rooms_to_delete=data.get("rooms_to_delete"))
 
     if contract_result.get("hotel_error"):
         st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")
@@ -1191,6 +1223,57 @@ def render_hotel_flow(client):
     # here instead, right before Publish, as a secondary sanity check rather than the main event.
     if existing_snapshot and hp_contract_purpose != "check_current":
         _render_hotel_price_audit_section(data, primary=False)
+
+    # ------------------------------------------------------------------
+    # "Tell AI what to fix" (2026-09-19) - CONFIRMED PRODUCT-OWNER REQUEST: "Before publishing
+    # hotel, we also must add as same as in other creation tools a AI text field to make some
+    # general adjustments." Hotel never had this box at all (Ticket/ClosedTour/Modality already
+    # do) - a human noticing something wrong this late (a room name, a season date, an offer
+    # value) had no way to fix it except editing the raw table by hand. Same apply_clarification/
+    # apply_clarify_changes/render_clarify_result machinery as every other flow; only the
+    # field->table-key resets below are Hotel-specific, since Hotel's own editable tables
+    # (rooms/meal plans/offers/supplements/images, plus per-rate season/stop-sales/distribution-
+    # price tables keyed by index) don't exist anywhere else.
+    # ------------------------------------------------------------------
+    st.markdown("#### 🤖 Tell AI what to fix or clarify (optional)")
+    hp_clarify_q = st.text_input("Your message", key="hp_clarify_input")
+    if render_house_rule_shortcut(hp_clarify_q, "Hotel", "hp_main"):
+        pass
+    elif not hp_clarify_q.strip():
+        st.caption(f"Type a message above first — Send stays disabled until there's something to send. "
+                  f"Start with \"{HOUSE_RULE_CODEWORD}\" to save a standing rule for every Hotel "
+                  f"supplier instead of a one-off fix.")
+    if not hp_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
+            "Send", disabled=not hp_clarify_q.strip(), key="hp_clarify_send"):
+        with st.spinner("Thinking..."):
+            result = apply_clarification(st.session_state.get("hp_raw_text", ""), data, hp_clarify_q)
+            st.session_state.hp_clarify_result = result
+            remember_clarification(clarify_supplier_id(supplier_id), "Hotel", hp_clarify_q, result)
+            if result.get("changes"):
+                apply_clarify_changes(data, result, currency)
+                reset_stale_editable_field_widgets(result["changes"])
+                hp_field_to_table_key = {
+                    "images": "hp_images", "rooms": "hp_rooms", "meal_plans": "hp_mealplans",
+                    "offers": "hp_offers", "supplements": "hp_supplements",
+                }
+                for field_name in result["changes"]:
+                    table_key = hp_field_to_table_key.get(field_name)
+                    if table_key:
+                        st.session_state[f"_editing_table_{table_key}"] = False
+                if "rates" in result["changes"]:
+                    # Rates are nested (season/room/stop-sales tables keyed by rate/season index
+                    # and, for prices, room name - not one fixed key) - sweep every such edit-mode
+                    # flag rather than hand-maintain one entry per possible index, same reasoning
+                    # as _clear_batch_widget_state's prefix sweep for positionally-keyed widgets.
+                    for _hp_key in list(st.session_state.keys()):
+                        if _hp_key.startswith(("_editing_table_hp_dr_", "_editing_table_hp_dp_",
+                                                "_editing_table_hp_ss_", "_editing_hprate",
+                                                "_editing_hpseason")):
+                            st.session_state[_hp_key] = False
+            st.rerun()
+    if st.session_state.get("hp_clarify_result"):
+        render_clarify_result(st.session_state.hp_clarify_result)
+    remember_memory_panel(clarify_supplier_id(supplier_id), "Hotel", "hp")
 
     # ------------------------------------------------------------------
     # PUBLISH - two phases, in order
