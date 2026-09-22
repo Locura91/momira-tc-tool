@@ -21,9 +21,20 @@ for the actual swap logic and why Transport needs an extra api_client lookup tha
 version doesn't (Transport's route lives only as location CODES on its segments, not a
 human-readable name field).
 
-Same duplicate-safety bar as every other create flow in this app: Publish is disabled until the
-human has explicitly checked (and, if a match is found, confirmed it away) that a transport for
-the NEW swapped route doesn't already exist - see transport_matcher.suggest_existing_transport_matches.
+SIMPLIFIED (product owner, 2026-09-21): "make sure, the Transport duplicate is workking similar
+like transfers duplicate. Transports are now easaliy copied, but the search is easy as transfer
+but not as transport." Matches the same simplification flows/duplicate_transfer.py already went
+through on 2026-09-16, for the same reasons Chris gave there: "Search by departure/arrival can be
+delete in the transfer creation for swap. Not needed" (a human duplicating a specific record
+already knows which one; pasting its id is the whole real use of this flow - the extra "how do
+you want to find it?" radio and departure/arrival search box this screen used to have, on top of
+Transfer's single paste box, was exactly the "search is easy as transfer but not as transport"
+gap) and "'duplicate Check' not needed, it is always safe to duplicate" (the mandatory "Check for
+a matching existing transport" step and the Publish-blocking gate that required it - Transfer's
+own equivalent was removed the same day for the same reason: publishing a genuine duplicate is a
+low-cost, easily-fixed mistake, not one worth a mandatory extra click on every publish).
+transport_matcher.suggest_existing_transport_matches/resolve_transport_match are no longer called
+from this flow at all - finding the source is a single id-paste box, same as Transfer.
 """
 import pandas as pd
 import streamlit as st
@@ -56,8 +67,7 @@ def render_duplicate_transport_flow(client):
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.
         for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
-                  "dtp_route_info", "dtp_options", "dtp_match_result",
-                  "dtp_match_route_fingerprint", "dtp_search_results"):
+                  "dtp_route_info", "dtp_options"):
             st.session_state.pop(k, None)
         st.session_state.dtp_supplier_id = supplier_id
 
@@ -92,54 +102,19 @@ def _fetch_source_and_options(client, supplier_id, transport_id):
 
 
 def _render_pick_source(client, supplier_id):
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-21): "the search is easy as transfer but not as
+    # transport" - matches flows/duplicate_transfer.py's own simplification (2026-09-16): a human
+    # duplicating a specific record already knows which one, so pasting its id is the whole real
+    # use of this flow. The "how do you want to find it?" radio and the departure/arrival search
+    # box are gone - just the one paste box, same as Transfer.
     st.markdown("#### Find the Transport to duplicate")
-    pick_mode = st.radio(
-        "How do you want to find it?",
-        ["Search by departure/arrival", "I already know its Travel Compositor id"],
-        horizontal=True, key="dtp_pick_mode")
-
-    if pick_mode == "I already know its Travel Compositor id":
-        tid = st.text_input("Transport id (e.g. TRANSPORT-412579)", key="dtp_manual_id").strip()
-        if st.button("Fetch", key="dtp_fetch_manual", disabled=not tid):
-            parent, options = _fetch_source_and_options(client, supplier_id, tid)
-            if parent is not None:
-                st.session_state.dtp_source = parent
-                st.session_state.dtp_source_options = options
-                st.rerun()
-        return
-
-    scol1, scol2 = st.columns(2)
-    with scol1:
-        dep_search = st.text_input("Departure (or part of it)", key="dtp_search_dep")
-    with scol2:
-        arr_search = st.text_input("Arrival (or part of it)", key="dtp_search_arr")
-    if st.button("🔎 Search", key="dtp_search_btn", disabled=not (dep_search or arr_search)):
-        with st.spinner("Fetching this supplier's existing transports..."):
-            result = client.get_transports(supplier_id)
-        if isinstance(result, dict) and "error" in result:
-            st.error(f"❌ Couldn't fetch this supplier's transports: {result.get('message', result)}")
-            st.session_state.dtp_search_results = []
-        else:
-            existing = result.get("transport", []) if isinstance(result, dict) else (result or [])
-            st.session_state.dtp_search_results = transport_matcher.suggest_existing_transport_matches(
-                dep_search or "", arr_search or "", existing, top_n=10)
-
-    results = st.session_state.get("dtp_search_results")
-    if results:
-        options = [f"{r['name'] or '(unnamed)'} ({r['transport_id']}, match {r['score']})" for r in results]
-        picked = st.radio("Pick the one to duplicate:", options, key="dtp_search_pick")
-        picked_idx = options.index(picked)
-        if st.button("Use this one", key="dtp_use_picked"):
-            tid = results[picked_idx]["transport_id"]
-            parent, opts = _fetch_source_and_options(client, supplier_id, tid)
-            if parent is not None:
-                st.session_state.dtp_source = parent
-                st.session_state.dtp_source_options = opts
-                st.rerun()
-    elif results == []:
-        st.info("No existing transports found for this supplier - nothing to duplicate yet. "
-                "Create the first one for this route directly in Travel Compositor, then this "
-                "tool can clone it for the return direction.")
+    tid = st.text_input("Transport id (e.g. TRANSPORT-412579)", key="dtp_manual_id").strip()
+    if st.button("Fetch", key="dtp_fetch_manual", disabled=not tid):
+        parent, options = _fetch_source_and_options(client, supplier_id, tid)
+        if parent is not None:
+            st.session_state.dtp_source = parent
+            st.session_state.dtp_source_options = options
+            st.rerun()
 
 
 def _render_review_and_publish(client, supplier_id):
@@ -188,8 +163,7 @@ def _render_review_and_publish(client, supplier_id):
 
     if st.button("↩️ Pick a different Transport to duplicate", key="dtp_restart"):
         for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
-                  "dtp_route_info", "dtp_options", "dtp_match_result",
-                  "dtp_match_route_fingerprint", "dtp_search_results"):
+                  "dtp_route_info", "dtp_options"):
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -392,49 +366,11 @@ def _render_review_and_publish(client, supplier_id):
                 if k not in ("segments", "name", "datasheets", "baseAdultPrice",
                              "baseChildrenPrice", "baseInfantPrice", "vehiclePrice")})
 
-    st.markdown("#### Duplicate check")
-    st.caption("Same safeguard every other create flow here has - confirms a Transport for THIS "
-              "new (swapped) route doesn't already exist before you publish another one.")
-    current_route_fingerprint = f"{new_dep_name}::{new_arr_name}"
-    if st.session_state.get("dtp_match_route_fingerprint") != current_route_fingerprint:
-        st.session_state.dtp_match_result = None
-        st.session_state.dtp_match_route_fingerprint = current_route_fingerprint
-
-    if st.button("🔎 Check for a matching existing transport", key="dtp_checkmatch"):
-        with st.spinner("Checking..."):
-            st.session_state.dtp_match_result = transport_matcher.resolve_transport_match(
-                client, supplier_id, new_dep_name, new_arr_name)
-            st.session_state.dtp_match_route_fingerprint = current_route_fingerprint
-
-    match_result = st.session_state.get("dtp_match_result")
-    match_checked = match_result is not None
-    blocks_as_duplicate = False
-    if match_result:
-        if match_result.get("fetch_error"):
-            st.warning(f"⚠️ Couldn't fetch this supplier's existing transports to check for a "
-                      f"match: {match_result['fetch_error'].get('message', match_result['fetch_error'])}.")
-        elif match_result.get("tracked_id"):
-            st.error(f"🚫 This app already tracks a Transport for this exact route: "
-                    f"**{match_result['tracked_id']}**. Duplicating would create a second, "
-                    f"conflicting record - go update that one instead (Step 1 → Price update to "
-                    f"existing Products), or change the route text above if this is genuinely a "
-                    f"different one.")
-            blocks_as_duplicate = True
-        elif match_result.get("fallback_candidates"):
-            best = match_result["fallback_candidates"][0]
-            if best["score"] >= 0.85:
-                st.warning(f"⚠️ A very similar Transport already exists: **{best['name'] or '(unnamed)'}** "
-                          f"({best['transport_id']}) (match {best['score']}). Double-check this "
-                          f"isn't the same route before publishing.")
-            else:
-                st.info(f"No close match found for this route (best similarity: {best['score']}) - "
-                        f"safe to publish as new.")
-        else:
-            st.info("No existing transports found for this supplier - safe to publish as new.")
-
-    if not match_checked:
-        st.warning("⚠️ Click **Check for a matching existing transport** above before publishing.")
-
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-21, matching flows/duplicate_transfer.py's own
+    # 2026-09-16 simplification): "'duplicate Check' not needed, it is always safe to duplicate."
+    # The "Check for a matching existing transport" step and the Publish-blocking gate that
+    # required it are gone - transport_matcher.resolve_transport_match is no longer called from
+    # this flow at all.
     st.markdown("#### Publish")
     with st.expander("🔎 Preview full parent payload"):
         st.json(payload)
@@ -448,7 +384,7 @@ def _render_review_and_publish(client, supplier_id):
         st.warning("⚠️ Departure and/or arrival couldn't be resolved to a real Transport Base - "
                   "fix the names above and re-resolve before publishing.")
 
-    publish_disabled = not match_checked or blocks_as_duplicate or not dates_ok or not segments_ok
+    publish_disabled = not dates_ok or not segments_ok
     if st.button("🚀 Publish — CREATE new transport", type="primary", key="dtp_publish", disabled=publish_disabled):
         # CONFIRMED REAL PRODUCTION BUG (product owner, 2026-09-16): the SAME "java.lang.
         # IllegalArgumentException: An instance of a null PK has been incorrectly provided for
@@ -545,6 +481,5 @@ def _render_review_and_publish(client, supplier_id):
                     st.success(f"✅ Published successfully (id: {new_id}) with all {len(options)} "
                               f"occupancy bracket(s).")
                 for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
-                          "dtp_route_info", "dtp_options", "dtp_match_result",
-                          "dtp_match_route_fingerprint", "dtp_search_results"):
+                          "dtp_route_info", "dtp_options"):
                     st.session_state.pop(k, None)

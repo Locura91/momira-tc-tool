@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-19-hotel-room-selection-gate-before-review"
+MODULE_BUILD = "2026-09-21-transport-duplicate-simplified-like-transfer"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
