@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-22-closedtour-bulk-translation"
+MODULE_BUILD = "2026-09-22-draft-banner-cleared-after-publish"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

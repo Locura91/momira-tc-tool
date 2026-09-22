@@ -40,6 +40,7 @@ import pandas as pd
 import streamlit as st
 
 from builder import build_transport_option_swap_payload
+import draft_autosave
 from transfer_gap_finder import build_and_rewrite_transport_swap_payload
 import transport_matcher
 from ui_components import editable_table, _safe_float, _safe_int, _html_to_plain_for_editing, _plain_to_html_for_saving
@@ -480,6 +481,11 @@ def _render_review_and_publish(client, supplier_id):
                 elif created_codes:
                     st.success(f"✅ Published successfully (id: {new_id}) with all {len(options)} "
                               f"occupancy bracket(s).")
+                # CONFIRMED PRODUCT-OWNER REPORT (2026-09-22): the "found unfinished work"
+                # draft-restore banner kept coming back even after a successful publish - the
+                # parent transport record is created here regardless of which branch above ran,
+                # so there's nothing left worth protecting either way.
+                draft_autosave.clear_on_publish_success()
                 for k in ("dtp_source", "dtp_source_options", "dtp_payload", "dtp_swap_report",
                           "dtp_route_info", "dtp_options"):
                     st.session_state.pop(k, None)

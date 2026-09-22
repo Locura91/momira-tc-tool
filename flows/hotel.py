@@ -28,6 +28,7 @@ from pixabay_client import search_images as search_images_pixabay
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from geocoding_client import geocode_search, parse_google_maps_url
 import cancellation_links
+import draft_autosave
 import hotel_automap
 import service_notes
 from image_dimensions import FALLBACK_IMAGE
@@ -1871,6 +1872,10 @@ def render_hotel_flow(client):
                     "seasons are matched and updated in place rather than duplicated.")
             else:
                 st.balloons()
+                # CONFIRMED PRODUCT-OWNER REPORT (2026-09-22): the "found unfinished work"
+                # draft-restore banner kept coming back even after a successful publish - full
+                # success (no all_failures) means there's nothing left worth protecting.
+                draft_autosave.clear_on_publish_success()
                 st.success(f"🎉 Hotel **{provider_code}** published in full — contract, rooms, meal plans, "
                           f"offers, supplements and {seasons_total} season(s) of prices.")
                 if rate_unchanged_names:

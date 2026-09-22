@@ -22,6 +22,7 @@ from document_reader import extract_raw_text
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import detect_transport_products, extract_transport_data, friendly_error_message
 import cancellation_links
+import draft_autosave
 import extraction_memory
 import publish_advisor
 import service_notes
@@ -844,6 +845,11 @@ def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_
 
         if all(q.get("publish_status") == "success" for q in queue):
             st.balloons()
+            # CONFIRMED PRODUCT-OWNER REPORT (2026-09-22): the "found unfinished work"
+            # draft-restore banner kept coming back even after a successful publish - the whole
+            # batch succeeding means there's nothing left worth protecting. Safe to call on
+            # every render of this success screen.
+            draft_autosave.clear_on_publish_success()
             st.success(f"🎉 All {len(queue)} transport(s) in this batch published.")
             st.write("")
             st.divider()

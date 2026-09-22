@@ -31,6 +31,7 @@ the per-occupancy price table before publishing, since the new direction may gen
 import pandas as pd
 import streamlit as st
 
+import draft_autosave
 import transfer_matcher
 from geocoding_client import geocode
 from transfer_gap_finder import build_and_rewrite_transfer_swap_payload
@@ -328,6 +329,12 @@ def _render_review_and_publish(client, supplier_id):
                     if new_id:
                         transfer_matcher.remember_transfer_id(supplier_id, new_dep_name, new_arr_name, new_id)
                     st.success(f"✅ Published successfully (id: {new_id or 'unknown'}).")
+                    # CONFIRMED PRODUCT-OWNER REPORT (2026-09-22): the "found unfinished work"
+                    # draft-restore banner (draft_autosave.py) kept coming back even after a
+                    # successful publish, because this flow (like most others) never told
+                    # draft_autosave a publish had actually succeeded - nothing was left to
+                    # protect, but the saved draft was never cleared.
+                    draft_autosave.clear_on_publish_success()
                     for k in ("dtf_source", "dtf_payload", "dtf_swap_report", "dtf_route_info"):
                         st.session_state.pop(k, None)
             except Exception as e:
