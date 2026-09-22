@@ -50,7 +50,7 @@ the same looseness on the write side would be a real hazard there.
 
 # Stamped on every delivery - see platform_store.py's own header for why this convention exists
 # (a partial deploy that updated every other file but this one would go undetected otherwise).
-MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
+MODULE_BUILD = "2026-09-22-closedtour-auto-load-supplier-list"
 
 import re
 import unicodedata

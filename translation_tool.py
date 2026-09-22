@@ -149,26 +149,15 @@ def _scope_picker(entity_label, specific_label, example, key_prefix):
     return is_all, specific_value, limit
 
 
-def _closed_tour_bulk_picker(supplier_id):
-    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-21, verbatim): "Translating Closed Tours must
-    work in bulk. Human selects an Supplier, the app shows a list with all closedtours, human
-    can select all, or select none and then starts the translation."
-
-    Travel Compositor exposes no endpoint that lists a supplier's Closed Tours - confirmed
-    elsewhere in this codebase for the identical reason (see bulk_notes.needs_manual_codes,
-    price_refresh.py's own ClosedTour scope-out, and flows/manual_information.py's "paste the
-    tour codes, one per line" box). There is no way to auto-discover "all closed tours for this
-    supplier" - so "the app shows a list" means: a human pastes the known codes ONCE (they
-    already know their own supplier's codes - the same information they'd otherwise be typing
-    into a single "Closed Tour Code" box one at a time), the app fetches each and turns it into
-    the same kind of checkable list every other entity type already gets from a real listing
-    endpoint, complete with Select all / Select none.
+def _closed_tour_manual_picker(supplier_id):
+    """Fallback for _closed_tour_bulk_picker below, used only when the real listing call
+    (TranslationTCAPI.get_closed_tours) fails - paste the known codes and fetch each one by
+    hand, the way this whole picker originally worked before the 2026-09-22 follow-up. Kept
+    around so a listing-endpoint outage doesn't block bulk translation entirely, just makes it
+    manual again for that one session.
 
     Returns the list of currently-checked Closed Tour codes.
     """
-    st.caption("Travel Compositor has no endpoint that lists a supplier's Closed Tours, so they "
-              "can't be found automatically - paste the codes you want to translate, one per "
-              "line, then fetch them to build the selectable list below.")
     raw_codes = st.text_area("Closed Tour codes", key="tr_ct_codes_raw", height=100,
                              placeholder="TNR-03\nASW-CT1\nCAI-CT2")
     pasted_codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
@@ -187,12 +176,11 @@ def _closed_tour_bulk_picker(supplier_id):
         st.session_state.tr_ct_candidates = candidates
         st.session_state.tr_ct_candidates_supplier = supplier_id
         for c in candidates:
-            st.session_state[f"tr_ct_pick_{c['code']}"] = True  # on default all are marked, same
-            # defaults-to-everything shape as the target-languages checklist below.
+            st.session_state[f"tr_ct_pick_{c['code']}"] = True  # on default all are marked - a
+            # pasted code is, by definition, one you already wanted, unlike the full auto-loaded
+            # list above which defaults everything OFF.
 
     candidates = st.session_state.get("tr_ct_candidates") or []
-    # A supplier switch invalidates the previous fetch - showing supplier A's tours as
-    # selectable while about to translate for supplier B would be a silent cross-supplier bug.
     if st.session_state.get("tr_ct_candidates_supplier") != supplier_id:
         candidates = []
 
@@ -226,6 +214,114 @@ def _closed_tour_bulk_picker(supplier_id):
         return selected
 
     return []
+
+
+def _normalize_closed_tour_list(result):
+    """Same "don't assume the shape" normalization app_helpers.get_existing_tour_names already
+    uses for this exact endpoint - a bare list, or a dict wrapping the list under one of a few
+    likely keys depending on account/version. Returns a list of {"code", "name"} dicts."""
+    items = []
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        for key in ("closedTour", "closedTours", "items", "data", "results", "content"):
+            if isinstance(result.get(key), list):
+                items = result[key]
+                break
+    tours = []
+    for item in items:
+        if isinstance(item, dict) and item.get("code"):
+            tours.append({"code": item["code"], "name": _label_for_closed_tour(item, "ClosedTour")})
+    return tours
+
+
+def _closed_tour_bulk_picker(supplier_id):
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-21, verbatim): "Translating Closed Tours must
+    work in bulk. Human selects an Supplier, the app shows a list with all closedtours, human
+    can select all, or select none and then starts the translation."
+
+    FOLLOW-UP (2026-09-22, verbatim): "could we not load all available closedtours from the
+    supplier and then the human selects all closedtorus that need an translation" - the first
+    version of this picker required pasting known codes by hand, because this tool's own API
+    client (TranslationTCAPI = travelcompositor_api.TravelCompositorAPI - see the NOTE at the
+    top of this file on the two separate clients) only had a single closed-tour GET-by-code, no
+    list endpoint. The Upload & Update tool's client (api_client.py) already had one - GET
+    /closedtour/{supplierId} - confirmed already working there (app_helpers'
+    get_existing_tour_names uses it for a live duplicate-name check) - so that same endpoint
+    (get_closed_tours) was ported into travelcompositor_api.py, and this picker now calls it
+    directly to auto-load the list instead of asking for pasted codes.
+
+    Auto-loaded tours default UNCHECKED, unlike the old paste-then-fetch flow (where everything
+    pasted was, by definition, something you wanted translated): "everything this supplier has"
+    is not the same as "everything that needs translating", so a bulk translation run should
+    never start with everything silently pre-selected just because it showed up in the list.
+
+    If the listing call itself fails (network issue, an unrecognized response shape, etc), falls
+    back to the original paste-codes-by-hand picker rather than blocking bulk translation
+    entirely - see _closed_tour_manual_picker.
+
+    Returns the list of currently-checked Closed Tour codes.
+    """
+    if not supplier_id:
+        return []
+
+    already_loaded = st.session_state.get("tr_ct_list_supplier") == supplier_id
+    label = "🔄 Reload closed tours for this supplier" if already_loaded else "🔍 Load closed tours for this supplier"
+    if st.button(label, key="tr_ct_load"):
+        api = TranslationTCAPI()
+        try:
+            result = api.get_closed_tours(supplier_id, first=0, limit=200)
+        except Exception as e:
+            result = {"error": "exception", "message": str(e)}
+
+        if isinstance(result, dict) and "error" in result:
+            st.session_state.tr_ct_list_error = describe_tc_fetch_error(
+                result, f"closed tours for supplier {supplier_id}")
+            st.session_state.tr_ct_list = []
+        else:
+            tours = _normalize_closed_tour_list(result)
+            st.session_state.tr_ct_list = tours
+            st.session_state.tr_ct_list_error = None if tours else (
+                "no closed tours found for this supplier (or the response format wasn't "
+                "recognized) - you can paste known codes below instead")
+        st.session_state.tr_ct_list_supplier = supplier_id
+        # A fresh load always starts fully unchecked - see the docstring above.
+        for t in st.session_state.tr_ct_list:
+            st.session_state[f"tr_ct_pick_{t['code']}"] = False
+
+    # A supplier switch invalidates the previous load - showing supplier A's tours as selectable
+    # while about to translate for supplier B would be a silent cross-supplier bug.
+    if st.session_state.get("tr_ct_list_supplier") != supplier_id:
+        return []
+
+    if st.session_state.get("tr_ct_list_error"):
+        st.warning(f"⚠️ Couldn't load the closed tour list automatically: "
+                   f"{st.session_state.tr_ct_list_error}")
+        with st.expander("➕ Paste codes by hand instead", expanded=True):
+            return _closed_tour_manual_picker(supplier_id)
+
+    tours = st.session_state.get("tr_ct_list") or []
+    if not tours:
+        return []
+
+    st.write(f"**{len(tours)}** closed tour(s) found for this supplier:")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Select all", key="tr_ct_select_all"):
+            for t in tours:
+                st.session_state[f"tr_ct_pick_{t['code']}"] = True
+    with c2:
+        if st.button("Select none", key="tr_ct_select_none"):
+            for t in tours:
+                st.session_state[f"tr_ct_pick_{t['code']}"] = False
+
+    selected = []
+    for t in tours:
+        picked = st.checkbox(f"{t['code']} — {t['name']}", key=f"tr_ct_pick_{t['code']}")
+        if picked:
+            selected.append(t["code"])
+    st.caption(f"**{len(selected)}** of {len(tours)} selected for translation.")
+    return selected
 
 
 def render_translation_tool():

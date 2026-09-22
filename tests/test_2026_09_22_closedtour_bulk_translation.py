@@ -6,12 +6,19 @@
     We also split translation: either all languages, or only German, Spanish, French, Dutch,
     Polish, Italian, or ALL languages."
 
-Travel Compositor exposes no endpoint that lists a supplier's Closed Tours - confirmed
-elsewhere in this codebase for the identical reason (bulk_notes.needs_manual_codes,
-price_refresh.py's own ClosedTour scope-out, flows/manual_information.py's "paste the tour
-codes, one per line" box). So "the app shows a list with all closedtours" is implemented as:
-paste the known codes once, fetch them into a checkable list (same Select all/Select none
-shape as every other bulk picker in this app), then translate only what's checked.
+FOLLOW-UP (2026-09-22, verbatim): "could we not load all available closedtours from the
+supplier and then the human selects all closedtorus that need an translation"
+
+The first version of this picker required pasting known codes by hand, because this tool's own
+API client (TranslationTCAPI = travelcompositor_api.TravelCompositorAPI) only had a single
+closed-tour GET-by-code, no list endpoint - the Upload & Update tool's client (api_client.py)
+already had one (GET /closedtour/{supplierId}, confirmed working there via
+app_helpers.get_existing_tour_names' live duplicate-name check). That same endpoint
+(get_closed_tours) was ported into travelcompositor_api.py, and the picker now calls it directly
+to auto-load "all closedtours from the supplier" instead of asking for pasted codes - exactly
+per this follow-up. Auto-loaded tours default UNCHECKED (loading everything a supplier has is
+not the same as everything that needs translating); a paste-codes-by-hand fallback (the original
+picker) is kept for when the listing call itself fails.
 
 The "either all languages, or only <6 languages>, or ALL languages" request is served by the
 EXISTING target_languages multiselect (already shared by every entity type, already defaults
@@ -26,6 +33,7 @@ Closed Tours instead of re-introducing the pattern that was removed everywhere e
 import inspect
 
 import translation_tool as tt
+import travelcompositor_api as tcapi
 
 
 def test_single_code_text_input_is_gone():
@@ -40,11 +48,30 @@ def test_bulk_picker_is_wired_into_the_scope_step():
     assert "closed_tour_codes = _closed_tour_bulk_picker(supplier_id)" in src
 
 
-def test_bulk_picker_pastes_codes_and_fetches_a_checkable_list():
+def test_travelcompositor_api_has_a_real_closed_tour_list_endpoint():
+    """Ported from api_client.py's already-confirmed-working get_closed_tours - this tool's own
+    client (travelcompositor_api.TravelCompositorAPI) previously lacked it entirely."""
+    assert hasattr(tcapi.TravelCompositorAPI, "get_closed_tours")
+    src = inspect.getsource(tcapi.TravelCompositorAPI.get_closed_tours)
+    assert '/closedtour/{supplier_id}"' in src
+    assert "first" in src and "limit" in src
+
+
+def test_bulk_picker_auto_loads_from_the_real_list_endpoint_not_pasted_codes():
     src = inspect.getsource(tt._closed_tour_bulk_picker)
-    assert 'st.text_area("Closed Tour codes"' in src
-    assert 'st.button("🔍 Fetch list"' in src
-    assert "api.get_closed_tour(supplier_id, code)" in src
+    assert "api.get_closed_tours(supplier_id, first=0, limit=200)" in src
+    # The old "paste codes into a text area" UI must not be the primary path any more.
+    assert 'st.text_area("Closed Tour codes"' not in src
+
+
+def test_auto_loaded_tours_default_unselected():
+    """"the human selects all closedtorus that need an translation" - loading everything a
+    supplier has is not the same as everything that needs translating, so nothing should be
+    pre-ticked just because it showed up in the auto-loaded list (unlike the manual paste
+    fallback, where a pasted code is by definition something you wanted - see that test below)."""
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    load_block = src[src.index("if st.button(label"):src.index("# A supplier switch invalidates")]
+    assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = False' in load_block
 
 
 def test_select_all_and_select_none_write_session_state_directly():
@@ -53,22 +80,31 @@ def test_select_all_and_select_none_write_session_state_directly():
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     assert 'st.button("Select all"' in src
     assert 'st.button("Select none"' in src
+    assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = True' in src
+    assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = False' in src
+
+
+def test_supplier_switch_invalidates_the_previously_loaded_list():
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    assert 'st.session_state.get("tr_ct_list_supplier") != supplier_id' in src
+
+
+def test_listing_failure_falls_back_to_the_manual_paste_picker():
+    """A listing-endpoint outage must not block bulk translation entirely - it degrades to the
+    original paste-codes-by-hand flow instead."""
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    assert "_closed_tour_manual_picker(supplier_id)" in src
+    assert "tr_ct_list_error" in src
+
+
+def test_manual_fallback_picker_still_works_standalone():
+    src = inspect.getsource(tt._closed_tour_manual_picker)
+    assert 'st.text_area("Closed Tour codes"' in src
+    assert 'st.button("🔍 Fetch list"' in src
+    assert "api.get_closed_tour(supplier_id, code)" in src
+    # A pasted code is, by definition, something you wanted - defaults to fully ticked, the
+    # opposite default from the auto-loaded list above.
     assert "st.session_state[f\"tr_ct_pick_{c['code']}\"] = True" in src
-    assert "st.session_state[f\"tr_ct_pick_{c['code']}\"] = False" in src
-
-
-def test_candidates_default_to_all_selected_on_fetch():
-    """"on default all languages are marked" - the equivalent default for the closed tour
-    checklist is that a freshly fetched list starts fully ticked, same as every other
-    defaults-to-everything checklist in this tool."""
-    src = inspect.getsource(tt._closed_tour_bulk_picker)
-    fetch_block = src[src.index("if st.button(\"🔍 Fetch list\""):src.index("candidates = st.session_state.get")]
-    assert "st.session_state[f\"tr_ct_pick_{c['code']}\"] = True" in fetch_block
-
-
-def test_supplier_switch_invalidates_the_previously_fetched_list():
-    src = inspect.getsource(tt._closed_tour_bulk_picker)
-    assert 'st.session_state.get("tr_ct_candidates_supplier") != supplier_id' in src
 
 
 def test_run_button_requires_at_least_one_selected_code():

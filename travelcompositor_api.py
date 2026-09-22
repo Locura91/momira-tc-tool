@@ -13,7 +13,7 @@ load_dotenv()
 # carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
-MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
+MODULE_BUILD = "2026-09-22-closedtour-auto-load-supplier-list"
 
 
 def _try_parse_json(text: str):
@@ -420,6 +420,30 @@ class TravelCompositorAPI:
             return []
         data = res.json()
         return data if isinstance(data, list) else []
+
+    def get_closed_tours(self, supplier_id: str, first: int = 0, limit: int = 200) -> Dict[str, Any]:
+        """
+        Executes GET /closedtour/{supplierId} (no tour code) — lists every Closed Tour this
+        supplier has, mirroring get_tickets()'s list pattern above. Ported over from
+        api_client.py's own get_closed_tours (2026-09-22, product-owner follow-up, verbatim):
+        "could we not load all available closedtours from the supplier and then the human
+        selects all closedtorus that need an translation" - this tool's client
+        (TravelCompositorAPI here, see the NOTE at the top of translation_tool.py on the two
+        separate API clients) only had get_closed_tour (singular, by code), which is why the
+        bulk-translation picker originally had to ask for pasted codes; api_client.py already
+        had this list endpoint, confirmed working there (app_helpers.get_existing_tour_names'
+        live duplicate-name check), so it's ported here rather than re-derived independently.
+        Returns whatever the API gives back (a bare list, or a paginated dict wrapping the list
+        depending on account/version) for the caller to normalize - same "don't assume the
+        shape" contract as api_client.py's version.
+        """
+        url = f"{self.api_base_url}/closedtour/{supplier_id}"
+        merged_headers = {**self.get_headers(), "first": str(first), "limit": str(limit)}
+        res = requests.request("GET", url, headers=merged_headers, timeout=15)
+        if res.status_code != 200:
+            print(f"\n❌ API Error ({res.status_code}):\n{res.text}")
+            return {"error": res.status_code, "message": res.text}
+        return res.json()
 
     def get_closed_tour(self, supplier_id: str, closed_tour_code: str) -> Dict[str, Any]:
         """

@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
+MODULE_BUILD = "2026-09-22-closedtour-auto-load-supplier-list"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
