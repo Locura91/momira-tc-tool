@@ -649,8 +649,13 @@ from flows.multi_transfer import render_multi_transfer_flow
 # though app.py no longer wires them as separate Step 1 destinations.
 from flows.transfer_duplicate_and_create import render_transfer_duplicate_and_create_flow
 
-# Same feature, for Transport - see DUPLICATE_TRANSPORT_CHOICE's own comment further down.
-from flows.duplicate_transport import render_duplicate_transport_flow
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-22) - see DUPLICATE_TRANSPORT_CHOICE's own comment
+# further down for the full reasoning: the same combined "scan for missing reverse-direction
+# routes + manual duplicate-by-id" Step 1 destination Transfer already has
+# (flows/transport_duplicate_and_create.py). render_duplicate_transport_flow and
+# render_missing_transports_flow themselves are kept importable for their own test suites even
+# though app.py no longer wires them as separate Step 1 destinations.
+from flows.transport_duplicate_and_create import render_transport_duplicate_and_create_flow
 
 
 # ======================================================================
@@ -787,7 +792,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-22-draft-banner-cleared-after-publish"
+BUILD_VERSION = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1132,10 +1137,16 @@ TRANSFER_DUPLICATE_AND_CREATE_CHOICE = "Transfer (duplicate & create missing rev
 # "can we do the same for Transport. Changing the Destination of the original Transport ID,
 # adopting the Name and adopting the Description." Transport has the same missing-create-path
 # problem as Transfer did - see builder.build_transport_swap_payload's own docstring for the
-# swap logic (and why it needs an extra api_client lookup Transfer's version doesn't). Transport
-# has no missing-reverse-direction scan yet, so it stays its own single-record duplicate-by-id
-# destination for now (the natural next step once the combined Transfer screen is proven out).
-DUPLICATE_TRANSPORT_CHOICE = "Transport (duplicate an existing one & swap destinations)"
+# swap logic (and why it needs an extra api_client lookup Transfer's version doesn't).
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-22, verbatim): "when duplicating transfer, I can
+# select the supplier and then direct I can scan this supplier for missing transfers - that
+# should be exactly the same for transport. currently I can only dubilicate one transpport at
+# the time, but that is not practical." Transport now gets the exact same combined shape Transfer
+# already has - pick a supplier once, scan for missing reverse-direction routes with select-all/
+# select-none batch creation (the primary path), with the manual duplicate-by-id flow kept
+# underneath for a record the automatic scan doesn't catch - see
+# flows/transport_duplicate_and_create.py's own docstring.
+DUPLICATE_TRANSPORT_CHOICE = "Transport (duplicate & create missing reverse-direction transports)"
 
 if "active_tool" not in st.session_state:
     st.session_state.active_tool = None
@@ -1331,8 +1342,11 @@ if st.session_state.product_type is None:
         if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
             st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
             st.rerun()
-        st.caption("Same idea, for Transport - clones an existing published Transport (parent "
-                  "record AND every occupancy bracket) with the route swapped.")
+        st.caption("Same idea, for Transport. Pick a supplier: the app scans every live "
+                  "Transport and lists every route with no reverse-direction pair yet, so you "
+                  "can Select all/Select none and create them as a batch (parent record AND "
+                  "every occupancy bracket, route swapped) - or duplicate one specific "
+                  "Transport by id instead.")
 
     with st.expander("🔧 Manage an existing product", expanded=False):
         if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
@@ -1384,7 +1398,7 @@ if st.session_state.product_type == TRANSFER_DUPLICATE_AND_CREATE_CHOICE:
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:
-    render_duplicate_transport_flow(client)
+    render_transport_duplicate_and_create_flow(client)
     st.stop()
 
 if st.session_state.product_type == "Ticket":

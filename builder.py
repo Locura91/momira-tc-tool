@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-22-draft-banner-cleared-after-publish"
+MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
 
 import copy
 import math

@@ -438,12 +438,24 @@ def test_parent_is_linked_to_the_real_option_codes_via_a_follow_up_update_after_
 
 
 def test_step_1_create_menu_offers_the_duplicate_transport_choice():
+    # UPDATE (2026-09-22): DUPLICATE_TRANSPORT_CHOICE now routes to the combined scan+duplicate
+    # screen (render_transport_duplicate_and_create_flow) instead of calling
+    # render_duplicate_transport_flow directly - see
+    # tests/test_2026_09_22_transport_missing_reverse_and_duplicate_combined.py for the full
+    # coverage of that change. render_duplicate_transport_flow itself is unchanged and still used
+    # by the combined screen's manual duplicate-by-id fallback (via its own
+    # _render_duplicate_transport_body split).
     src = _read_app_py()
     assert "DUPLICATE_TRANSPORT_CHOICE" in src
     assert "pt_choice_duplicate_transport" in src
-    assert "render_duplicate_transport_flow(client)" in src
+    assert "render_transport_duplicate_and_create_flow(client)" in src
 
 
-def test_duplicate_transport_flow_is_imported_from_its_own_module():
+def test_duplicate_transport_flow_module_still_exists_for_the_manual_fallback():
+    # UPDATE (2026-09-22): app.py no longer imports render_duplicate_transport_flow directly
+    # (same pattern already established for Transfer's own combined flow) - it's reached through
+    # flows/transport_duplicate_and_create.py's import of the module's
+    # _render_duplicate_transport_body instead.
     src = _read_app_py()
-    assert "from flows.duplicate_transport import render_duplicate_transport_flow" in src
+    assert "from flows.duplicate_transport import render_duplicate_transport_flow" not in src
+    assert "from flows.transport_duplicate_and_create import render_transport_duplicate_and_create_flow" in src

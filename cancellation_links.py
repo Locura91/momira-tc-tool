@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-22-draft-banner-cleared-after-publish"
+MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
 
 _NAMESPACE = "cancellation_links"
 

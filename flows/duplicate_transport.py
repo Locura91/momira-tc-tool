@@ -49,6 +49,13 @@ from app_helpers import _ur_pick_momira_supplier, show_publish_error
 
 
 def render_duplicate_transport_flow(client):
+    """Standalone entry point - picks its own supplier, then renders the pick/review/publish body
+    below. Kept for backward compatibility with this module's own test suite; the combined Step 1
+    menu entry (flows/transport_duplicate_and_create.py, 2026-09-22) instead picks ONE supplier
+    shared with the automated missing-transports scan and calls
+    _render_duplicate_transport_body(client, supplier_id) directly, so the human never sees two
+    separate supplier pickers on what is now one screen - mirrors flows/duplicate_transfer.py's
+    own 2026-09-17 split for the exact same reason."""
     st.header("🧬 New Transport — duplicate an existing one & swap destinations")
     if st.button("🔙 Back to Step 1", key="dtp_back"):
         st.session_state.product_type = None
@@ -64,6 +71,14 @@ def render_duplicate_transport_flow(client):
     if not supplier_id:
         return
 
+    _render_duplicate_transport_body(client, supplier_id)
+
+
+def _render_duplicate_transport_body(client, supplier_id):
+    """Everything after the supplier is already known - split out (2026-09-22) so the combined
+    Transport create screen can share ONE supplier pick with the automated missing-transports scan
+    instead of rendering two separate pickers. See render_duplicate_transport_flow's own
+    docstring."""
     if st.session_state.get("dtp_supplier_id") != supplier_id:
         # Supplier changed - drop everything picked/loaded for the previous one, same as every
         # other flow in this app does when the supplier selection changes underneath it.

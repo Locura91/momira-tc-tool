@@ -117,12 +117,15 @@ def test_app_py_imports_the_combined_flow_not_the_two_standalone_ones():
     assert "from flows.missing_transfers import render_missing_transfers_flow" not in src
 
 
-def test_transport_duplicate_menu_entry_is_untouched():
-    # Only the two Transfer entries were merged - Transport's own duplicate-by-id destination
-    # (no scan yet) must be unaffected.
+def test_transport_duplicate_menu_entry_still_exists():
+    # UPDATE (2026-09-22): Transport got the same combined scan+duplicate-by-id treatment
+    # Transfer has here - DUPLICATE_TRANSPORT_CHOICE now routes to
+    # render_transport_duplicate_and_create_flow instead of the old single-record-only
+    # render_duplicate_transport_flow. See test_2026_09_22_transport_missing_reverse_and_duplicate_combined.py
+    # for the full coverage of that change; this just confirms the menu entry itself survived.
     src = _read(_APP_PY)
     assert "DUPLICATE_TRANSPORT_CHOICE" in src
-    assert "render_duplicate_transport_flow(client)" in src
+    assert "render_transport_duplicate_and_create_flow(client)" in src
 
 
 # ---------------------------------------------------------------------------------------------

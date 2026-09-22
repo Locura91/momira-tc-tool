@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-22-draft-banner-cleared-after-publish"
+MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
 
 _NAMESPACE = "translation_state"
 

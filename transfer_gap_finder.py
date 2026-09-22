@@ -32,14 +32,17 @@ are recognized as the same place) PLUS vehicleType, since a supplier commonly se
 one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cairo City) and
 those are genuinely separate products, not duplicates of each other.
 """
-MODULE_BUILD = "2026-09-22-draft-banner-cleared-after-publish"
+MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
 
 from typing import Any, Dict, List, Optional
 
 from text_normalize import normalize_name
-from builder import build_transfer_swap_payload, build_transport_swap_payload
+from builder import (
+    build_transfer_swap_payload, build_transport_swap_payload, build_transport_option_swap_payload,
+)
 from ai_extractor import rewrite_route_description_for_new_direction
 from ui_components import _html_to_plain_for_editing, _plain_to_html_for_saving
+import transport_matcher
 
 
 def _route_signature(transfer: Dict[str, Any]):
@@ -163,3 +166,180 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     payload["datasheets"] = datasheets
 
     return payload, swap_report, route_info
+
+
+# ============================================================================
+# TRANSPORT: missing-reverse-direction scan + batch create
+# ============================================================================
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-09-22): "when duplicating transfer, I can select the
+# supplier and then direct I can scan this supplier for missing transfers - that should be
+# exactly the same for transport. currently I can only dubilicate one transpport at the time,
+# but that is not practical." Direct Transport counterpart to find_missing_reverse_transfers/
+# the batch-create loop in flows/missing_transfers.py, wired the same way as the rest of this
+# module already pairs a Transfer function with its Transport counterpart just above.
+def _transport_route_signature(transport: Dict[str, Any]) -> Optional[tuple]:
+    """Unlike Transfer's departure/arrival name objects, a Transport's route lives only as
+    location CODES on its segments (see build_transport_swap_payload's own docstring) - the
+    overwhelming norm is a single segment even for a combined multi-leg journey, so segments[0]/
+    segments[-1] (matching build_transport_swap_payload's own old_departure_code/old_arrival_code
+    reads) is the same "good enough for the common case" boundary already accepted there. Codes
+    are compared directly (no name normalization needed - a code IS the canonical identifier,
+    unlike Transfer's free-text location name). transportType (CAR/PLANE/COMBINED) is Transport's
+    equivalent of Transfer's vehicleType - same reasoning: a supplier can sell the same route by
+    more than one transport type, and those are genuinely separate products, not duplicates.
+    Returns None (never paired, never flagged as a false gap) for a transport with no segments or
+    a missing departure/arrival code on the first/last segment."""
+    segments = transport.get("segments") or []
+    if not segments:
+        return None
+    dep_code = (segments[0].get("departureLocationCode") or "").strip()
+    arr_code = (segments[-1].get("arrivalLocationCode") or "").strip()
+    if not dep_code or not arr_code:
+        return None
+    transport_type = (transport.get("transportType") or "").strip().lower()
+    return dep_code, arr_code, transport_type
+
+
+def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client) -> List[Dict[str, Any]]:
+    """Given a supplier's full live transport list (exactly what GET /transport/{supplierId}
+    returns), returns one entry per transport whose exact reverse route is NOT present elsewhere
+    in the same list - same exact-match-only pairing rule confirmed for Transfer
+    (find_missing_reverse_transfers's own docstring: "The route can not be touched, just
+    swapped"), applied to location codes instead of names:
+
+        {"source": transport, "missing_from_name": str, "missing_to_name": str,
+         "transport_type": str}
+
+    Deliberately excludes any transport whose 'active' field is explicitly False, same as the
+    Transfer version.
+
+    api_client is used ONLY to resolve each location CODE to a human-readable name for display
+    (via api_client.resolve_transport_base - the same resolver build_transport_swap_payload's own
+    code already uses) - the actual gap-matching itself never needs a name, only the code. Each
+    distinct code is resolved at most once per call (cached locally), so a supplier with hundreds
+    of transports sharing a handful of real bases costs a handful of lookups, not hundreds - the
+    scan step overall is still a small, bounded number of HTTP calls, never one per transport, so
+    it can't run away regardless of supplier size."""
+    live = [t for t in (transports or []) if t.get("active") is not False]
+    signatures = {sig for sig in (_transport_route_signature(t) for t in live) if sig}
+
+    name_cache: Dict[str, str] = {}
+
+    def _resolve_name(code: str) -> str:
+        if not code:
+            return code
+        if code in name_cache:
+            return name_cache[code]
+        try:
+            result = api_client.resolve_transport_base(code)
+        except Exception:
+            result = None
+        name = result["name"] if isinstance(result, dict) and result.get("valid") and result.get("name") else code
+        name_cache[code] = name
+        return name
+
+    gaps = []
+    for t in live:
+        sig = _transport_route_signature(t)
+        if not sig:
+            continue
+        dep_code, arr_code, transport_type = sig
+        reverse_signature = (arr_code, dep_code, transport_type)
+        if reverse_signature not in signatures:
+            gaps.append({
+                "source": t,
+                "missing_from_name": _resolve_name(arr_code),
+                "missing_to_name": _resolve_name(dep_code),
+                "transport_type": t.get("transportType") or "",
+            })
+    return gaps
+
+
+def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any]) -> Dict[str, Any]:
+    """Builds and publishes ONE new Transport as the swapped-direction duplicate of `source`,
+    including every one of its existing occupancy-bracket Options - the exact same fetch-source-
+    options / build-swap / create-parent-inactive / create-options / link-and-activate sequence
+    flows/duplicate_transport.py's own Publish button uses (see that flow's own module docstring
+    for the two confirmed production bugs this sequence exists to avoid: a stale-optionCodes null
+    PK on the parent create, and Travel Compositor's "must add at least one modality" rejection of
+    an active parent with zero Options yet). Used by flows/missing_transports.py's batch-create
+    loop, where there is no human review step in between - CONFIRMED PRODUCT-OWNER REQUEST
+    (2026-09-22): "that should be exactly the same for transport" as Transfer's missing-transfers
+    batch create, which likewise publishes each accepted gap directly with no per-item review.
+
+    Returns {"status": "created"|"partial"|"created_unlinked"|"failed", "name": str,
+             "new_id": str|None, "route": str|None, "detail": str|None} - "partial" means the
+    parent and SOME occupancy brackets published but at least one bracket failed; "created_unlinked"
+    means every bracket published but the follow-up PUT that links/activates the parent failed
+    (the brackets themselves are NOT lost - the caller's message should point the human at the new
+    id to fix in Travel Compositor directly, same as the single-transport flow's own equivalent
+    warning)."""
+    source_options = []
+    for opt_code in (source.get("optionCodes") or []):
+        opt = client.get_transport_option(supplier_id, source.get("id"), opt_code)
+        if isinstance(opt, dict) and "error" not in opt:
+            source_options.append(opt)
+        # A single occupancy bracket failing to fetch is not fatal to the whole gap - matches
+        # flows/duplicate_transport.py's own _fetch_source_and_options, which only warns and
+        # carries on rather than aborting the whole duplicate.
+
+    payload, _swap_report, route_info = build_and_rewrite_transport_swap_payload(source, client)
+    new_dep_name = route_info.get("new_departure_name", "")
+    new_arr_name = route_info.get("new_arrival_name", "")
+    label = source.get("name") or f"{new_dep_name} → {new_arr_name}"
+    route_label = f"{new_dep_name} → {new_arr_name}"
+
+    duplicated_options = [
+        build_transport_option_swap_payload(opt, new_dep_name, new_arr_name) for opt in source_options
+    ]
+    payload["optionCodes"] = []
+    payload["active"] = False
+
+    try:
+        result = client.create_transport(supplier_id, payload)
+    except Exception as e:
+        return {"status": "failed", "name": label, "new_id": None, "route": None, "detail": str(e)}
+    if isinstance(result, dict) and "error" in result:
+        return {"status": "failed", "name": label, "new_id": None, "route": None,
+                "detail": result.get("message", result)}
+    new_id = result.get("id") if isinstance(result, dict) else None
+    if not new_id:
+        return {"status": "failed", "name": label, "new_id": None, "route": None,
+                "detail": "created but no id came back from Travel Compositor"}
+
+    failed_options = []
+    created_codes = []
+    for opt in duplicated_options:
+        opt_result = client.create_transport_option(supplier_id, new_id, opt)
+        if isinstance(opt_result, dict) and "error" in opt_result:
+            failed_options.append((opt.get("code"), opt_result))
+        else:
+            created_codes.append(opt.get("code"))
+
+    if created_codes:
+        link_payload = dict(payload)
+        link_payload["id"] = new_id
+        link_payload["optionCodes"] = created_codes
+        link_payload["active"] = True
+        link_result = client.update_transport(supplier_id, link_payload)
+        if isinstance(link_result, dict) and "error" in link_result:
+            transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
+            return {"status": "created_unlinked", "name": label, "new_id": new_id, "route": route_label,
+                    "detail": f"couldn't link occupancy bracket(s) to the parent: "
+                              f"{link_result.get('message', link_result)}"}
+    elif duplicated_options:
+        # Every occupancy bracket failed to publish - the parent is still sitting at
+        # active=False (correctly - it genuinely has no modalities yet).
+        transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
+        return {"status": "partial", "name": label, "new_id": new_id, "route": route_label,
+                "detail": "every occupancy bracket failed to publish - the transport was left "
+                          "inactive in Travel Compositor (add at least one bracket manually, "
+                          "then activate it there)"}
+
+    transport_matcher.remember_transport_id(supplier_id, new_dep_name, new_arr_name, new_id)
+    if failed_options:
+        return {"status": "partial", "name": label, "new_id": new_id, "route": route_label,
+                "detail": f"{len(failed_options)} of {len(duplicated_options)} occupancy "
+                          f"bracket(s) failed to publish: " +
+                          ", ".join(code or "?" for code, _err in failed_options)}
+    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": None}
