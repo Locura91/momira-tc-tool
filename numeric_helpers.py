@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
+MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
 
 
 def _safe_float(value, fallback=0.0):

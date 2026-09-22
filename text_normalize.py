@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
+MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
 
 
 def normalize_name(s: Optional[str]) -> str:

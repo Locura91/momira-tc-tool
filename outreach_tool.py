@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
+MODULE_BUILD = "2026-09-22-outreach-contacted-before-second-column"
 
 import csv
 import io
@@ -942,15 +942,20 @@ def _render_review_and_send():
                    "you deliberately want to reach out again.")
 
     if suppliers:
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-22, verbatim): "the contracted before button on
+        # the outreach shall be on the second column as this is important to know." Previously
+        # "Contacted before" sat second-to-last (after Rating, before Why selected) where it was
+        # easy to miss; it's now right after "Send" so a repeat-contact flag is the first thing an
+        # operator sees, not the last.
         df = pd.DataFrame([{
             "Send": s["selected"],
+            "Contacted before": "🔁" if s.get("alreadyContacted") else "",
             "Name": s["name"],
             "Email": s["email"] or "",
             "Website": s["website"] or "",
             "Social": s["social"] or "",
             "Listing": s["listingUrl"] or "",
             "Rating": s["rating"],
-            "Contacted before": "🔁" if s.get("alreadyContacted") else "",
             "Why selected": s["selectionReason"],
         } for s in suppliers])
 
