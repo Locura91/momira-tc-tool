@@ -63,6 +63,7 @@ from sync_transport import (
 from sync_hotel import sync_hotel, fetch_all_hotels
 from sync_closed_tour import sync_closed_tour
 from api_client import describe_tc_fetch_error
+from bulk_notes import label_for as _label_for_closed_tour
 
 
 # Reduced from 30 to 19 target languages per the product owner: removed
@@ -148,6 +149,85 @@ def _scope_picker(entity_label, specific_label, example, key_prefix):
     return is_all, specific_value, limit
 
 
+def _closed_tour_bulk_picker(supplier_id):
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-21, verbatim): "Translating Closed Tours must
+    work in bulk. Human selects an Supplier, the app shows a list with all closedtours, human
+    can select all, or select none and then starts the translation."
+
+    Travel Compositor exposes no endpoint that lists a supplier's Closed Tours - confirmed
+    elsewhere in this codebase for the identical reason (see bulk_notes.needs_manual_codes,
+    price_refresh.py's own ClosedTour scope-out, and flows/manual_information.py's "paste the
+    tour codes, one per line" box). There is no way to auto-discover "all closed tours for this
+    supplier" - so "the app shows a list" means: a human pastes the known codes ONCE (they
+    already know their own supplier's codes - the same information they'd otherwise be typing
+    into a single "Closed Tour Code" box one at a time), the app fetches each and turns it into
+    the same kind of checkable list every other entity type already gets from a real listing
+    endpoint, complete with Select all / Select none.
+
+    Returns the list of currently-checked Closed Tour codes.
+    """
+    st.caption("Travel Compositor has no endpoint that lists a supplier's Closed Tours, so they "
+              "can't be found automatically - paste the codes you want to translate, one per "
+              "line, then fetch them to build the selectable list below.")
+    raw_codes = st.text_area("Closed Tour codes", key="tr_ct_codes_raw", height=100,
+                             placeholder="TNR-03\nASW-CT1\nCAI-CT2")
+    pasted_codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+
+    if st.button("🔍 Fetch list", key="tr_ct_fetch", disabled=not (supplier_id and pasted_codes)):
+        api = TranslationTCAPI()
+        candidates = []
+        for code in pasted_codes:
+            entry = api.get_closed_tour(supplier_id, code)
+            if isinstance(entry, dict) and "error" in entry:
+                candidates.append({"code": code, "name": None, "found": False,
+                                   "detail": describe_tc_fetch_error(entry, f"closed tour {code!r}")})
+            else:
+                candidates.append({"code": code, "name": _label_for_closed_tour(entry, "ClosedTour"),
+                                   "found": True, "detail": None})
+        st.session_state.tr_ct_candidates = candidates
+        st.session_state.tr_ct_candidates_supplier = supplier_id
+        for c in candidates:
+            st.session_state[f"tr_ct_pick_{c['code']}"] = True  # on default all are marked, same
+            # defaults-to-everything shape as the target-languages checklist below.
+
+    candidates = st.session_state.get("tr_ct_candidates") or []
+    # A supplier switch invalidates the previous fetch - showing supplier A's tours as
+    # selectable while about to translate for supplier B would be a silent cross-supplier bug.
+    if st.session_state.get("tr_ct_candidates_supplier") != supplier_id:
+        candidates = []
+
+    if not candidates:
+        return []
+
+    found = [c for c in candidates if c["found"]]
+    not_found = [c for c in candidates if not c["found"]]
+    if not_found:
+        st.warning("Couldn't fetch " + ", ".join(f"**{c['code']}**" for c in not_found) + " - "
+                  "double-check the code(s). " + "; ".join(c["detail"] for c in not_found if c["detail"]))
+
+    if found:
+        st.write(f"**{len(found)}** closed tour(s) found:")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Select all", key="tr_ct_select_all"):
+                for c in found:
+                    st.session_state[f"tr_ct_pick_{c['code']}"] = True
+        with c2:
+            if st.button("Select none", key="tr_ct_select_none"):
+                for c in found:
+                    st.session_state[f"tr_ct_pick_{c['code']}"] = False
+
+        selected = []
+        for c in found:
+            picked = st.checkbox(f"{c['code']} — {c['name']}", key=f"tr_ct_pick_{c['code']}")
+            if picked:
+                selected.append(c["code"])
+        st.caption(f"**{len(selected)}** of {len(found)} selected.")
+        return selected
+
+    return []
+
+
 def render_translation_tool():
     """
     Translation Sync tool. Takes products that ALREADY exist in Travel
@@ -176,7 +256,8 @@ def render_translation_tool():
 
     supplier_id = None
     microsite_id = None
-    package_id = ticket_code = transfer_id = transport_id = provider_code = closed_tour_code = None
+    package_id = ticket_code = transfer_id = transport_id = provider_code = None
+    closed_tour_codes = []
     is_all = False
     limit = None
 
@@ -208,9 +289,7 @@ def render_translation_tool():
 
     else:  # Closed Tours
         supplier_id = _supplier_picker("tr_ct")
-        closed_tour_code = st.text_input("Closed Tour Code", placeholder="e.g. TNR-03", key="tr_ct_code")
-        st.caption("Travel Compositor has no bulk listing endpoint for Closed Tours, so these are done one "
-                  "code at a time. A wrong code gives a clear 'not found' message rather than a raw API error.")
+        closed_tour_codes = _closed_tour_bulk_picker(supplier_id)
 
     st.header("Translate — Step 4: Languages & run")
 
@@ -482,27 +561,42 @@ def render_translation_tool():
 
         # ---- Closed Tours ----
         else:
-            if not closed_tour_code:
-                st.error("Enter a Closed Tour Code first.")
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-21): bulk, over the checked selection from
+            # _closed_tour_bulk_picker - "Keep in mind, the translation might take a while,
+            # because the text is long", so this logs per-tour progress exactly like the other
+            # bulk entity types above, rather than blocking silently until everything is done.
+            if not closed_tour_codes:
+                st.error("Fetch the closed tour list and select at least one before translating.")
                 return
-            log_message(f"📋 Checking closed tour {closed_tour_code} for supplier {supplier_id}...")
-            result = sync_closed_tour(api, translator, store, supplier_id, closed_tour_code,
-                                       target_languages, dry_run=False, force=force)
-            if result.get("status") == "not_found":
-                st.error(f"❌ {result.get('reason', 'Closed tour not found.')}")
-                log_message(f"   ❌ Not found: {closed_tour_code}")
-            elif result.get("status") == "fetch_failed":
-                # CONFIRMED REAL INCIDENT (2026-08-25): TNR-01/supplier 50370 failed with a raw
-                # Java NullPointerException nested in the error body - see
-                # api_client.describe_tc_fetch_error's own docstring for the full incident and
-                # why this is a bug on Travel Compositor's side, not this tool's or the code
-                # entered. Surfaced here the same way not_found already is, instead of leaving
-                # the human to decode a raw stack trace themselves in the "Full result" expander.
-                st.error(f"❌ {describe_tc_fetch_error(result.get('detail'), f'closed tour {closed_tour_code!r}')}")
-                log_message(f"   ❌ Fetch failed: {closed_tour_code}")
-            else:
-                log_message(f"   → {result.get('status', 'unknown')}")
-            results = [result]
+            log_message(f"📋 Translating {len(closed_tour_codes)} closed tour(s) for supplier {supplier_id}...")
+            progress_placeholder = st.empty()
+
+            for idx, code in enumerate(closed_tour_codes):
+                progress_placeholder.write(f"🔄 Processing closed tour {idx + 1}/{len(closed_tour_codes)}: **{code}**")
+                log_message(f"🔄 Processing closed tour {idx + 1}/{len(closed_tour_codes)}: {code}")
+
+                result = sync_closed_tour(api, translator, store, supplier_id, code,
+                                           target_languages, dry_run=False, force=force)
+                if result.get("status") == "not_found":
+                    log_message(f"   ❌ Not found: {code}")
+                elif result.get("status") == "fetch_failed":
+                    # CONFIRMED REAL INCIDENT (2026-08-25): TNR-01/supplier 50370 failed with a raw
+                    # Java NullPointerException nested in the error body - see
+                    # api_client.describe_tc_fetch_error's own docstring for the full incident and
+                    # why this is a bug on Travel Compositor's side, not this tool's or the code
+                    # entered.
+                    log_message(f"   ❌ Fetch failed: {describe_tc_fetch_error(result.get('detail'), f'closed tour {code!r}')}")
+                else:
+                    log_message(f"   → {result.get('status', 'unknown')}")
+                    if result.get("options"):
+                        up_to_date = sum(1 for r in result["options"] if r.get("status") == "up_to_date")
+                        updated = sum(1 for r in result["options"] if r.get("status") == "updated")
+                        skipped = sum(1 for r in result["options"] if r.get("status") == "skipped")
+                        log_message(f"      Options: {len(result['options'])} total, {up_to_date} up-to-date, "
+                                    f"{updated} updated, {skipped} skipped")
+                results.append(result)
+                log_message(f"   ✅ Finished closed tour {code}")
+            progress_placeholder.empty()
 
     # ---- Summary ----
     by_status = {}

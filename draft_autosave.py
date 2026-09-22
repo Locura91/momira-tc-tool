@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
+MODULE_BUILD = "2026-09-22-closedtour-bulk-translation"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

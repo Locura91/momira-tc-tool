@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
+MODULE_BUILD = "2026-09-22-closedtour-bulk-translation"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
+MODULE_BUILD = "2026-09-22-closedtour-bulk-translation"
 
 
 def _safe_float(value, fallback=0.0):
