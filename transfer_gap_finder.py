@@ -32,7 +32,7 @@ are recognized as the same place) PLUS vehicleType, since a supplier commonly se
 one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cairo City) and
 those are genuinely separate products, not duplicates of each other.
 """
-MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
+MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
 
 from typing import Any, Dict, List, Optional
 
@@ -177,18 +177,18 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
 # but that is not practical." Direct Transport counterpart to find_missing_reverse_transfers/
 # the batch-create loop in flows/missing_transfers.py, wired the same way as the rest of this
 # module already pairs a Transfer function with its Transport counterpart just above.
-def _transport_route_signature(transport: Dict[str, Any]) -> Optional[tuple]:
-    """Unlike Transfer's departure/arrival name objects, a Transport's route lives only as
-    location CODES on its segments (see build_transport_swap_payload's own docstring) - the
-    overwhelming norm is a single segment even for a combined multi-leg journey, so segments[0]/
-    segments[-1] (matching build_transport_swap_payload's own old_departure_code/old_arrival_code
-    reads) is the same "good enough for the common case" boundary already accepted there. Codes
-    are compared directly (no name normalization needed - a code IS the canonical identifier,
-    unlike Transfer's free-text location name). transportType (CAR/PLANE/COMBINED) is Transport's
-    equivalent of Transfer's vehicleType - same reasoning: a supplier can sell the same route by
-    more than one transport type, and those are genuinely separate products, not duplicates.
-    Returns None (never paired, never flagged as a false gap) for a transport with no segments or
-    a missing departure/arrival code on the first/last segment."""
+def _transport_route_codes(transport: Dict[str, Any]) -> Optional[tuple]:
+    """Reads the raw (dep_code, arr_code, transport_type) off a Transport's segments - a pure
+    structural read, no resolution and no matching decision of its own (see
+    find_missing_reverse_transports for why the actual gap-matching does NOT compare these raw
+    codes directly). The overwhelming norm is a single segment even for a combined multi-leg
+    journey, so segments[0]/segments[-1] (matching build_transport_swap_payload's own
+    old_departure_code/old_arrival_code reads) is the same "good enough for the common case"
+    boundary already accepted there. transportType (CAR/PLANE/COMBINED) is Transport's equivalent
+    of Transfer's vehicleType - a supplier can sell the same route by more than one transport
+    type, and those are genuinely separate products, not duplicates. Returns None (never paired,
+    never flagged as a false gap) for a transport with no segments or a missing departure/arrival
+    code on the first/last segment."""
     segments = transport.get("segments") or []
     if not segments:
         return None
@@ -205,7 +205,7 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
     returns), returns one entry per transport whose exact reverse route is NOT present elsewhere
     in the same list - same exact-match-only pairing rule confirmed for Transfer
     (find_missing_reverse_transfers's own docstring: "The route can not be touched, just
-    swapped"), applied to location codes instead of names:
+    swapped"):
 
         {"source": transport, "missing_from_name": str, "missing_to_name": str,
          "transport_type": str}
@@ -213,15 +213,34 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
     Deliberately excludes any transport whose 'active' field is explicitly False, same as the
     Transfer version.
 
-    api_client is used ONLY to resolve each location CODE to a human-readable name for display
-    (via api_client.resolve_transport_base - the same resolver build_transport_swap_payload's own
-    code already uses) - the actual gap-matching itself never needs a name, only the code. Each
-    distinct code is resolved at most once per call (cached locally), so a supplier with hundreds
-    of transports sharing a handful of real bases costs a handful of lookups, not hundreds - the
-    scan step overall is still a small, bounded number of HTTP calls, never one per transport, so
-    it can't run away regardless of supplier size."""
+    CONFIRMED REAL BUG (product owner, 2026-09-22, screenshot from the first live test): a Luxor
+    -> Hurghada Transport and its already-published Hurghada -> Luxor reverse - sitting right next
+    to each other in the scanned list - were BOTH wrongly flagged as missing each other. Root
+    cause: the first version of this matched on the raw location CODE (on the theory that "a code
+    IS the canonical identifier", unlike Transfer's free-text location name). Real Travel
+    Compositor master data proved that assumption wrong - the same real-world place ("Luxor City
+    Center") can carry more than one Transport Base code, so a departure using one code and an
+    arrival elsewhere using a different code for what is visibly the same place never matched by
+    code, even though they were plainly each other's reverse to a human reading the resolved
+    names. FIXED to match the exact same way Transfer already does (find_missing_reverse_transfers's
+    own MATCH KEY): on the RESOLVED, NORMALIZED display name (api_client.resolve_transport_base +
+    text_normalize.normalize_name - same normalization already used everywhere else in this app
+    for exactly this "same place, different spelling/whitespace/code" problem), not the raw code.
+    A transport whose code fails to resolve at all falls back to the raw code as its "name" (see
+    _resolve_name below) - it can still match another transport that resolves to the identical
+    raw code, just not one that resolves to a different code for the same real place; that residual
+    gap is a real Travel Compositor master-data quirk this scan can't see past, and is why this
+    function's flags should be reviewed by a human before batch-creating, exactly as the UI already
+    has them do (select all/select none, never an unattended auto-create).
+
+    api_client is used to resolve each location CODE to a human-readable name - both for display
+    AND now for the match itself (api_client.resolve_transport_base - the same resolver
+    build_transport_swap_payload's own code already uses). Each distinct code is resolved at most
+    once per call (cached locally), so a supplier with hundreds of transports sharing a handful of
+    real bases costs a handful of lookups, not hundreds - the scan step overall is still a small,
+    bounded number of HTTP calls, never one per transport, so it can't run away regardless of
+    supplier size."""
     live = [t for t in (transports or []) if t.get("active") is not False]
-    signatures = {sig for sig in (_transport_route_signature(t) for t in live) if sig}
 
     name_cache: Dict[str, str] = {}
 
@@ -238,14 +257,29 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
         name_cache[code] = name
         return name
 
+    def _name_signature(t):
+        codes = _transport_route_codes(t)
+        if not codes:
+            return None
+        dep_code, arr_code, transport_type = codes
+        dep_name = normalize_name(_resolve_name(dep_code))
+        arr_name = normalize_name(_resolve_name(arr_code))
+        if not dep_name or not arr_name:
+            return None
+        return dep_name, arr_name, transport_type
+
+    signatures = {sig for sig in (_name_signature(t) for t in live) if sig}
+
     gaps = []
     for t in live:
-        sig = _transport_route_signature(t)
+        sig = _name_signature(t)
         if not sig:
             continue
-        dep_code, arr_code, transport_type = sig
-        reverse_signature = (arr_code, dep_code, transport_type)
+        dep_name_norm, arr_name_norm, transport_type = sig
+        reverse_signature = (arr_name_norm, dep_name_norm, transport_type)
         if reverse_signature not in signatures:
+            codes = _transport_route_codes(t)
+            dep_code, arr_code, _ = codes
             gaps.append({
                 "source": t,
                 "missing_from_name": _resolve_name(arr_code),

@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
+MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
 
 
 def normalize_name(s: Optional[str]) -> str:

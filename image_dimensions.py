@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
+MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

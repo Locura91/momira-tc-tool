@@ -28,6 +28,7 @@ import os
 
 from builder import (
     build_transport_swap_payload, build_transport_option_swap_payload, _generate_transport_option_code,
+    _swap_route_text,
 )
 
 
@@ -168,6 +169,44 @@ def test_name_and_datasheet_name_read_in_the_new_direction_matching_product_owne
     assert payload["datasheets"]["EN"]["name"] == "One-way transfer Alexandria Airport (ALY) to Marsa Matruh"
     assert report["name"] is True
     assert report["datasheet_name"] is True
+
+
+def test_swap_route_text_with_suffix_on_fallback_false_leaves_unmatched_text_unchanged():
+    # Direct unit test of the new parameter (CONFIRMED PRODUCT-OWNER FEEDBACK, 2026-09-22: "dont
+    # add return to the Name of the Transport when duplicate them") - Transfer's own default
+    # (suffix_on_fallback=True, unpassed) is covered separately in
+    # test_2026_09_16_duplicate_transfer_swap_destinations.py and is untouched by this change.
+    assert _swap_route_text("Airport Pickup Service", "Cairo Airport", "Hotel Le Meridien",
+                            suffix_on_fallback=False) == "Airport Pickup Service"
+    assert _swap_route_text("", "Cairo Airport", "Hotel Le Meridien", suffix_on_fallback=False) == ""
+
+
+def test_swap_route_text_with_suffix_on_fallback_false_still_swaps_a_matching_route():
+    # The fix only changes the FALLBACK behavior - a name that genuinely does contain both
+    # locations still swaps correctly either way.
+    assert _swap_route_text("Cairo Airport to Hotel Le Meridien", "Cairo Airport", "Hotel Le Meridien",
+                            suffix_on_fallback=False) == "Hotel Le Meridien to Cairo Airport"
+
+
+def test_name_that_does_not_mention_the_route_is_rebuilt_as_from_to_not_suffixed_with_return():
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the
+    # Transport when duplicate them." Then, same day, a follow-up: "never write '(return)' just
+    # better rewrite the correct name: Always FORM - TO, accodingly to the Itinarary." Before
+    # this fix, a name/datasheet name that didn't literally contain the route (neither the formal
+    # Transport Base name nor a shortened alias) fell back to builder._swap_route_text's own
+    # "(return)" suffix. Now it's rebuilt outright as "<new departure> - <new arrival>" (the
+    # resolved itinerary's new direction) instead of either the stale old-direction text or a
+    # "(return)" suffix.
+    source = _real_transport_get_response()
+    source["name"] = "AC First Class Airport Transfer"
+    source["datasheets"]["EN"]["name"] = "AC First Class Airport Transfer"
+    payload, report, route_info = build_transport_swap_payload(source, _FakeApiClient())
+    expected = f"{route_info['new_departure_name']} - {route_info['new_arrival_name']}"
+    assert payload["name"] == expected == "Alexandria Airport (ALY) - Marsa Matruh"
+    assert payload["datasheets"]["EN"]["name"] == expected
+    assert "(return)" not in payload["name"]
+    assert "(return)" not in payload["datasheets"]["EN"]["name"]
+    assert "AC First Class Airport Transfer" not in payload["name"]
 
 
 def test_description_is_swapped_when_it_names_the_route():

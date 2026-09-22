@@ -123,6 +123,36 @@ def test_different_transport_types_on_the_same_route_are_not_confused_for_each_o
     assert len(gaps) == 2
 
 
+def test_real_bug_two_different_codes_for_the_same_display_name_still_pair_up():
+    # CONFIRMED REAL PRODUCT-OWNER BUG (2026-09-22, screenshot from the first live test): "Luxor
+    # - Hurghada" and its reverse "Hurghada - Luxor" sat right next to each other in the scanned
+    # list, yet BOTH were flagged as missing each other. The two Transports use two different
+    # Travel Compositor location codes that both happen to resolve to the display name "Luxor
+    # City Center" - matching on raw code (the original approach) never paired them; matching on
+    # the resolved, normalized NAME (like Transfer already does) does.
+    client = _FakeClient(resolve_names={
+        "LXR-CTR-A": "Luxor City Center", "LXR-CTR-B": "  luxor  city center ",  # same place, different code + casing/whitespace
+        "HGD-CTR": "Hurghada City Center",
+    })
+    transports = [
+        _transport("TRANSPORT-406543", "LXR-CTR-A", "HGD-CTR"),  # Luxor -> Hurghada
+        _transport("TRANSPORT-415965", "HGD-CTR", "LXR-CTR-B"),  # Hurghada -> Luxor (different Luxor code)
+    ]
+    gaps = transfer_gap_finder.find_missing_reverse_transports(transports, client)
+    assert gaps == []
+
+
+def test_two_genuinely_different_places_that_merely_share_no_code_are_still_flagged():
+    # Sanity check the fix didn't turn into "always match" - two really different places must
+    # still be flagged as missing their reverse.
+    client = _FakeClient(resolve_names={"CAI": "Cairo Airport", "HTL1": "Hotel Le Meridien"})
+    transports = [_transport("TRANSPORT-1", "CAI", "HTL1")]
+    gaps = transfer_gap_finder.find_missing_reverse_transports(transports, client)
+    assert len(gaps) == 1
+    assert gaps[0]["missing_from_name"] == "Hotel Le Meridien"
+    assert gaps[0]["missing_to_name"] == "Cairo Airport"
+
+
 def test_inactive_transports_are_ignored_entirely():
     client = _FakeClient()
     transports = [_transport("TRANSPORT-1", "CAI", "HTL1", active=False)]

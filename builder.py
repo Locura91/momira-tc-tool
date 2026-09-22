@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-22-transport-missing-reverse-scan-and-batch-create"
+MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
 
 import copy
 import math
@@ -3680,13 +3680,22 @@ def build_transfer_payload(
     }
 
 
-def _swap_route_text(text, old_departure_name, old_arrival_name):
+def _swap_route_text(text, old_departure_name, old_arrival_name, suffix_on_fallback=True):
     """Rewrite a SHORT text (a transfer's name/datasheet name) so it reads in the other
-    direction, by swapping every occurrence of the OLD departure/arrival names. Falls back to
-    appending "(return)" rather than guessing wrong - a name that states the opposite of what it
-    does is worse than one that's merely unpolished and needs a human's edit. Only right for a
-    short label - see _swap_route_text_if_found for prose fields (description/pickup info),
-    where appending "(return)" to a paragraph would look broken rather than helpful.
+    direction, by swapping every occurrence of the OLD departure/arrival names. When the swap
+    can't be done (neither the full name nor an alias was found in the text) and
+    suffix_on_fallback is True (the default, used for Transfer), falls back to appending
+    "(return)" rather than guessing wrong - a name that states the opposite of what it does is
+    worse than one that's merely unpolished and needs a human's edit. Only right for a short
+    label - see _swap_route_text_if_found for prose fields (description/pickup info), where
+    appending "(return)" to a paragraph would look broken rather than helpful.
+
+    CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the Transport
+    when duplicate them." - build_transport_swap_payload now passes suffix_on_fallback=False for
+    Transport's name/datasheet-name swap, so an unmatched Transport name is left exactly as
+    copied from the source (still needs a human's edit either way, same as any other unmatched
+    field) rather than getting "(return)" tacked onto the end. Transfer's own name swap is
+    unaffected - still appends "(return)" as before.
 
     Same swap-with-placeholder approach as app_helpers._swapped_label (candidate-list "Add the
     return direction" button) - duplicated here in builder.py rather than imported, since
@@ -3698,7 +3707,9 @@ def _swap_route_text(text, old_departure_name, old_arrival_name):
         return (text.replace(old_departure_name, placeholder)
                     .replace(old_arrival_name, old_departure_name)
                     .replace(placeholder, old_arrival_name))
-    return f"{text} (return)".strip()
+    if suffix_on_fallback:
+        return f"{text} (return)".strip()
+    return text
 
 
 def _swap_route_text_if_found(text, old_departure_name, old_arrival_name):
@@ -5057,12 +5068,29 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     arrival_aliases = _transport_location_name_aliases(old_arrival_name)
 
     def _swap_with_aliases(text: str):
-        """Tries the full formal name pair first, then the shortened alias pair, before falling
-        back to _swap_route_text's own "(return)" suffix - see _transport_location_name_aliases'
-        docstring for why a shortened alias is often what's needed."""
+        """Tries the full formal name pair first, then the shortened alias pair. CONFIRMED
+        PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the Transport when
+        duplicate them" - unlike Transfer, an unmatched Transport name/datasheet name never gets
+        _swap_route_text's own "(return)" suffix appended (suffix_on_fallback=False) - see
+        _transport_location_name_aliases' docstring for why a shortened alias is often what's
+        needed in the first place.
+
+        CONFIRMED PRODUCT-OWNER FOLLOW-UP (same day): "never write '(return)' just better rewrite
+        the correct name: Always FORM - TO, accodingly to the Itinarary." When neither the formal
+        name nor a shortened alias is found anywhere in the text - i.e. the swap genuinely
+        couldn't do anything, suffix_on_fallback=False would otherwise just leave the OLD
+        (wrong-direction) wording in place - the name is rebuilt from scratch as
+        "<new departure> - <new arrival>" (the resolved itinerary's own new direction; matches
+        the "X - Y" naming convention Transport names already use elsewhere in this app), rather
+        than either leaving stale text or appending a suffix."""
         pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
         dep, arr = pair if pair else (old_departure_name, old_arrival_name)
-        return _swap_route_text(text, dep, arr)
+        swapped = _swap_route_text(text, dep, arr, suffix_on_fallback=False)
+        if swapped == text and text:
+            # Route wording wasn't found anywhere in the text - rebuild it outright instead of
+            # leaving the old direction's wording sitting there unchanged.
+            return f"{old_arrival_name} - {old_departure_name}".strip(" -")
+        return swapped
 
     def _swap_with_aliases_if_found(text: str):
         pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
