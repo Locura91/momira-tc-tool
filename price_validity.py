@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-21-transport-duplicate-simplified-like-transfer"
+MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
 
 import os
 import re

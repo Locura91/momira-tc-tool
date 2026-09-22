@@ -51,7 +51,7 @@ rather than perceived speed. Behaviour is identical; only wall-clock differs.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-21-transport-duplicate-simplified-like-transfer"
+MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
 
 import os
 import re
@@ -216,19 +216,32 @@ def build_queries(country: str, city: str, keyword: str) -> List[Dict[str, Any]]
     country_base = f"{keyword} {country}".strip()
     queries = []
 
+    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "The search result is too much focused on
+    # DMC, we are missing a bit local suppliers with a speciality - like Cruise Sailing in
+    # Thailand, I only get results for DMC." Before this fix, the generic operator-type phrase
+    # ("local DMC, travel agency, tour operator, or private tour guide") was appended AFTER the
+    # keyword with equal weight - e.g. "Cruise Sailing Bangkok Thailand local DMC, travel agency,
+    # tour operator, or private tour guide". Search providers latch onto "DMC" as a strong,
+    # industry-jargon term and surface generic DMC directories/aggregators over a niche specialty
+    # match. Reworded (same call budget - still ONE combined call per scope, per the 2026-08-26
+    # consolidation above) so the specialty keyword is the clear subject ("<keyword> specialist")
+    # and the operator types are a parenthetical hint of what KIND of business to expect, not a
+    # second co-equal subject the provider can match on instead of the specialty.
+    operator_types_hint = "local DMC, travel agency, tour operator, or private tour guide"
+
     # ---- 1. CITY-SPECIFIC (if city is provided) - ONE combined call ----
     if city and city.strip():
-        city_base = f"{keyword} {city} {country}".strip()
+        location = f"{city}, {country}".strip(", ")
         queries.append({
             "source": "supplier_city",
-            "query": f"{city_base} local DMC, travel agency, tour operator, or private tour guide",
+            "query": f"{keyword} specialist in {location} ({operator_types_hint})",
             "domains": [], "max_results": 15,
         })
 
     # ---- 2. COUNTRY-WIDE - ONE combined call ----
     queries.append({
         "source": "supplier_country",
-        "query": f"{country_base} local DMC, travel agency, tour operator, or private tour guide",
+        "query": f"{keyword} specialist in {country} ({operator_types_hint})",
         "domains": [], "max_results": 12,
     })
 

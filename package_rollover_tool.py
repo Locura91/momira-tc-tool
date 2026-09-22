@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-21-transport-duplicate-simplified-like-transfer"
+MODULE_BUILD = "2026-09-22-transport-dup-simplified-and-outreach-specialty-keyword"
 
 _PHASE_KEY = "pkr_phase"
 
