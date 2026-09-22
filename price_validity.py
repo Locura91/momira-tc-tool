@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 import os
 import re

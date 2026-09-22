@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 _PHASE_KEY = "pkr_phase"
 

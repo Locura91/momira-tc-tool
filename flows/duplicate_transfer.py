@@ -231,8 +231,8 @@ def _render_review_and_publish(client, supplier_id):
                       "change) - check it reads correctly for the new direction before "
                       "publishing.")
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs and one item per line for a "
-                  "list.")
+                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
+                  "line before and after it with each item on its own line starting with \"- \".")
         new_plain_description = st.text_area(
             "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtf_description")
         en["description"] = _plain_to_html_for_saving(new_plain_description)
@@ -246,8 +246,8 @@ def _render_review_and_publish(client, supplier_id):
                       "no change) - check it reads correctly for the new direction before "
                       "publishing.")
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs and one item per line for a "
-                  "list.")
+                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
+                  "line before and after it with each item on its own line starting with \"- \".")
         new_plain_pickup = st.text_area(
             "Pickup information", value=_html_to_plain_for_editing(en.get("pickupDescription", "")),
             key="dtf_pickup_description")

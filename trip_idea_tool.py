@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 _PHASE_KEY = "ti_phase"
 

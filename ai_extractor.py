@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 import os
 import re
@@ -2317,9 +2317,11 @@ def rewrite_route_description_for_new_direction(
         "happen to appear literally. Keep every other factual detail EXACTLY as stated (vehicle "
         "type, service availability, included amenities, any codes or qualifiers like airport "
         "codes) - do not invent, drop, or embellish anything. Keep the same tone, length, and "
-        "paragraph/list structure as the original (plain text: a blank line between paragraphs, "
-        "one item per line for a list - no HTML tags). Output ONLY the rewritten text, nothing "
-        "else - no preamble, no explanation, no quotation marks around it."
+        "paragraph/list structure as the original (plain text: a blank line between paragraphs; "
+        "a bullet list is a blank line before and after it, with each item on its own line "
+        "starting with '- ' - keep that '- ' marker on every list item exactly as it appears in "
+        "the original, don't add or remove it; no HTML tags). Output ONLY the rewritten text, "
+        "nothing else - no preamble, no explanation, no quotation marks around it."
     )
     user_content = (
         f"OLD departure point: {old_departure_name}\n"

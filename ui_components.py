@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 import re
 import math
@@ -658,10 +658,25 @@ def _clean_time_table_rows(edf, col="Time (HH:MM)"):
 def _html_to_plain_for_editing(html):
     """
     Converts the stored HTML (<p>...</p> paragraphs, <strong>/<em> inline
-    formatting, <p><br></p> spacer paragraphs between days) into plain,
-    human-friendly text for editing - no raw HTML tags shown. Bold/italic
-    become **bold**/*italic* markdown-style markers so the human can still
-    see and edit that emphasis without ever looking at a tag.
+    formatting, <p><br></p> spacer paragraphs between days, <ul><li> bullet
+    lists) into plain, human-friendly text for editing - no raw HTML tags
+    shown. Bold/italic become **bold**/*italic* markdown-style markers so the
+    human can still see and edit that emphasis without ever looking at a tag.
+
+    CONFIRMED REAL BUG (product owner, 2026-09-22, screenshot comparing an original Train Ticket
+    description against its duplicate): "It would be great, if the format of the text is the same
+    as in the original one. It always shall be regardless if transfer or transport." The original
+    had a real <ul><li> bullet list ("AC First Class Seat" / "Sleeper Double Cabin" / "Sleeper
+    Single Cabin" each on their own bulleted line); the duplicate's version had lost the bullets
+    entirely and read as plain unbulleted lines. Root cause: this function already flattened a
+    <ul><li> list into bare plain-text lines with NO marker distinguishing them from ordinary
+    paragraph lines - so _plain_to_html_for_saving (see its own docstring) had no way to tell a
+    list apart from a paragraph on the way back, and always rebuilt <p><br> paragraphs, never
+    <ul><li>. This is not specific to the duplicate flow - it's the SAME generic html_text_area
+    widget (ui_components.editable_field) every description field in this app uses, so it lost the
+    bullets on ANY save that passed through it. Fixed by marking each list item with a leading
+    "- " in the plain text (the same widely-understood plain-text bullet convention), which
+    _plain_to_html_for_saving now detects to rebuild the exact same <ul><li> structure.
     """
     if not html:
         return ""
@@ -672,13 +687,13 @@ def _html_to_plain_for_editing(html):
     text = re.sub(r"<(em|i)>(.*?)</\1>", r"*\2*", text, flags=re.I | re.S)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
     text = re.sub(r"<p>(.*?)</p>", r"\1\n\n", text, flags=re.I | re.S)
-    # Strip any remaining stray tags (e.g. <ul><li> bullet lists) rather than
-    # showing raw code - fall back to plain line-per-item for bullets.
-    text = re.sub(r"</li>\s*<li>", "\n", text, flags=re.I)
-    text = re.sub(r"<[uo]l>", "", text, flags=re.I)
-    text = re.sub(r"</[uo]l>", "\n", text, flags=re.I)
-    text = re.sub(r"<li>", "", text, flags=re.I)
-    text = re.sub(r"</li>", "\n", text, flags=re.I)
+    # <ul>/<ol> bullet lists - each <li> becomes its own "- " prefixed line, with a blank line
+    # before/after the whole list so it stays a separate block from surrounding paragraphs (see
+    # _plain_to_html_for_saving for how the "- " prefix is used to rebuild the list on save).
+    text = re.sub(r"\s*<[uo]l>\s*", "\n\n", text, flags=re.I)
+    text = re.sub(r"\s*</[uo]l>\s*", "\n\n", text, flags=re.I)
+    text = re.sub(r"<li[^>]*>\s*", "- ", text, flags=re.I)
+    text = re.sub(r"\s*</li>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -692,16 +707,35 @@ def _plain_to_html_for_saving(text):
     a paragraph become <br>, and **bold**/*italic* markers become
     <strong>/<em> tags - all done automatically in the background so the
     human editing the field never has to type or see raw HTML.
+
+    CONFIRMED FIX (product owner, 2026-09-22 - see _html_to_plain_for_editing's own docstring for
+    the full bug report): a paragraph block whose every line starts with "- " (the marker
+    _html_to_plain_for_editing now gives each bullet-list item) is rebuilt as a real <ul><li>...
+    </li></ul> list instead of a <p> paragraph with <br> line breaks - restoring the exact
+    original structure instead of silently downgrading a bulleted list into plain lines. A block
+    that mixes "- " lines with ordinary text is treated as an ordinary paragraph (safer than
+    guessing at a partial list), same as before this fix.
     """
     if not text or not text.strip():
         return ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
     html_parts = []
     for i, para in enumerate(paragraphs):
-        para_html = para.replace("\n", "<br>")
-        para_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", para_html)
-        para_html = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", para_html)
-        html_parts.append(f"<p>{para_html}</p>")
+        lines = [ln.strip() for ln in para.split("\n") if ln.strip()]
+        is_list = bool(lines) and all(re.match(r"^[-*]\s+\S", ln) for ln in lines)
+        if is_list:
+            items = []
+            for ln in lines:
+                item_text = re.sub(r"^[-*]\s+", "", ln)
+                item_text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item_text)
+                item_text = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", item_text)
+                items.append(f"<li>{item_text}</li>")
+            html_parts.append("<ul>" + "".join(items) + "</ul>")
+        else:
+            para_html = para.replace("\n", "<br>")
+            para_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", para_html)
+            para_html = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", para_html)
+            html_parts.append(f"<p>{para_html}</p>")
         if i < len(paragraphs) - 1:
             html_parts.append("<p><br></p>")
     return "".join(html_parts)
@@ -860,9 +894,10 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
             # (<p>, <strong>, etc.) is converted automatically in the
             # background on the way in and out, so the human never sees or
             # types raw markup.
-            st.caption("Formatting (bold, paragraphs) is handled automatically - just write plain text. "
-                      "Use **word** for bold if you want to keep a day title bold, and a blank line "
-                      "between paragraphs/days.")
+            st.caption("Formatting (bold, paragraphs, bullet points) is handled automatically - just "
+                      "write plain text. Use **word** for bold if you want to keep a day title bold, "
+                      "a blank line between paragraphs/days, and a bullet list as a blank line before "
+                      "and after it with each item on its own line starting with \"- \".")
             new_plain_value = st.text_area(label, value=_html_to_plain_for_editing(current_value),
                                            height=height or 120, key=widget_key)
         elif widget == "html_list_area":

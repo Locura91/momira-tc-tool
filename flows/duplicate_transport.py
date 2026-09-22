@@ -254,8 +254,8 @@ def _render_review_and_publish(client, supplier_id):
         # human-friendly text, and convert it back to the same HTML shape automatically on save -
         # the human never sees or types a tag.
         st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs and one item per line for a "
-                  "list.")
+                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
+                  "line before and after it with each item on its own line starting with \"- \".")
         new_plain_description = st.text_area(
             "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtp_description")
         en["description"] = _plain_to_html_for_saving(new_plain_description)

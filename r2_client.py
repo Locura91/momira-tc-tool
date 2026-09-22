@@ -72,7 +72,7 @@ import mimetypes
 import requests
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-22-transport-duplicate-name-rebuilt-from-to-no-return-suffix"
+MODULE_BUILD = "2026-09-22-bullet-list-formatting-preserved-on-duplicate"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old
