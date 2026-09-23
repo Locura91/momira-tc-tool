@@ -507,15 +507,12 @@ def render_ticket_flow(client):
                         data["image_urls"] = []
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
-                        if not data.get("image_urls"):
-                            data["image_urls"] = [FALLBACK_IMAGE]
                         floor_start_date_for_new_data(data)
                         # Only fills in when this document (and, for an update, the live
                         # baseline it was just merged over) had no cancellation terms of its
                         # own - see apply_cancellation_link_default's docstring.
                         st.session_state.tk_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                             data, supplier_id, "Ticket")
-                        st.session_state.tk_extracted = data
                         # Supersedes the earlier reset_child_age_band_widgets("tk") call: a fresh
                         # generation re-keys EVERY tk widget built through widget_generation(),
                         # not just the two child-age boxes.
@@ -526,6 +523,19 @@ def render_ticket_flow(client):
                         _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_url, doc_raw_images, doc_image_urls))
                         st.session_state.tk_doc_raw_images = doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                        # automatically use the images... at least the images are being
+                        # detected... but i cannot automatically use them for my closedtours and
+                        # neither for my tickets." Same fix as the ClosedTour flow (app.py) -
+                        # every URL in tk_hosted_image_candidates is already a verified,
+                        # R2-hosted image (uploaded AND public-URL-verified inside
+                        # _add_page_images_to_doc_pool/upload_images_with_errors before it ever
+                        # reaches this list), so fold it straight into image_urls instead of
+                        # waiting for a manual tick-and-"Add selected" click.
+                        auto_images = list(dict.fromkeys(
+                            [u for u in data.get("image_urls", []) if u] + st.session_state.tk_hosted_image_candidates))
+                        data["image_urls"] = auto_images or [FALLBACK_IMAGE]
+                        st.session_state.tk_extracted = data
                         st.success("Extraction complete. Review and edit below.")
             except Exception as e:
                 st.error(f"Extraction failed: {friendly_error_message(e)}")
@@ -599,13 +609,10 @@ def render_ticket_flow(client):
                         data["image_urls"] = []
                         if action == "update_ticket":
                             data = _merge_extraction_over_baseline(st.session_state.get("tk_extracted") or {}, data)
-                        if not data.get("image_urls"):
-                            data["image_urls"] = [FALLBACK_IMAGE]
 
                         floor_start_date_for_new_data(data)
                         st.session_state.tk_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                             data, supplier_id, "Ticket")
-                        st.session_state.tk_extracted = data
                         bump_widget_generation("tk")  # see the sibling extraction path above
                         st.session_state.tk_raw_preview = f"(Extracted excursion: {chosen_label})\n\n{st.session_state.tk_pending_raw_text}"
                         st.session_state.tk_payloads = None
@@ -615,6 +622,13 @@ def render_ticket_flow(client):
                         _warn_page_image_upload_errors(_add_page_images_to_doc_pool(tk_pending_url, pending_doc_raw_images, pending_doc_image_urls))
                         st.session_state.tk_doc_raw_images = pending_doc_raw_images
                         st.session_state.tk_hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
+                        # Same auto-fold as the direct-extraction path above (2026-09-23
+                        # product-owner request) - every tk_hosted_image_candidates URL here is
+                        # already verified-hosted.
+                        auto_images = list(dict.fromkeys(
+                            [u for u in data.get("image_urls", []) if u] + st.session_state.tk_hosted_image_candidates))
+                        data["image_urls"] = auto_images or [FALLBACK_IMAGE]
+                        st.session_state.tk_extracted = data
                         st.session_state.tk_pending_variants = None
                         st.session_state.tk_pending_raw_text = None
                         st.session_state.tk_pending_variant_selection = None
@@ -807,8 +821,20 @@ def render_ticket_flow(client):
                     st.session_state[_tk_images_key] = st.session_state._tk_pending_images_update
                     st.session_state._tk_pending_images_update = None
 
-                images_text = st.text_area("Image URLs (one per line)", key=_tk_images_key)
+                images_text = st.text_area(
+                    "Image URLs (one per line - images found on the page/URL or in your "
+                    "document(s) are added automatically; edit or delete a line to change what's used)",
+                    key=_tk_images_key)
                 data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+                if data["image_urls"] == [FALLBACK_IMAGE]:
+                    st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+                elif st.session_state.get("tk_hosted_image_candidates"):
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time
+                    # merge above: this used to be a manual tick-and-"Add selected" picker
+                    # (render_url_image_picker); now it's a plain confirmation, since the URLs
+                    # are already in the text area above.
+                    st.caption(f"✅ {len(st.session_state.tk_hosted_image_candidates)} image(s) found on the page/URL/document "
+                              f"were added automatically above.")
 
                 default_tk_img_query = data.get("ticket_name", "") or data.get("city", "")
 
@@ -835,22 +861,6 @@ def render_ticket_flow(client):
                     return 0
 
                 render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "tk_pixabay_closed", _tk_add_pixabay)
-
-                def _tk_add_url_images():
-                    selected = render_url_image_picker(st.session_state.tk_hosted_image_candidates, "tk_found_images")
-                    if selected:
-                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                        new_list = current + selected
-                        data["image_urls"] = new_list
-                        st.session_state._tk_pending_images_update = "\n".join(new_list)
-                        return len(selected)
-                    return 0
-
-                render_closable_image_section(
-                    bool(st.session_state.get("tk_hosted_image_candidates")),
-                    f"🖼️ Images found ({len(st.session_state.get('tk_hosted_image_candidates') or [])}) - from the page/document",
-                    "tk_found_images_closed", _tk_add_url_images
-                )
 
                 def _tk_add_doc_image():
                     added = render_doc_image_picker(st.session_state.tk_doc_raw_images, "tk_doc_images")

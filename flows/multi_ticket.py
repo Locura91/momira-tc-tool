@@ -451,7 +451,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     current["data"] = extract_ticket_main_info(
                         st.session_state.mt_raw_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
-                    current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                    # automatically use the images... but i cannot automatically use them for my
+                    # closedtours and neither for my tickets." Same fix as the single-Ticket flow
+                    # (flows/ticket.py) and the ClosedTour batch flow (multi_tour.py) - every URL
+                    # in mt_hosted_image_candidates is already a verified, R2-hosted image, so
+                    # it's used directly instead of requiring a manual pick.
+                    auto_images = list(dict.fromkeys(st.session_state.get("mt_hosted_image_candidates") or []))
+                    current["data"]["image_urls"] = auto_images or [FALLBACK_IMAGE]
                     # Only fills in when this document didn't state its own cancellation
                     # terms - see apply_cancellation_link_default's docstring. Runs once,
                     # here at extraction time, not inside the review widgets below.
@@ -622,22 +629,14 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
                 st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real "
                           "image below (Travel Compositor requires at least one image per Ticket).")
+            elif st.session_state.get("mt_hosted_image_candidates"):
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge
+                # above: this used to be a manual tick-and-"Add selected" picker
+                # (render_url_image_picker); now it's a plain confirmation.
+                st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) found "
+                          f"in your document/page were added automatically.")
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
-
-            def _mt_add_url_images():
-                selected = render_url_image_picker(st.session_state.mt_hosted_image_candidates, f"mt_found_{idx}")
-                if selected:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + selected
-                    return len(selected)
-                return 0
-
-            render_closable_image_section(
-                bool(st.session_state.get("mt_hosted_image_candidates")),
-                f"🖼️ Images found in your document/page ({len(st.session_state.get('mt_hosted_image_candidates') or [])})",
-                f"mt_found_{idx}_closed", _mt_add_url_images
-            )
 
             def _mt_add_doc_image():
                 added = render_doc_image_picker(st.session_state.mt_doc_raw_images, f"mt_doc_{idx}")
@@ -1725,8 +1724,16 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                         st.session_state.mtu_raw_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     current["data"] = _merge_extraction_over_baseline(baseline, fresh)
-                    if not current["data"].get("image_urls"):
-                        current["data"]["image_urls"] = [FALLBACK_IMAGE]
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                    # automatically use the images... but i cannot automatically use them for my
+                    # closedtours and neither for my tickets." Same fix as the create-batch flow
+                    # above - fold in every verified, already-hosted mtu_hosted_image_candidates
+                    # URL on top of whatever the baseline/fresh merge already produced, instead
+                    # of requiring a manual pick, before falling back to the placeholder.
+                    auto_images = list(dict.fromkeys(
+                        [u for u in current["data"].get("image_urls", []) if u]
+                        + (st.session_state.get("mtu_hosted_image_candidates") or [])))
+                    current["data"]["image_urls"] = auto_images or [FALLBACK_IMAGE]
                     current["_cancellation_link_scope"] = cancellation_links.apply_cancellation_link_default(
                         current["data"], supplier_id, "Ticket")
                     live_datasheet = (live_ticket.get("datasheets") or {}).get("EN") or {}
@@ -1874,23 +1881,16 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
                 st.caption("⚠️ No real image on file yet - using a generic placeholder. Pick at least one "
                           "real image below (Travel Compositor requires at least one image per Ticket).")
+            elif st.session_state.get("mtu_hosted_image_candidates"):
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge
+                # above: this used to be a manual tick-and-"Add selected" picker
+                # (render_url_image_picker); now it's a plain confirmation.
+                st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) "
+                          f"selected (carried over from the live ticket, plus any found in your document/page, "
+                          f"added automatically).")
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected "
                           f"(carried over from the live ticket unless you change them below).")
-
-            def _mtu_add_url_images():
-                selected = render_url_image_picker(st.session_state.mtu_hosted_image_candidates, f"mtu_found_{idx}")
-                if selected:
-                    current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    data["image_urls"] = current_imgs + selected
-                    return len(selected)
-                return 0
-
-            render_closable_image_section(
-                bool(st.session_state.get("mtu_hosted_image_candidates")),
-                f"🖼️ Images found in your document/page ({len(st.session_state.get('mtu_hosted_image_candidates') or [])})",
-                f"mtu_found_{idx}_closed", _mtu_add_url_images
-            )
 
             def _mtu_add_doc_image():
                 added = render_doc_image_picker(st.session_state.mtu_doc_raw_images, f"mtu_doc_{idx}")

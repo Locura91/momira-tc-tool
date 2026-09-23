@@ -13,7 +13,7 @@ load_dotenv()
 # carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
-MODULE_BUILD = "2026-09-22-closedtour-auto-load-supplier-list"
+MODULE_BUILD = "2026-09-23-images-auto-used-closedtour-and-ticket"
 
 
 def _try_parse_json(text: str):

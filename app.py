@@ -792,7 +792,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-22-closedtour-auto-load-supplier-list"
+BUILD_VERSION = "2026-09-23-images-auto-used-closedtour-and-ticket"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1980,22 +1980,34 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                         # than replacing them outright - an incomplete fresh extraction shouldn't
                         # blank out fields the new source just didn't happen to mention.
                         data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
-                    if not data.get("image_urls"):
-                        data["image_urls"] = [FALLBACK_IMAGE]
                     # Only fills in when this document (and, for an update, the live baseline
                     # it was just merged over) had no cancellation terms of its own - see
                     # apply_cancellation_link_default's docstring.
                     st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                         data, supplier_id, "ClosedTour")
-                    st.session_state.extracted = data
                     reset_child_age_band_widgets("ct")
-                    st.session_state.images_text_value = ""
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
                     _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
                     st.session_state.doc_raw_images = doc_raw_images
                     st.session_state.hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                    # automatically use the images... at least the images are being detected...
+                    # but i cannot automatically use them for my closedtours and neither for my
+                    # tickets." Every URL in hosted_image_candidates is already a verified,
+                    # R2-hosted image (uploaded AND public-URL-verified inside
+                    # _add_page_images_to_doc_pool/upload_images_with_errors before it ever
+                    # reaches this list - see r2_client.verify_public_url) - nothing left for a
+                    # human to confirm, so fold it straight into image_urls (and the text area
+                    # that drives it) instead of waiting for a manual tick-and-"Add selected"
+                    # click. The "Images found" section below now only confirms what was
+                    # auto-added, it no longer gates on a click.
+                    auto_images = list(dict.fromkeys(
+                        [u for u in data.get("image_urls", []) if u] + st.session_state.hosted_image_candidates))
+                    data["image_urls"] = auto_images or [FALLBACK_IMAGE]
+                    st.session_state.images_text_value = "\n".join(auto_images)
+                    st.session_state.extracted = data
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
             st.error(f"Extraction failed: {friendly_error_message(e)}")
@@ -2056,14 +2068,10 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
                 if action == "update_tour":
                     data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
-                if not data.get("image_urls"):
-                    data["image_urls"] = [FALLBACK_IMAGE]
 
                 st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                     data, supplier_id, "ClosedTour")
-                st.session_state.extracted = data
                 reset_child_age_band_widgets("ct")
-                st.session_state.images_text_value = ""
                 st.session_state.raw_preview = preview
                 st.session_state.payloads = None
                 pending_doc_raw_images = list(st.session_state.get("pending_doc_raw_images", []))
@@ -2071,6 +2079,13 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 _warn_page_image_upload_errors(_add_page_images_to_doc_pool(pending_url, pending_doc_raw_images, pending_doc_image_urls))
                 st.session_state.doc_raw_images = pending_doc_raw_images
                 st.session_state.hosted_image_candidates = list(dict.fromkeys(pending_doc_image_urls))
+                # Same auto-fold as the direct-extraction path above (2026-09-23 product-owner
+                # request) - every hosted_image_candidates URL here is already verified-hosted.
+                auto_images = list(dict.fromkeys(
+                    [u for u in data.get("image_urls", []) if u] + st.session_state.hosted_image_candidates))
+                data["image_urls"] = auto_images or [FALLBACK_IMAGE]
+                st.session_state.images_text_value = "\n".join(auto_images)
+                st.session_state.extracted = data
                 st.session_state.pending_variants = None
                 st.session_state.pending_raw_text = None
                 st.session_state.pending_url = None
@@ -2153,29 +2168,21 @@ if st.session_state.extracted:
                 st.session_state._pending_images_update = None
 
             images_text = st.text_area(
-                "Image URLs (one per line - documents need these added manually)",
+                "Image URLs (one per line - images found on the page/URL or in your document(s) "
+                "are added automatically; edit or delete a line to change what's used)",
                 key="images_text_value",
                 height=80
             )
             data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
             if data["image_urls"] == [FALLBACK_IMAGE]:
                 st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
-
-            def _ct_add_url_images():
-                selected = render_url_image_picker(st.session_state.hosted_image_candidates, "found_images")
-                if selected:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + selected
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    return len(selected)
-                return 0
-
-            render_closable_image_section(
-                bool(st.session_state.get("hosted_image_candidates")),
-                f"🖼️ Images found ({len(st.session_state.get('hosted_image_candidates') or [])}) - from the page/document",
-                "found_images_closed", _ct_add_url_images
-            )
+            elif st.session_state.get("hosted_image_candidates"):
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the docstring above where
+                # hosted_image_candidates is merged into image_urls: this used to be a manual
+                # tick-and-"Add selected" picker (render_url_image_picker); now it's a plain
+                # confirmation, since the URLs are already in the text area above.
+                st.caption(f"✅ {len(st.session_state.hosted_image_candidates)} image(s) found on the page/URL/document "
+                          f"were added automatically above.")
 
             def _ct_add_doc_image():
                 added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")

@@ -296,7 +296,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         # document-derived max_occupancy extraction field.
                         max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
-                    tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                    # automatically use the images... at least the images are being detected...
+                    # but i cannot automatically use them for my closedtours and neither for my
+                    # tickets." Same fix as the single-tour ClosedTour/Ticket flows (app.py,
+                    # flows/ticket.py) - every URL in mct_hosted_image_candidates is already a
+                    # verified, R2-hosted image (uploaded AND public-URL-verified inside
+                    # _add_page_images_to_doc_pool/upload_images_with_errors, computed above in
+                    # PHASE 1 before this tour was even selected), so it's used directly instead
+                    # of requiring a manual tick-and-"Add selected" click.
+                    auto_images = list(dict.fromkeys(st.session_state.get("mct_hosted_image_candidates") or []))
+                    tour["main_data"]["image_urls"] = auto_images or [FALLBACK_IMAGE]
                     reset_child_age_band_widgets("mct_main")
                     # Only fills in when this document didn't state its own cancellation
                     # terms - see apply_cancellation_link_default's docstring. Runs once,
@@ -381,22 +391,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         st.markdown("**Images**")
         if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
             st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real image below.")
+        elif st.session_state.get("mct_hosted_image_candidates"):
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge above:
+            # this used to be a manual tick-and-"Add selected" picker (render_url_image_picker);
+            # now it's a plain confirmation, since these were already folded into image_urls.
+            st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) found in "
+                      f"your document/page were added automatically.")
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
-
-        def _mct_add_url_images():
-            selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, "mct_found_main")
-            if selected:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + selected
-                return len(selected)
-            return 0
-
-        render_closable_image_section(
-            bool(st.session_state.get("mct_hosted_image_candidates")),
-            f"🖼️ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
-            "mct_found_main_closed", _mct_add_url_images
-        )
 
         def _mct_add_doc_image():
             added = render_doc_image_picker(st.session_state.mct_doc_raw_images, "mct_doc_main")

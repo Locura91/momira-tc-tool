@@ -299,6 +299,14 @@ def test_all_four_placeholder_image_sites_defer_to_baseline_before_falling_back(
     # Every site that sets a FALLBACK_IMAGE placeholder for a fresh extraction must now set an
     # empty list first (so the merge can prefer a real baseline image) and only apply the
     # placeholder AFTER the merge, guarded on the result still being empty.
+    #
+    # UPDATED (2026-09-23, product-owner request: "...I cannot automatically use the images...
+    # but i cannot automatically use them for my closedtours and neither for my tickets"): all
+    # four sites now also auto-fold hosted_image_candidates (already-verified, R2-hosted URLs -
+    # see ui_components._add_page_images_to_doc_pool) into image_urls before the placeholder
+    # decision, via `data["image_urls"] = auto_images or [FALLBACK_IMAGE]` - a wider window and a
+    # third acceptable marker cover this without weakening what the test actually guards (that a
+    # bare, unconditional placeholder assignment never wins over real images).
     occurrences = 0
     idx = 0
     while True:
@@ -306,8 +314,12 @@ def test_all_four_placeholder_image_sites_defer_to_baseline_before_falling_back(
         if idx == -1:
             break
         occurrences += 1
-        window = src[idx:idx + 900]
-        assert 'if not data.get("image_urls"):' in window or 'data["image_urls"] = [FALLBACK_IMAGE]' in window
+        window = src[idx:idx + 3000]
+        assert (
+            'if not data.get("image_urls"):' in window
+            or 'data["image_urls"] = [FALLBACK_IMAGE]' in window
+            or 'data["image_urls"] = auto_images or [FALLBACK_IMAGE]' in window
+        )
         idx += 1
     assert occurrences == 4, f"expected exactly 4 fixed placeholder sites, found {occurrences}"
     # The old buggy ordering (placeholder set unconditionally, comment included) must be gone.

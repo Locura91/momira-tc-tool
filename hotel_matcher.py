@@ -33,7 +33,7 @@ memory of past uploads.
 # (2026-08-30 audit): this module had never carried a build stamp, so a partial deploy that
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
-MODULE_BUILD = "2026-09-22-closedtour-auto-load-supplier-list"
+MODULE_BUILD = "2026-09-23-images-auto-used-closedtour-and-ticket"
 
 from typing import List, Optional
 from text_normalize import normalize_name as _norm
