@@ -13,7 +13,7 @@ load_dotenv()
 # carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
-MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
+MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
 
 
 def _try_parse_json(text: str):

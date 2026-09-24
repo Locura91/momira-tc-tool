@@ -72,7 +72,7 @@ import mimetypes
 import requests
 from dotenv import load_dotenv
 
-MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
+MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but
 # nothing was actually loading the .env file into the process environment - the old

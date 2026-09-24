@@ -349,7 +349,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix="_main")
         editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix="_main")
-        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix="_main")
+        # CONFIRMED BUG (product-owner screenshot, 2026-09-24) - same fix as app.py's single-tour
+        # ClosedTour flow: hotels_text is stored as HTML, this was the generic no-conversion
+        # widget, so raw HTML tags leaked onto the review screen. See
+        # ui_components._plain_marked_to_display_html's docstring for the full report.
+        editable_field("Hotels", data, "hotels_text", widget="html_text_area", height=100, key_suffix="_main")
         editable_field("Included", data, "included", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Excluded", data, "excluded", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")

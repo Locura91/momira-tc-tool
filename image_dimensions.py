@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
+MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

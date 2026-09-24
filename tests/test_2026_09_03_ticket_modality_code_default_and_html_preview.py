@@ -163,6 +163,17 @@ def test_tk_pending_variant_selection_preserves_supplier_code_shape_when_present
 # 2) ui_components.editable_field() read-only preview no longer shows raw HTML
 # ======================================================================
 def test_html_text_area_readonly_preview_shows_plain_text_not_raw_tags(monkeypatch):
+    """2026-09-24 update: the read-only preview used to flatten stored HTML all the way down to
+    bare, unmarked plain text (no tags at all, "**bold**" markers included). CONFIRMED REAL BUG
+    (product-owner screenshot, 2026-09-24, ClosedTour review screen): that flattening left the
+    **bold**/*italic*/"- " markers _html_to_plain_for_editing() produces sitting in the preview as
+    literal asterisks/dashes instead of ever being rendered as actual bold/italic/bullets - a
+    human saw "**Day 1: ...**" right on the page. Fixed by re-rendering those markers as real
+    <strong>/<em>/<ul><li> tags for DISPLAY only (see ui_components._plain_marked_to_display_html)
+    - always AFTER html.escape() has already neutralized anything from the original supplier/human
+    text, so only markers this code itself produced can ever become a tag again. This test now
+    asserts the corrected behavior: real <strong> markup for visible bold (not a literal
+    "**"/"&lt;strong&gt;"), and no escaped-tag leakage from the original HTML either."""
     import streamlit as st
     import ui_components
 
@@ -182,8 +193,15 @@ def test_html_text_area_readonly_preview_shows_plain_text_not_raw_tags(monkeypat
     html_calls = [a[0] for (_, a, _k) in rendered if a and isinstance(a[0], str) and "background:#f6f6f6" in a[0]]
     assert html_calls, "expected the read-only preview div to have been rendered"
     preview_html = html_calls[0]
+    # Nothing from the original document/human text ever reaches the preview as an escaped,
+    # inert-looking tag (the old raw-HTML-leak failure mode).
     assert "&lt;p&gt;" not in preview_html
-    assert "<p>" not in preview_html.replace("<div", "").replace("</div>", "")
+    assert "&lt;strong&gt;" not in preview_html
+    # Nor does it ever show the intermediate **bold**-style plain-text marker literally (the
+    # 2026-09-24 bug this test now guards against).
+    assert "**" not in preview_html
+    # It DOES show a real <strong> tag - the bold is actually rendered, not just de-tagged.
+    assert "<strong>Vallee de Mai</strong>" in preview_html
     assert "Guided tour of the" in preview_html
     assert "Second paragraph here." in preview_html
 

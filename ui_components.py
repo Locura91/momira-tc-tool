@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
+MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
 
 import re
 import math
@@ -812,6 +812,61 @@ def merge_what_to_bring_into_voucher_remarks(data):
     data["what_to_bring"] = ""
 
 
+def _plain_marked_to_display_html(escaped_text):
+    """Renders the **bold**/*italic*/"- " plain-text markers that _html_to_plain_for_editing()/
+    _html_list_to_plain_for_editing() produce as real <strong>/<em>/<ul><li> markup for the
+    READ-ONLY preview, instead of showing the literal marker characters.
+
+    CONFIRMED REAL BUG (product-owner screenshot, 2026-09-24, ClosedTour creation review screen):
+    a Description showed "**Day 1: Cairo to Fayoum Oasis...**" with the asterisks visible right on
+    the page instead of bold text, and a Hotels field showed raw "<p><strong>Planned hotels for
+    this tour...</strong></p><ul><li>..." HTML tags outright. Two separate root causes, both in
+    this same read-only preview path:
+
+    1. The read-only branch below converts stored HTML to plain text with **bold**/*italic*/"- "
+       markers (via _html_to_plain_for_editing/_html_list_to_plain_for_editing - correct, and
+       needed so the EDIT text_area under the pencil button never shows raw HTML either), then
+       escapes it and drops it straight into a raw `<div>...</div>` string. Markdown-style markers
+       inside an already-open HTML block are not turned back into <strong>/<em>/<ul><li> by
+       anything downstream - st.markdown does not re-parse markdown syntax found inside literal
+       HTML you handed it via unsafe_allow_html, so "**word**" just sits there as four asterisk-ish
+       characters around a word instead of becoming bold. THIS function is the missing step: it
+       turns those markers back into real tags for display, mirroring what _plain_to_html_for_saving
+       already does when the human saves an edit - the read-only preview just never did the same
+       conversion.
+    2. Separately, the Hotels field itself was wired up with widget="text_area" (the generic,
+       no-conversion widget) instead of "html_text_area" - see the two call sites this fix also
+       corrects - so it was never routed through _html_to_plain_for_editing at all and showed its
+       stored raw HTML completely unconverted, edit mode included. Fixed there, not here.
+
+    `escaped_text` MUST already be html.escape()'d (so any literal "<"/">"/"&" that was actually
+    part of the supplier's document or a human's typed note is already neutralized) - this
+    function only ever ADDS its own <strong>/<em>/<ul><li>/<p>/<br> tags on top of that escaped
+    text, so nothing from the original content can smuggle in real markup this way. A no-op on
+    text with no markers - safe to call unconditionally.
+    """
+    if not escaped_text:
+        return ""
+
+    def _bold_italic(s):
+        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s, flags=re.S)
+        s = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<em>\1</em>", s)
+        return s
+
+    out_parts = []
+    for para in re.split(r"\n\s*\n", escaped_text.strip()):
+        lines = [ln for ln in para.split("\n") if ln.strip()]
+        is_list = bool(lines) and all(re.match(r"^[-*]\s+\S", ln) for ln in lines)
+        if is_list:
+            item_bodies = [_bold_italic(re.sub(r"^[-*]\s+", "", ln)) for ln in lines]
+            items = "".join(f"<li>{body}</li>" for body in item_bodies)
+            out_parts.append(f"<ul>{items}</ul>")
+        else:
+            para_body = _bold_italic(para.replace(chr(10), "<br>"))
+            out_parts.append(f"<p>{para_body}</p>")
+    return "".join(out_parts)
+
+
 def editable_field(label, data_dict, field_key, widget="text_input", height=None, default_value="", key_suffix="",
                    min_value=1):
     """
@@ -871,15 +926,26 @@ def editable_field(label, data_dict, field_key, widget="text_input", height=None
                 # afterward as the same safety net for genuinely plain fields and for anything the
                 # plain-text conversion doesn't strip.
                 _display_value = current_value
-                if widget == "html_text_area":
-                    _display_value = _html_to_plain_for_editing(current_value)
-                elif widget == "html_list_area":
-                    _display_value = _html_list_to_plain_for_editing(current_value)
-                st.markdown(
-                    f"<div style='white-space: pre-wrap; background:#f6f6f6; padding:8px; "
-                    f"border-radius:4px;'>{_html_module.escape(str(_display_value))}</div>",
-                    unsafe_allow_html=True
-                )
+                if widget in ("html_text_area", "html_list_area"):
+                    _display_value = (_html_to_plain_for_editing(current_value) if widget == "html_text_area"
+                                      else _html_list_to_plain_for_editing(current_value))
+                    # Render the **bold**/*italic*/"- " plain-text markers back into real
+                    # <strong>/<em>/<ul><li> markup (see _plain_marked_to_display_html's own
+                    # docstring for the bug this fixes) - escape() runs FIRST so nothing from the
+                    # original supplier/human text can inject markup, only the markers we know we
+                    # produced ourselves above.
+                    _body = _plain_marked_to_display_html(_html_module.escape(str(_display_value)))
+                    st.markdown(
+                        f"<div style='background:#f6f6f6; padding:8px; "
+                        f"border-radius:4px;'>{_body}</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='white-space: pre-wrap; background:#f6f6f6; padding:8px; "
+                        f"border-radius:4px;'>{_html_module.escape(str(_display_value))}</div>",
+                        unsafe_allow_html=True
+                    )
             else:
                 st.caption("(empty)")
         with bcol:

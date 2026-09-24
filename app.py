@@ -792,7 +792,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
+BUILD_VERSION = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2123,7 +2123,14 @@ if st.session_state.extracted:
 
             editable_field("Tour name", data, "tour_name", widget="text_input")
             editable_field("Description", data, "description", widget="html_text_area", height=200)
-            editable_field("Hotels", data, "hotels_text", widget="text_area", height=140)
+            # CONFIRMED BUG (product-owner screenshot, 2026-09-24): hotels_text is stored as HTML
+            # (a <p><strong>...</strong></p><ul><li>...</li></ul> block, per ai_extractor.py's own
+            # prompt template) exactly like Description just above, but was wired up with the
+            # generic "text_area" widget instead of "html_text_area" - so unlike Description, this
+            # field showed its raw HTML tags straight on the review screen (and in the edit box)
+            # instead of clean plain text. See ui_components._plain_marked_to_display_html's
+            # docstring for the full report and the matching read-only-preview fix.
+            editable_field("Hotels", data, "hotels_text", widget="html_text_area", height=140)
             editable_field("Included", data, "included", widget="html_list_area", height=120)
             editable_field("Excluded", data, "excluded", widget="html_list_area", height=120)
             editable_field("Meeting point", data, "meeting_point", widget="text_input")
