@@ -9,6 +9,15 @@ mi_ts_period_start/end - added 2026-09-09 for the bulk price-supplement feature)
 raw "YYYY-MM-DD" labels/placeholders and no _iso()/_disp() conversion, unlike every other date
 field in the app - an oversight from before the house DD/MM/YYYY convention was applied to them.
 Fixed to match the same convention as every Valid-From/Valid-Until field elsewhere in app.py.
+
+2026-09-16 update: the Transfer field (mi_s_period_start/end) moved from a bare
+_iso(st.text_input(...)) to the shared _dmy_date_field(...) helper (added that day to fix a
+StreamlitWidgetAlreadyInstantiatedError on the calendar popover - see
+claude/hotel-...2026-09-16.md-era fixes) - _dmy_date_field already returns an ISO date and
+accepts DD/MM/YYYY or DD.MM.YYYY, so the house-format guarantee still holds, just through a
+different call shape. The Transport field (mi_ts_period_start/end) was deliberately kept on the
+plain text_input + _iso() shape (calendar popover reported broken there, 2026-09-10) and is
+unchanged.
 """
 import os
 
@@ -41,9 +50,11 @@ def _read_app_py():
 
 def test_transfer_supplement_period_dates_use_the_house_display_format():
     src = _read_app_py()
-    assert 'item_data["start_date"] = _iso(st.text_input(' in src
-    assert 'key="mi_s_period_start"' in src
-    assert "YYYY-MM-DD" not in src.split('key="mi_s_period_start"')[0][-400:]
+    # Now goes through the shared _dmy_date_field(...) helper (calendar + typeable text, both
+    # house-format DD/MM/YYYY or DD.MM.YYYY, returns ISO) rather than a bare _iso(text_input(...)).
+    assert 'item_data["start_date"] = _dmy_date_field(' in src
+    assert '"mi_s_period_start"' in src
+    assert "YYYY-MM-DD" not in src.split('"mi_s_period_start"')[0][-400:]
 
 
 def test_transport_supplement_period_dates_use_the_house_display_format():

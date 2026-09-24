@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-23-images-auto-used-closedtour-and-ticket"
+MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
 
 _PHASE_KEY = "pkr_phase"
 

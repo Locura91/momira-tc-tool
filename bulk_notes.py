@@ -49,7 +49,7 @@ from numeric_helpers import _safe_float
 # as a traceback whose line numbers pointed at unrelated code. bulk_notes.py never carried this
 # stamp before (2026-09-13, while consolidating _safe_float into numeric_helpers.py) - an oversight
 # that meant a partial deploy touching only this file was invisible to the app's own check.
-MODULE_BUILD = "2026-09-23-images-auto-used-closedtour-and-ticket"
+MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
 
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}

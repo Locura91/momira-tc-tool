@@ -45,7 +45,7 @@ a warning before Apply.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-23-images-auto-used-closedtour-and-ticket"
+MODULE_BUILD = "2026-09-23-stale-test-cleanup-and-utcnow-fix"
 
 import json
 from typing import Any, Dict, List, Optional
@@ -104,7 +104,7 @@ def remember_supplier_for(domain_or_email: str, supplier_id: str, supplier_label
     return platform_store.set(_NS_SENDER_SUPPLIER, key, {
         "supplier_id": str(supplier_id),
         "supplier_label": supplier_label,
-        "first_matched_at": (existing or {}).get("first_matched_at") or pd.Timestamp.utcnow().isoformat(),
+        "first_matched_at": (existing or {}).get("first_matched_at") or pd.Timestamp.now("UTC").isoformat(),
     })
 
 
@@ -585,7 +585,7 @@ def render_stop_sales_tool(client) -> None:
                 [r["start"] + ".." + r["end"] for r in new_ranges])
             extraction_memory.commit(supplier_id, "StopSale", item, product_code)
             mark_processed(fingerprint, {
-                "applied_at": pd.Timestamp.utcnow().isoformat(),
+                "applied_at": pd.Timestamp.now("UTC").isoformat(),
                 "supplier_id": supplier_id, "product_type": product_type,
                 "product_code": product_code,
                 "ranges": [f"{r['start']} → {r['end']}" for r in new_ranges],
