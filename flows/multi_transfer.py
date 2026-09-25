@@ -559,10 +559,19 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                       "charge 50 in currency instead of half the fare.")
 
         st.markdown("#### Notes, validity & cancellation")
+        # CONFIRMED BUG (audit, 2026-09-25) - same class of issue as the ClosedTour Hotels widget
+        # fix on 2026-09-24: these three fields are documented (ai_extractor.py's own
+        # TRANSFER_EXTRACTION_SYSTEM_PROMPT) as multi-sentence prose ("1-2 short plain-English
+        # sentences", "informational text about location-conditional costs", "any specific pickup
+        # logistics/instructions"), exactly like Transport's equivalent fields just below in
+        # flows/multi_transport.py - which correctly use widget="text_area". These three had no
+        # widget= at all, defaulting to the single-line text_input, cramping multi-sentence text
+        # into a box built for a short value. Matched to Transport's own heights for consistency.
         editable_field("Location note (e.g. a harbor-only pickup fee) — goes to Voucher Remarks, never applied to price",
-                       data, "location_notes", key_suffix=key_suffix)
-        editable_field("Description", data, "description", key_suffix=key_suffix)
-        editable_field("Pickup information", data, "pickup_information", key_suffix=key_suffix)
+                       data, "location_notes", widget="text_area", height=80, key_suffix=key_suffix)
+        editable_field("Description", data, "description", widget="text_area", height=100, key_suffix=key_suffix)
+        editable_field("Pickup information", data, "pickup_information", widget="text_area", height=80,
+                       key_suffix=key_suffix)
         # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
         # docstring. Blank by default; when set, the app appends "(YYYYMMDD)" to Voucher Remarks
         # automatically at publish time - no need to type the code by hand.
@@ -583,7 +592,10 @@ def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_u
                       f"was filled in from {current['_cancellation_link_scope']}. Edit or clear it if "
                       f"this product needs different terms.")
         render_cancellation_policy_editor(data, f"xtf_cancel_{idx}")
-        editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text", key_suffix=key_suffix)
+        # Same widget-type fix as the three fields above - matches Transport's own
+        # widget="text_area" for the identical field key.
+        editable_field("Cancellation policy text (customer-facing summary)", data, "cancellation_policy_text",
+                       widget="text_area", height=80, key_suffix=key_suffix)
 
         service_notes.render_notes_editor(supplier_id, "Transfer", data, key_suffix=key_suffix)
 

@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
+MODULE_BUILD = "2026-09-25-transfer-prose-fields-text-area-widget-fix"
 
 
 def _safe_float(value, fallback=0.0):

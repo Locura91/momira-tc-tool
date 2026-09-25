@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
+MODULE_BUILD = "2026-09-25-transfer-prose-fields-text-area-widget-fix"
 
 _NAMESPACE = "supplier_images"
 

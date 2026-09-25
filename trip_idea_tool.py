@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-24-closedtour-hotels-html-leak-and-markdown-display-fix"
+MODULE_BUILD = "2026-09-25-transfer-prose-fields-text-area-widget-fix"
 
 _PHASE_KEY = "ti_phase"
 
