@@ -93,7 +93,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-verify-public-url-fix"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple

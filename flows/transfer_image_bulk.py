@@ -10,9 +10,17 @@ the new image will be added... We could integrate that to manage existing produc
 "either per supplier or per transfertype or a mixture" (both filters optional, combinable), and
 "the image shall come from the local PC or from another URL that the human can select."
 
+VEHICLE TYPE FILTER ADDED (2026-09-25, verbatim): "we must enhance the selection: Car and Boat,
+Van and Boat or Minivan or Boat as a transfer, we will have another transfer image. Could we
+also include this selection in the app" - a third optional, combinable filter alongside Supplier
+and ServiceType, scoped by Transfer's `vehicleType` field. The exact dropdown values in
+tib.VEHICLE_TYPES (see transfer_image_bulk.py) were confirmed from a screenshot of Travel
+Compositor's own Transfer edit screen (product owner, 2026-09-25), not guessed.
+
 SAFETY GATE (this file's own choice, not transfer_image_bulk.py's): at least one of supplier /
-ServiceType must be picked before scanning - "every live Transfer in the whole account" is never
-offered as a scope, to keep one accidental click from touching services nobody meant to touch.
+ServiceType / Vehicle Type must be picked before scanning - "every live Transfer in the whole
+account" is never offered as a scope, to keep one accidental click from touching services
+nobody meant to touch.
 
 CONFIRMED BUG FIX (product owner, 2026-09-25, live report the day this shipped: ran a bulk
 update through this exact screen, the Transfer's Images tab in Travel Compositor then showed the
@@ -28,10 +36,11 @@ import streamlit as st
 
 from ui_components import is_active_supplier
 
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-verify-public-url-fix"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"
+_ANY_VEHICLE = "— Any Vehicle Type —"
 
 
 def _load_momira_suppliers(client):
@@ -60,9 +69,10 @@ def render_transfer_image_bulk_flow(client):
         st.rerun()
     st.caption(
         "Replace the image on many ALREADY-LIVE Transfers at once — pick a supplier, a "
-        "ServiceType (Private/Shuttle/Shared), or both together, upload one new photo (from "
-        "your computer, or paste a URL), and it REPLACES whatever image is currently on every "
-        "matching Transfer. Nothing is written until you review the list and confirm."
+        "ServiceType (Private/Shuttle/Shared), a Vehicle Type (Car, Van, Car and Boat, ...), or "
+        "any mixture of the three, upload one new photo (from your computer, or paste a URL), "
+        "and it REPLACES whatever image is currently on every matching Transfer. Nothing is "
+        "written until you review the list and confirm."
     )
 
     if st.session_state.get("tib_results"):
@@ -87,7 +97,7 @@ def render_transfer_image_bulk_flow(client):
         return
 
     st.subheader("1 — Which Transfers?")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         supplier_labels = [_ANY_SUPPLIER] + [f"{s['name']} — ID {s['id']}" for s in momira_suppliers]
         supplier_choice = st.selectbox("Supplier", supplier_labels, key="tib_supplier_choice")
@@ -95,25 +105,34 @@ def render_transfer_image_bulk_flow(client):
         type_label_to_key = {tib.SERVICE_TYPE_LABELS[t]: t for t in tib.SERVICE_TYPES}
         type_labels = [_ANY_TYPE] + list(type_label_to_key.keys())
         type_choice = st.selectbox("ServiceType", type_labels, key="tib_type_choice")
+    with col3:
+        vehicle_label_to_key = {tib.VEHICLE_TYPE_LABELS[v]: v for v in tib.VEHICLE_TYPES}
+        vehicle_labels = [_ANY_VEHICLE] + list(vehicle_label_to_key.keys())
+        vehicle_choice = st.selectbox("Vehicle Type", vehicle_labels, key="tib_vehicle_choice")
 
-    if supplier_choice == _ANY_SUPPLIER and type_choice == _ANY_TYPE:
-        st.warning("⚠️ Pick a supplier, a ServiceType, or both — applying to every live "
-                  "Transfer in the whole account isn't offered here.")
+    if supplier_choice == _ANY_SUPPLIER and type_choice == _ANY_TYPE and vehicle_choice == _ANY_VEHICLE:
+        st.warning("⚠️ Pick a supplier, a ServiceType, a Vehicle Type, or any mixture of the "
+                  "three — applying to every live Transfer in the whole account isn't offered "
+                  "here.")
         return
 
+    scope_bits = []
+    if type_choice != _ANY_TYPE:
+        scope_bits.append(f"**{type_choice}**")
+    if vehicle_choice != _ANY_VEHICLE:
+        scope_bits.append(f"**{vehicle_choice}**")
+    scope_desc = " ".join(scope_bits) + " " if scope_bits else "every "
     if supplier_choice == _ANY_SUPPLIER:
         target_suppliers = momira_suppliers
-        st.caption(f"Scope: every **{type_choice}** Transfer across all {len(momira_suppliers)} "
-                   f"Momira suppliers — this scans every supplier and will take longer.")
+        st.caption(f"Scope: {scope_desc}Transfer across all {len(momira_suppliers)} Momira "
+                   f"suppliers — this scans every supplier and will take longer.")
     else:
         chosen = next(s for s in momira_suppliers if supplier_choice == f"{s['name']} — ID {s['id']}")
         target_suppliers = [chosen]
-        if type_choice == _ANY_TYPE:
-            st.caption(f"Scope: every Transfer of **{chosen['name']}**.")
-        else:
-            st.caption(f"Scope: **{type_choice}** Transfers of **{chosen['name']}**.")
+        st.caption(f"Scope: {scope_desc}Transfer(s) of **{chosen['name']}**.")
 
     service_type = None if type_choice == _ANY_TYPE else type_label_to_key[type_choice]
+    vehicle_type = None if vehicle_choice == _ANY_VEHICLE else vehicle_label_to_key[vehicle_choice]
 
     st.subheader("2 — New image")
     source = st.radio("Image source", ["Upload from my computer", "Paste a URL"],
@@ -170,7 +189,8 @@ def render_transfer_image_bulk_flow(client):
         def _prog(done, total, label):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Scanning {label} ({done}/{total})")
 
-        planned = tib.plan(client, target_suppliers, service_type, final_url, progress=_prog)
+        planned = tib.plan(client, target_suppliers, service_type, final_url,
+                           vehicle_type=vehicle_type, progress=_prog)
         if planned.get("error") and not planned.get("items"):
             st.error(f"❌ {planned['error']}")
             return
@@ -208,8 +228,15 @@ def render_transfer_image_bulk_flow(client):
                 st.session_state[f"tib_pick_{i['id']}"] = False
             st.rerun()
 
+    def _tags(item):
+        parts = [tib.SERVICE_TYPE_LABELS.get(item['service_type'], item['service_type'])] if item['service_type'] else []
+        if item.get('vehicle_type'):
+            parts.append(tib.VEHICLE_TYPE_LABELS.get(item['vehicle_type'], item['vehicle_type']))
+        return "  ·  ".join(parts)
+
     for item in will_change:
-        label = f"**{item['name']}**  ·  {tib.SERVICE_TYPE_LABELS.get(item['service_type'], item['service_type'])}  ·  id `{item['id']}`"
+        tags = _tags(item)
+        label = f"**{item['name']}**" + (f"  ·  {tags}" if tags else "") + f"  ·  id `{item['id']}`"
         st.session_state.tib_selected[item["id"]] = st.checkbox(
             label, value=st.session_state.tib_selected.get(item["id"], True),
             key=f"tib_pick_{item['id']}")
@@ -228,7 +255,8 @@ def render_transfer_image_bulk_flow(client):
     if unchanged:
         with st.expander(f"{len(unchanged)} already match this image — left alone", expanded=False):
             for item in unchanged:
-                st.caption(f"{item['name']} · {tib.SERVICE_TYPE_LABELS.get(item['service_type'], item['service_type'])}")
+                tags = _tags(item)
+                st.caption(f"{item['name']}" + (f" · {tags}" if tags else ""))
 
     selected_ids = {pid for pid, v in st.session_state.tib_selected.items() if v}
     st.caption(f"{len(selected_ids)} of {len(will_change)} selected.")

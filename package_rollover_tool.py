@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-verify-public-url-fix"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
 
 _PHASE_KEY = "pkr_phase"
 
