@@ -50,7 +50,7 @@ the same looseness on the write side would be a real hazard there.
 
 # Stamped on every delivery - see platform_store.py's own header for why this convention exists
 # (a partial deploy that updated every other file but this one would go undetected otherwise).
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-upload"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-verify-public-url-fix"
 
 import re
 import unicodedata

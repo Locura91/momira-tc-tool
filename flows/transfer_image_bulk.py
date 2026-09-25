@@ -13,12 +13,22 @@ the new image will be added... We could integrate that to manage existing produc
 SAFETY GATE (this file's own choice, not transfer_image_bulk.py's): at least one of supplier /
 ServiceType must be picked before scanning - "every live Transfer in the whole account" is never
 offered as a scope, to keep one accidental click from touching services nobody meant to touch.
+
+CONFIRMED BUG FIX (product owner, 2026-09-25, live report the day this shipped: ran a bulk
+update through this exact screen, the Transfer's Images tab in Travel Compositor then showed the
+raw R2 URL as unrendered/broken text instead of a picture): the "Load" step now calls
+r2_client.verify_public_url on the resolved image URL - for BOTH sources, an uploaded file and a
+pasted URL - and refuses to scan or write anything if it isn't actually publicly fetchable. See
+that step's own comment for why (the identical bug r2_client.py already fixed once before,
+2026-09-18, for document-image uploads - a successful R2 PUT was never proof the bucket's Public
+Access was enabled or that R2_PUBLIC_BASE_URL pointed at a real public URL, and this screen was
+the one place in the app that had skipped that check).
 """
 import streamlit as st
 
 from ui_components import is_active_supplier
 
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-upload"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-verify-public-url-fix"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"
@@ -135,6 +145,26 @@ def render_transfer_image_bulk_flow(client):
                 except Exception as e:
                     st.error(f"❌ Couldn't upload the image: {type(e).__name__}: {e}")
                     return
+        # CONFIRMED BUG FIX (product owner, 2026-09-25, live report: applied a bulk image via
+        # this exact screen, the Transfer's Images tab in Travel Compositor then showed the raw
+        # R2 URL as broken/unrendered text instead of a picture). r2_client.upload_image's own
+        # PUT succeeding is NOT proof the URL is actually publicly fetchable - see
+        # r2_client.verify_public_url's own docstring for the identical bug already found and
+        # fixed elsewhere in this app (2026-09-18, document-image uploads): a successful PUT only
+        # proves the write credentials work, not that the bucket's Public Access is enabled or
+        # that R2_PUBLIC_BASE_URL points at a real public URL rather than R2's private S3 API
+        # endpoint. upload_images_with_errors already verifies every URL it hands back for
+        # exactly this reason - this screen skipped that check entirely (a plain upload_image()
+        # call) and would happily plan/apply a URL that 404s for everyone, including Travel
+        # Compositor's own fetch. Checked here, BEFORE scanning or writing anything, for BOTH
+        # sources (an uploaded file goes through upload_image above; a pasted URL never went
+        # through R2 at all, but could just as easily be a typo or an unreachable host) - a bad
+        # image must never reach a live Transfer record.
+        with st.spinner("Checking the image is actually publicly reachable..."):
+            ok, reason = r2_client.verify_public_url(final_url)
+        if not ok:
+            st.error(f"❌ This image URL isn't usable: {reason}")
+            return
         bar = st.progress(0.0, text="Scanning...")
 
         def _prog(done, total, label):
