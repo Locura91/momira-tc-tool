@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-25-transfer-prose-fields-text-area-widget-fix"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-upload"
 
 _NAMESPACE = "translation_state"
 

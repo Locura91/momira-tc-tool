@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-25-transfer-prose-fields-text-area-widget-fix"
+MODULE_BUILD = "2026-09-25-transfer-image-bulk-upload"
 
 
 def normalize_name(s: Optional[str]) -> str:
