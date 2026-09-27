@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-single-double-child-discount"
+MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
 
 import os
 import re
@@ -54,9 +54,19 @@ Output ONLY valid JSON, no markdown fences, no explanation. Use this exact struc
 }
 If there is only one tour, set "multiple_variants": false and "variants": [] ."""
 
-EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data from a DMC (Destination Management Company) supplier document for Momira Travel.
-
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
+# CONSOLIDATED 2026-09-27: this exact 45-line block ("how rate tables are laid out in the
+# extracted text" + "how to read dates in the source") used to be pasted verbatim into 8
+# separate extraction prompts below (ClosedTour/Modality/Option, Ticket/Modality/Option,
+# Transfer, Transport, Hotel) - every wording tweak meant hand-editing the same text 8 times
+# (exactly the kind of edit this session kept doing for house-rule changes). Extracted into
+# one shared constant instead; each prompt below concatenates it in at the same spot it used
+# to be pasted, so the text the AI actually receives is byte-for-byte unchanged.
+#
+# NOT used by TICKET_MODALITY_SYSTEM_PROMPT (deliberately shorter/condensed variant of both
+# sub-sections - preserved as-is rather than forced to match, to avoid changing what that
+# prompt actually sends) or TICKET_MAIN_INFO_SYSTEM_PROMPT (no pricing/tables at all, only a
+# condensed date-reading rule) - both keep their own inline text unchanged.
+_TABLE_AND_DATE_READING_HOUSE_RULES = """HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
 Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
 which price sits under which heading. The notation is:
   "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
@@ -101,7 +111,12 @@ impossible result (e.g. "13/25/2026"), say so in the notes field rather than pic
 ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
 date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
 output DD/MM/YYYY yourself, whatever the source used.
+"""
 
+
+EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data from a DMC (Destination Management Company) supplier document for Momira Travel.
+
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """
 - NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
   says in one part of a list net prices and in the other part sales prices, we are ONLY using
   net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
@@ -2542,52 +2557,7 @@ def answer_clarification_question(raw_text: str, current_data: dict, question: s
 
 OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel Compositor
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-Modality/Option (ContractClosedTourOptionVO). This is NOT a full tour extraction - do NOT extract
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """Modality/Option (ContractClosedTourOptionVO). This is NOT a full tour extraction - do NOT extract
 tour name, description, itinerary, hotels, included/excluded, meeting point, policy remarks, or
 supplements. The source is often just a pricing table.
 
@@ -2731,52 +2701,7 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
 
 MODALITY_EXTRACTION_SYSTEM_PROMPT = """You are extracting PRICING/SCHEDULE data for ONE SPECIFIC Modality
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-(room/cabin/pricing category - e.g. "Standard", "Superior", "Deluxe") of a Travel Compositor ClosedTour,
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """(room/cabin/pricing category - e.g. "Standard", "Superior", "Deluxe") of a Travel Compositor ClosedTour,
 from a DMC supplier document that may describe multiple such Modalities for the same tour. Focus ONLY on
 the pricing table(s), supplements, and schedule information for the Modality named in the human guidance
 you're given - IGNORE pricing/supplements that are clearly labeled as belonging to a DIFFERENT named
@@ -3217,52 +3142,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
 
 TICKET_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TICKET
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-(an excursion/activity - single destination, no overnight stay) from a DMC supplier document.
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """(an excursion/activity - single destination, no overnight stay) from a DMC supplier document.
 This is DIFFERENT from a multi-day tour: no itinerary, no day-by-day description, no room-occupancy
 pricing. Translate ALL content to English regardless of source language.
 
@@ -4485,52 +4365,7 @@ def detect_ticket_modalities(raw_text: str, variant_hint: str = None, model: str
 
 TICKET_OPTION_ONLY_SYSTEM_PROMPT = """You are extracting ONLY pricing/schedule data for a Travel
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket extraction - do NOT
 extract ticket name, description, city, meeting points, includes/excludes, or cancellation policy
 (cancellation and release timing belong to the TICKET itself, not the modality, and aren't touched
 when just adding/updating a modality). The source is often just a pricing table for an ALREADY-EXISTING ticket.
@@ -4808,52 +4643,7 @@ def detect_transfer_products(raw_text: str, model: str = "claude-sonnet-5",
 
 TRANSFER_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSFER
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-(a point-to-point or zone-to-zone vehicle transfer, e.g. airport-to-hotel) from a DMC supplier rate sheet.
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """(a point-to-point or zone-to-zone vehicle transfer, e.g. airport-to-hotel) from a DMC supplier rate sheet.
 Translate ALL content to English regardless of source language.
 
 CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
@@ -5175,52 +4965,7 @@ def detect_transport_products(raw_text: str, model: str = "claude-sonnet-5",
 
 TRANSPORT_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor TRANSPORT
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-(a connection between two named destinations/locations - e.g. a private car route, a car+ferry combined
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """(a connection between two named destinations/locations - e.g. a private car route, a car+ferry combined
 journey, a scheduled flight or train leg between two towns/cities/islands - NOT a local airport/hotel
 transfer) from a DMC supplier rate sheet. Translate ALL content to English regardless of source language.
 
@@ -5426,52 +5171,7 @@ def extract_transport_data(raw_text: str, model: str = "claude-sonnet-5", transp
 
 HOTEL_EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data for a Travel Compositor HOTEL contract
 
-HOW TABLES ARE WRITTEN IN THE TEXT YOU ARE GIVEN - READ THIS BEFORE ANY RATE TABLE:
-Tables arrive as a grid with explicit column positions, because a rate sheet's meaning lives in
-which price sits under which heading. The notation is:
-  "COLUMNS: C1 | C2 | ..."      a ruler naming every column position in this table
-  "R3:"                          the row number
-  "High «spans C4-C5»"           this cell covers columns 4 AND 5 - a merged heading
-  "$847 «spans C4-C5»"           this value belongs to columns 4 and 5, i.e. under "High"
-  "24/9/2026 «C2»"               a single cell in column 2
-  "·"                            a genuinely empty cell
-  "NOTE: this table has NO header row of its own..."  the table is a CONTINUATION of the one
-                                 immediately above it, and its columns line up with that table's
-                                 headers one for one. Use the table above to know what each
-                                 column means. This is common: Word often stores one visual
-                                 table as two, with all the headings in the first and all the
-                                 numbers in the second.
-"BY COLUMN (the same table read downwards...)"   PREFER THIS. It is the whole table already
-                               resolved for you: each line gives one column's full path from the
-                               top heading down through the sub-headings, its dates, and every
-                               value in it labelled with the row it came from, e.g.
-                                 C2 = Season 2026 / 2027 > Normal > From > 24/9/2026 > 7/1/2027
-                                      > 5/4/2027 > Single Luxury Cabin: $565 > Per person in
-                                        Double Luxury Cabin: $353 > ...
-                               Read that and the season, its date ranges and each cabin's price
-                               are already together on one line. Use the R-rows above only to
-                               check something that looks wrong.
-TO READ A SEASON GRID: use the BY COLUMN list. If you must work from the rows instead, first
-work out which COLUMN RANGE each season occupies (e.g. Normal = C2-C3, High = C4-C5), then take
-each price from the cell covering that same range. Never match a price to a season by counting
-values left to right - merged cells make the count wrong.
-STACKED DATE RANGES ARE SEPARATE PERIODS, NOT A TYPO: a season often has SEVERAL From/To pairs
-listed on consecutive rows under the same heading (e.g. Normal running 24/9/2026-23/12/2026,
-then 7/1/2027-24/3/2027, then 5/4/2027-5/5/2027). Every one of those is its own entry in
-price_list, all carrying that season's SAME prices. Do not merge them into one long range - the
-gaps between them are other seasons, and merging would sell the high season at the normal rate.
-Do not drop the later ones either; missing periods are the most common failure on these sheets.
-
-READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
-A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
-never 4 March. Momira and its suppliers are European and Middle Eastern and write dates that way,
-and the two readings differ by a month with nothing to show for it - a season boundary quietly
-moved, a rate applied to the wrong weeks. If a date is genuinely ambiguous AND day-first gives an
-impossible result (e.g. "13/25/2026"), say so in the notes field rather than picking silently.
-ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
-date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
-output DD/MM/YYYY yourself, whatever the source used.
-from a DMC supplier rate sheet/tariff document. Translate ALL content to English regardless of source language.
+""" + _TABLE_AND_DATE_READING_HOUSE_RULES + """from a DMC supplier rate sheet/tariff document. Translate ALL content to English regardless of source language.
 
 CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
 directly. Momira Travel is the tour operator the client actually deals with - the client must NEVER be told

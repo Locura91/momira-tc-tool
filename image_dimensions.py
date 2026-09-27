@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-27-single-double-child-discount"
+MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
