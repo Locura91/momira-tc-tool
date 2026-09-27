@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
+MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
 
 _PHASE_KEY = "pkr_phase"
 

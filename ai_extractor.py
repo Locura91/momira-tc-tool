@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
+MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
 
 import os
 import re
@@ -122,6 +122,18 @@ Rules:
   product type (Tickets) that doesn't use this convention.
 - tour_name: keep the product name close to what the source calls it, but apply the Nights-vs-Days naming
   rule above if the source's title states a day count - fix it to nights + 1 if it doesn't already match.
+  CONFIRMED PRODUCT-OWNER NAMING STRUCTURE (2026-09-27, verbatim): "closed tour supplier name shall be
+  overall the same: X Days NAME TOUR. Keep this name structure as the number of nights do not need to be
+  mentioned. put the number of days always at the beginning." So every ClosedTour's tour_name MUST be
+  formatted as "<N> Days <clean product name>" - the day count is always the very FIRST word(s) of the
+  name, never appended at the end or placed in parentheses, and is always present even if the source's
+  own title has no day count in it at all. NEVER include a Nights count anywhere in tour_name (e.g. "4
+  Nights") - Days only. Examples: source titled "Bush Camp Safari" (4 nights) -> tour_name "5 Days Bush
+  Camp Safari". Source titled "Bush Camp Safari - 5 Days" -> tour_name "5 Days Bush Camp Safari" (moved
+  to the front). Source titled "4 Nights / 5 Days Safari" -> tour_name "5 Days Safari" (Nights dropped).
+  This is deterministically double-checked/reformatted after extraction regardless (see
+  _format_tour_name_days_first), so getting the exact punctuation perfect here matters less than getting
+  the day COUNT and the overall clean product name right.
   CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
   ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
   code, so its easy for the supplier when receiving automatic mails"): if the source's title/heading
@@ -802,11 +814,55 @@ def _fix_days_count_in_tour_name(tour_name: str, nights) -> str:
     untouched, and does nothing for a 0-night (single-day, no overnight)
     product, since that's a different product type (Ticket) this
     convention doesn't apply to.
+
+    Superseded by _format_tour_name_days_first below for the actual naming
+    pipeline (see that function's docstring) - kept standalone since its
+    narrower "just fix the number, don't move anything" behavior is still
+    useful on its own and is exercised directly by existing tests.
     """
     if not tour_name or not isinstance(nights, (int, float)) or nights <= 0:
         return tour_name
     correct_days = int(nights) + 1
     return re.sub(r"\b\d+\s*(Days?)\b", lambda m: f"{correct_days} {m.group(1)}", tour_name, count=1, flags=re.I)
+
+
+def _format_tour_name_days_first(tour_name: str, nights) -> str:
+    """CONFIRMED PRODUCT-OWNER NAMING RULE (2026-09-27, verbatim): "closed tour supplier name shall
+    be overall the same: X Days NAME TOUR. Keep this name structure as the number of nights do not
+    need to be mentioned. put the number of days always at the beginning."
+
+    Every ClosedTour's tour_name is reshaped into "<N> Days <clean name>", with the day count
+    (N = nights + 1, same convention as _fix_days_count_in_tour_name) as the VERY FIRST token -
+    never appended at the end, tucked in parentheses, or left out of a name that has no day count
+    at all - and with any explicit Nights mention removed, since only Days belongs in the name.
+    Deterministic backstop alongside the AI's own tour_name instruction (EXTRACTION_SYSTEM_PROMPT)
+    - same "AI is told, but the app double-checks/fixes it anyway" pattern as
+    _fix_days_count_in_tour_name, which this supersedes in the actual extraction pipeline (folds in
+    its correct-day-count math, then also relocates the token to the front and strips Nights).
+
+    Examples: "Bush Camp Safari" (4 nights) -> "5 Days Bush Camp Safari". "Bush Camp Safari - 5
+    Days" -> "5 Days Bush Camp Safari" (token moved, count re-verified). "4 Nights / 5 Days Safari"
+    -> "5 Days Safari" (Nights mention dropped). "Safari (4 Nights)" -> "5 Days Safari".
+
+    Only acts on a genuine multi-day product (nights > 0) - a single-day Ticket-type product (0
+    nights) is untouched, same carve-out as _fix_days_count_in_tour_name.
+    """
+    if not tour_name or not isinstance(nights, (int, float)) or nights <= 0:
+        return tour_name
+    correct_days = int(nights) + 1
+    name = tour_name.strip()
+    # Strip an explicit Nights mention entirely, and whatever separator trails it - e.g.
+    # "4 Nights / 5 Days Safari" -> "5 Days Safari", "Safari (4 Nights, 5 Days)" -> "Safari (5 Days)".
+    name = re.sub(r"\b\d+\s*Nights?\b\s*[/,-]?\s*", "", name, flags=re.I)
+    # Pull out any existing "<N> Day(s)" token, wherever it sits, so it can be reinserted at the
+    # front with the verified-correct count - "Safari - 5 Days", "Safari (5 Days)", "5-Day Safari"
+    # all collapse to the same "5 Days Safari" shape.
+    name = re.sub(r"\b\d+[\s-]*Days?\b", "", name, flags=re.I)
+    # Clean up whatever punctuation/separator is left dangling where the token used to sit.
+    name = re.sub(r"\(\s*\)", "", name)  # empty parens left behind
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    name = name.strip(" -–—/,()")
+    return f"{correct_days} Days {name}".strip() if name else f"{correct_days} Days"
 
 
 def _sanitize_cancellation_tiers(tiers) -> list:
@@ -3070,10 +3126,11 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     # this whole fix responds to - see _drop_incomplete_stop_sales_entries's own docstring.
     _drop_incomplete_stop_sales_entries(defaults)
 
-    # Deterministic double-check of the Nights-vs-Days naming rule (see
-    # _fix_days_count_in_tour_name's docstring) - catches the AI copying a
-    # wrong day count straight from the source document's own title.
-    defaults["tour_name"] = _fix_days_count_in_tour_name(defaults.get("tour_name", ""), defaults.get("nights"))
+    # Deterministic double-check of the naming rule (see _format_tour_name_days_first's
+    # docstring) - catches the AI copying a wrong day count straight from the source document's
+    # own title, AND enforces the "<N> Days <name>" structure (day count first, no Nights
+    # mention) regardless of where/whether the AI placed a day count in tour_name.
+    defaults["tour_name"] = _format_tour_name_days_first(defaults.get("tour_name", ""), defaults.get("nights"))
 
     defaults["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(defaults.get("cancellation_policy_tiers"))
 

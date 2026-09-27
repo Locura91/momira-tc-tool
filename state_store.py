@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
+MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
 
 _NAMESPACE = "translation_state"
 

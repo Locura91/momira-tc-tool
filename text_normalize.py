@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
+MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
 
 
 def normalize_name(s: Optional[str]) -> str:
