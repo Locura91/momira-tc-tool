@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
+MODULE_BUILD = "2026-09-27-single-double-child-discount"
 
 import re
 import math
@@ -1630,23 +1630,28 @@ def render_extra_child_notice(data, key_prefix):
 
 
 def render_child_discount_editor(data, key_prefix, currency=None):
-    """Document-wide child-discount percentage - the ONLY child discount Travel Compositor
-    actually supports on a ClosedTour price list, and only for Triple/Quadruple occupancy (see
-    builder.normalize_price_list()'s own docstring for the confirmed real API limitation - there
-    is no Single/Double equivalent anywhere in Travel Compositor's live price list schema,
-    PriceListPriceVO).
+    """Document-wide child-discount percentage, applied to every occupancy this Modality sells
+    (Single/Double/Triple/Quadruple - see builder.normalize_price_list()'s own docstring).
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "a single and a double price can have
+    a child discount. It would be adjusted when someone is travelling 1 adult and one child,
+    therefore it must be included to the upload") - REVERSES the earlier 2026-08-24 house rule
+    that this discount only existed for Triple/Quadruple occupancy on a ClosedTour price list.
+    singleChildPercentageDiscount/doubleChildPercentageDiscount now exist on PriceListPriceVO
+    (schemas.py) alongside the original Triple/Quadruple fields, and normalize_price_list()
+    applies the same fallback/clamp logic to all four uniformly.
 
     CONFIRMED REAL GAP (product owner question, 2026-08-31): this value is already extracted from
     the source document into child_discount_percentage, and is already being sent to Travel
     Compositor - normalize_price_list() applies it automatically to every price-list row that
-    sells Triple/Quadruple, right before publish (see build_closed_tour_payloads). But until this
-    widget, it had ZERO visibility on any review screen: not shown, not editable, and its effect
-    on the actual price rows invisible - "so far no child discount is seen at all" was accurate.
-    This widget closes that gap: shows/edits the document-wide percentage, and previews exactly
-    what will be sent on each Triple/Quadruple row. A row's own explicit discount (when the source
-    stated one specifically for that row, rather than a document-wide number) always wins over
-    this - same override rule normalize_price_list already applies; this widget only sets the
-    fallback, never overwrites a row's own value.
+    sells the relevant occupancy, right before publish (see build_closed_tour_payloads). But
+    until this widget, it had ZERO visibility on any review screen: not shown, not editable, and
+    its effect on the actual price rows invisible - "so far no child discount is seen at all" was
+    accurate. This widget closes that gap: shows/edits the document-wide percentage, and previews
+    exactly what will be sent on each occupancy's rows. A row's own explicit discount (when the
+    source stated one specifically for that row, rather than a document-wide number) always wins
+    over this - same override rule normalize_price_list already applies; this widget only sets
+    the fallback, never overwrites a row's own value.
 
     CONFIRMED SAFETY RULE (product owner, 2026-08-31): "we must make sure, that the app never
     allows more than 100% discount - because in travel compositor people could enter 100000%
@@ -1664,10 +1669,9 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     from builder import normalize_price_list, sold_occupancies
 
     sold = sold_occupancies(data.get("price_list"))
-    if not ({"triplePrice", "quadruplePrice"} & sold):
-        st.caption("👶 No Triple or Quadruple occupancy priced yet - a child discount only ever "
-                   "applies to those two (Travel Compositor has no Single/Double field), so "
-                   "there's nothing to set here until one of them has a price.")
+    if not ({"singlePrice", "doublePrice", "triplePrice", "quadruplePrice"} & sold):
+        st.caption("👶 No occupancy priced yet - add at least one Single/Double/Triple/Quadruple "
+                   "price above first to see a child discount option here.")
         return
 
     raw = data.get("child_discount_percentage")
@@ -1683,15 +1687,14 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     # below via clamp_notes.
     current_value = max(0.0, min(current_value, 100.0))
     new_value = st.number_input(
-        "👶 Child discount % (Triple/Quadruple only)", min_value=0.0, max_value=100.0,
+        "👶 Child discount %", min_value=0.0, max_value=100.0,
         value=current_value, step=1.0, key=f"{key_prefix}_child_discount_pct",
-        help="Travel Compositor only supports a child discount on Triple/Quadruple occupancy - "
-             "there is no Single/Double field on a ClosedTour price list, so those two never show "
-             "a number here. Detected from the document when it stated one; leave at 0 if the "
-             "document doesn't mention a child discount. Applied to every Triple/Quadruple row "
-             "below that doesn't already carry its own row-specific discount. Capped at 100% "
-             "(a free child) - Travel Compositor itself has no such limit, which is exactly what "
-             "makes an uncapped value dangerous to send.")
+        help="Detected from the document when it stated one; leave at 0 if the document doesn't "
+             "mention a child discount. Applied to every Single/Double/Triple/Quadruple row below "
+             "that doesn't already carry its own row-specific discount (e.g. when 1 adult travels "
+             "with 1 child sharing a Double). Capped at 100% (a free child) - Travel Compositor "
+             "itself has no such limit, which is exactly what makes an uncapped value dangerous "
+             "to send.")
     data["child_discount_percentage"] = new_value
 
     clamp_notes = []
@@ -1703,7 +1706,9 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     lines = []
     for row in preview_rows:
         price = row.get("price") or {}
-        for money_key, label in (("tripleChildPercentageDiscount", "Triple"),
+        for money_key, label in (("singleChildPercentageDiscount", "Single"),
+                                  ("doubleChildPercentageDiscount", "Double"),
+                                  ("tripleChildPercentageDiscount", "Triple"),
                                   ("quadrupleChildPercentageDiscount", "Quadruple")):
             pct = price.get(money_key)
             if pct is not None:
@@ -1712,6 +1717,6 @@ def render_child_discount_editor(data, key_prefix, currency=None):
     if lines:
         st.caption("Will be sent to Travel Compositor on publish:\n\n" + "\n".join(lines))
     elif new_value:
-        st.caption("Nothing to send yet - add a Triple or Quadruple price above first.")
+        st.caption("Nothing to send yet - add a price above first.")
     else:
         st.caption("No discount will be sent - set the percentage above if the document states one.")

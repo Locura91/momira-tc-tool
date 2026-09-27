@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
+MODULE_BUILD = "2026-09-27-single-double-child-discount"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator, root_validator
@@ -282,11 +282,23 @@ class OptionTranslation(BaseModel):
     remarks: Optional[str] = None
 
 class PriceListPriceVO(BaseModel):
-    """Same per-occupancy shape as the main tour's (deprecated) price block, but THIS one is live/used."""
+    """Same per-occupancy shape as the main tour's (deprecated) price block, but THIS one is live/used.
+
+    singleChildPercentageDiscount/doubleChildPercentageDiscount: CONFIRMED PRODUCT-OWNER REQUEST
+    (2026-09-27, verbatim: "a single and a double price can have a child discount. It would be
+    adjusted when someone is travelling 1 adult and one child, therefore it must be included to
+    the upload") - REVERSES the earlier 2026-08-24 house rule recorded in
+    builder.normalize_price_list's docstring, which said Single/Double had no child-discount
+    field at all. Added here in the exact same shape Travel Compositor already accepts for
+    Triple/Quadruple (a plain percentage float, not the SupplementPriceVO ChildDiscount object
+    used elsewhere in this schema) so the same normalize_price_list logic can treat all four
+    occupancies uniformly."""
     singlePrice: Optional[MoneyVO] = None
     doublePrice: Optional[MoneyVO] = None
     triplePrice: Optional[MoneyVO] = None
     quadruplePrice: Optional[MoneyVO] = None
+    singleChildPercentageDiscount: Optional[float] = None
+    doubleChildPercentageDiscount: Optional[float] = None
     tripleChildPercentageDiscount: Optional[float] = None
     quadrupleChildPercentageDiscount: Optional[float] = None
 

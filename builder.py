@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
+MODULE_BUILD = "2026-09-27-single-double-child-discount"
 
 import copy
 import math
@@ -330,16 +330,22 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     recorded in `notes` (when given), same "flag it, don't silently change it" convention as the
     child-discount clamp below.
 
-    fallback_child_discount_percentage: CONFIRMED HOUSE RULE (product owner, 2026-08-24) - Travel
-    Compositor's ONLY child-price mechanism on a Closed Tour price list entry is
-    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount (a child as the 3rd/4th person
-    sharing a room); there is no equivalent field for single/double occupancy. When the extraction
-    (or a human) states a document-wide child discount percentage but a given row's own
-    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount is missing, apply this fallback
-    to that row instead of silently leaving the discount off - but ONLY on rows that actually sell
-    triplePrice/quadruplePrice (an occupancy this tour doesn't sell can't carry a discount either,
-    same rule as supplements - see strip_unsold_supplement_occupancies). A row's own explicit value
-    (including 0, meaning "confirmed no discount") always wins over this fallback.
+    fallback_child_discount_percentage: ORIGINALLY a CONFIRMED HOUSE RULE (product owner,
+    2026-08-24) that Travel Compositor's ONLY child-price mechanism on a Closed Tour price list
+    entry was tripleChildPercentageDiscount/quadrupleChildPercentageDiscount (a child as the
+    3rd/4th person sharing a room), with no equivalent field for single/double occupancy.
+    REVERSED (product owner, 2026-09-27, verbatim: "a single and a double price can have a child
+    discount. It would be adjusted when someone is travelling 1 adult and one child, therefore it
+    must be included to the upload") - singleChildPercentageDiscount/doubleChildPercentageDiscount
+    now exist on PriceListPriceVO (see its own comment in schemas.py) and are handled identically
+    to Triple/Quadruple below. When the extraction (or a human) states a document-wide child
+    discount percentage but a given row's own singleChildPercentageDiscount/
+    doubleChildPercentageDiscount/tripleChildPercentageDiscount/quadrupleChildPercentageDiscount is
+    missing, apply this fallback to that row instead of silently leaving the discount off - but
+    ONLY on rows that actually sell that occupancy's price (an occupancy this tour doesn't sell
+    can't carry a discount either, same rule as supplements - see
+    strip_unsold_supplement_occupancies). A row's own explicit value (including 0, meaning
+    "confirmed no discount") always wins over this fallback.
 
     Every child-discount value (a row's own, or the fallback) is clamped to 0-100% - see
     _clamp_child_discount_percentage's own comment for why. notes: an optional list to append a
@@ -374,6 +380,14 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
             if money is not None:
                 cleaned[key] = money
         for extra, occupancy_key in (
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "a single and a double price
+            # can have a child discount. It would be adjusted when someone is travelling 1 adult
+            # and one child, therefore it must be included to the upload") - REVERSES the earlier
+            # 2026-08-24 house rule (see this function's own docstring) that Single/Double had no
+            # child-discount mechanism at all. Same shape, same fallback/clamp/notes handling as
+            # Triple/Quadruple below - see PriceListPriceVO's own comment in schemas.py.
+            ("singleChildPercentageDiscount", "singlePrice"),
+            ("doubleChildPercentageDiscount", "doublePrice"),
             ("tripleChildPercentageDiscount", "triplePrice"),
             ("quadrupleChildPercentageDiscount", "quadruplePrice"),
         ):

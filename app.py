@@ -790,7 +790,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-net-price-only-house-rule"
+BUILD_VERSION = "2026-09-27-single-double-child-discount"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2651,7 +2651,18 @@ if st.session_state.extracted:
         render_clarify_result(r)
     remember_memory_panel(clarify_supplier_id(), "ClosedTour", "legacy")
 
-    if st.button("🔎 Check Locations & Continue",
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "when updating existing closedtour
+    # modality only, no need to check the destiinations again before publishing"): an
+    # option-only action (add_option/update_option/the "Price only" scope of update_tour) never
+    # touches the main tour's itinerary at all - Step 5 doesn't even show the itinerary
+    # destinations box for these (see the `is_option_only` branch above), so
+    # extract_option_only_data()/extract_modality_data() always hand back an empty
+    # itinerary_destinations list and there is nothing for build_closed_tour_payloads' resolution
+    # step to actually check. The button/spinner used to still say "Check Locations", which reads
+    # as a real destination re-verification step and is misleading friction for a modality-only
+    # update - relabel it to plain "Continue" for this case.
+    _ct_continue_label = "➡️ Continue" if is_option_only else "🔎 Check Locations & Continue"
+    if st.button(_ct_continue_label,
                 disabled=not price_list_valid):
         # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
         # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
@@ -2659,7 +2670,9 @@ if st.session_state.extracted:
         # `provider_code` and silently publish under the wrong tour's code. `provider_code`
         # (module-level, above) already carries the fetched_tour_matches_code()-validated value
         # when one applies - nothing else should be trusted here.
-        with st.spinner("Resolving destinations against Travel Compositor..."):
+        _ct_spinner_msg = ("Preparing payload..." if is_option_only
+                           else "Resolving destinations against Travel Compositor...")
+        with st.spinner(_ct_spinner_msg):
             try:
                 # HumanPreConfig() itself used to be constructed OUTSIDE this
                 # try block - if provider_code didn't match the required
@@ -2695,35 +2708,41 @@ if st.session_state.extracted:
     # rebuild instead of letting a stale payload reach Step 6/7 below.
     if st.session_state.payloads and _data_fingerprint(data) != st.session_state.get("payloads_data_fingerprint"):
         st.session_state.payloads = None
-        st.warning("✏️ You edited the data above after building the payload - click "
-                  "**🔎 Check Locations & Continue** again to refresh it before publishing.")
+        st.warning(f"✏️ You edited the data above after building the payload - click "
+                  f"**{_ct_continue_label}** again to refresh it before publishing.")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
 
-        st.header("Step 6 — Destination Resolution & Payload Preview")
+        st.header("Step 6 — Payload Preview" if is_option_only else "Step 6 — Destination Resolution & Payload Preview")
 
         render_modalities_review(
             "tour", modality_code, "Base Modality", data,
             st.session_state.get("extra_modalities", []), currency
         )
 
-        st.subheader("Destination Check — verify these against Travel Compositor before publishing")
-        for res in payloads["itinerary_resolution"]:
-            if res["valid"]:
-                st.markdown(
-                    f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
-                    f"border-radius:4px; margin-bottom:4px;'>✅ <b>{res['input']}</b> → "
-                    f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.markdown(
-                    f"<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
-                    f"border-radius:4px; margin-bottom:4px;'>❌ <b>{res['input']}</b> → NOT FOUND "
-                    f"in Travel Compositor</div>",
-                    unsafe_allow_html=True
-                )
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, see the button-relabel comment above): an
+        # option-only action never carries any itinerary_destinations to resolve, so
+        # payloads["itinerary_resolution"] is always empty here - skip the section heading
+        # entirely instead of showing "Destination Check" over a blank list, which read as if a
+        # check had happened (or was still needed) when there was never anything to check.
+        if not is_option_only:
+            st.subheader("Destination Check — verify these against Travel Compositor before publishing")
+            for res in payloads["itinerary_resolution"]:
+                if res["valid"]:
+                    st.markdown(
+                        f"<div style='background-color:#d4edda; color:#155724; padding:6px 12px; "
+                        f"border-radius:4px; margin-bottom:4px;'>✅ <b>{res['input']}</b> → "
+                        f"<code>{res['destination']}</code> ({res.get('resolved_name', '')})</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='background-color:#f8d7da; color:#721c24; padding:6px 12px; "
+                        f"border-radius:4px; margin-bottom:4px;'>❌ <b>{res['input']}</b> → NOT FOUND "
+                        f"in Travel Compositor</div>",
+                        unsafe_allow_html=True
+                    )
 
         if payloads.get("is_indonesia"):
             st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day and Nyepi are automatically "
@@ -2823,7 +2842,8 @@ if st.session_state.extracted:
         if missing_existing_code:
             st.info("Existing Tour Code is missing - go back to Step 3.")
         elif not can_publish:
-            st.info("Resolve all destinations and fix pricing above before publishing.")
+            st.info("Fix pricing above before publishing." if is_option_only
+                    else "Resolve all destinations and fix pricing above before publishing.")
 
         action_descriptions = {
             "Create a brand-new tour (+ first option)": "Will POST a new tour, then POST a new option.",

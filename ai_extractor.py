@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
+MODULE_BUILD = "2026-09-27-single-double-child-discount"
 
 import os
 import re
@@ -582,17 +582,22 @@ Rules:
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
       "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "singleChildPercentageDiscount": 0,
+      "doubleChildPercentageDiscount": 0,
       "tripleChildPercentageDiscount": 0,
       "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a date range), use that same date for both startDate and endDate. Use the currency mentioned in the document.
-  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as the document's stated
-  child_discount_percentage (see below) on every row that has a triplePrice/quadruplePrice - "children
-  free" -> 100, "50% off" -> 50. Omit both keys entirely if no child discount is stated anywhere in the
-  source (do not default to 0 in that case - 0 would mean "confirmed no discount", which is different
-  from "not stated"). These two fields are the ONLY place Travel Compositor lets a child discount
-  affect price - it has no equivalent field for single/double occupancy.
+  singleChildPercentageDiscount/doubleChildPercentageDiscount/tripleChildPercentageDiscount/
+  quadrupleChildPercentageDiscount: same value as the document's stated child_discount_percentage
+  (see below) on every row that has the matching singlePrice/doublePrice/triplePrice/
+  quadruplePrice - "children free" -> 100, "50% off" -> 50. CONFIRMED PRODUCT-OWNER REQUEST
+  (2026-09-27, verbatim: "a single and a double price can have a child discount. It would be
+  adjusted when someone is travelling 1 adult and one child, therefore it must be included to the
+  upload") - this now applies to ALL FOUR occupancies, not just Triple/Quadruple. Omit a key
+  entirely if no child discount is stated anywhere in the source (do not default to 0 in that
+  case - 0 would mean "confirmed no discount", which is different from "not stated").
 
   ============================================================
   SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
@@ -2611,17 +2616,22 @@ Extract ONLY:
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
       "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "singleChildPercentageDiscount": 0,
+      "doubleChildPercentageDiscount": 0,
       "tripleChildPercentageDiscount": 0,
       "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
-  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as this Modality's stated
-  child_discount_percentage (see below), on every row with a triplePrice/quadruplePrice - "children
-  free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
-  0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
-  on this record - there is no equivalent for single/double occupancy.
+  singleChildPercentageDiscount/doubleChildPercentageDiscount/tripleChildPercentageDiscount/
+  quadrupleChildPercentageDiscount: same value as this Modality's stated child_discount_percentage
+  (see below), on every row with the matching singlePrice/doublePrice/triplePrice/quadruplePrice -
+  "children free" -> 100, "50% off" -> 50. CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim:
+  "a single and a double price can have a child discount. It would be adjusted when someone is
+  travelling 1 adult and one child, therefore it must be included to the upload") - this now
+  applies to ALL FOUR occupancies, not just Triple/Quadruple. Omit a key if no child discount is
+  stated (do not default to 0 - 0 means "confirmed no discount").
 
   ============================================================
   SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
@@ -2680,9 +2690,9 @@ Extract ONLY:
   extract it as a plain percentage OFF the adult price - "children are free" -> 100, "child rate is
   50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the DISCOUNT, not
   the amount they pay). Set to null if no child discount/rate is stated anywhere (do not invent a
-  default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
-  Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
-  pricing when a 3rd/4th person is sharing the room.
+  default). This feeds singleChildPercentageDiscount/doubleChildPercentageDiscount/
+  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - applies whenever 1 adult
+  travels with 1 child sharing any occupancy, not only when a 3rd/4th person is sharing the room.
 - extra_child_allowed: CONFIRMED REAL FEATURE (product owner, 2026-08-26) - Travel Compositor's own
   Modality screen has an "Extra child allowed" toggle plus a per-occupancy "Max extra child" number, not
   exposed by the write API - this app can only compute the recommended values and remind a human to
@@ -2807,17 +2817,22 @@ Extract:
       "doublePrice": {"amount": 0, "currency": "EUR"},
       "triplePrice": {"amount": 0, "currency": "EUR"},
       "quadruplePrice": {"amount": 0, "currency": "EUR"},
+      "singleChildPercentageDiscount": 0,
+      "doubleChildPercentageDiscount": 0,
       "tripleChildPercentageDiscount": 0,
       "quadrupleChildPercentageDiscount": 0
     }
   }
   If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
-  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount: same value as this Modality's stated
-  child_discount_percentage (see below), on every row with a triplePrice/quadruplePrice - "children
-  free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
-  0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
-  on this record - there is no equivalent for single/double occupancy.
+  singleChildPercentageDiscount/doubleChildPercentageDiscount/tripleChildPercentageDiscount/
+  quadrupleChildPercentageDiscount: same value as this Modality's stated child_discount_percentage
+  (see below), on every row with the matching singlePrice/doublePrice/triplePrice/quadruplePrice -
+  "children free" -> 100, "50% off" -> 50. CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim:
+  "a single and a double price can have a child discount. It would be adjusted when someone is
+  travelling 1 adult and one child, therefore it must be included to the upload") - this now
+  applies to ALL FOUR occupancies, not just Triple/Quadruple. Omit a key if no child discount is
+  stated (do not default to 0 - 0 means "confirmed no discount").
 
   ============================================================
   SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
@@ -2910,9 +2925,9 @@ Extract:
   THIS Modality, extract it as a plain percentage OFF the adult price - "children are free" -> 100,
   "child rate is 50% off"/"children pay half price" -> 50, "children pay 70% of adult price" -> 30 (the
   DISCOUNT, not the amount they pay). Set to null if no child discount/rate is stated (do not invent a
-  default). This feeds tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - Travel
-  Compositor has no equivalent field for single/double occupancy, so a stated discount only affects
-  pricing when a 3rd/4th person is sharing the room.
+  default). This feeds singleChildPercentageDiscount/doubleChildPercentageDiscount/
+  tripleChildPercentageDiscount/quadrupleChildPercentageDiscount above - applies whenever 1 adult
+  travels with 1 child sharing any occupancy, not only when a 3rd/4th person is sharing the room.
 - extra_child_allowed: CONFIRMED REAL FEATURE (product owner, 2026-08-26) - Travel Compositor's own
   Modality screen has an "Extra child allowed" toggle plus a per-occupancy "Max extra child" number, not
   exposed by the write API - this app can only compute the recommended values and remind a human to

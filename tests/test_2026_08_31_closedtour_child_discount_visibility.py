@@ -7,9 +7,14 @@ seen at all."
 
 Investigation confirmed TWO separate things:
 
-  1. Single/Double child discount: genuine Travel Compositor platform limitation, NOT fixable -
-     the real, live-used price list schema (PriceListPriceVO in schemas.py) has no field for it
-     at all. Nothing to build here.
+  1. Single/Double child discount: at the time (2026-08-31), believed to be a genuine Travel
+     Compositor platform limitation, since the price list schema (PriceListPriceVO in schemas.py)
+     had no field for it. REVERSED 2026-09-27 (product owner, verbatim: "a single and a double
+     price can have a child discount. It would be adjusted when someone is travelling 1 adult and
+     one child, therefore it must be included to the upload") - singleChildPercentageDiscount/
+     doubleChildPercentageDiscount now exist on PriceListPriceVO and are handled identically to
+     Triple/Quadruple everywhere in this pipeline. See
+     test_2026_09_27_single_double_child_discount.py for that fix's own tests.
   2. Triple/Quadruple child discount: WAS already being computed and sent to Travel Compositor
      (builder.normalize_price_list()'s fallback_child_discount_percentage, applied automatically
      from the document-wide extracted child_discount_percentage - see build_closed_tour_payloads,
@@ -17,8 +22,8 @@ Investigation confirmed TWO separate things:
      editable, effect on the actual price rows invisible.
 
 The fix: ui_components.render_child_discount_editor() - shows/edits the document-wide
-child_discount_percentage and previews exactly what will be sent on each Triple/Quadruple row,
-using the SAME builder.normalize_price_list() call build_closed_tour_payloads uses right before
+child_discount_percentage and previews exactly what will be sent on each occupancy's row, using
+the SAME builder.normalize_price_list() call build_closed_tour_payloads uses right before
 publish, so the preview can never drift from what's actually sent. Wired into all three
 ClosedTour creation screens in app.py (single-tour "ct_single", and the two multi-modality flows
 "mm_"/"mct_mod_"), right after the existing render_extra_child_notice() call.
@@ -81,6 +86,9 @@ def test_document_wide_percentage_flows_into_the_real_published_payload(fake_api
     price = result["tour_option_payload"]["priceList"][0]["price"]
     assert price["tripleChildPercentageDiscount"] == 15.0
     assert price["quadrupleChildPercentageDiscount"] == 15.0
+    # 2026-09-27: Single/Double now get the same fallback (see this file's module docstring).
+    assert price["singleChildPercentageDiscount"] == 15.0
+    assert price["doubleChildPercentageDiscount"] == 15.0
 
 
 def test_no_document_wide_percentage_means_no_discount_sent(fake_api_client):
@@ -96,6 +104,8 @@ def test_no_document_wide_percentage_means_no_discount_sent(fake_api_client):
     price = result["tour_option_payload"]["priceList"][0]["price"]
     assert price["tripleChildPercentageDiscount"] is None
     assert price["quadrupleChildPercentageDiscount"] is None
+    assert price["singleChildPercentageDiscount"] is None
+    assert price["doubleChildPercentageDiscount"] is None
 
 
 def test_a_rows_own_explicit_discount_still_wins_over_the_document_wide_value(fake_api_client):
@@ -119,28 +129,41 @@ def test_a_rows_own_explicit_discount_still_wins_over_the_document_wide_value(fa
     assert price["quadrupleChildPercentageDiscount"] == 15.0   # document-wide fallback applied
 
 
-def test_single_and_double_never_carry_a_discount_field_at_all(fake_api_client):
-    """CONFIRMED REAL LIMITATION: Travel Compositor's price list schema has no Single/Double
-    child-discount field - the fallback must never invent one, however the document-wide
-    percentage is set."""
+def test_single_and_double_now_carry_the_discount_too(fake_api_client):
+    """REVERSED 2026-09-27 (see this file's module docstring) - Single/Double now get the same
+    document-wide fallback discount as Triple/Quadruple, since Travel Compositor's price list
+    schema was extended with singleChildPercentageDiscount/doubleChildPercentageDiscount."""
     result = build_closed_tour_payloads(
         make_pre_config(),
         minimal_extracted_data(price_list=_TRIPLE_QUAD_PRICE_LIST, child_discount_percentage=50),
         fake_api_client,
     )
     price = result["tour_option_payload"]["priceList"][0]["price"]
-    assert not any("ingle" in k and "hild" in k for k in price)
-    assert not any("ouble" in k and "hild" in k for k in price)
+    assert price["singleChildPercentageDiscount"] == 50.0
+    assert price["doubleChildPercentageDiscount"] == 50.0
+    assert price["tripleChildPercentageDiscount"] == 50.0
+    assert price["quadrupleChildPercentageDiscount"] == 50.0
 
 
-def test_gating_condition_no_triple_or_quadruple_priced_means_nothing_to_preview():
-    """Mirrors the widget's own early-return condition: with no Triple/Quadruple priced,
-    sold_occupancies never includes either key, so the widget shows its 'nothing to set here'
-    caption instead of a number input - checked here at the logic level the widget calls into."""
+def test_gating_condition_no_occupancy_priced_means_nothing_to_preview():
+    """Mirrors the widget's own early-return condition (broadened 2026-09-27 to cover all four
+    occupancies, not just Triple/Quadruple - see render_child_discount_editor's docstring): with
+    NO occupancy priced at all, sold_occupancies is empty, so the widget shows its 'nothing to set
+    here' caption instead of a number input - checked here at the logic level the widget calls
+    into."""
+    nothing_priced = [{"startDate": "2027-01-01", "endDate": "2027-12-31", "price": {}}]
+    sold = sold_occupancies(nothing_priced)
+    assert not ({"singlePrice", "doublePrice", "triplePrice", "quadruplePrice"} & sold)
+
+
+def test_gating_condition_triple_or_quadruple_alone_still_no_longer_the_only_trigger():
+    """REVERSED 2026-09-27: a Single/Double-only price list now DOES have something to preview
+    (Single/Double got their own child-discount fields too), unlike before this fix when only
+    Triple/Quadruple counted."""
     single_double_only = [{"startDate": "2027-01-01", "endDate": "2027-12-31",
                            "price": {"singlePrice": {"amount": 500}, "doublePrice": {"amount": 300}}}]
     sold = sold_occupancies(single_double_only)
-    assert not ({"triplePrice", "quadruplePrice"} & sold)
+    assert {"singlePrice", "doublePrice", "triplePrice", "quadruplePrice"} & sold
 
 
 def test_gating_condition_triple_priced_means_something_to_preview():
