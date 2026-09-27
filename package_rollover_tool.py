@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
+MODULE_BUILD = "2026-09-27-social-kit-wired-in"
 
 _PHASE_KEY = "pkr_phase"
 

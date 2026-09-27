@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
+MODULE_BUILD = "2026-09-27-social-kit-wired-in"
 
 _NAMESPACE = "supplier_images"
 
