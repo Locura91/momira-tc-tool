@@ -259,7 +259,10 @@ def test_app_py_multi_tour_flow_dispatcher_never_handles_a_reviewing_phase():
 def test_app_py_existing_tour_code_widget_has_a_stable_key():
     src = _read_app_py()
     idx = src.index('if "existing_tour_code" in needed:')
-    window = src[idx:idx + 2200]
+    # Window widened 2026-09-27: the add_option ClosedTour picker (fetches this supplier's
+    # tours via get_existing_tour_names and lets the human pick one) was inserted ahead of the
+    # shared text_input, pushing it further from the "needed" check than before.
+    window = src[idx:idx + 3600]
     assert 'key=_ct_code_key' in window
     assert '_ct_code_key = "ct_existing_tour_code_in"' in window
     # The old one-shot pattern (value=prefill, no key) must be gone.

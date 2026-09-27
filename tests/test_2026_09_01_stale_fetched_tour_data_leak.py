@@ -76,10 +76,13 @@ def test_step3_continue_gate_uses_the_match_helper_not_bare_truthiness():
     #
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" was deliberately REMOVED from
     # this tuple - "If we select the supplier and if we select the ClosedTour Code, we just want
-    # to add a new Modality, regardless what is already online." add_option now asks for
-    # Currency directly in Step 3 instead of fetching it (see ACTION_FIELDS's own comment) and no
-    # longer needs (or offers) the "Check what's already online" gate at all.
-    marker = 'if action in ("update_tour", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):'
+    # to add a new Modality, regardless what is already online." add_option briefly asked for
+    # Currency directly in Step 3 instead of fetching it.
+    #
+    # REVERSED 2026-09-27: add_option now picks the ClosedTour from a fetched list and inherits
+    # its currency (currency can't differ between Modalities of the same tour), so it goes
+    # through this same fetch-and-match gate again, alongside update_tour/update_option.
+    marker = 'if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):'
     assert marker in src, (
         "Step 3's 'Continue to Step 4' gate must require the fetch to match the CURRENTLY "
         "entered tour code, not just be present - a bare truthiness check on "

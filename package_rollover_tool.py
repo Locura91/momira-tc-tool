@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 _PHASE_KEY = "pkr_phase"
 

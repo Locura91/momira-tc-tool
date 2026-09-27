@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 import os
 import re

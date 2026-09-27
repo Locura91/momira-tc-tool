@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 import os
 import re
@@ -568,6 +568,25 @@ Rules:
   from "not stated"). These two fields are the ONLY place Travel Compositor lets a child discount
   affect price - it has no equivalent field for single/double occupancy.
 
+  ============================================================
+  SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
+  says for specific time period no single supplement, the price for single is the same as double.
+  but if the contract does not say otherwise, we have to add single supplement to the single price
+  list." So singlePrice is NEVER just copied equal to doublePrice by default:
+    - If the source states a single supplement (a surcharge for solo/single occupancy - a flat
+      amount, a percentage, or a per-night rate) for a date range, singlePrice for that row =
+      doublePrice + that supplement (a per-night supplement is multiplied by nights first, same as
+      the PER-NIGHT PRICING rule below).
+    - If the source EXPLICITLY says no single supplement applies for a specific period ("no single
+      supplement", "single supplement waived", "single occupancy at the double rate" for THOSE
+      dates), singlePrice for that row = doublePrice, unchanged - this is the ONLY case where the
+      two are set equal.
+    - If the source gives an explicit, separate single-occupancy rate (not phrased as a supplement
+      on top of double), use that stated rate directly - this rule is about the case where a
+      supplement needs to be CALCULATED, not one already spelled out as its own rate.
+    - If the document is silent about single supplement entirely for a given period (no stated
+      supplement, no stated waiver), do NOT default to equal - say so in pricing_notes rather than
+      guessing, since assuming either equal or a made-up supplement amount would misprice bookings.
   ============================================================
   PER-NIGHT PRICING - CONFIRMED HOUSE RULE (product owner), and the single most repeated
   correction on this platform. It applies to Nile cruises above all, and to any ClosedTour whose
@@ -2519,6 +2538,26 @@ Extract ONLY:
   free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
   0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
   on this record - there is no equivalent for single/double occupancy.
+
+  ============================================================
+  SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
+  says for specific time period no single supplement, the price for single is the same as double.
+  but if the contract does not say otherwise, we have to add single supplement to the single price
+  list." So singlePrice is NEVER just copied equal to doublePrice by default:
+    - If the source states a single supplement (a surcharge for solo/single occupancy - a flat
+      amount, a percentage, or a per-night rate) for a date range, singlePrice for that row =
+      doublePrice + that supplement (a per-night supplement is multiplied by nights first).
+    - If the source EXPLICITLY says no single supplement applies for a specific period ("no single
+      supplement", "single supplement waived", "single occupancy at the double rate" for THOSE
+      dates), singlePrice for that row = doublePrice, unchanged - this is the ONLY case where the
+      two are set equal.
+    - If the source gives an explicit, separate single-occupancy rate (not phrased as a supplement
+      on top of double), use that stated rate directly - this rule is about the case where a
+      supplement needs to be CALCULATED, not one already spelled out as its own rate.
+    - If the document is silent about single supplement entirely for a given period (no stated
+      supplement, no stated waiver), do NOT default to equal - say so in pricing_notes rather than
+      guessing, since assuming either equal or a made-up supplement amount would misprice bookings.
+  ============================================================
 - pricing_notes: leave empty UNLESS you had to approximate/drop something fitting a group-size table into the 4-slot schema - explain exactly what, with real numbers.
 - schedule_notes: plain-English description of departure timing/pattern if mentioned (e.g. "departs every Monday", "runs only on specific dates in the schedule table") - informational only. NEVER include an instruction telling the customer to contact the operator/supplier directly (e.g. "contact the operator 48h before to confirm pick-up time") - Momira is the client-facing operator, not this DMC supplier, so silently drop that kind of text if present.
 - operational_days: your best guess at which weekdays this departs on, as a list of uppercase weekday names, based on schedule_notes. If genuinely unclear, return all 7 days and let the human confirm.
@@ -2681,6 +2720,26 @@ Extract:
   free" -> 100, "50% off" -> 50. Omit both keys if no child discount is stated (do not default to 0 -
   0 means "confirmed no discount"). This is the ONLY field Travel Compositor has for a child discount
   on this record - there is no equivalent for single/double occupancy.
+
+  ============================================================
+  SINGLE SUPPLEMENT - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if an contract
+  says for specific time period no single supplement, the price for single is the same as double.
+  but if the contract does not say otherwise, we have to add single supplement to the single price
+  list." So singlePrice is NEVER just copied equal to doublePrice by default:
+    - If the source states a single supplement (a surcharge for solo/single occupancy - a flat
+      amount, a percentage, or a per-night rate) for a date range, singlePrice for that row =
+      doublePrice + that supplement (a per-night supplement is multiplied by nights first).
+    - If the source EXPLICITLY says no single supplement applies for a specific period ("no single
+      supplement", "single supplement waived", "single occupancy at the double rate" for THOSE
+      dates), singlePrice for that row = doublePrice, unchanged - this is the ONLY case where the
+      two are set equal.
+    - If the source gives an explicit, separate single-occupancy rate (not phrased as a supplement
+      on top of double), use that stated rate directly - this rule is about the case where a
+      supplement needs to be CALCULATED, not one already spelled out as its own rate.
+    - If the document is silent about single supplement entirely for a given period (no stated
+      supplement, no stated waiver), do NOT default to equal - say so in pricing_notes rather than
+      guessing, since assuming either equal or a made-up supplement amount would misprice bookings.
+  ============================================================
 - supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them (upgrades, optional excursions), OR a peak-season/holiday surcharge, that apply SPECIFICALLY to bookings of THIS Modality. Do NOT include anything already covered in included/excluded, and do NOT include a supplement that the source clearly ties to a DIFFERENT Modality.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional CO2 offset contribution") - never add these as a supplement. This is a deliberate exclusion, not an oversight.
   CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes. CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): specifically for an Easter/Easter holiday surcharge with no exact dates of its own stated in the source, do NOT estimate - use these exact confirmed windows instead: 30 March 2027 - 8 April 2027 (travel_start_date 2027-03-30, travel_end_date 2027-04-08), and 10 April 2028 - 25 April 2028 (travel_start_date 2028-04-10, travel_end_date 2028-04-25) - whichever year overlaps this Modality's own validity dates; if neither applies, fall back to the general best-guess rule above. If the source states its OWN explicit Easter dates, use those instead.

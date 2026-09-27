@@ -41,7 +41,7 @@ from urllib.parse import urlparse, unquote
 
 import requests
 
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"

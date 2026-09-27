@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier
 
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"

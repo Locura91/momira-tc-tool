@@ -110,6 +110,7 @@ from builder import build_ticket_modality_combinations
 from builder import LANGUAGE_CODE_NAMES
 from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shape
 from builder import _MAX_OCCUPANCY_PAX as MAX_OCCUPANCY_PAX
+from builder import fix_touching_season_boundaries, split_nested_price_list_seasons
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts YYYY-MM-DD, so every screen converts at the boundary
 # and the payload stays ISO throughout. Both helpers accept both forms - see date_format.py.
@@ -789,7 +790,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-modality-detection-never-splits-by-season"
+BUILD_VERSION = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1561,6 +1562,36 @@ else:
             _prefill = st.session_state.pop("prefill_existing_tour_code")
             if _prefill:
                 st.session_state[_ct_code_key] = _prefill
+
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "human selects the supplier,
+        # then the app shall fetch all closedtours available from theis supplier, and then we
+        # add the new modality"): for add_option specifically, offer a picker built from the
+        # supplier's own live ClosedTour list (get_existing_tour_names - the same call already
+        # used for the duplicate-name check) instead of requiring the human to type/remember a
+        # code. Selecting one seeds the shared text_input's key below (same "set the key before
+        # the widget renders" pattern the prefill logic above already uses), so it still works
+        # as a fallback for manual entry/correction.
+        if action == "add_option":
+            _tour_names, _tour_names_error = get_existing_tour_names(client, supplier_id)
+            if _tour_names_error:
+                st.info(f"ℹ️ Couldn't auto-load this supplier's ClosedTours ({_tour_names_error}) - "
+                        f"type the code directly below instead.")
+            elif _tour_names:
+                _picker_options = ["(select a ClosedTour)"] + [
+                    f"{t['code']} — {t['name']}" for t in _tour_names if t.get("code")
+                ]
+                _picker_choice = st.selectbox(
+                    "Pick the ClosedTour to add this Modality to",
+                    _picker_options, key="ct_add_option_picker",
+                )
+                if _picker_choice != "(select a ClosedTour)":
+                    _picked_code = _picker_choice.split(" — ", 1)[0]
+                    if st.session_state.get(_ct_code_key) != _picked_code:
+                        st.session_state[_ct_code_key] = _picked_code
+                        st.rerun()
+                st.caption(f"**{len(_tour_names)}** ClosedTour(s) found for this supplier - or type/edit "
+                          f"the code directly below if you don't see the one you want.")
+
         existing_tour_code_in = st.text_input(
             "Existing Tour Code",
             key=_ct_code_key,
@@ -1572,14 +1603,15 @@ else:
             "if the first attempt doesn't work."
         )
 
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "If we select the supplier and if we select
-    # the ClosedTour Code, we just want to add a new Modality, regardless what is already
-    # online." add_option no longer fetches/compares against the tour's current live state at
-    # all - Currency is asked directly above (see ACTION_FIELDS's own comment), and the new
-    # Modality simply gets added under whatever code was typed. The "Check what's already
-    # online" button/results below (existing modality codes, live pricing lookup) stay available
-    # for update_tour/update_option, which genuinely need to inherit live data.
-    if "existing_tour_code" in needed and action != "add_option":
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "we do no specify another time the
+    # currency as this information is betted within main information and the currency can not
+    # change for different mdalities"): add_option now goes through the SAME "Check what's
+    # already online for this code" fetch as update_tour/update_option, so its Currency is
+    # inherited from the picked/fetched tour (fetched_tour_currency, read at the Step 3 Continue
+    # button below) instead of asked again - reversing the 2026-09-17 decision that had add_option
+    # skip this fetch entirely. Showing the tour's existing Modality codes here is also useful
+    # context when adding a NEW one (avoids picking a code that collides).
+    if "existing_tour_code" in needed:
         if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
             with st.spinner("Fetching from Travel Compositor..."):
                 fetched, working_code = try_code_variants(
@@ -1627,6 +1659,10 @@ else:
                     st.caption(f"Will reuse from this tour: Min Pax **{t.get('minPax')}**, "
                               f"Max Pax **{t.get('maxPax')}**, Currency **{t.get('currency')}**, "
                               f"ClosedTour Code **{t.get('providerCode')}**.")
+                elif action == "add_option":
+                    st.caption(f"Currency for this tour: **{t.get('currency')}** - the new Modality "
+                              f"will use this (currency can't differ between Modalities of the "
+                              f"same tour).")
                 existing_modalities = t.get("modalityCodes", [])
                 st.write(f"Existing modality codes: {existing_modalities if existing_modalities else '(none)'}")
                 if existing_modalities and "modality_code" in needed:
@@ -1747,12 +1783,10 @@ else:
     # could click Continue having never checked what's online, and every price row would
     # publish under whatever cfg_currency last held (blank on a fresh session, which the
     # downstream builder defaults to EUR) - silently re-denominating a non-EUR tour.
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" removed from this gate - it no
-    # longer requires (or even offers) the "Check what's already online" fetch at all, see
-    # ACTION_FIELDS's own comment. Still gated by "existing_tour_code"/"currency" being filled in
-    # (the generic required_ok checks above already cover both, now that "currency" is in
-    # add_option's own ACTION_FIELDS list).
-    if action in ("update_tour", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):
+    # REVERSED (2026-09-27): "add_option" added BACK to this gate, since "currency" was dropped
+    # from its own ACTION_FIELDS again and is now inherited the same way update_option's already
+    # was - see ACTION_FIELDS's own comment and the matching Step 3 UI changes above.
+    if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):
         required_ok = False
         st.info("Click 'Check what's already online for this code' above first (or again, if you "
                "changed the code) - this fetches the existing tour's Currency (and for updates, "
@@ -1762,6 +1796,8 @@ else:
         if action == "update_tour":
             min_pax_in = st.session_state.get("fetched_tour_min_pax") or 1
             max_pax_in = st.session_state.get("fetched_tour_max_pax") or 9
+            currency_in = st.session_state.get("fetched_tour_currency") or ""
+        elif action == "add_option":
             currency_in = st.session_state.get("fetched_tour_currency") or ""
         st.session_state.cfg_provider_code = provider_code_in or ""
         st.session_state.cfg_min_pax = min_pax_in or 1
@@ -1918,24 +1954,31 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                     st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
                 combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
 
-                remaining_budget = 12 - len(doc_raw_images)
-                _doc_image_errors = []
-                embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
-                _warn_page_image_upload_errors(_doc_image_errors)
-                if embedded_images:
-                    for i, (img_bytes, ext) in enumerate(embedded_images):
-                        doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
-                    with st.spinner(f"Trying to auto-upload {len(embedded_images)} image(s) from {uploaded.name}..."):
-                        try:
-                            new_urls = upload_images_r2(embedded_images)
-                            doc_image_urls.extend(new_urls)
-                            if new_urls:
-                                st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
-                            if len(new_urls) < len(embedded_images):
-                                st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 5).")
-                        except Exception as e:
-                            st.caption(f"ℹ️ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
-                                      f"{uploaded.name} will be available to download instead (see Step 5).")
+                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "no need for auto image
+                # upload for creating a new modality. when new modality is being created, we
+                # focus only on the new prices."): add_option is adding a Modality (a pricing
+                # category) to a tour whose images already exist - a new price document has no
+                # reason to carry images at all, so skip the extraction/upload work entirely
+                # for this action rather than silently doing it every time regardless.
+                if action != "add_option":
+                    remaining_budget = 12 - len(doc_raw_images)
+                    _doc_image_errors = []
+                    embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
+                    _warn_page_image_upload_errors(_doc_image_errors)
+                    if embedded_images:
+                        for i, (img_bytes, ext) in enumerate(embedded_images):
+                            doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                        with st.spinner(f"Trying to auto-upload {len(embedded_images)} image(s) from {uploaded.name}..."):
+                            try:
+                                new_urls = upload_images_r2(embedded_images)
+                                doc_image_urls.extend(new_urls)
+                                if new_urls:
+                                    st.caption(f"✅ Auto-uploaded {len(new_urls)}/{len(embedded_images)} image(s) from {uploaded.name}.")
+                                if len(new_urls) < len(embedded_images):
+                                    st.caption(f"ℹ️ {len(embedded_images) - len(new_urls)} image(s) will be available to download instead (see Step 5).")
+                            except Exception as e:
+                                st.caption(f"ℹ️ Auto-upload unavailable ({e}) - all {len(embedded_images)} image(s) from "
+                                          f"{uploaded.name} will be available to download instead (see Step 5).")
 
                 os.remove(tmp_path)
 
@@ -2338,6 +2381,34 @@ if st.session_state.extracted:
         }],
         key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
     )
+
+    # CONFIRMED PRODUCT-OWNER BUG (2026-09-27, verbatim: "if multiple modalities are within the
+    # same dates the modalities are added up, which in this example makes the closedtour way too
+    # expensive"): a genuinely NESTED season (e.g. a higher "Peak season" rate fully inside a
+    # longer base-season row) extracted as two overlapping price_list rows on this SAME table
+    # gets ADDED TOGETHER by Travel Compositor for the overlapping dates, silently inflating the
+    # price - exactly the shape the 2026-09-18 fix (fix_touching_season_boundaries/
+    # split_nested_price_list_seasons) already solves for flows/multi_tour.py's multi-Modality
+    # create screen, but this single-Modality price table never applied either fix. Applied here
+    # too, with one difference: flows/multi_tour.py spins the nested window off into a brand-new
+    # Modality; this screen edits ONE Modality directly, so the carved-out nested row is kept
+    # right here as an extra non-overlapping row instead - matching the same-day house rule that
+    # a different price for a different time period is never a separate Modality, it's additional
+    # dated rows in the SAME price table (see MODALITY_DETECTION_PROMPT).
+    default_price_list = fix_touching_season_boundaries(default_price_list)
+    _ct_carved, _ct_nested_rows, _ct_nest_unhandled = split_nested_price_list_seasons(default_price_list)
+    if _ct_nested_rows:
+        default_price_list = sorted(_ct_carved + _ct_nested_rows, key=lambda entry: entry.get("startDate", ""))
+        st.info(
+            f"ℹ️ Found {len(_ct_nested_rows)} nested season row(s) sitting fully inside a longer "
+            f"date range below - split into non-overlapping rows automatically so Travel "
+            f"Compositor doesn't add both prices together for the overlapping dates. Review the "
+            f"rows below."
+        )
+    for _ct_note in _ct_nest_unhandled:
+        st.warning(f"⚠️ {_ct_note} — this is nested more than one level deep, so it wasn't "
+                  f"auto-split. Please fix the overlapping dates manually below.")
+
     data["price_list"] = default_price_list
 
     price_df_rows = []
@@ -2941,17 +3012,16 @@ if st.session_state.extracted:
                             new_supplements = data.get("supplements") or []
                             if new_supplements:
                                 with st.spinner(f"Adding '{modality_code}''s supplements to the tour..."):
-                                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" no
-                                    # longer requires the human to click "Check what's already
-                                    # online" in Step 3 first (see ACTION_FIELDS's own comment) -
-                                    # so st.session_state.fetched_tour is typically empty now.
-                                    # Merging a new supplement into the tour's existing list still
-                                    # genuinely needs the tour's CURRENT live data (to avoid wiping
-                                    # out supplements that already belong to other Modalities) - so
-                                    # fetch it here, automatically, only in this one case where a
-                                    # fetch is actually needed, rather than making the human do it
-                                    # up front for every add_option run (most of which have no new
-                                    # supplements at all and never needed this data).
+                                    # add_option now goes through the same Step 3 "Check what's
+                                    # already online for this code" fetch as update_tour/
+                                    # update_option (reversed 2026-09-27 - see ACTION_FIELDS's own
+                                    # comment), so st.session_state.fetched_tour is normally
+                                    # already populated by the time we get here. Still re-fetched
+                                    # as a fallback below when it isn't (e.g. an older session, or
+                                    # the fetch failed) - merging a new supplement into the tour's
+                                    # existing list genuinely needs the tour's CURRENT live data
+                                    # (to avoid wiping out supplements that already belong to
+                                    # other Modalities), so this can't just skip if missing.
                                     old_tour = st.session_state.get("fetched_tour")
                                     if not isinstance(old_tour, dict) or "error" in old_tour:
                                         old_tour, _fresh_code = try_code_variants(

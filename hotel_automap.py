@@ -48,7 +48,7 @@ and a reminder that silently disappears on the next deploy is worse than no remi
 because by then the hotel is live and nobody is looking for it any more.
 """
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
+MODULE_BUILD = "2026-09-27-overlap-autofix-and-single-supplement-rule"
 
 import time
 from typing import Any, Dict, List, Optional

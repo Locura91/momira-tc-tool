@@ -137,10 +137,12 @@ def test_failed_batch_publish_deactivates_the_tour_instead_of_skipping_the_updat
 
 def test_closedtour_update_option_is_now_in_the_step3_currency_gate():
     source = _read_app_py()
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" was later removed from this
-    # gate entirely - see test_2026_09_01_stale_fetched_tour_data_leak.py's own updated test for
-    # that change. This test only needs to keep confirming update_option is (still) covered.
-    marker = 'if action in ("update_tour", "update_option") and not fetched_tour_matches_code(existing_tour_code_in):'
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17): "add_option" was briefly removed from this
+    # gate, then REVERSED on 2026-09-27 - add_option now goes through the same Step 3 "Check
+    # what's already online" fetch as update_tour/update_option (see ACTION_FIELDS's own
+    # comment) - so this test just confirms update_option is (still) covered, alongside the
+    # other two actions.
+    marker = 'if action in ("update_tour", "update_option", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):'
     assert marker in source
     # The old, narrower tuple that let update_option through unchecked must be gone.
     assert 'if action in ("update_tour", "add_option") and not fetched_tour_matches_code(existing_tour_code_in):' not in source
