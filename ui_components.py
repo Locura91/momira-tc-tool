@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
+MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
 
 import re
 import math
@@ -1323,22 +1323,46 @@ def render_closedtour_supplements(data, key_prefix):
               "starting point, not a decision. House rule: ClosedTour supplements are never "
               "refundable, and the app always publishes them that way.")
 
-    rows = [
-        {
+    def _derive_occupancy(flat_price, per_pax):
+        # CONFIRMED FIX (product owner, 2026-09-27, real screenshot: "Single/Additional Tent
+        # Supplement" and both "Private Transfer Surcharge" rows showing the SAME flat number
+        # repeated across Single/Double/Triple/Quadruple even though Per Pax was already
+        # (correctly) unchecked). The Save callback below has derived these fresh from Price +
+        # Per Pax since the same day's earlier fix, but this read-only table - what a human
+        # actually sees BEFORE ever opening the editor - was still built straight from whatever
+        # the AI wrote into single_price/double_price/triple_price/quadruple_price, so a bad AI
+        # division (or none at all) looked wrong on screen until someone thought to open the
+        # editor and hit Save with no other change. Deriving it here too means the numbers are
+        # right the very first time the page renders, matching _save's own logic exactly.
+        if per_pax:
+            return flat_price, flat_price, flat_price, flat_price
+        return (
+            round_up_currency(flat_price / 1),
+            round_up_currency(flat_price / 2),
+            round_up_currency(flat_price / 3),
+            round_up_currency(flat_price / 4),
+        )
+
+    rows = []
+    for s in (data.get("supplements") or []):
+        if not isinstance(s, dict):
+            continue
+        _flat = _safe_float(s.get("price", 0))
+        _per_pax = bool(s.get("per_pax", False))
+        _single, _double, _triple, _quad = _derive_occupancy(_flat, _per_pax)
+        rows.append({
             "Name": s.get("name", ""),
             "Price (per person)": s.get("price", 0),
-            "Single": s.get("single_price", s.get("price", 0)),
-            "Double": s.get("double_price", s.get("price", 0)),
-            "Triple": s.get("triple_price", s.get("price", 0)),
-            "Quadruple": s.get("quadruple_price", s.get("price", 0)),
-            "Per Pax": s.get("per_pax", False),
+            "Single": _single,
+            "Double": _double,
+            "Triple": _triple,
+            "Quadruple": _quad,
+            "Per Pax": _per_pax,
             "Mandatory": s.get("mandatory", False),
             "On Request": s.get("on_request", False),
             "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
             "Special Travel End Date": _disp(s.get("travel_end_date", "")),
-        }
-        for s in (data.get("supplements") or []) if isinstance(s, dict)
-    ]
+        })
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=SUPPLEMENT_COLUMNS)
 
     def _save(edited_df, data=data):

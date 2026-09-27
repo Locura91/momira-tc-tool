@@ -2,10 +2,11 @@
 detected by the app, we must give the option 'select all' 'select none', on default select all."
 
 app_helpers.render_candidate_filter already existed (2026-09-something, see its own docstring)
-and was already wired into flows/multi_transfer.py and flows/multi_transport.py - it renders a
-filter box plus "Keep only these" / "Select all" / "Clear all" buttons above a checkbox-per-row
-candidate list, and every candidate list already defaulted "selected" to True at every one of
-these sites.
+and was already wired into flows/multi_transfer.py and flows/multi_transport.py - it renders
+bulk select/deselect buttons above a checkbox-per-row candidate list (simplified to just
+"Select all" / "Select none" on 2026-09-16 - see test_2026_09_16_candidate_filter_simplified.py
+- originally it also had a filter text box and a "Keep only these" button), and every candidate
+list already defaulted "selected" to True at every one of these sites.
 
 What was MISSING was render_candidate_filter itself at four other detected-list screens (so a
 human had no bulk way to select/deselect there, only one checkbox at a time), plus one outright
@@ -98,9 +99,10 @@ def test_single_ticket_pending_variant_selection_now_defaults_to_selected():
 
 
 # ======================================================================
-# Sites that were ALREADY correct (already wired + already defaulting True) stay that way
+# Sites that were ALREADY correct (already wired + already defaulting True) at the time -
+# flows/multi_transfer.py and flows/multi_transport.py (the "xtf"/"xtp" sites this test used to
+# check) were removed 2026-09-27 as dead entry points, imported into app.py but never actually
+# called - superseded by flows/transfer_duplicate_and_create.py / transport_duplicate_and_
+# create.py, which have no candidate-filter bulk-select concept of their own (they work off a
+# single supplier-picked id, not a detected list).
 # ======================================================================
-def test_multi_transfer_and_multi_transport_still_have_bulk_select():
-    src = _read_app_py()
-    assert 'render_candidate_filter(candidates, "xtf", "transfer")' in src
-    assert 'render_candidate_filter(candidates, "xtp", "transport")' in src

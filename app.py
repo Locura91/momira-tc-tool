@@ -640,8 +640,6 @@ from flows.ticket import render_ticket_flow
 
 
 
-from flows.multi_transfer import render_multi_transfer_flow
-
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-17) - see TRANSFER_DUPLICATE_AND_CREATE_CHOICE's own
 # comment further down for the full reasoning: ONE combined Step 1 destination for both the
 # automated missing-reverse-direction scan and the manual duplicate-by-id flow, sharing a single
@@ -671,11 +669,6 @@ from flows.transport_duplicate_and_create import render_transport_duplicate_and_
 # Uses xtp_-prefixed session keys so nothing collides with the other flows.
 # ======================================================================
 from flows.fts_matrix import render_fts_matrix_import_flow
-
-
-
-
-from flows.multi_transport import render_multi_transport_flow
 
 
 # ======================================================================
@@ -795,7 +788,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-multi-source-closedtour-not-narrowed"
+BUILD_VERSION = "2026-09-27-closedtour-supplement-readonly-derivation"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

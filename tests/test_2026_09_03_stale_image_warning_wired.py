@@ -15,11 +15,13 @@ errors pattern) and wires it into all 5 product flows' 6 publish sites, immediat
   - Ticket batch publish (render_multi_ticket_flow): every queued item's data["image_urls"],
     combined into one list since the whole batch publishes together
   - Ticket single (render_ticket_flow): data["image_urls"]
-  - Transfer (render_multi_transfer_flow): data["image_urls"]
-  - Transport (render_multi_transport_flow): data["image_urls"] (auto-resolved supplier image,
-    same single-image-per-route pattern as Transfer - initially assumed image-free during
-    discovery, corrected once resolve_and_host_image's call site was found)
   - Hotel (render_hotel_flow): data["images"] (different field name/no FALLBACK_IMAGE sentinel)
+
+render_multi_transfer_flow (flows/multi_transfer.py) and render_multi_transport_flow
+(flows/multi_transport.py) were wired here too when this batch was written, but both were dead
+entry points by 2026-09-27 (imported into app.py but never actually called - superseded by
+flows/transfer_duplicate_and_create.py / flows/transport_duplicate_and_create.py) and were
+deleted in that session's cleanup, along with the two tests that checked their wiring here.
 
 render_multi_modality_flow (the ClosedTour "add Modality to an existing tour" flow) is
 deliberately NOT wired - adding an option/Modality to an already-published tour has no image step
@@ -139,28 +141,6 @@ def test_single_ticket_flow_warns_with_data_image_urls_before_its_publish_button
     assert call_idx < btn_idx
 
 
-def test_multi_transfer_flow_warns_with_data_image_urls_before_its_publish_button():
-    src = _read_app_py()
-    window = _function_source(
-        src, "def render_multi_transfer_flow(client, supplier_id, currency, release_days, tf_url, tf_files, tf_hint):")
-    assert '_warn_stale_images(data.get("image_urls"))' in window
-    call_idx = window.index('_warn_stale_images(data.get("image_urls"))')
-    btn_idx = window.index('publish_label = (')
-    assert call_idx < btn_idx
-
-
-def test_multi_transport_flow_warns_with_data_image_urls_before_its_publish_button():
-    src = _read_app_py()
-    window = _function_source(
-        src, "def render_multi_transport_flow(client, supplier_id, currency, release_days, tp_url, tp_files, tp_hint):")
-    # Confirms the single auto-resolved supplier image (resolve_and_host_image) is really there -
-    # this flow was initially (wrongly) assumed image-free during discovery.
-    assert '_si_url' in window and 'current["data"]["image_urls"] = [_si_url]' in window
-    assert '_warn_stale_images(data.get("image_urls"))' in window
-    call_idx = window.index('_warn_stale_images(data.get("image_urls"))')
-    btn_idx = window.index('publish_label = (')
-    assert call_idx < btn_idx
-
 
 def test_hotel_flow_warns_with_data_images_only_when_images_ok_before_its_publish_button():
     src = _read_app_py()
@@ -181,21 +161,21 @@ def test_closed_tour_update_flow_warns_with_data_image_urls_before_its_publish_b
 
 def test_exactly_seven_warn_stale_images_call_sites_plus_the_definition():
     src = _read_app_py()
-    # 1 def + 8 call sites (ClosedTour create, ClosedTour update, Ticket batch-create,
-    # Ticket batch-update (added 2026-09-08), Ticket single, Transfer, Transport, Hotel) = 9
-    # occurrences of the name total. Phase 1 (2026-09-15) moved the Ticket-single call site into
-    # flows/ticket.py, the Hotel call site into flows/hotel.py, the Ticket batch-create + Ticket
-    # batch-update call sites into flows/multi_ticket.py (both sharing ONE `from app import
-    # _warn_stale_images` line since they live in the same file), the ClosedTour create call site
-    # into flows/multi_tour.py, the Transport call site into flows/multi_transport.py, and the
-    # Transfer call site into flows/multi_transfer.py - six modules' worth of import lines beyond
-    # the base 9 (only the ClosedTour-update call site remains inline in app.py itself), for the
-    # same 9 real call sites/def. Phase 1 module 13 (2026-09-16) then moved the definition itself
-    # (and every remaining call site) out of app.py into app_helpers.py, and added one more
-    # `from app_helpers import (...)` line in app.py naming _warn_stale_images so the six
-    # `from app import _warn_stale_images` lines above keep resolving unchanged - one more
-    # occurrence of the name, bumping the known total from 15 to 16.
-    assert src.count("_warn_stale_images") == 16
+    # 1 def + 6 call sites (ClosedTour create, ClosedTour update, Ticket batch-create, Ticket
+    # batch-update (added 2026-09-08), Ticket single, Hotel) = 7 occurrences of the name total
+    # (Transfer and Transport were removed 2026-09-27 as dead entry points - see this file's own
+    # top docstring - taking their call sites and imports with them). Phase 1 (2026-09-15) moved
+    # the Ticket-single call site into flows/ticket.py, the Hotel call site into flows/hotel.py,
+    # the Ticket batch-create + Ticket batch-update call sites into flows/multi_ticket.py (both
+    # sharing ONE `from app import _warn_stale_images` line since they live in the same file),
+    # and the ClosedTour create call site into flows/multi_tour.py - four modules' worth of
+    # import lines beyond the base 7 (only the ClosedTour-update call site remains inline in
+    # app.py itself), for the same 7 real call sites/def. Phase 1 module 13 (2026-09-16) then
+    # moved the definition itself (and every remaining call site) out of app.py into
+    # app_helpers.py, and added one more `from app_helpers import (...)` line in app.py naming
+    # _warn_stale_images so the four `from app import _warn_stale_images` lines above keep
+    # resolving unchanged - one more occurrence of the name, bumping the known total to 12.
+    assert src.count("_warn_stale_images") == 12
 
 
 # ======================================================================

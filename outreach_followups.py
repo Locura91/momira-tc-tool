@@ -46,7 +46,7 @@ import platform_store
 # screen when they differ. CONFIRMED GAP (full-app audit, already logged): this module and
 # outreach_email.py were the only two of the outreach subsystem's files with no MODULE_BUILD
 # constant at all, invisible to app.py's partial-deploy detector - added now.
-MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
+MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
 
 _NAMESPACE = "outreach_sends"
 

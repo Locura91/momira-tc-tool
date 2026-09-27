@@ -33,6 +33,8 @@ combined, per Chris's approved 3-batch plan:
       block.
   11. Transport's "Read this route again" was the only reset in the file sweeping only its own
       prefix, without SHARED_WIDGET_STATE_PREFIXES - fixed to match its sibling "skip" button.
+      (This lived in flows/multi_transport.py, removed 2026-09-27 as a dead entry point never
+      actually called - see the removed test's own note below.)
   12. A bare clarify_supplier_id() call in the Ticket flow could resolve to a stale ClosedTour
       supplier id (checked first in the fallback order) - fixed by passing the local supplier_id
       explicitly at each Ticket call site.
@@ -354,13 +356,9 @@ def test_hp_publish_succeeded_is_reset_when_a_new_publish_attempt_starts():
 
 
 # ======================================================================
-# 11. Transport "Read this route again" missing the shared-prefix sweep
+# 11. Transport "Read this route again" missing the shared-prefix sweep - removed 2026-09-27
+# along with flows/multi_transport.py (dead entry point, never actually called).
 # ======================================================================
-def test_transport_reread_sweeps_shared_prefixes_too():
-    src = _read_app_py()
-    idx = src.index('if st.button("🔁 Read this route from the document again"')
-    window = src[idx:idx + 1200]
-    assert '_clear_batch_widget_state(["xtp_"] + SHARED_WIDGET_STATE_PREFIXES, keep=XTP_STATE_KEYS)' in window
 
 
 # ======================================================================

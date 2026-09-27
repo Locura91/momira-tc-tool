@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
+MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
 
 
 def _safe_float(value, fallback=0.0):

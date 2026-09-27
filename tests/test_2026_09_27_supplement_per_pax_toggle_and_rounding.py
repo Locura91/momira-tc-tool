@@ -79,9 +79,14 @@ def test_per_pax_default_is_now_per_travel_group_not_per_person():
     # CONFIRMED DEFAULT RULE: "if not specific mentioned, a supplement is mostly per travel
     # group" - both the display default and the save-back default flip from True to False.
     source = _source()
-    assert '"Per Pax": s.get("per_pax", False)' in source
+    # 2026-09-27 follow-up fix: the read-only table's "Per Pax" now flows through a local
+    # `_per_pax = bool(s.get("per_pax", False))` variable instead of an inline dict literal
+    # (needed so the same value can also feed the occupancy-column derivation used for the
+    # read-only display - see test_read_only_display_also_derives_occupancy_columns below), but
+    # the default is unchanged: False.
+    assert '_per_pax = bool(s.get("per_pax", False))' in source
     assert 'row.get("Per Pax", False)' in source
-    assert '"Per Pax": s.get("per_pax", True)' not in source
+    assert '_per_pax = bool(s.get("per_pax", True))' not in source
     assert 'row.get("Per Pax", True)' not in source
 
 
@@ -121,3 +126,64 @@ def test_caption_explains_the_toggle_and_rounding_rule_to_the_human():
     source = _source()
     assert "Per Pax" in source
     assert "round" in source.lower()
+
+
+# ======================================================================
+# Follow-up fix (2026-09-27, second screenshot): the READ-ONLY table (what a human sees before
+# ever opening the editor) still built its rows straight from whatever the AI wrote into
+# single_price/double_price/triple_price/quadruple_price - so three real rows ("Single/Additional
+# Tent Supplement", "Private Transfer Surcharge - Chiang Mai Hotel & Airport", "Private Transfer
+# Surcharge - Chiang Rai Hotel") all showed the same flat number repeated across every occupancy
+# column despite Per Pax already being (correctly) unchecked, because the AI itself never divided
+# them and nothing recomputed the columns until a human opened the editor and hit Save with no
+# other change. The fix derives the same four columns fresh from Price + Per Pax for the
+# read-only display too, using a local helper that mirrors _save's own math exactly.
+# ======================================================================
+def test_read_only_display_also_derives_occupancy_columns():
+    source = _source()
+    assert "def _derive_occupancy(flat_price, per_pax):" in source
+    # The helper must be defined and used BEFORE the Save callback's own (separate) derivation,
+    # i.e. it drives the initial `rows` list, not just something dead sitting nearby.
+    derive_def_index = source.index("def _derive_occupancy(flat_price, per_pax):")
+    rows_loop_index = source.index("for s in (data.get(\"supplements\") or []):")
+    save_def_index = source.index("def _save(edited_df, data=data):")
+    assert derive_def_index < rows_loop_index < save_def_index
+
+
+def test_read_only_derivation_matches_save_math_exactly():
+    source = _source()
+    # Same per_pax branch, same round_up_currency division by 1/2/3/4, same "no division when
+    # Per Pax is on" rule - just computed for the row dict the human sees before saving anything.
+    assert "if per_pax:\n            return flat_price, flat_price, flat_price, flat_price" in source
+    assert "round_up_currency(flat_price / 1)," in source
+    assert "round_up_currency(flat_price / 2)," in source
+    assert "round_up_currency(flat_price / 3)," in source
+    assert "round_up_currency(flat_price / 4)," in source
+
+
+def test_read_only_derivation_ignores_stale_ai_written_occupancy_fields():
+    # The real bug: single_price/double_price/triple_price/quadruple_price already sat in the
+    # data (written by the AI), wrong. The fix must never read those fields for display - only
+    # "price" and "per_pax" feed the derivation.
+    source = _source()
+    rows_loop_start = source.index("for s in (data.get(\"supplements\") or []):")
+    save_def_index = source.index("def _save(edited_df, data=data):")
+    rows_block = source[rows_loop_start:save_def_index]
+    assert 's.get("single_price"' not in rows_block
+    assert 's.get("double_price"' not in rows_block
+    assert 's.get("triple_price"' not in rows_block
+    assert 's.get("quadruple_price"' not in rows_block
+
+
+def test_derive_occupancy_matches_the_real_reported_numbers():
+    # _derive_occupancy is a closure local to render_closedtour_supplements (a Streamlit widget
+    # function that can't be run outside a real app - see this file's own module docstring), so
+    # this checks its documented math (identical to round_up_currency, which IS directly callable)
+    # against the real reported example: "Private Transfer Surcharge - Chiang Mai Hotel &
+    # Airport" = 4900 total, Per Pax unchecked -> Single 4900, Double 2450,
+    # Triple 1634 (ceil(1633.33...)), Quadruple 1225.
+    flat_price = 4900.0
+    assert round_up_currency(flat_price / 1) == 4900.0
+    assert round_up_currency(flat_price / 2) == 2450.0
+    assert round_up_currency(flat_price / 3) == 1634.0
+    assert round_up_currency(flat_price / 4) == 1225.0

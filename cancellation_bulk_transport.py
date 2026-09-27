@@ -63,7 +63,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
+MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple

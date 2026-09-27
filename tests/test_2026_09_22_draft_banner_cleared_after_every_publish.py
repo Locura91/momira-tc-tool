@@ -20,11 +20,16 @@ Fixed by calling draft_autosave.clear_on_publish_success() at each of those flow
 "this is fully done" moment - the same place each flow already resets its own session-state
 keys or shows its "batch published"/"published in full" success message.
 
-flows/*.py can't be imported directly in a test process here (hotel.py/multi_transfer.py/
-multi_transport.py all do `from app import (...)` at module level, and app.py itself can't be
-imported outside the real app - see test_2026_09_02_active_supplier_filter.py's own note on
-this) - so, matching that suite's established pattern, these are verified by reading the
-source text directly rather than importing the modules.
+flows/*.py can't be imported directly in a test process here (hotel.py does `from app import
+(...)` at module level, and app.py itself can't be imported outside the real app - see
+test_2026_09_02_active_supplier_filter.py's own note on this) - so, matching that suite's
+established pattern, these are verified by reading the source text directly rather than
+importing the modules.
+
+flows/multi_transfer.py and flows/multi_transport.py (and the 2 tests below that verified this
+same fix inside them) were removed 2026-09-27 as dead entry points - imported into app.py but
+never actually called, superseded by flows/transfer_duplicate_and_create.py /
+flows/transport_duplicate_and_create.py, which this file's own tests above already cover.
 """
 import os
 
@@ -61,26 +66,6 @@ def test_hotel_clears_draft_only_on_the_full_success_branch():
     window_before = src[max(0, idx - 400):idx]
     assert "st.balloons()" in window_before
     assert "st.error(" not in window_before
-
-
-def test_multi_transfer_clears_draft_only_when_the_whole_batch_succeeded():
-    src = _read_flow("multi_transfer.py")
-    assert "import draft_autosave" in src
-    idx = src.index("draft_autosave.clear_on_publish_success()")
-    before = src[:idx]
-    assert 'if all(q.get("publish_status") == "success" for q in queue):' in before
-    window_before = src[max(0, idx - 400):idx]
-    assert "st.balloons()" in window_before
-
-
-def test_multi_transport_clears_draft_only_when_the_whole_batch_succeeded():
-    src = _read_flow("multi_transport.py")
-    assert "import draft_autosave" in src
-    idx = src.index("draft_autosave.clear_on_publish_success()")
-    before = src[:idx]
-    assert 'if all(q.get("publish_status") == "success" for q in queue):' in before
-    window_before = src[max(0, idx - 400):idx]
-    assert "st.balloons()" in window_before
 
 
 def test_ticket_and_app_already_had_it_and_still_do():

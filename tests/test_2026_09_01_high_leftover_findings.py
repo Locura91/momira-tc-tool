@@ -35,6 +35,10 @@ approach as every other builder.py test in this suite). Items 4-6 are app.py-onl
 flow changes; app.py can't be imported in a test process (heavy top-level Streamlit/API-client
 setup), so - matching this suite's established pattern for such changes - they're verified by
 reading app.py's own source text and checking the specific code shape.
+
+Item 2 lived in flows/multi_transport.py (render_multi_transport_flow), which was removed
+2026-09-27 as a dead entry point - imported into app.py but never actually called, superseded by
+flows/transport_duplicate_and_create.py - taking the test that verified this fix with it.
 """
 import os
 
@@ -153,15 +157,8 @@ def test_builder_option_actions_include_auto_generated_name_key():
     assert '"auto_generated_name"' in window
 
 
-def test_app_py_compares_typed_override_against_auto_generated_name_not_suggested():
-    src = _read_app_py()
-    idx = src.index('_suggested = ((_a.get("option_payload")')
-    window = src[idx:idx + 1800]
-    assert '_auto = _a.get("auto_generated_name") or _suggested' in window
-    assert 'if _typed.strip() and _typed.strip() != _auto:' in window
-    # The OLD buggy comparison (against _suggested, which already has the override baked in)
-    # must be gone from this specific block.
-    assert 'if _typed.strip() and _typed.strip() != _suggested:' not in window
+# test_app_py_compares_typed_override_against_auto_generated_name_not_suggested (item 2) was
+# removed 2026-09-27 along with flows/multi_transport.py - see this file's own top docstring.
 
 
 # ======================================================================
