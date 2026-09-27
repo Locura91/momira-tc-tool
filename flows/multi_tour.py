@@ -412,7 +412,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_table(
             "Itinerary destinations (in visit order)", dest_df, "mct_destinations_main",
             on_save=_save_mct_destinations,
-            column_config={"#": st.column_config.NumberColumn(disabled=True)}
+            column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
         )
 
         st.markdown("**Images**")
@@ -1135,7 +1135,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 editable_table(
                     "Itinerary destinations (in visit order)", mct_dest_df, "mct_publish_destinations",
                     on_save=_save_mct_publish_destinations,
-                    column_config={"#": st.column_config.NumberColumn(disabled=True)}
+                    column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
                 )
 
             _warn_stale_images(main_data.get("image_urls"))

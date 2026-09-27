@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
+MODULE_BUILD = "2026-09-27-supplement-add-row-blocked-fix"
 
 import re
 import math
@@ -1426,10 +1426,21 @@ def render_closedtour_supplements(data, key_prefix):
             # Derived from Price (per person) + Per Pax on Save - see _save above and the
             # module-level caption. Disabled here so a human can't type a value that Save would
             # silently overwrite anyway.
-            "Single": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
-            "Double": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
-            "Triple": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
-            "Quadruple": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
+            #
+            # CONFIRMED REAL BUG (product owner, 2026-09-27, verbatim: "now i canot add the
+            # supplement manually, it is blocked. it worked already fine"): a disabled
+            # NumberColumn with no `default` blocks Streamlit's data_editor from letting a human
+            # add a new row at all when num_rows="dynamic" (the new row can't get a value into a
+            # disabled cell, so the editor refuses to create one) - this table's Single/Double/
+            # Triple/Quadruple columns were made disabled the same day, which silently broke
+            # adding a brand-new supplement row entirely, not just editing an existing one.
+            # `default=0` gives the new row's disabled cells a value to start from - Save (see
+            # _save above) recalculates all four from Price + Per Pax immediately anyway, so the
+            # placeholder default is never actually published.
+            "Single": st.column_config.NumberColumn(disabled=True, default=0, help="Calculated from Price + Per Pax"),
+            "Double": st.column_config.NumberColumn(disabled=True, default=0, help="Calculated from Price + Per Pax"),
+            "Triple": st.column_config.NumberColumn(disabled=True, default=0, help="Calculated from Price + Per Pax"),
+            "Quadruple": st.column_config.NumberColumn(disabled=True, default=0, help="Calculated from Price + Per Pax"),
         },
     )
     if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):

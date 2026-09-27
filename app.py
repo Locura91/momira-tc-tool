@@ -790,7 +790,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-tour-name-days-first-format"
+BUILD_VERSION = "2026-09-27-supplement-add-row-blocked-fix"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2234,7 +2234,7 @@ if st.session_state.extracted:
             editable_table(
                 "Itinerary destinations (in visit order)", dest_df, "destinations",
                 on_save=_save_destinations,
-                column_config={"#": st.column_config.NumberColumn(disabled=True)}
+                column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
             )
 
             if "images_text_value" not in st.session_state:

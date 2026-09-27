@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-27-tour-name-days-first-format"
+MODULE_BUILD = "2026-09-27-supplement-add-row-blocked-fix"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
