@@ -283,12 +283,19 @@ ACTION_FIELDS = {
     # online." Used to rely on "Check what's already online for this code" (a live GET fetch) to
     # supply currency, the same "an UPDATE never asks for things the live record already has"
     # rule update_option/update_tour use - but the product owner reversed that specifically for
-    # add_option: adding a Modality shouldn't depend on a successful fetch of the CURRENT tour
-    # state at all. "currency" is asked directly here instead (same as "create"), and Step 3/4's
-    # "must have fetched the live tour first" gate no longer applies to this action - see app.py's
-    # own comments at the Step 3 Continue-button gate and the Step 4+ currency/min/max override
-    # block for the matching removal.
-    "add_option": ["existing_tour_code", "modality_code", "currency", "on_request"],
+    # add_option (at the time) to not depend on a successful fetch of the CURRENT tour state at
+    # all, asking for "currency" directly here instead (same as "create").
+    #
+    # REVERSED AGAIN (2026-09-27, verbatim: "when adding a new modality to an existing closedtour,
+    # human selects the supplier, then the app shall fetch all closedtours available from theis
+    # supplier, and then we add the new modality. we do no specify another time the currency as
+    # this information is betted within main information and the currency can not change for
+    # different mdalities"): back to the general "an UPDATE never asks for things the live
+    # record already has" rule - "currency" is dropped from this list again, inherited from the
+    # picked/fetched tour instead (see app.py's ClosedTour picker for add_option and the
+    # fetched_tour_currency inheritance at the Step 3 Continue button, both now also covering
+    # add_option, not just update_tour/update_option).
+    "add_option": ["existing_tour_code", "modality_code", "on_request"],
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28), identical fix to Ticket's "update_ticket"
     # above: "3" used to always run the full, expensive extraction (name/description/
     # cancellation AND pricing/schedule) even though it only ever published the non-pricing
