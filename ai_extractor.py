@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
+MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
 
 import os
 import re
@@ -373,6 +373,15 @@ Rules:
   below, cancellation gets its own dedicated fields instead of being mixed into policy_remarks.
   If the source's policy section is ONLY about cancellation or child pricing percentages, leave
   policy_remarks empty entirely rather than including any of it.
+- park_fee_notes: CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "It includes room +
+  package + transfer but the park fee must be stated it is paid on field when client is there.
+  This information must be added to the voucher remarks as well." A National Park Fee (or any
+  similar cost the source says is paid ON-SITE/LOCALLY/IN PERSON rather than pre-paid through this
+  booking) is NEVER added to the tour's price - it goes here instead, as plain informational text
+  for the customer's voucher (e.g. "National Park entrance fees of 578 THB per adult and 289 THB
+  per child are payable locally, on-site, at the time of your visit - not included in the price
+  above."). Same pattern as Transfer's own location_notes field: a real cost that exists, but must
+  never be silently folded into the price. Empty string if the source states no such on-site fee.
 - cancellation_policy_tiers: CORRECTED RULE - this used to be wrongly treated as always a flat 30-days/
   100% default regardless of what the source said; that was wrong. Whenever the source states its OWN
   specific cancellation-fee policy - usually a tiered schedule like "From 91 days or more before arrival,
@@ -602,6 +611,7 @@ Output this exact JSON structure:
   "excluded": "",
   "meeting_point": "",
   "policy_remarks": "",
+  "park_fee_notes": "",
   "what_to_bring": "",
   "cancellation_policy_tiers": [],
   "cancellation_policy_text": "",
@@ -676,6 +686,7 @@ EXTRACTION_TOOL_SCHEMA = {
         "excluded": {"type": "string"},
         "meeting_point": {"type": "string"},
         "policy_remarks": {"type": "string"},
+        "park_fee_notes": {"type": "string"},
         "what_to_bring": {"type": "string"},
         "cancellation_policy_tiers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "cancellation_policy_text": {"type": "string"},
@@ -700,7 +711,7 @@ EXTRACTION_TOOL_SCHEMA = {
     },
     "required": [
         "tour_name", "description", "hotels_text", "hotels_count", "supplements", "included",
-        "excluded", "meeting_point", "policy_remarks", "what_to_bring", "cancellation_policy_tiers",
+        "excluded", "meeting_point", "policy_remarks", "park_fee_notes", "what_to_bring", "cancellation_policy_tiers",
         "cancellation_policy_text", "itinerary_destinations", "nights", "start_time", "end_time",
         "min_child_age", "max_child_age", "child_discount_percentage", "extra_child_allowed",
         "extra_child_max_overrides", "max_occupancy", "operational_days",
@@ -2861,7 +2872,7 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
         # reads, even though it's unused/not sent for option-only actions.
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1,
         "supplements": [], "included": "", "excluded": "", "meeting_point": "",
-        "policy_remarks": "", "itinerary_destinations": [], "nights": 1,
+        "policy_remarks": "", "park_fee_notes": "", "itinerary_destinations": [], "nights": 1,
     }
     for key, default in defaults.items():
         if key not in data or data[key] is None:
@@ -2925,7 +2936,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
     # Defensive defaults in case the model omits a key
     defaults = {
         "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
-        "excluded": "", "meeting_point": "", "policy_remarks": "", "what_to_bring": "",
+        "excluded": "", "meeting_point": "", "policy_remarks": "", "park_fee_notes": "", "what_to_bring": "",
         "cancellation_policy_tiers": [], "cancellation_policy_text": "",
         "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
         "child_discount_percentage": None,

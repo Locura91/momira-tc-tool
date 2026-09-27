@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
+MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
 
 _PHASE_KEY = "pkr_phase"
 

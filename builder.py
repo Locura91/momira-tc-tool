@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
+MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
 
 import copy
 import math
@@ -1647,6 +1647,114 @@ def per_night_occupancy_prices(nights, per_night_rate):
     return single, round(single / 2, 2)
 
 
+def build_room_package_transfer_occupancy_prices(
+        nights, room_rate_per_night, room_max_occupancy, package_price_per_adult,
+        transfer_one_way_rate=0, package_price_per_child=None, transfer_one_way_rate_return=None):
+    """Per-occupancy ClosedTour Modality prices for a resort/room-category tour where the final
+    price is the SUM of several independently-priced components, rather than one single rate.
+
+    CONFIRMED HOUSE RULE (product owner, 2026-09-27), built from a real Our Jungle Resorts /
+    Khao Sok contract requiring Room + mandatory Package + Transfer to all be reconciled into one
+    ClosedTour price (National Park Fees are deliberately excluded - see the separate
+    park-fee-as-voucher-note handling, not a price component):
+
+    "a closedtour must understand: Room costs (land-based accommodation charged separately per
+    room type/season) the different seasons of this room prices and add them always to the
+    modality. Transfers must be also calculated to the holiday package tours from the beginning...
+    It includes room + package + transfer."
+
+    Per-occupancy formula (N = 1/2/3/4 for single/double/triple/quadruple):
+        price(N) = (room_rate_per_night x nights / N)
+                 + package_price_per_adult (or package_price_per_child for the child column)
+                 + ((transfer_one_way_rate + transfer_one_way_rate_return) / N)
+
+    ROOM: same per-night-times-nights-divided-by-occupancy math as per_night_occupancy_prices
+    above (the quoted rate buys the WHOLE room; two/three/four people sharing it each pay a
+    fraction) - see that function's own docstring for why halving is not a discount.
+
+    TRANSFER: CONFIRMED (product owner, 2026-09-27, real numbers from the same contract): a
+    transfer table gives ONE-WAY rates only, so the round trip is the one-way rate used TWICE
+    (once for arrival, once for departure) - "the 4090 is one way price and must be used double
+    for return price." That total is then divided by the SAME occupancy count as the room -
+    "transfer total price must be devided be the total pax price" - so it contributes a
+    per-person share exactly like every other component here. Pass a different
+    transfer_one_way_rate_return only when the arrival and departure legs genuinely use different
+    rates (e.g. two different pickup/drop-off cities); it defaults to the same rate as the
+    arrival leg (a same-city round trip, the ordinary case).
+
+    OCCUPANCY CAP: only occupancy tiers the room actually sells are returned.
+    room_max_occupancy caps this (e.g. a "Double" room category with max_occupancy=2 returns only
+    singlePrice/doublePrice - never an invented triplePrice/quadruplePrice for a room nobody can
+    book three or four people into). Also capped at 4 regardless, since Travel Compositor's own
+    Modality price schema only has four occupancy slots - a room whose real max_occupancy exceeds
+    4 (e.g. a "2 Storey Family" sleeping 6) has that excess flagged in the returned notes rather
+    than silently dropped or invented.
+
+    Returns (prices, notes) where prices is {"single_price": ..., "double_price": ..., ...} with
+    only the keys the room's occupancy actually supports (adult figures; pass
+    package_price_per_child to also get "single_child_price" etc.), and notes lists anything that
+    had to be capped or couldn't be computed (e.g. a missing/zero room rate)."""
+    notes = []
+    try:
+        nights = int(nights)
+    except (TypeError, ValueError):
+        nights = 0
+    try:
+        room_rate_per_night = float(room_rate_per_night)
+    except (TypeError, ValueError):
+        room_rate_per_night = 0.0
+    try:
+        room_max_occupancy = int(room_max_occupancy)
+    except (TypeError, ValueError):
+        room_max_occupancy = 0
+    try:
+        package_price_per_adult = float(package_price_per_adult)
+    except (TypeError, ValueError):
+        package_price_per_adult = 0.0
+    try:
+        transfer_one_way_rate = float(transfer_one_way_rate or 0)
+    except (TypeError, ValueError):
+        transfer_one_way_rate = 0.0
+    transfer_one_way_rate_return = (
+        transfer_one_way_rate if transfer_one_way_rate_return is None else transfer_one_way_rate_return)
+    try:
+        transfer_one_way_rate_return = float(transfer_one_way_rate_return or 0)
+    except (TypeError, ValueError):
+        transfer_one_way_rate_return = 0.0
+    has_child_price = package_price_per_child is not None
+    try:
+        package_price_per_child = float(package_price_per_child) if has_child_price else None
+    except (TypeError, ValueError):
+        package_price_per_child = None
+        has_child_price = False
+
+    if nights <= 0 or room_rate_per_night <= 0 or room_max_occupancy <= 0:
+        return {}, ["Could not compute room+package+transfer pricing: nights, room rate, and "
+                     "room max occupancy must all be positive."]
+
+    transfer_round_trip_total = transfer_one_way_rate + transfer_one_way_rate_return
+
+    effective_max_occupancy = min(room_max_occupancy, 4)
+    if room_max_occupancy > 4:
+        notes.append(
+            f"This room category's stated max occupancy is {room_max_occupancy}, but Travel "
+            f"Compositor's Modality price only has 4 occupancy slots (single/double/triple/"
+            f"quadruple) - capped at quadruple. Review whether this room needs its own manual "
+            f"handling for the extra {room_max_occupancy - 4} guest(s).")
+
+    occupancy_labels = {1: "single", 2: "double", 3: "triple", 4: "quadruple"}
+    prices = {}
+    for occ in range(1, effective_max_occupancy + 1):
+        label = occupancy_labels[occ]
+        room_share = round((room_rate_per_night * nights) / occ, 2)
+        transfer_share = round(transfer_round_trip_total / occ, 2)
+        prices[f"{label}_price"] = round(room_share + package_price_per_adult + transfer_share, 2)
+        if has_child_price:
+            prices[f"{label}_child_price"] = round(
+                room_share + package_price_per_child + transfer_share, 2)
+    return prices, notes
+
+
 def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12):
     """The child age band to publish, given whatever the document stated.
 
@@ -2409,15 +2517,29 @@ def build_closed_tour_payloads(
         # exactly what strip_stray_html's own docstring already carves an exception for -
         # included/excluded - description just wasn't added to that exception when it was written.
         _tour_display_name = strip_stray_html(extracted_dmc_data.get("tour_name") or "")
-        datasheet_en = DatasheetEN(
-            name=_tour_display_name,
-            description=extracted_dmc_data.get("description") or "",
-            hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
-            voucherRemarks=_with_manual_notes(
+        # PARK FEE / other pay-on-site costs (product owner, 2026-09-27, verbatim): "It includes
+        # room + package + transfer but the park fee must be stated it is paid on field when
+        # client is there. This information must be added to the voucher remarks as well." A
+        # National Park Fee (or any similar on-site, pay-locally cost) is NEVER folded into the
+        # price - it becomes an informational voucher note instead, exactly the same pattern
+        # already shipped for Transfer's own `location_notes` ("a location-conditional cost that
+        # can't be safely auto-applied to price ... becomes an informational voucher note instead
+        # - never a mandatory charge applied to every booking").
+        _ct_voucher_text = _append_if_new(
+            _with_manual_notes(
                 _with_what_to_bring(
                     _cancellation_voucher_text(None, cancellation_tiers),
                     extracted_dmc_data),
                 extracted_dmc_data),
+            extracted_dmc_data.get("park_fee_notes") or "")
+        # park_fee_notes is appended AFTER _with_manual_notes' own strip_stray_html pass, so it
+        # needs its own pass here too - same reasoning as Transfer's location_notes.
+        _ct_voucher_text = strip_stray_html(_ct_voucher_text)
+        datasheet_en = DatasheetEN(
+            name=_tour_display_name,
+            description=extracted_dmc_data.get("description") or "",
+            hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
+            voucherRemarks=_ct_voucher_text,
             included=extracted_dmc_data.get("included") or "",
             excluded=extracted_dmc_data.get("excluded") or "",
             meetingPoint=strip_stray_html(extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT),
