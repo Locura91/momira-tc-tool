@@ -41,7 +41,7 @@ from urllib.parse import urlparse, unquote
 
 import requests
 
-MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
+MODULE_BUILD = "2026-09-27-social-kit-wired-in"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
