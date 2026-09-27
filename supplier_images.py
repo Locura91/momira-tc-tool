@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 _NAMESPACE = "supplier_images"
 

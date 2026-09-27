@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 import math
 from difflib import SequenceMatcher

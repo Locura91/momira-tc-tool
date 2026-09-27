@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 _PHASE_KEY = "pkr_phase"
 

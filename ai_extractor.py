@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 import os
 import re
@@ -239,9 +239,17 @@ Rules:
   CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND
   the "per_pax" flag below; getting the combination wrong over- or under-charges the customer, so follow
   this exactly:
-  - "per stay" / a flat one-time amount (source says neither "per person" nor "per night"): charged ONCE
-    regardless of group size or how long the surcharge period runs. price = the stated flat amount,
-    per_pax: false. Never multiply this by anything.
+  - "per stay" / a flat one-time amount (source says neither "per person" nor "per night"): CONFIRMED
+    DEFAULT RULE (product owner, 2026-09-27, verbatim): "if supplement is per person or per travel group
+    - if not specific mentioned, a supplement is mostly per travel group." So this is a PER TRAVEL GROUP
+    charge, not a per-person one - handle it with the SAME division as the "per room" basis further below:
+    price = the stated flat total, per_pax: false, then divide that SAME total by 1, 2, 3, and 4 for
+    single_price/double_price/triple_price/quadruple_price, rounding each result UP to the next whole
+    currency unit (never to nearest, never down). Real examples that belong here even without the word
+    "room": a "Single Room Surcharge (SRS)" (paid once by whoever books the room alone), an "Extra
+    Mattress" charge (one physical mattress for the room, not one per traveler) - neither says "per room"
+    explicitly, but both are travel-group charges. Only skip this division when the source EXPLICITLY says
+    "per person"/"per traveler"/"per pax" (the next bullet below).
   - "per person" (and NOT also "per night"): price = the stated per-person amount, exactly as given - do
     NOT multiply it by a pax count yourself. Set per_pax: true instead, so Travel Compositor's own booking
     engine multiplies this amount by however many travelers actually book. This is the only correct way to
@@ -274,22 +282,28 @@ Rules:
     calculation and same tour-length cap as the "per night" rule above; if the source says "per room"
     with NO "per night" attached, treat it as already a flat one-time per-room total - don't multiply by
     nights). Then divide that SAME total by 1, 2, 3, and 4 to get the per-person amount for each occupancy
-    tier - e.g. rate $71 x 3 affected nights = $213 total for the room, so single_price = 213/1 = 213,
-    double_price = 213/2 = 106.50, triple_price = 213/3 = 71, quadruple_price = 213/4 = 53.25. Set
+    tier, ROUNDING EACH RESULT UP to the next whole currency unit (CONFIRMED HOUSE RULE, product owner,
+    2026-09-27, verbatim: "we round up, we do not write in any price 0,75 it will be 1 or 30,89 will be
+    31" - never round to nearest, never floor) - e.g. rate $71 x 3 affected nights = $213 total for the
+    room, so single_price = 213/1 = 213, double_price = ceil(213/2) = ceil(106.50) = 107,
+    triple_price = 213/3 = 71, quadruple_price = ceil(213/4) = ceil(53.25) = 54. Set
     per_pax: false and put the double_price value in "price" too (as the general-purpose per-person
     figure) - Travel Compositor must NOT multiply any of these occupancy amounts again, each is already
     the final per-person charge for that room configuration.
     CRITICAL SELF-CHECK: verify all four occupancy amounts were computed by dividing the exact SAME
-    total-per-room figure by 1, 2, 3, and 4 respectively - never compute them independently, and never
-    copy the per-night/per-room rate into more than one slot unchanged.
+    total-per-room figure by 1, 2, 3, and 4 respectively, then rounded UP - never compute them
+    independently, and never copy the per-night/per-room rate into more than one slot unchanged.
   - Whole-trip/percentage surcharges (e.g. "20% higher during Christmas", not tied to a per-night rate):
     pre-calculate an actual currency amount where you can (e.g. 20% of the base per-person price) and put
     that resulting number in "price", with per_pax: true (a percentage of a per-person price is itself
     per-person, so let Travel Compositor scale it by actual pax the same way). If a percentage genuinely
     can't be converted to a safe real amount, still create the mandatory supplement with your best
     estimate and flag it clearly in pricing_notes for review.
-  For every OTHER basis above (not "per room"/"per room per night"), the per-person amount is the SAME
-  regardless of occupancy, so set single_price = double_price = triple_price = quadruple_price = "price".
+  SUMMARY OF THE DEFAULT ABOVE: the flat-repeat treatment (single_price = double_price = triple_price =
+  quadruple_price = "price", no division) is reserved ONLY for bases EXPLICITLY marked per-person/
+  per-traveler/per-pax ("per person", "per person per night", and the percentage/whole-trip case - all
+  already per_pax: true). Every other, unlabeled or ambiguous basis (including "per stay") defaults to
+  per travel group: divide by occupancy, round up, per_pax: false.
   CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge specifically, the "name" must stay a
   clean, customer-facing label ONLY - e.g. "Christmas/New Year Surcharge" or "Peak Season Surcharge -
   Hotel X" - and must NEVER include the price, percentage, or the calculation (no "(20% of base price)",
@@ -2654,13 +2668,17 @@ Extract:
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional CO2 offset contribution") - never add these as a supplement. This is a deliberate exclusion, not an oversight.
   CRITICAL - CONFIRMED RULE: only add a peak-season/holiday surcharge if the source genuinely mentions one for THIS Modality - never invent one "just in case". When it does, ALWAYS model it as its own supplement with "mandatory": true and a real travel_start_date/travel_end_date (never a separate price_list row, never an empty date range). This supplement OVERLAYS the normal price as an ADDITIONAL charge for bookings inside that date range. If the source only names a season/holiday without exact dates, use your best real-world date range and say so in pricing_notes. CONFIRMED EASTER DATES RULE (product owner, 2026-09-16): specifically for an Easter/Easter holiday surcharge with no exact dates of its own stated in the source, do NOT estimate - use these exact confirmed windows instead: 30 March 2027 - 8 April 2027 (travel_start_date 2027-03-30, travel_end_date 2027-04-08), and 10 April 2028 - 25 April 2028 (travel_start_date 2028-04-10, travel_end_date 2028-04-25) - whichever year overlaps this Modality's own validity dates; if neither applies, fall back to the general best-guess rule above. If the source states its OWN explicit Easter dates, use those instead.
   CONFIRMED BASIS RULE - how the surcharge is phrased in the source decides BOTH the "price" number AND the "per_pax" flag; getting the combination wrong over- or under-charges the customer:
-  - "per stay" / a flat one-time amount (neither "per person" nor "per night"): price = the stated flat amount, per_pax: false. Never multiply.
+  - "per stay" / a flat one-time amount (neither "per person" nor "per night"): CONFIRMED DEFAULT RULE (product owner, 2026-09-27, verbatim): "if supplement is per person or per travel group - if not specific mentioned, a supplement is mostly per travel group." So this is a PER TRAVEL GROUP charge - handle it with the SAME division as the "per room" basis further below: price = the stated flat total, per_pax: false, then divide that SAME total by 1, 2, 3, and 4 for single_price/double_price/triple_price/quadruple_price, rounding each one UP to the next whole currency unit. Real examples that fall here even without the words "per room": a "Single Room Surcharge (SRS)" (paid once by whoever books the room alone), an "Extra Mattress" charge (one physical mattress for the room, not one per traveler) - neither says "per room" explicitly, but both are travel-group charges, not per-person ones. Only skip this division when the source EXPLICITLY says "per person"/"per traveler"/"per pax" (the next bullet below).
   - "per person" (and NOT also "per night"): price = the stated per-person amount as-is - do NOT multiply by a pax count. Set per_pax: true so Travel Compositor's own booking engine multiplies it by however many travelers actually book (pax is a min/max range at extraction time, never one fixed number).
   - "per night" (and NOT also "per person") - e.g. "USD 11 per night surcharge during peak season": Travel Compositor's schema has no native "per night" concept, so YOU must pre-multiply. price = the per-night rate x the actual number of affected nights within THIS Modality's own stay{tour_nights_clause}, capped at that length. per_pax: false. CRITICAL SELF-CHECK: verify you multiplied rate x nights and didn't just copy the per-night rate as the total.
   - "per person per night": combine the two rules above - price = per-night rate x actual affected nights ONLY (pre-calculated by you), then per_pax: true so Travel Compositor further multiplies by the actual booked pax count.
-  - "per room" / "per room per night" - e.g. "USD 71.00 per room per night" (a flat charge for the WHOLE room, not per traveler): compute the TOTAL charge for the whole room for the whole stay - the per-room rate x the actual affected nights (same nights rule as above; if "per room" with no "per night" attached, treat as already a flat one-time per-room total). Then divide that SAME total by 1, 2, 3, and 4 to get single_price/double_price/triple_price/quadruple_price - e.g. rate $71 x 3 nights = $213 total, so single_price=213, double_price=106.50, triple_price=71, quadruple_price=53.25. Set per_pax: false and put double_price in "price" too. CRITICAL SELF-CHECK: verify all four occupancy amounts come from dividing the SAME total by 1/2/3/4 - never compute them independently.
+  - "per room" / "per room per night" - e.g. "USD 71.00 per room per night" (a flat charge for the WHOLE room, not per traveler): compute the TOTAL charge for the whole room for the whole stay - the per-room rate x the actual affected nights (same nights rule as above; if "per room" with no "per night" attached, treat as already a flat one-time per-room total). Then divide that SAME total by 1, 2, 3, and 4 to get single_price/double_price/triple_price/quadruple_price, ROUNDING EACH ONE UP to the next whole currency unit (never to nearest, never down) - e.g. rate $71 x 3 nights = $213 total, so single_price=213, double_price=ceil(106.50)=107, triple_price=71, quadruple_price=ceil(53.25)=54. Set per_pax: false and put double_price in "price" too. CRITICAL SELF-CHECK: verify all four occupancy amounts come from dividing the SAME total by 1/2/3/4 (then rounding up) - never compute them independently.
   - Whole-trip/percentage surcharges (e.g. "20% higher during Christmas"): pre-calculate an actual currency amount (e.g. 20% of the base per-person price) into "price", with per_pax: true.
-  - For every basis OTHER than "per room"/"per room per night", set single_price = double_price = triple_price = quadruple_price = "price" (the per-person amount is the same regardless of occupancy).
+  SUMMARY: the flat-repeat treatment (single_price = double_price = triple_price = quadruple_price =
+  "price", no division) is reserved ONLY for bases EXPLICITLY marked per-person/per-traveler/per-pax
+  ("per person", "per person per night", and the percentage/whole-trip case - all already per_pax:
+  true). Every other, unlabeled or ambiguous basis (including "per stay") defaults to per travel group:
+  divide by occupancy, round up, per_pax: false.
   CRITICAL - CONFIRMED RULE: for a peak-season/holiday surcharge, "name" must stay a clean customer-facing label ONLY (e.g. "Peak Season Surcharge") - NEVER include the price/percentage/calculation in the name. Put the calculation itself in pricing_notes instead, never in the name.
   For each TRUE supplement, output:
   {

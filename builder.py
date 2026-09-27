@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 import copy
 import math
@@ -10,7 +10,7 @@ import re
 import html as _html_module
 from typing import Dict, Any, List, Optional, Tuple
 from pydantic import ValidationError
-from numeric_helpers import _safe_float, _safe_int
+from numeric_helpers import _safe_float, _safe_int, round_up_currency
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
@@ -1742,16 +1742,21 @@ def build_room_package_transfer_occupancy_prices(
             f"quadruple) - capped at quadruple. Review whether this room needs its own manual "
             f"handling for the extra {room_max_occupancy - 4} guest(s).")
 
+    # CONFIRMED HOUSE RULE (product owner, 2026-09-27): "Overall rule: we round up, we do not
+    # write in any price 0,75 it will be 1 or 30,89 will be 31." Every occupancy-tier amount here
+    # comes from dividing a total by 1/2/3/4, which routinely produces a fraction - round_up_currency
+    # (numeric_helpers.py) always takes the ceiling, never rounds to nearest or floors.
     occupancy_labels = {1: "single", 2: "double", 3: "triple", 4: "quadruple"}
     prices = {}
     for occ in range(1, effective_max_occupancy + 1):
         label = occupancy_labels[occ]
-        room_share = round((room_rate_per_night * nights) / occ, 2)
-        transfer_share = round(transfer_round_trip_total / occ, 2)
-        prices[f"{label}_price"] = round(room_share + package_price_per_adult + transfer_share, 2)
+        room_share = (room_rate_per_night * nights) / occ
+        transfer_share = transfer_round_trip_total / occ
+        prices[f"{label}_price"] = round_up_currency(
+            room_share + package_price_per_adult + transfer_share)
         if has_child_price:
-            prices[f"{label}_child_price"] = round(
-                room_share + package_price_per_child + transfer_share, 2)
+            prices[f"{label}_child_price"] = round_up_currency(
+                room_share + package_price_per_child + transfer_share)
     return prices, notes
 
 
@@ -1794,7 +1799,8 @@ def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12
     return low, high
 
 
-def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List[str]] = None) -> List[SupplementVO]:
+def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List[str]] = None,
+                          voucher_notes: Optional[List[str]] = None) -> List[SupplementVO]:
     """
     Converts the app's internal flat supplement dicts (name/price/single_price/
     double_price/triple_price/quadruple_price/mandatory/on_request/applies_to/
@@ -1825,6 +1831,17 @@ def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List
     per the product owner's own framing of the rule, and is dropped exactly the same way).
     `notes` is optional and defaults to None (silently discarded) so existing callers that
     don't care about the reason keep working unchanged; pass a list to collect them.
+
+    CONFIRMED FOLLOW-UP RULE (product owner, 2026-09-27, verbatim): "The required holiday dinner
+    must be added in the voucher remark, as this supplement is with no cost but it is important
+    to know for the client. So if supplement has no costs, we must add it to the voucher remark."
+    `notes` above is an INTERNAL review note (never shown to the client) - a genuinely free but
+    important supplement (e.g. a "Required Holiday Dinner (24/31 December)" the source lists at
+    no charge) still needs to reach the CLIENT somehow even though it can never be published as a
+    priced Supplement. `voucher_notes` (optional, same default-None/opt-in shape as `notes`)
+    collects a customer-facing sentence for each dropped free supplement, meant to be appended
+    into the ClosedTour's own voucherRemarks by the caller - same "informational note instead of
+    a price" pattern already used for park_fee_notes/Transfer location_notes.
     """
     supplements_list = []
     for s in (supplements or []):
@@ -1835,11 +1852,14 @@ def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List
         quadruple_val = _safe_supplement_price(s.get("quadruple_price", 0))
 
         if price_val == 0 and single_val == 0 and double_val == 0 and triple_val == 0 and quadruple_val == 0:
+            _supp_name = s.get("name") or "unnamed supplement"
             if notes is not None:
-                notes.append(f"'{s.get('name') or 'unnamed supplement'}' had no price (0 Euro) in any "
+                notes.append(f"'{_supp_name}' had no price (0 Euro) in any "
                              f"occupancy - a supplement can never be 0 Euro, so it was dropped, not "
                              f"published. If this was meant to have a real charge, add the price and "
                              f"re-add it.")
+            if voucher_notes is not None and s.get("name"):
+                voucher_notes.append(f"{_supp_name} is included at no extra charge.")
             continue
 
         # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
@@ -2480,8 +2500,14 @@ def build_closed_tour_payloads(
         # 0 Euro" - dropped here, with the reason appended to the SAME notes list/review-screen
         # field as the occupancy-stripping notes just above (both are "a supplement was removed
         # before publish, and here's why" - see build_supplement_vos' own docstring for the
-        # full rule).
-        supplements_list = build_supplement_vos(_consistent_supplements, notes=_supplement_notes)
+        # full rule). `_free_supplement_voucher_notes` collects the CLIENT-facing counterpart
+        # (product owner, 2026-09-27): a genuinely free-but-important supplement (e.g. "Required
+        # Holiday Dinner") still needs to reach the client, so it becomes a voucherRemarks line
+        # instead of a priced Supplement - appended into `_ct_voucher_text` below.
+        _free_supplement_voucher_notes = []
+        supplements_list = build_supplement_vos(
+            _consistent_supplements, notes=_supplement_notes,
+            voucher_notes=_free_supplement_voucher_notes)
 
         # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
         # cancellation_policy_tiers is deliberately NOT read here anymore - see
@@ -2532,8 +2558,17 @@ def build_closed_tour_payloads(
                     extracted_dmc_data),
                 extracted_dmc_data),
             extracted_dmc_data.get("park_fee_notes") or "")
-        # park_fee_notes is appended AFTER _with_manual_notes' own strip_stray_html pass, so it
-        # needs its own pass here too - same reasoning as Transfer's location_notes.
+        # FREE SUPPLEMENT -> VOUCHER NOTE (product owner, 2026-09-27, verbatim): "The required
+        # holiday dinner must be added in the voucher remark, as this supplement is with no cost
+        # but it is important to know for the client. So if supplement has no costs, we must add
+        # it to the voucher remark." Each dropped-as-free supplement (see
+        # `_free_supplement_voucher_notes`, populated by build_supplement_vos above) gets folded
+        # in here too, one sentence per supplement, same _append_if_new dedup as every other note.
+        for _free_note in _free_supplement_voucher_notes:
+            _ct_voucher_text = _append_if_new(_ct_voucher_text, _free_note)
+        # park_fee_notes/free-supplement notes are appended AFTER _with_manual_notes' own
+        # strip_stray_html pass, so it needs its own pass here too - same reasoning as Transfer's
+        # location_notes.
         _ct_voucher_text = strip_stray_html(_ct_voucher_text)
         datasheet_en = DatasheetEN(
             name=_tour_display_name,

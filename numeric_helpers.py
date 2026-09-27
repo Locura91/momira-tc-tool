@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 
 def _safe_float(value, fallback=0.0):
@@ -49,3 +49,22 @@ def _safe_int(value, fallback=0):
     """Same NaN/Infinity/non-numeric safety as _safe_float, but returns an int."""
     result = _safe_float(value, fallback=None)
     return fallback if result is None else int(result)
+
+
+def round_up_currency(amount):
+    """Round a money amount UP to the next whole currency unit - never to the nearest, never down.
+
+    CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "Overall rule: we round up, we do
+    not write in any price 0,75 it will be 1 or 30,89 will be 31." Introduced alongside the fix for
+    ClosedTour supplements that split a flat per-room/per-group charge across occupancy (e.g. a
+    Single Room Surcharge or Extra Mattress divided by 1/2/3/4 travelers) - that division routinely
+    produces a fractional amount (213/4 = 53.25), and the confirmed rule is to always charge the
+    customer the ceiling of that fraction, never a rounded or floored amount. Applies to any money
+    figure produced by dividing a total across occupancy, not just supplements.
+
+    `round(value, 6)` before `math.ceil` guards against floating-point representation noise (e.g.
+    106.49999999999999 for what should be an exact 106.5, or 3780.0000000001 for an exact 3780)
+    incorrectly pushing an intended whole number one unit too high.
+    """
+    value = round(_safe_float(amount), 6)
+    return float(math.ceil(value))

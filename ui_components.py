@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-room-package-transfer-pricing"
+MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
 
 import re
 import math
@@ -30,7 +30,7 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
-from numeric_helpers import _safe_float, _safe_int
+from numeric_helpers import _safe_float, _safe_int, round_up_currency
 from builder import (
     coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
     resolve_ticket_child_price_ratio, sanitize_supplement_name, format_what_to_bring_line,
@@ -1301,11 +1301,22 @@ def render_closedtour_supplements(data, key_prefix):
               "optional extras the customer only pays for if they choose them — a room upgrade, a "
               "meal upgrade, an optional excursion — or a peak-season surcharge. Leave empty if "
               "this tour has none. Every row needs a clear Name.")
-    st.caption("**Single/Double/Triple/Quadruple** only matter for a surcharge quoted 'per room' "
-              "(e.g. 'USD 71.00 per room per night'): that flat per-room charge has to be split by "
-              "how many share the room, so those four columns hold the resulting per-person amount. "
-              "For a normal per-person add-on just fill 'Price (per person)' and the four occupancy "
-              "columns follow it.")
+    st.caption("**Per Pax** decides how 'Price (per person)' turns into the four occupancy columns "
+              "— they are calculated automatically and can't be typed into directly. **Per Pax ON** "
+              "= a true per-traveler charge (e.g. a $50/person add-on): every occupancy column shows "
+              "the same amount, since each person who books it pays that amount regardless of room "
+              "size. **Per Pax OFF** = a flat per-room/per-travel-group charge (e.g. a Single Room "
+              "Surcharge, an Extra Mattress, most surcharges the source doesn't explicitly call "
+              "'per person'): the flat amount is split across however many share the room — Single "
+              "gets the full amount, Double half, Triple a third, Quadruple a quarter — rounded UP "
+              "to the next whole currency unit (never down, never to nearest — a $213 total split 3 "
+              "ways is $71 each, but $213 split 2 ways is $107, not $106.50).")
+    st.caption("⚠️ **If the AI's Per Pax guess looks wrong** — e.g. every occupancy column shows the "
+              "full flat amount, meaning every traveler would be charged in full — just flip the "
+              "**Per Pax** checkbox for that row and hit Save; the four occupancy amounts recalculate "
+              "immediately from 'Price (per person)' using the new setting. **When the source doesn't "
+              "clearly say 'per person'/'per traveler', assume Per Pax OFF (per travel group)** — "
+              "that's the more common case and now the default for a new row.")
     st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
               "supplement is often genuinely optional, so these two boxes are the difference between "
               "an add-on the client chooses and a charge they cannot avoid — the AI's guess is a "
@@ -1320,7 +1331,7 @@ def render_closedtour_supplements(data, key_prefix):
             "Double": s.get("double_price", s.get("price", 0)),
             "Triple": s.get("triple_price", s.get("price", 0)),
             "Quadruple": s.get("quadruple_price", s.get("price", 0)),
-            "Per Pax": s.get("per_pax", True),
+            "Per Pax": s.get("per_pax", False),
             "Mandatory": s.get("mandatory", False),
             "On Request": s.get("on_request", False),
             "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
@@ -1342,18 +1353,41 @@ def render_closedtour_supplements(data, key_prefix):
                     missing_name = True
                 continue
             flat_price = _safe_float(price_given)
+            per_pax = bool(row.get("Per Pax", False))
 
-            def _occ(col, fallback=flat_price):
-                return _safe_float(row.get(col), fallback)
+            # CONFIRMED FIX (product owner, 2026-09-27): the four occupancy columns are ALWAYS
+            # derived from "Price (per person)" + "Per Pax" here, never read back from whatever
+            # the AI (or a previous save) happened to write into those cells - see this
+            # function's own module-level caption for the full Per Pax ON/OFF explanation. Before
+            # this fix, an AI-mis-set Per Pax=False row that still carried the SAME flat number in
+            # all four occupancy columns (the exact real bug reported: "Single Room Surcharge" and
+            # "Extra Mattress" both showing 3660/600 across every occupancy tier) had no way to be
+            # corrected except by hand-editing all four numbers - flipping the Per Pax checkbox
+            # alone did nothing, since the stale flat numbers were simply read back unchanged.
+            # Deriving them fresh from Per Pax on every save means toggling that ONE checkbox and
+            # hitting Save is now enough to fix a wrong AI guess.
+            if per_pax:
+                # Per Pax ON: a true per-traveler charge - the same amount applies whatever the
+                # room size, since Travel Compositor itself multiplies it by the actual pax who
+                # book it.
+                single_val = double_val = triple_val = quadruple_val = flat_price
+            else:
+                # Per Pax OFF: a flat per-room/per-travel-group charge - split across however many
+                # share the room. CONFIRMED HOUSE RULE (product owner, 2026-09-27): "Overall rule:
+                # we round up" - round_up_currency (numeric_helpers.py) always takes the ceiling.
+                single_val = round_up_currency(flat_price / 1)
+                double_val = round_up_currency(flat_price / 2)
+                triple_val = round_up_currency(flat_price / 3)
+                quadruple_val = round_up_currency(flat_price / 4)
 
             out.append({
                 "name": name,
                 "price": flat_price,
-                "single_price": _occ("Single"),
-                "double_price": _occ("Double"),
-                "triple_price": _occ("Triple"),
-                "quadruple_price": _occ("Quadruple"),
-                "per_pax": bool(row.get("Per Pax", True)),
+                "single_price": single_val,
+                "double_price": double_val,
+                "triple_price": triple_val,
+                "quadruple_price": quadruple_val,
+                "per_pax": per_pax,
                 "mandatory": bool(row.get("Mandatory", False)),
                 "on_request": bool(row.get("On Request", False)),
                 "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
@@ -1362,7 +1396,18 @@ def render_closedtour_supplements(data, key_prefix):
         data["supplements"] = out
         st.session_state[f"_{key_prefix}_supplements_missing_name"] = missing_name
 
-    editable_table("Supplements", df, f"{key_prefix}_supplements", on_save=_save)
+    editable_table(
+        "Supplements", df, f"{key_prefix}_supplements", on_save=_save,
+        column_config={
+            # Derived from Price (per person) + Per Pax on Save - see _save above and the
+            # module-level caption. Disabled here so a human can't type a value that Save would
+            # silently overwrite anyway.
+            "Single": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
+            "Double": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
+            "Triple": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
+            "Quadruple": st.column_config.NumberColumn(disabled=True, help="Calculated from Price + Per Pax"),
+        },
+    )
     if st.session_state.get(f"_{key_prefix}_supplements_missing_name"):
         st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement "
                    "needs a clear Name.")
