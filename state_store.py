@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
 
 _NAMESPACE = "translation_state"
 

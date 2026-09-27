@@ -33,7 +33,7 @@ from ui_components import (
     render_stop_sales_editor, render_cancellation_policy_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
     render_readonly_source, render_closable_image_section, render_url_image_picker,
-    render_doc_image_picker, render_stock_photo_picker, render_child_age_band,
+    render_doc_image_picker, render_auto_added_image_review, render_stock_photo_picker, render_child_age_band,
     render_duration_editor, is_active_supplier,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _add_page_images_to_doc_pool,
 )
@@ -831,10 +831,26 @@ def render_ticket_flow(client):
                 elif st.session_state.get("tk_hosted_image_candidates"):
                     # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time
                     # merge above: this used to be a manual tick-and-"Add selected" picker
-                    # (render_url_image_picker); now it's a plain confirmation, since the URLs
-                    # are already in the text area above.
-                    st.caption(f"✅ {len(st.session_state.tk_hosted_image_candidates)} image(s) found on the page/URL/document "
-                              f"were added automatically above.")
+                    # (render_url_image_picker); now it folds straight into image_urls with no
+                    # click needed to keep any of them.
+                    #
+                    # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found
+                    # in your document/page were added automatically. --> human must verify the
+                    # images as many images are not good or just logos and therefore is human
+                    # interaction needed"): a plain confirmation caption gave no way to actually
+                    # SEE what got added - render_auto_added_image_review shows a thumbnail per
+                    # auto-added image, pre-checked (no click needed to keep any of them,
+                    # preserving the 2026-09-23 fix), so unchecking a bad one is the only action
+                    # needed. Dropped via _tk_pending_images_update, same mechanism _tk_add_doc_
+                    # image below uses to add one - the text area above stays the source of truth.
+                    _tk_reviewed = render_auto_added_image_review(st.session_state.tk_hosted_image_candidates, "tk_auto_img")
+                    _tk_unchecked = [u for u in st.session_state.tk_hosted_image_candidates if u not in _tk_reviewed]
+                    if _tk_unchecked:
+                        _tk_filtered = [u for u in data.get("image_urls", []) if u not in _tk_unchecked]
+                        if _tk_filtered != data.get("image_urls", []):
+                            data["image_urls"] = _tk_filtered or [FALLBACK_IMAGE]
+                            st.session_state._tk_pending_images_update = "\n".join(_tk_filtered)
+                            st.rerun()
 
                 default_tk_img_query = data.get("ticket_name", "") or data.get("city", "")
 

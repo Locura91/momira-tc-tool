@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
 
 import math
 from difflib import SequenceMatcher

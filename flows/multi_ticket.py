@@ -36,6 +36,7 @@ from image_dimensions import FALLBACK_IMAGE
 from ui_components import (
     editable_table, editable_field, render_cancellation_policy_editor,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
+    render_auto_added_image_review,
     render_stock_photo_picker, render_child_age_band, render_currency_check,
     render_duration_editor, render_stop_sales_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
@@ -632,9 +633,21 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             elif st.session_state.get("mt_hosted_image_candidates"):
                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge
                 # above: this used to be a manual tick-and-"Add selected" picker
-                # (render_url_image_picker); now it's a plain confirmation.
-                st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) found "
-                          f"in your document/page were added automatically.")
+                # (render_url_image_picker); now it folds straight into image_urls with no click
+                # needed to keep any of them.
+                #
+                # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in
+                # your document/page were added automatically. --> human must verify the images
+                # as many images are not good or just logos and therefore is human interaction
+                # needed"): a plain confirmation caption gave no way to actually SEE what got
+                # added - render_auto_added_image_review shows a thumbnail per auto-added image,
+                # pre-checked (no click needed to keep any of them, preserving the 2026-09-23
+                # fix), so unchecking a bad one is the only action needed. data["image_urls"] is
+                # mutated directly, same as _mt_add_doc_image below does when adding one.
+                _mt_reviewed = render_auto_added_image_review(st.session_state.mt_hosted_image_candidates, f"mt_auto_img_{idx}")
+                _mt_unchecked = [u for u in st.session_state.mt_hosted_image_candidates if u not in _mt_reviewed]
+                if _mt_unchecked:
+                    data["image_urls"] = [u for u in data.get("image_urls", []) if u not in _mt_unchecked] or [FALLBACK_IMAGE]
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 
@@ -1884,10 +1897,26 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             elif st.session_state.get("mtu_hosted_image_candidates"):
                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge
                 # above: this used to be a manual tick-and-"Add selected" picker
-                # (render_url_image_picker); now it's a plain confirmation.
+                # (render_url_image_picker); now it folds straight into image_urls with no click
+                # needed to keep any of them.
+                #
+                # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in
+                # your document/page were added automatically. --> human must verify the images
+                # as many images are not good or just logos and therefore is human interaction
+                # needed"): a plain confirmation caption gave no way to actually SEE what got
+                # added - render_auto_added_image_review shows a thumbnail per auto-added image
+                # (only the ones found in this document/page, not the ones carried over from the
+                # live ticket, which were already reviewed by a human when first published),
+                # pre-checked (no click needed to keep any of them, preserving the 2026-09-23
+                # fix), so unchecking a bad one is the only action needed. data["image_urls"] is
+                # mutated directly, same as _mtu_add_doc_image below does when adding one.
                 st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) "
                           f"selected (carried over from the live ticket, plus any found in your document/page, "
                           f"added automatically).")
+                _mtu_reviewed = render_auto_added_image_review(st.session_state.mtu_hosted_image_candidates, f"mtu_auto_img_{idx}")
+                _mtu_unchecked = [u for u in st.session_state.mtu_hosted_image_candidates if u not in _mtu_reviewed]
+                if _mtu_unchecked:
+                    data["image_urls"] = [u for u in data.get("image_urls", []) if u not in _mtu_unchecked] or [FALLBACK_IMAGE]
             else:
                 st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected "
                           f"(carried over from the live ticket unless you change them below).")

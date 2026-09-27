@@ -69,7 +69,7 @@ from typing import Any, Callable, Dict, List, Optional
 import bulk_notes
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
 
 SERVICE_TYPES = ["PRIVATE", "SHUTTLE", "SHARED"]
 SERVICE_TYPE_LABELS = {"PRIVATE": "Private", "SHUTTLE": "Shuttle", "SHARED": "Shared"}

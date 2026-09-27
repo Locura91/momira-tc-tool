@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
 
 import os
 import re
@@ -122,6 +122,23 @@ Rules:
   product type (Tickets) that doesn't use this convention.
 - tour_name: keep the product name close to what the source calls it, but apply the Nights-vs-Days naming
   rule above if the source's title states a day count - fix it to nights + 1 if it doesn't already match.
+  CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
+  ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
+  code, so its easy for the supplier when receiving automatic mails"): if the source's title/heading
+  includes the SUPPLIER's own reference/product code for one specific duration or pricing variant of this
+  tour (e.g. "Bush Camp Safari (TBC2)" where "TBC2" is that supplier's own code for the 2-day version,
+  shown in a "Code" column next to a pricing table row), leave that code OUT of tour_name entirely - do
+  not copy the parenthetical/appended code into the name, even though it's part of the source's own
+  title text. That code identifies one specific Modality/variant, not the tour as a whole (a tour can
+  have several Modalities, e.g. TBC2 for 2 days and TBC3 for 3 days, sharing one tour_name), and belongs
+  on the Modality's own code instead (see the Modality-detection step, which looks for exactly this kind
+  of explicit per-row supplier code) - never duplicated into the client-facing tour title, since that
+  code exists so the supplier can match automatic booking emails back to their own records, not to be
+  customer-facing marketing copy. Strip it whether it appears in parentheses, after a dash, or any other
+  way it's attached to the title. If genuinely unsure whether a trailing code is this kind of supplier
+  reference code (vs. a real part of the product's name), prefer leaving it out and noting the ambiguity
+  is not needed here - a short, clean tour_name is always correct; a supplier code visible in modality
+  detection is never lost by removing it from the name too.
 - CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the operator/supplier/provider
   directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up
   time, and note that the starting time and duration may vary according to traffic, weather and
@@ -1791,6 +1808,21 @@ with extra words beyond the core tier name, extract ONLY the tier name itself fo
 any of that other descriptive detail (language, occupancy notes) in "label" instead, where it's just
 informational and never sent to the API as-is.
 
+CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
+ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
+code, so its easy for the supplier when receiving automatic mails"): if the source document explicitly
+assigns its OWN reference code to a specific category/duration/variant row (e.g. a "Code" column showing
+"TBC2" next to a "2 days" row and "TBC3" next to a "3 days" row for the same tour), use that EXACT
+supplier code as suggested_code for that Modality - PREFER it over inventing a generic tier name, even
+though it's not a plain word like "Standard"/"Deluxe". This is a real supplier-assigned identifier, not
+descriptive text, so the "short clean tier name only" rule above does not mean rejecting it - the supplier
+uses this exact code to match automatic booking confirmation emails back to their own records, so getting
+it verbatim onto the Modality (rather than losing it, or worse, leaving it stuck in the tour's title text)
+matters operationally. Still strip out anything ELSE bundled with it that isn't part of the code itself
+(e.g. from "Code: TBC2 (2 Days)" extract just "TBC2", putting "2 Days" in "label" instead). Only fall back
+to inventing a short generic tier name when the source does NOT give its own explicit code for this
+category/variant.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_modalities": true or false,
@@ -3035,6 +3067,15 @@ Extract:
   described (e.g. "Half Day City Tour" from a document about a half-day tour of a named city, "Private
   Airport Transfer" from a transfer document with no other name) - never a generic placeholder like
   "Excursion" or "Ticket" alone, and never leave it as an empty string under any circumstances.
+  CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
+  ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
+  code, so its easy for the supplier when receiving automatic mails"): if the source's title/heading
+  includes the SUPPLIER's own reference/product code (e.g. "City Tour (WT1)" where "WT1" is that
+  supplier's own code, shown in a "Tour Code"/"Product Code"/"Ref" column next to this excursion's row),
+  leave that code OUT of ticket_name - it belongs in the separate supplier_code field (see the
+  variant-detection step) so it ends up on the Modality Code instead, not duplicated into the
+  client-facing title. That code exists so the supplier can match automatic booking emails back to
+  their own records, not as customer-facing copy.
 - description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
   natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
   a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
@@ -3651,6 +3692,15 @@ Extract:
   described (e.g. "Half Day City Tour" from a document about a half-day tour of a named city, "Private
   Airport Transfer" from a transfer document with no other name) - never a generic placeholder like
   "Excursion" or "Ticket" alone, and never leave it as an empty string under any circumstances.
+  CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
+  ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
+  code, so its easy for the supplier when receiving automatic mails"): if the source's title/heading
+  includes the SUPPLIER's own reference/product code (e.g. "City Tour (WT1)" where "WT1" is that
+  supplier's own code, shown in a "Tour Code"/"Product Code"/"Ref" column next to this excursion's row),
+  leave that code OUT of ticket_name - it belongs in the separate supplier_code field (see the
+  variant-detection step) so it ends up on the Modality Code instead, not duplicated into the
+  client-facing title. That code exists so the supplier can match automatic booking emails back to
+  their own records, not as customer-facing copy.
 - description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
   natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
   a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
@@ -4140,11 +4190,21 @@ include: parenthetical/explanatory text, numbers describing pax/occupancy/min-ma
 "people"/"pax"/"person", periods, or slashes. Correct: "Standard", "Deluxe", "German". Wrong: "Standard
 English min. 2 people", "German Speaking Guide (on request)".
 
+CONFIRMED PRODUCT-OWNER RULE (2026-09-25, verbatim: "if supplier is delivering a code for closedtour
+ticket etc this code must be seen in the modality and not in the title. Code = connected to Modality
+code, so its easy for the supplier when receiving automatic mails"): if the source document explicitly
+assigns its OWN reference code to a specific pricing category (e.g. a "Code"/"Tour Code"/"Ref" column
+showing "WT1" next to one Modality's row), use that EXACT supplier code as suggested_code - PREFER it
+over inventing a generic tier name, since it's a real supplier-assigned identifier the supplier uses to
+match automatic booking emails back to their own records, not descriptive text to be stripped out. Still
+strip anything ELSE bundled with it that isn't the code itself. Only fall back to a short generic tier
+name when the source gives no explicit code of its own for that category.
+
 Output ONLY valid JSON, no markdown fences, no explanation. Use this exact structure:
 {
   "multiple_modalities": true or false,
   "modalities": [
-    {"label": "short human-readable label, e.g. 'German Speaking Guide'", "suggested_code": "e.g. 'German' - ONLY the core category name, no / + - characters, no extra words"}
+    {"label": "short human-readable label, e.g. 'German Speaking Guide'", "suggested_code": "e.g. 'German' - ONLY the core category name, no / + - characters, no extra words - or the supplier's own explicit code if the source gives one, see the rule above"}
   ]
 }
 If there's only one pricing category (or pricing is a single flat table with optional extras), set

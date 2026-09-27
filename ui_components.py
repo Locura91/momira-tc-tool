@@ -20,7 +20,7 @@ actually sharing it. All five flows now call the same function.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+MODULE_BUILD = "2026-09-25-auto-added-images-need-review"
 
 import re
 import math
@@ -1137,6 +1137,50 @@ def render_url_image_picker(image_urls, state_prefix):
     if st.button("➕ Add selected to Image URLs", key=f"{state_prefix}_add_btn") and selected_urls:
         return selected_urls
     return None
+
+
+def render_auto_added_image_review(image_urls, state_prefix):
+    """
+    Shows the images that were auto-added to image_urls (2026-09-23's fix - every hosted
+    candidate URL folds straight into image_urls automatically, no manual pick-in step needed).
+
+    CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in your
+    document/page were added automatically. --> human must verify the images as many images are
+    not good or just logos and therefore is human interaction needed"): auto-added is not the
+    same as auto-CORRECT - a supplier document/page often mixes real product photos with junk
+    (the supplier's own logo, a decorative icon, an unrelated banner), and until now that junk
+    silently rode along to the live listing with nothing on screen to catch it - the "images
+    found" section was just a plain confirmation caption with no thumbnails at all, so a human
+    had no way to actually SEE what got added without decoding raw URLs from the image-URLs text
+    box by hand.
+
+    This renders each auto-added image as a thumbnail with a checkbox PRE-CHECKED (value=True) -
+    keeping every image needs NO click at all, preserving the 2026-09-23 fix (the whole point of
+    that fix was removing the "must manually opt every image in" friction) - so the only action
+    a human ever takes here is UNCHECKING a bad one. There is deliberately no "Add selected"
+    button, unlike render_url_image_picker above: these images are already in image_urls by the
+    time this renders, so there's nothing to "add" - the return value is simply this render's
+    live selection, for the caller to diff against the full candidate list and drop whatever got
+    unchecked.
+
+    Returns the list of currently-checked URLs (always a list, never None - every one of them
+    starts checked, so calling this with no image_urls given just returns []).
+    """
+    if not image_urls:
+        return []
+    st.caption(f"🖼️ {len(image_urls)} image(s) found in your document/page were added "
+              f"automatically - **please verify them**: uncheck anything that isn't a real "
+              f"product photo (a logo, an icon, an unrelated banner, low quality) before "
+              f"continuing.")
+    cols = st.columns(3)
+    selected = []
+    for i, url in enumerate(image_urls):
+        photo_key = abs(hash(url))  # content-based, never collides across different sets of results
+        with cols[i % 3]:
+            st.image(url)
+            if st.checkbox("Keep this image", value=True, key=f"{state_prefix}_keep_{photo_key}"):
+                selected.append(url)
+    return selected
 
 
 def render_doc_image_picker(doc_raw_images, state_prefix):

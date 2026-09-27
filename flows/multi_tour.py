@@ -40,6 +40,7 @@ from image_dimensions import FALLBACK_IMAGE
 from ui_components import (
     editable_table, editable_field, render_cancellation_policy_editor,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
+    render_auto_added_image_review,
     render_stock_photo_picker, render_child_age_band, render_child_discount_editor,
     render_closedtour_supplements, render_currency_check, render_extra_child_notice,
     render_optional_time_input, render_stop_sales_editor,
@@ -398,9 +399,21 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         elif st.session_state.get("mct_hosted_image_candidates"):
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge above:
             # this used to be a manual tick-and-"Add selected" picker (render_url_image_picker);
-            # now it's a plain confirmation, since these were already folded into image_urls.
-            st.caption(f"✅ {len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) found in "
-                      f"your document/page were added automatically.")
+            # now it folds straight into image_urls with no click needed to keep any of them.
+            #
+            # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in your
+            # document/page were added automatically. --> human must verify the images as many
+            # images are not good or just logos and therefore is human interaction needed"): a
+            # plain confirmation caption gave no way to actually SEE what got added -
+            # render_auto_added_image_review shows a thumbnail per auto-added image, pre-checked
+            # (no click needed to keep any of them, preserving the 2026-09-23 fix), so unchecking
+            # a bad one (a logo, low quality, unrelated) is the only action needed. data["image_
+            # urls"] is mutated directly, same as _mct_add_doc_image below does when adding one -
+            # no separate text-area widget exists on this batch screen to keep in sync.
+            _mct_reviewed = render_auto_added_image_review(st.session_state.mct_hosted_image_candidates, "mct_auto_img")
+            _mct_unchecked = [u for u in st.session_state.mct_hosted_image_candidates if u not in _mct_reviewed]
+            if _mct_unchecked:
+                data["image_urls"] = [u for u in data.get("image_urls", []) if u not in _mct_unchecked] or [FALLBACK_IMAGE]
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
 

@@ -266,6 +266,7 @@ from ui_components import (
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
     render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
+    render_auto_added_image_review,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
     render_child_discount_editor, render_duration_editor, is_active_supplier,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
@@ -794,7 +795,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-25-transfer-image-bulk-vehicle-type-filter"
+BUILD_VERSION = "2026-09-25-auto-added-images-need-review"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2207,10 +2208,27 @@ if st.session_state.extracted:
             elif st.session_state.get("hosted_image_candidates"):
                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the docstring above where
                 # hosted_image_candidates is merged into image_urls: this used to be a manual
-                # tick-and-"Add selected" picker (render_url_image_picker); now it's a plain
-                # confirmation, since the URLs are already in the text area above.
-                st.caption(f"✅ {len(st.session_state.hosted_image_candidates)} image(s) found on the page/URL/document "
-                          f"were added automatically above.")
+                # tick-and-"Add selected" picker (render_url_image_picker); now it folds straight
+                # into image_urls with no click needed to keep any of them.
+                #
+                # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in
+                # your document/page were added automatically. --> human must verify the images
+                # as many images are not good or just logos and therefore is human interaction
+                # needed"): a plain confirmation caption gave no way to actually SEE what got
+                # added - render_auto_added_image_review shows a thumbnail per auto-added image,
+                # pre-checked (no click needed to keep any of them, preserving the 2026-09-23
+                # fix), so unchecking a bad one (a logo, low quality, unrelated) is the only
+                # action needed. Unchecked ones are dropped from image_urls the same way
+                # _ct_add_doc_image below adds one - via _pending_images_update, so the text area
+                # above stays the single source of truth.
+                _reviewed = render_auto_added_image_review(st.session_state.hosted_image_candidates, "ct_auto_img")
+                _unchecked = [u for u in st.session_state.hosted_image_candidates if u not in _reviewed]
+                if _unchecked:
+                    _filtered = [u for u in data.get("image_urls", []) if u not in _unchecked]
+                    if _filtered != data.get("image_urls", []):
+                        data["image_urls"] = _filtered or [FALLBACK_IMAGE]
+                        st.session_state._pending_images_update = "\n".join(_filtered)
+                        st.rerun()
 
             def _ct_add_doc_image():
                 added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")

@@ -28,6 +28,17 @@ app.py/flows/*.py can't be imported directly in this test process (app.py touche
 import time; the flows/*.py modules are pulled in by it) - matching this suite's established
 convention (see test_2026_09_01_medium_batch1_app_py.py's own docstring), these are all
 source-text checks.
+
+FOLLOW-UP (2026-09-25, verbatim): "3 image(s) found in your document/page were added
+automatically. --> human must verify the images as many images are not good or just logos and
+therefore is human interaction needed." The plain confirmation caption this fix originally put
+in place of the manual picker (below) was ITSELF replaced with a thumbnail review
+(render_auto_added_image_review, defined in ui_components.py) -
+every image still folds into image_urls automatically with no click required to keep any of
+them (this fix's core behavior is untouched), but a human can now actually SEE each one and
+uncheck a bad one (a logo, low quality, unrelated). The "images found section is a confirmation
+not a picker" tests below were updated to check for that review call instead of the old plain
+caption text, which no longer exists at these call sites.
 """
 import os
 
@@ -67,8 +78,8 @@ def test_closedtour_images_found_section_is_a_confirmation_not_a_picker():
     src = _read("app.py")
     # The old manual picker function/call must be gone entirely.
     assert "_ct_add_url_images" not in src
-    # A plain confirmation caption replaces it.
-    assert "were added automatically above" in src
+    # The old plain caption was replaced by a checkbox-based human review.
+    assert 'render_auto_added_image_review(st.session_state.hosted_image_candidates' in src
 
 
 # ======================================================================
@@ -98,7 +109,7 @@ def test_ticket_variant_resolution_also_auto_folds_hosted_candidates():
 def test_ticket_images_found_section_is_a_confirmation_not_a_picker():
     src = _read("flows", "ticket.py")
     assert "_tk_add_url_images" not in src
-    assert "were added automatically above" in src
+    assert 'render_auto_added_image_review(st.session_state.tk_hosted_image_candidates' in src
 
 
 # ======================================================================
@@ -116,7 +127,7 @@ def test_multi_tour_batch_auto_folds_hosted_candidates_into_image_urls():
 def test_multi_tour_images_found_section_is_a_confirmation_not_a_picker():
     src = _read("flows", "multi_tour.py")
     assert "_mct_add_url_images" not in src
-    assert "were added automatically." in src
+    assert 'render_auto_added_image_review(st.session_state.mct_hosted_image_candidates' in src
 
 
 # ======================================================================
@@ -144,9 +155,9 @@ def test_multi_ticket_images_found_sections_are_confirmations_not_pickers():
     src = _read("flows", "multi_ticket.py")
     assert "_mt_add_url_images" not in src
     assert "_mtu_add_url_images" not in src
-    assert "in your document/page were added automatically." in src  # mt_ (create)
-    assert "plus any found in your document/page," in src  # mtu_ (update)
-    assert 'f"added automatically).")' in src
+    assert 'render_auto_added_image_review(st.session_state.mt_hosted_image_candidates' in src
+    assert 'render_auto_added_image_review(st.session_state.mtu_hosted_image_candidates' in src
+    assert "plus any found in your document/page," in src  # mtu_ (update) caption kept
 
 
 # ======================================================================
