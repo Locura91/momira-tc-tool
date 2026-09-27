@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

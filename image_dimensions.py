@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

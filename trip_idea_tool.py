@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 _PHASE_KEY = "ti_phase"
 

@@ -49,6 +49,7 @@ from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shap
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from document_reader import extract_raw_text
 from ui_components import is_active_supplier, _safe_float, _safe_int
+from numeric_helpers import round_up_currency
 from web_extractor import get_page_text, short_page_text_warning
 from r2_client import stale_image_warning
 from geocoding_client import build_place_query
@@ -1608,15 +1609,51 @@ def _diff_tour_price_list(old_list, new_list):
     return changes
 
 
+def _infer_supplement_per_pax(single, double, triple, quadruple):
+    """
+    CONFIRMED PRODUCT-OWNER PRINCIPLE (2026-09-27, verbatim): "once any product is being
+    updated by new prices, can the app follow the price structure that exists already. so it
+    is most likely that the price structure is done correctly once it is online" - i.e. the
+    live, already-published occupancy prices ARE the correct structure (a human reviewed and
+    published them), so recover Per Pax FROM them instead of defaulting blind.
+
+    This used to be genuinely unrecoverable-looking (the old docstring here said so), but it
+    isn't: Per Pax OFF (per travel group) has a very specific, checkable fingerprint - the four
+    occupancy prices are the SAME flat total divided by 1/2/3/4 and rounded up
+    (numeric_helpers.round_up_currency, the same house rule confirmed the same day - see
+    render_closedtour_supplements' own Save callback in ui_components.py). Per Pax ON (per
+    traveler) has an equally specific one - all four are simply equal. So: if the live numbers
+    match the division pattern (and are NOT just coincidentally all equal, e.g. every value 0),
+    it was published as Per Pax OFF; otherwise default to Per Pax ON (the old, still-safe
+    default when nothing distinguishes the two, e.g. a 0-priced or brand-new row).
+    """
+    single = _safe_float(single)
+    double = _safe_float(double)
+    triple = _safe_float(triple)
+    quadruple = _safe_float(quadruple)
+    if single <= 0:
+        return True
+    all_equal = single == double == triple == quadruple
+    divides_cleanly = (
+        double == round_up_currency(single / 2)
+        and triple == round_up_currency(single / 3)
+        and quadruple == round_up_currency(single / 4)
+    )
+    if divides_cleanly and not all_equal:
+        return False
+    return True
+
+
 def _map_fetched_supplements(fetched_supplements):
     """
-    Best-effort reverse mapping of GET-response SupplementVO dicts back into
-    the internal editing shape (name/price/single_price/.../applies_to/
-    travel_start_date/travel_end_date) used throughout the review UI and by
-    build_closed_tour_payloads(). Some detail (e.g. exactly how per_pax was
-    originally set) isn't recoverable from the GET response, so this
-    defaults conservatively - always double-check supplements on the review
-    screen after they're pulled in this way.
+    Reverse mapping of GET-response SupplementVO dicts back into the internal editing shape
+    (name/price/single_price/.../applies_to/travel_start_date/travel_end_date) used throughout
+    the review UI and by build_closed_tour_payloads(). Per Pax is recovered from the live
+    numbers via _infer_supplement_per_pax rather than hardcoded - see that function's own
+    docstring for the "follow the price structure that already exists online" reasoning
+    (product owner, 2026-09-27). Always double-check supplements on the review screen after
+    they're pulled in this way regardless - inference is best-effort, not a substitute for a
+    human's own eyes.
     """
     mapped = []
     for s in (fetched_supplements or []):
@@ -1637,14 +1674,18 @@ def _map_fetched_supplements(fetched_supplements):
         travel_start = (windows[0] or {}).get("start", "") if windows else ""
         travel_end = (windows[0] or {}).get("end", "") if windows else ""
         flat_price = price.get("singlePrice", 0) or 0
+        single_price = price.get("singlePrice", flat_price)
+        double_price = price.get("doublePrice", flat_price)
+        triple_price = price.get("triplePrice", flat_price)
+        quadruple_price = price.get("quadruplePrice", flat_price)
         mapped.append({
             "name": name,
             "price": flat_price,
-            "single_price": price.get("singlePrice", flat_price),
-            "double_price": price.get("doublePrice", flat_price),
-            "triple_price": price.get("triplePrice", flat_price),
-            "quadruple_price": price.get("quadruplePrice", flat_price),
-            "per_pax": True,
+            "single_price": single_price,
+            "double_price": double_price,
+            "triple_price": triple_price,
+            "quadruple_price": quadruple_price,
+            "per_pax": _infer_supplement_per_pax(single_price, double_price, triple_price, quadruple_price),
             "mandatory": s.get("mandatory", False),
             "on_request": s.get("onRequest", False),
             "applies_to": applies_to,
@@ -1652,6 +1693,80 @@ def _map_fetched_supplements(fetched_supplements):
             "travel_end_date": travel_end,
         })
     return mapped
+
+
+def _norm_supplement_name(name):
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def merge_closedtour_supplements_over_baseline(baseline_supplements, fresh_supplements):
+    """
+    CONFIRMED PRODUCT-OWNER PRINCIPLE (2026-09-27, verbatim): "once any product is being
+    updated by new prices, can the app follow the price structure that exists already. so it
+    is most likely that the price structure is done correctly once it is online."
+
+    Before this, an "Update an existing tour's details" run with a freshly-uploaded price
+    document threw away the ENTIRE live supplements list and replaced it wholesale with
+    whatever the fresh AI extraction produced (see _merge_extraction_over_baseline - a
+    non-empty list is never treated as "empty," so it always won outright). That meant every
+    price update re-guessed Per Pax from scratch via the AI's BASIS RULE prompt, discarding a
+    structure that was likely already correct AND already human-reviewed on a previous pass -
+    and silently dropped any live supplement the new document just didn't happen to restate.
+
+    This instead matches supplements by name (case/whitespace-insensitive, same pattern as
+    Hotel's hotel_matcher.match_offer_or_supplement_by_name):
+      - A live supplement matched by name to one in the fresh extraction: the fresh PRICE wins
+        (that's the whole point of a price update) and Mandatory/On Request/dates come from the
+        fresh source too (those are as likely to change as price), but Per Pax - the BILLING
+        BASIS, not a price - is carried forward from the live baseline, and the four occupancy
+        columns are recalculated from the fresh price using that carried-forward Per Pax
+        (round_up_currency, same math as render_closedtour_supplements' own Save callback).
+      - A live supplement NOT restated by name in the fresh extraction: carried forward
+        unchanged, exactly as Hotel already does for offers/supplements not restated in a fresh
+        document - not silently dropped just because this particular document didn't mention it.
+      - A fresh supplement with no live match by name: a genuinely new supplement this document
+        introduces - kept exactly as the AI extracted it, nothing to carry forward.
+    """
+    baseline_by_name = {}
+    for s in (baseline_supplements or []):
+        if isinstance(s, dict) and s.get("name"):
+            baseline_by_name.setdefault(_norm_supplement_name(s["name"]), s)
+
+    merged = []
+    seen_names = set()
+    for s in (fresh_supplements or []):
+        if not isinstance(s, dict):
+            continue
+        key = _norm_supplement_name(s.get("name"))
+        seen_names.add(key)
+        match = baseline_by_name.get(key) if key else None
+        if match:
+            per_pax = bool(match.get("per_pax", False))
+            flat_price = _safe_float(s.get("price", 0))
+            if per_pax:
+                single_val = double_val = triple_val = quadruple_val = flat_price
+            else:
+                single_val = round_up_currency(flat_price / 1)
+                double_val = round_up_currency(flat_price / 2)
+                triple_val = round_up_currency(flat_price / 3)
+                quadruple_val = round_up_currency(flat_price / 4)
+            merged.append({
+                **s,
+                "price": flat_price,
+                "single_price": single_val,
+                "double_price": double_val,
+                "triple_price": triple_val,
+                "quadruple_price": quadruple_val,
+                "per_pax": per_pax,
+            })
+        else:
+            merged.append(s)
+
+    for key, s in baseline_by_name.items():
+        if key not in seen_names:
+            merged.append(s)
+
+    return merged
 
 
 def _map_fetched_tour_to_data(fetched):

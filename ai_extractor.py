@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 import os
 import re
@@ -1818,6 +1818,23 @@ their own price table) for what is otherwise the SAME single tour/ticket product
 This is DIFFERENT from checking for tour variants (different itineraries/durations) - here we're looking
 for multiple PRICING CATEGORIES within the same product that would each need to become a separate
 Modality/Option in Travel Compositor.
+
+CONFIRMED PRODUCT-OWNER RULE (2026-09-27, verbatim: "we shall have just one modality to be created:
+One main information and one modality. Different prices of the same modality must be listed all in the
+modality price table with different start and end dates, so no missing dates in the modality price. But
+if there is another modality like Standard = Modality 1 and Deluxe = Modality 2 the human shall see the
+difference."): a DIFFERENT PRICE FOR A DIFFERENT TIME PERIOD (a season, a date range, "Low Season" vs
+"High Season", a holiday surcharge window) for the SAME room/cabin/ticket category is NEVER a separate
+Modality - it is the SAME Modality priced differently across dates, and belongs in that one Modality's
+price table as additional dated rows (handled downstream, not by this check). Only propose a separate
+entry here when the document genuinely describes a DIFFERENT PRODUCT/CATEGORY a customer chooses between
+at booking time - a different room type, cabin class, or ticket tier (e.g. "Standard" vs "Deluxe"), not a
+different price for the same one depending on when you travel. If every price difference in the document
+traces back to WHEN (season/date), not WHAT (category), this is a SINGLE Modality - set
+"multiple_modalities": false. When genuinely unsure whether two rows are different categories or just
+different seasons of the same category, look for a category/tier NAME attached to each (e.g. "Standard
+Cabin" vs "Deluxe Cabin") - if the only thing distinguishing two price blocks is a date range or season
+name with no category name attached, treat them as ONE Modality's seasonal pricing, never two Modalities.
 
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing

@@ -35,7 +35,7 @@ key/value write has to carry the entire ~30-50MB payload at once.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 import time
 from typing import Any, Callable, Dict, List, Optional

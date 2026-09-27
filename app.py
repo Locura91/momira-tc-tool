@@ -190,6 +190,7 @@ from app_helpers import (
     _map_fetched_tour_to_data,
     _map_fetched_ticket_to_data,
     _merge_extraction_over_baseline,
+    merge_closedtour_supplements_over_baseline,
     render_tour_update_comparison,
     _diff_ticket_option_pricing,
     render_ticket_update_comparison,
@@ -788,7 +789,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-closedtour-supplement-readonly-derivation"
+BUILD_VERSION = "2026-09-27-modality-detection-never-splits-by-season"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1994,7 +1995,11 @@ if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
                         # Merge on top of the tour's real live values (pre-filled in Step 3) rather
                         # than replacing them outright - an incomplete fresh extraction shouldn't
                         # blank out fields the new source just didn't happen to mention.
-                        data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+                        _baseline = st.session_state.get("extracted") or {}
+                        data = _merge_extraction_over_baseline(_baseline, data)
+                        # Per-supplement carry-forward (Per Pax etc.) - see own docstring.
+                        data["supplements"] = merge_closedtour_supplements_over_baseline(
+                            _baseline.get("supplements"), data.get("supplements"))
                     # Only fills in when this document (and, for an update, the live baseline
                     # it was just merged over) had no cancellation terms of its own - see
                     # apply_cancellation_link_default's docstring.
@@ -2082,7 +2087,13 @@ if st.session_state.get("pending_variants") and not is_option_only:
                 data["image_urls"] = []
                 preview = f"(Extracted variant: {chosen_label})\n\n{st.session_state.pending_raw_text}"
                 if action == "update_tour":
-                    data = _merge_extraction_over_baseline(st.session_state.get("extracted") or {}, data)
+                    _baseline = st.session_state.get("extracted") or {}
+                    data = _merge_extraction_over_baseline(_baseline, data)
+                    # See the matching comment at the other update_tour merge site above -
+                    # carries forward the live Per Pax structure per supplement rather than
+                    # letting the fresh extraction wholesale-replace it.
+                    data["supplements"] = merge_closedtour_supplements_over_baseline(
+                        _baseline.get("supplements"), data.get("supplements"))
 
                 st.session_state.ct_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
                     data, supplier_id, "ClosedTour")

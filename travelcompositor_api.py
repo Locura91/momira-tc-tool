@@ -13,7 +13,7 @@ load_dotenv()
 # carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 
 def _try_parse_json(text: str):

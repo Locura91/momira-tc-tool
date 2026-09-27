@@ -50,7 +50,7 @@ the same looseness on the write side would be a real hazard there.
 
 # Stamped on every delivery - see platform_store.py's own header for why this convention exists
 # (a partial deploy that updated every other file but this one would go undetected otherwise).
-MODULE_BUILD = "2026-09-27-closedtour-supplement-readonly-derivation"
+MODULE_BUILD = "2026-09-27-modality-detection-never-splits-by-season"
 
 import re
 import unicodedata
