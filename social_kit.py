@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-09-27-social-kit-wired-in"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import io
 import os
@@ -197,10 +197,59 @@ class Package:
     departures: List[str] = field(default_factory=list)
     flights: int = 0
     hotels: int = 0
+    # CONFIRMED REAL GAP (2026-09-27): Holiday Package's image/gallery field names were never
+    # confirmed against a live response before this module was written (see
+    # claude/multiwander-tc-api-briefing-2026-09-05.md: "Images/gallery field names for a
+    # Holiday Package specifically are NOT covered by anything confirmed... this is genuinely
+    # unmapped territory, treat it the same as the itinerary fields: inspect a real response
+    # before parsing"). The first live test (Chris, 2026-09-27) hit exactly this - "no
+    # photographs" on a package that has them in Travel Compositor. `raw` keeps the untouched
+    # `info`/`detail`/`calendar` responses so the UI can show them for on-the-spot diagnosis
+    # instead of a dead end, and `_find_image_urls` below is a field-name-agnostic fallback that
+    # finds photographs even before the real field name is confirmed.
+    raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def fixed_departures(self) -> bool:
         return bool(self.departures)
+
+
+_IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif)(\?|$)", re.IGNORECASE)
+
+
+def _find_image_urls(node: Any, limit: int = 12, _seen: Optional[List[str]] = None) -> List[str]:
+    """
+    Walk any nested dict/list looking for strings that are plainly image URLs.
+
+    A field-name-agnostic fallback for exactly the situation documented on `Package.raw`
+    above: the named keys this module guesses (`imageUrls`/`images`/`gallery`) are not
+    confirmed against a real Holiday Package response, so when they come up empty this finds
+    photographs anyway by shape (`http...` + an image extension) rather than by a key name
+    that might be wrong. Deliberately conservative - a real photo CDN URL almost always ends
+    in a normal image extension, so this rarely mis-fires on unrelated strings (a description
+    or a destination name never matches `_IMAGE_EXT_RE`).
+    """
+    found: List[str] = _seen if _seen is not None else []
+
+    if len(found) >= limit:
+        return found
+
+    if isinstance(node, str):
+        candidate = node.strip()
+        if candidate.startswith("http") and _IMAGE_EXT_RE.search(candidate) and candidate not in found:
+            found.append(candidate)
+    elif isinstance(node, dict):
+        for value in node.values():
+            _find_image_urls(value, limit, found)
+            if len(found) >= limit:
+                break
+    elif isinstance(node, list):
+        for item in node:
+            _find_image_urls(item, limit, found)
+            if len(found) >= limit:
+                break
+
+    return found
 
 
 def fetch(client: TCClient, package_id: str, brand: "Brand" = None, lang: Optional[str] = None) -> Package:
@@ -235,6 +284,7 @@ def fetch(client: TCClient, package_id: str, brand: "Brand" = None, lang: Option
 
 def normalise(package_id: str, info: Dict[str, Any], detail: Dict[str, Any], calendar: Dict[str, Any]) -> Package:
     pack = Package(id=package_id)
+    pack.raw = {"info": info, "detail": detail, "calendar": calendar}
 
     pack.title = str(_pick(info, ["title", "name"], "")).strip()
     pack.description = str(_pick(info, ["description", "shortDescription", "remarks"], "")).strip()
@@ -266,12 +316,19 @@ def normalise(package_id: str, info: Dict[str, Any], detail: Dict[str, Any], cal
         if theme:
             pack.themes.append(theme)
 
-    for image in _pick(info, ["imageUrls", "images", "gallery"], []) or []:
-        if isinstance(image, dict):
-            image = _pick(image, ["url", "imageUrl", "src"], "")
-        image = str(image).strip()
-        if image.startswith("http"):
-            pack.gallery.append(image)
+    for source in (info, detail):
+        for image in _pick(source, ["imageUrls", "images", "gallery", "galleryImages", "photos", "media"], []) or []:
+            if isinstance(image, dict):
+                image = _pick(image, ["url", "imageUrl", "src", "fullUrl", "path"], "")
+            image = str(image).strip()
+            if image.startswith("http") and image not in pack.gallery:
+                pack.gallery.append(image)
+
+    # Named-field lookup above is a guess (see Package.raw's docstring for why) - when it comes
+    # up empty, fall back to finding photographs by shape rather than giving up on a package
+    # that may well have them under a field name this module doesn't know about yet.
+    if not pack.gallery:
+        pack.gallery = _find_image_urls(info) or _find_image_urls(detail)
 
     transports = _pick(detail, ["transports"], []) or []
     pack.flights = sum(1 for t in transports if isinstance(t, dict) and "FLIGHT" in str(_pick(t, ["transportType"], "")).upper())

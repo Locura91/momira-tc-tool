@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-09-27-social-kit-wired-in"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 _NAMESPACE = "translation_state"
 

@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-09-27-social-kit-wired-in"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import os
 import re

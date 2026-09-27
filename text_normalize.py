@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-27-social-kit-wired-in"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 
 def normalize_name(s: Optional[str]) -> str:

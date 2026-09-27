@@ -86,6 +86,39 @@ def test_every_format_style_brand_combination_renders_at_the_exact_network_size(
     assert jpeg_bytes[:2] == b"\xff\xd8"  # a real JPEG, not an empty/corrupt buffer
 
 
+def test_gallery_falls_back_to_finding_image_urls_by_shape_when_the_named_fields_are_empty():
+    """CONFIRMED REAL GAP (2026-09-27): Chris's first live test hit exactly the risk
+    claude/multiwander-tc-api-briefing-2026-09-05.md flagged in advance - Holiday Package's
+    image field name was never confirmed against a real response, and the named-field guess
+    (imageUrls/images/gallery) came up empty on a package that does have photographs. This
+    checks the field-name-agnostic fallback that was added in response: it finds photographs by
+    shape (an http URL ending in a normal image extension) anywhere in the nested response,
+    however deeply the real field is nested."""
+    info = {
+        "title": "Test package",
+        "content": {"media": {
+            "hero": "https://cdn.example.com/photos/hero-1234.jpg",
+            "thumbs": ["https://cdn.example.com/photos/thumb1.webp", "not a url", "https://cdn.example.com/desc.txt"],
+        }},
+    }
+    pack = sk.normalise("1", info, {}, {})
+    assert pack.gallery == [
+        "https://cdn.example.com/photos/hero-1234.jpg",
+        "https://cdn.example.com/photos/thumb1.webp",
+    ]
+
+
+def test_a_named_gallery_field_when_present_is_used_instead_of_the_fallback():
+    pack = sk.normalise("2", {"title": "x", "imageUrls": ["https://cdn.example.com/a.jpg"]}, {}, {})
+    assert pack.gallery == ["https://cdn.example.com/a.jpg"]
+
+
+def test_package_keeps_the_raw_responses_for_on_the_spot_diagnosis():
+    info, detail, calendar = {"title": "x"}, {"y": 1}, {"z": 2}
+    pack = sk.normalise("3", info, detail, calendar)
+    assert pack.raw == {"info": info, "detail": detail, "calendar": calendar}
+
+
 def test_the_bundled_font_files_are_present_so_rendering_never_falls_back_to_pil_default():
     font_dir = os.path.join(os.path.dirname(os.path.abspath(sk.__file__)), "fonts")
     assert os.path.exists(os.path.join(font_dir, "mw-bold.ttf"))
@@ -102,3 +135,22 @@ def test_app_wires_social_kit_in_as_its_own_tool_alongside_package_rollover():
     assert "import social_kit_ui" in app_source
     assert 'TOOL_SOCIALKIT = "📱 Social Kit"' in app_source
     assert "social_kit_ui.render_social_kit()" in app_source
+
+
+def test_the_app_screen_never_mentions_multiwander_or_offers_a_brand_choice():
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim): "in the app we use only momira
+    travel with english and euro. No need to mention multiwander.com there." social_kit.py's own
+    BRANDS dict keeps MultiWander for reuse as a library (see its module docstring and
+    README_SOCIAL_KIT.md's "Using it as a library" section) - only the Streamlit screen must
+    stay Momira-only, so this checks social_kit_ui.py specifically, not social_kit.py."""
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ui_source = open(os.path.join(repo_dir, "social_kit_ui.py"), encoding="utf-8").read()
+
+    # Strip the module docstring (lines 1-18), which quotes "multiwander" and "MultiWander" only
+    # to document why the code below it does not - the code itself must be clean of both.
+    code_only = ui_source.split('"""', 2)[-1]
+
+    assert "multiwander" not in code_only.lower()
+    assert 'sk.BRANDS["momira"]' in ui_source
+    assert '"Brand"' not in code_only  # the brand-picker selectbox's label, specifically
+    assert "PLN" not in code_only and "zł" not in code_only  # no currency-conversion input either

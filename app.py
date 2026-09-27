@@ -324,11 +324,14 @@ from package_rollover_tool import render_package_rollover_tool
 # "Social kit" (2026-09-27): a Holiday Package ID in, three ready-to-post captions and a
 # finished JPG out, sized for Instagram/Facebook feed, Story (9:16) or Google Business Post.
 # Read-only against Travel Compositor (info/detail/calendar GETs on an already-published
-# package) and bilingual/brand-aware (Momira Travel EN/EUR, MultiWander PL/PLN) - see
-# README_SOCIAL_KIT.md and social_kit.py's own module docstring. Placed alongside Package
-# Rollover rather than inside the Create/Update product-type wizard: both are "give it a
-# Holiday Package ID, get information back" tools that never touch product data, unlike the
-# five real product types (ClosedTour/Ticket/Transfer/Transport/Hotel) that wizard writes to.
+# package). CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim): "in the app we use only
+# momira travel with english and euro. No need to mention multiwander.com there" - this app
+# screen is Momira Travel EN/EUR only (social_kit.py's own BRANDS dict still carries a
+# MultiWander entry for reuse as a library, see README_SOCIAL_KIT.md, but social_kit_ui.py
+# never exposes it). Placed alongside Package Rollover rather than inside the Create/Update
+# product-type wizard: both are "give it a Holiday Package ID, get information back" tools
+# that never touch product data, unlike the five real product types
+# (ClosedTour/Ticket/Transfer/Transport/Hotel) that wizard writes to.
 import social_kit_ui
 
 # CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
@@ -799,7 +802,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-social-kit-wired-in"
+BUILD_VERSION = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1088,9 +1091,10 @@ TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # docstring and the "package-auto-rollover-rules" project note.
 TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
 # Social kit (2026-09-27): a Holiday Package ID in, three ready-to-post captions and a sized JPG
-# out, for whichever brand sells that inventory (Momira Travel EN/EUR, MultiWander PL/PLN).
-# Read-only against Travel Compositor, same as Package Rollover above - see social_kit.py's
-# module docstring and README_SOCIAL_KIT.md.
+# out for Momira Travel (English, euro - the only brand this app screen exposes; see
+# social_kit_ui.py's module docstring for the 2026-09-27 product-owner request that scoped it
+# down from the module's own multi-brand support). Read-only against Travel Compositor, same as
+# Package Rollover above - see social_kit.py's module docstring and README_SOCIAL_KIT.md.
 TOOL_SOCIALKIT = "📱 Social Kit"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
@@ -1227,10 +1231,10 @@ if st.session_state.active_tool is None:
          "Closed Tours · Hotels"),
         (TOOL_SOCIALKIT, "tool_btn_socialkit",
          "Turn a live Holiday Package into ready-to-post social content.",
-         "Enter a Holiday Package ID and pick a brand; it fetches the package from Travel "
-         "Compositor in that brand's language, writes three captions, and renders a JPG sized "
-         "for Instagram/Facebook, Story or Google Business Profile. Read-only.",
-         "Momira Travel (EN, €) · MultiWander (PL, zł)"),
+         "Enter a Holiday Package ID; it fetches the package from Travel Compositor, writes "
+         "three captions, and renders a JPG sized for Instagram/Facebook, Story or Google "
+         "Business Profile. Read-only.",
+         "Momira Travel · English · €"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):

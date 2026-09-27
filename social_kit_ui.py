@@ -8,75 +8,64 @@ else in the platform. Wire it up wherever the product-type wizard is chosen
 State is kept in st.session_state under the "sk_" prefix so it cannot collide
 with the wizard's own keys, and the package is cached per ID so changing the
 photograph or the framing does not go back to Travel Compositor.
+
+CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim): "in the app we use only momira travel
+with english and euro. No need to mention multiwander.com there." This screen is hard-wired to
+`sk.BRANDS["momira"]` - no brand picker, no PLN-rate input, no MultiWander wording anywhere in
+its captions or help text. social_kit.py itself still carries both brands in `BRANDS` (removing
+MultiWander there would break the module's own "use it as a library" story for a future
+scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 """
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-09-27-social-kit-wired-in"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import streamlit as st
 
 import social_kit as sk
 
 
+_BRAND = sk.BRANDS["momira"]
+
+
 def _package(package_id: str, brand: sk.Brand) -> sk.Package:
     """
-    One fetch per ID PER BRAND per session.
+    One fetch per ID per session.
 
-    The brand is part of the key because it decides the language Travel
-    Compositor is asked for: the same ID is a different package in English
-    and in Polish, right down to the destination names. Framing and photo
-    changes must never go back to the API.
+    Kept keyed by brand (as social_kit.py's own caching contract expects)
+    even though this screen only ever passes _BRAND, so the cache dict has
+    the same shape whether one brand or several are ever fetched through it.
     """
     cache = st.session_state.setdefault("sk_cache", {})
     key = f"{brand.key}:{package_id}"
 
     if key not in cache:
-        with st.spinner(f"Reading the package from Travel Compositor in {brand.tc_lang}…"):
+        with st.spinner("Reading the package from Travel Compositor…"):
             cache[key] = sk.fetch(sk.TCClient(), package_id, brand)
 
     return cache[key]
 
 
 def render_social_kit() -> None:
+    brand = _BRAND
+
     st.header("Social kit")
     st.caption(
-        "A Holiday Package ID in, a finished post out. Pick the brand and everything follows: "
-        "Momira Travel posts in English and quotes euro, MultiWander posts in Polish and quotes "
-        "złoty. The captions are written from the package's own facts — route, length, price and "
-        "the real departure dates — and the images come out at the exact size each network wants."
+        "A Holiday Package ID in, a finished post out. The captions are written from the "
+        "package's own facts — route, length, price and the real departure dates — and the "
+        "images come out at the exact size each network wants."
     )
 
-    col_brand, col_id = st.columns([1, 1])
-
-    brand_key = col_brand.selectbox(
-        "Brand",
-        list(sk.BRANDS),
-        format_func=lambda k: f"{sk.BRANDS[k].name} — {sk.BRANDS[k].lang.upper()}, {sk.BRANDS[k].currency}",
-        key="sk_brand",
-        help="Decides the language Travel Compositor is asked for, the language the caption is "
-             "written in, the currency, the wordmark on the image and the hashtag set.",
-    )
-    brand = sk.BRANDS[brand_key]
-
-    package_id = col_id.text_input("Holiday Package ID", key="sk_id", placeholder="63989764")
+    package_id = st.text_input("Holiday Package ID", key="sk_id", placeholder="63989764")
 
     url = st.text_input(
         "Link to put in the post",
-        key=f"sk_url_{brand.key}",
+        key="sk_url",
         value=brand.url,
         help="The package's permanent page. This is the only thing in the post that has to "
              "survive being copied, so it is worth checking.",
     )
-
-    rate = None
-    if brand.converts_to_pln:
-        rate = st.number_input(
-            "EUR → PLN rate", min_value=0.0, value=4.3, step=0.05, key="sk_rate",
-            help="Travel Compositor prices in euro and this brand quotes złoty. Set 0 to quote "
-                 "the euro figure instead — a wrong rate is worse than no conversion.",
-        )
-        rate = rate if rate > 0 else None
 
     if not package_id:
         st.info("Enter an ID to begin.")
@@ -93,9 +82,6 @@ def render_social_kit() -> None:
         return
 
     st.subheader(pack.title)
-    st.caption(f"{brand.name} · {brand.lang.upper()} · {brand.currency}")
-
-    pln = rate
 
     # ---------------------------------------------------------------- text
     st.markdown("### The captions")
@@ -106,7 +92,7 @@ def render_social_kit() -> None:
         "gbp": "Google Business Profile",
     }
 
-    texts = sk.captions(pack, url, brand, pln)
+    texts = sk.captions(pack, url, brand, pln_rate=None)
 
     for key, tab in zip(labels, st.tabs(list(labels.values()))):
         with tab:
@@ -124,7 +110,22 @@ def render_social_kit() -> None:
     st.markdown("### The post")
 
     if not pack.gallery:
-        st.warning("This package has no photographs in Travel Compositor, so no image can be built.")
+        st.warning(
+            "No photographs were found for this package. Travel Compositor's exact field name "
+            "for Holiday Package images was never confirmed against a live response (see "
+            "README_SOCIAL_KIT.md) - open 'Raw package data' below and check for a field that "
+            "looks like a photo URL; if you find one, send it over so the lookup can be fixed."
+        )
+        with st.expander("🔍 Raw package data (for diagnosing the missing photos)"):
+            st.caption(
+                "The exact JSON Travel Compositor returned for this package. Look for anything "
+                "that looks like an image URL (ends in .jpg/.png/.webp) and note which field "
+                "it's under."
+            )
+            st.json(pack.raw.get("info") or {})
+            if pack.raw.get("detail"):
+                st.caption("Detail response:")
+                st.json(pack.raw["detail"])
         return
 
     choice = st.selectbox(
@@ -161,7 +162,7 @@ def render_social_kit() -> None:
     for column, (style, style_label) in zip(columns, sk.STYLES.items()):
         with column:
             st.markdown(f"**{style_label}**")
-            image = sk.render(pack, fmt, style, photo, focus, float(zoom), brand, pln)
+            image = sk.render(pack, fmt, style, photo, focus, float(zoom), brand, pln_rate=None)
             st.image(image, use_container_width=True)
             st.download_button(
                 "Download JPG",
