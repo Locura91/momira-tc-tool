@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier
 
-MODULE_BUILD = "2026-09-27-supplement-add-row-blocked-fix"
+MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"

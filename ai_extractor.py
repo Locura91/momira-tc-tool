@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-supplement-add-row-blocked-fix"
+MODULE_BUILD = "2026-09-27-net-price-only-house-rule"
 
 import os
 import re
@@ -101,6 +101,20 @@ impossible result (e.g. "13/25/2026"), say so in the notes field rather than pic
 ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
 date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
 output DD/MM/YYYY yourself, whatever the source used.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Rules:
 - Translate ALL content into English, regardless of the source document's original language.
@@ -2572,6 +2586,20 @@ Modality/Option (ContractClosedTourOptionVO). This is NOT a full tour extraction
 tour name, description, itinerary, hotels, included/excluded, meeting point, policy remarks, or
 supplements. The source is often just a pricing table.
 
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
+
 Extract ONLY:
 - price_list: the pricing table(s). Use this EXACT shape per entry (confirmed against the real API schema):
   {
@@ -2753,6 +2781,20 @@ CRITICAL - NEVER include any instruction telling the CUSTOMER to contact the ope
 directly (e.g. "Please contact the operator 48 hours before your tour date to confirm your pick-up time").
 Momira Travel is the tour operator the client actually deals with - the client must NEVER be told to
 contact the DMC/supplier directly. Silently drop/omit this kind of text if present, anywhere it appears.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Extract:
 - price_list: the pricing table(s) for THIS Modality only. Use this EXACT shape per entry (confirmed against the real API schema):
@@ -3218,6 +3260,20 @@ DMC/supplier directly, since that DMC is Momira's backend supplier, not the clie
 applies EVERYWHERE such an instruction could appear - description, includes/excludes, meeting points,
 pricing_notes, schedule_notes, anywhere - silently drop/omit it entirely rather than including,
 paraphrasing, or softening it. This is a deliberate exclusion, not an oversight.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Extract:
 - ticket_name: the excursion/activity name - keep close to the source, don't invent a fancier title.
@@ -4149,6 +4205,20 @@ READING DATES IN THE SOURCE - HOUSE RULE, applies to this whole document:
 A numeric date written with slashes, dots or dashes is DAY FIRST. "03/04/2026" is 3 April 2026,
 never 4 March. ALWAYS OUTPUT YYYY-MM-DD.
 
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
+
 Extract:
 - base_adult_price, base_children_price, base_infant_price: the core prices found in the source, as numbers.
   CRITICAL RULE for base_children_price specifically: if children are allowed (not disallow_children) but
@@ -4449,6 +4519,20 @@ Compositor Ticket Modality (ContractTicketModalityVO). This is NOT a full ticket
 extract ticket name, description, city, meeting points, includes/excludes, or cancellation policy
 (cancellation and release timing belong to the TICKET itself, not the modality, and aren't touched
 when just adding/updating a modality). The source is often just a pricing table for an ALREADY-EXISTING ticket.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Extract ONLY: base_adult_price, base_children_price, base_infant_price, child_age_min, child_age_max,
 start_date, end_date (this modality's validity window), operational_days,
@@ -4780,6 +4864,20 @@ AIRPORTS or abbreviations, and a section heading may be the only place the depar
     NEVER CORRECT for a document that prices this route - a blank form tells the operator nothing about
     what went wrong, and they cannot correct a value that is not there. Extract your best reading and let
     the human fix it on the review screen.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Extract:
 - service_name: the service/tier name exactly as the document states it, e.g. "Private Car Transfer", "Standard".
@@ -5134,6 +5232,20 @@ AIRPORTS or abbreviations, and a section heading may be the only place the depar
     NEVER CORRECT for a document that prices this route - a blank form tells the operator nothing about
     what went wrong, and they cannot correct a value that is not there. Extract your best reading and let
     the human fix it on the review screen.
+
+- NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+  says in one part of a list net prices and in the other part sales prices, we are ONLY using
+  net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+  If the source document distinguishes between a NET price (what Momira/the DMC actually
+  charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B
+  price") and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes
+  labelled "sales price", "sell price", "retail price", "rack rate", "gross price", "selling
+  price"), ALWAYS extract and use the NET price for every price field - Travel Compositor
+  only accepts net prices; a sales/retail price would double-charge the client (Travel
+  Compositor/Momira applies its own markup on top of net). If a document shows BOTH for the
+  same item, use the NET one and ignore the sales one entirely. If a table has separate NET
+  and SALES columns, extract only the NET column. If genuinely unsure which of two numbers is
+  net vs sales (no explicit labels), say so in pricing_notes rather than guessing.
 
 Extract:
 - service_name: the service/tier name exactly as the document states it, e.g. "Private Car", "Car + Ferry Combined".
@@ -5543,6 +5655,20 @@ PLANS with a matching price, do NOT also create a supplement entry for it - the 
 correct and only place that cost belongs. Only extract a Supplements-section row as a genuine supplement when
 it is a distinct charge that isn't just the cost of switching meal plan (a resort fee, a compulsory gala
 dinner tied to specific dates, a genuinely separate add-on).
+
+NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
+says in one part of a list net prices and in the other part sales prices, we are ONLY using
+net prices generally. In travel compositor we can ONLY add Net prices, never sales prices."
+If the source document distinguishes between a NET price (what Momira/the DMC actually
+charges/is charged - sometimes labelled "net", "net rate", "cost price", "nett", "B2B price")
+and a SALES/SELL/RETAIL/GROSS price (a marked-up customer-facing price, sometimes labelled
+"sales price", "sell price", "retail price", "rack rate", "gross price", "selling price"),
+ALWAYS extract and use the NET price for every room_prices/distribution_prices amount, meal
+plan price, offer value and supplement price below - Travel Compositor only accepts net
+prices; a sales/retail price would double-charge the client. If a document shows BOTH for the
+same item, use the NET one and ignore the sales one entirely. If a table has separate NET and
+SALES columns, extract only the NET column. If genuinely unsure which of two numbers is net
+vs sales (no explicit labels), say so in the top-level description rather than guessing.
 
 === RATES, SEASONS, and ROOM PRICES ===
 "rates": Travel Compositor groups pricing under named "rate" containers (e.g. "Standard Rates", "Peak Season
