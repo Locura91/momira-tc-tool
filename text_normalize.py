@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-09-27-single-double-child-discount"
+MODULE_BUILD = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
 
 
 def normalize_name(s: Optional[str]) -> str:
