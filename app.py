@@ -321,6 +321,15 @@ from trip_idea_tool import render_trip_idea_tool
 # PUT yet) - see package_rollover_tool.py's module docstring and the
 # "package-auto-rollover-rules" project note.
 from package_rollover_tool import render_package_rollover_tool
+# "Social kit" (2026-09-27): a Holiday Package ID in, three ready-to-post captions and a
+# finished JPG out, sized for Instagram/Facebook feed, Story (9:16) or Google Business Post.
+# Read-only against Travel Compositor (info/detail/calendar GETs on an already-published
+# package) and bilingual/brand-aware (Momira Travel EN/EUR, MultiWander PL/PLN) - see
+# README_SOCIAL_KIT.md and social_kit.py's own module docstring. Placed alongside Package
+# Rollover rather than inside the Create/Update product-type wizard: both are "give it a
+# Holiday Package ID, get information back" tools that never touch product data, unlike the
+# five real product types (ClosedTour/Ticket/Transfer/Transport/Hotel) that wizard writes to.
+import social_kit_ui
 
 # CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
 # too-small-image fallback (see builder.py's ensure_images_meet_minimum_size) and this app's own
@@ -790,7 +799,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-dedupe-ai-prompts-and-api-error-handling"
+BUILD_VERSION = "2026-09-27-social-kit-wired-in"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1078,6 +1087,11 @@ TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
 TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
+# Social kit (2026-09-27): a Holiday Package ID in, three ready-to-post captions and a sized JPG
+# out, for whichever brand sells that inventory (Momira Travel EN/EUR, MultiWander PL/PLN).
+# Read-only against Travel Compositor, same as Package Rollover above - see social_kit.py's
+# module docstring and README_SOCIAL_KIT.md.
+TOOL_SOCIALKIT = "📱 Social Kit"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
@@ -1211,6 +1225,12 @@ if st.session_state.active_tool is None:
          "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
          "would change, and blocks them only after you confirm. Existing blocks are kept.",
          "Closed Tours · Hotels"),
+        (TOOL_SOCIALKIT, "tool_btn_socialkit",
+         "Turn a live Holiday Package into ready-to-post social content.",
+         "Enter a Holiday Package ID and pick a brand; it fetches the package from Travel "
+         "Compositor in that brand's language, writes three captions, and renders a JPG sized "
+         "for Instagram/Facebook, Story or Google Business Profile. Read-only.",
+         "Momira Travel (EN, €) · MultiWander (PL, zł)"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -1285,6 +1305,13 @@ if st.session_state.active_tool == TOOL_TRIPIDEA:
 # its own Packages-API client (see package_rollover_tool.py's module docstring) ----
 if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
     render_package_rollover_tool()
+    st.stop()
+
+# ---- Social kit: hand straight off, it has no product-type step and uses its own read-only
+# Travel Compositor client (see social_kit.py's module docstring for why it doesn't share
+# api_client.py, which is built for writing products) ----
+if st.session_state.active_tool == TOOL_SOCIALKIT:
+    social_kit_ui.render_social_kit()
     st.stop()
 
 # ---- Hotels awaiting automap: a follow-up checklist, not a product flow. Reads and writes only
