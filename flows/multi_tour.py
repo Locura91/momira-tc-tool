@@ -250,7 +250,29 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                              format_func=lambda i: labels[i], key="mct_tour_choice")
 
         if st.button("➡️ Start Reviewing", type="primary"):
-            st.session_state.mct_tour = _new_mct_tour(candidates[choice_idx], default_tour_code)
+            chosen_candidate = dict(candidates[choice_idx])
+            # CONFIRMED PRODUCT-OWNER FIX (2026-09-27, verbatim: "the information from the
+            # document does not exclude the information form the url. If human adds both
+            # informations to the app, the App must read both of them complete each other and
+            # they are not excluded each others information... better to have one complete
+            # closedtour with multiple modalities, rather than having multiple closedtours").
+            #
+            # is_genuine_variant=True makes PHASE 3 pass this candidate's label to
+            # extract_structured_data as a variant_hint, which tells the AI to focus ONLY on
+            # that label and ignore everything else in the combined text - exactly right for
+            # two genuinely different tour PRODUCTS (different length/itinerary), but exactly
+            # wrong for the "same nights" case just warned about above: there, the document and
+            # the URL (or several documents) almost always describe complementary DETAILS of
+            # the SAME tour (e.g. the URL gives the itinerary, a document gives hotel names and
+            # pricing) - not competing alternatives - so narrowing extraction to "just the
+            # label that matched the document" would silently throw away everything the URL (or
+            # the other document) contributed, and vice versa. Forcing is_genuine_variant=False
+            # here means PHASE 3 extracts from the FULL combined text with no narrowing at all,
+            # so every source's information is merged into this one tour instead of one
+            # excluding the other.
+            if len(distinct_nights) <= 1:
+                chosen_candidate["is_genuine_variant"] = False
+            st.session_state.mct_tour = _new_mct_tour(chosen_candidate, default_tour_code)
             st.session_state.mct_phase = "reviewing_main"
             st.rerun()
 

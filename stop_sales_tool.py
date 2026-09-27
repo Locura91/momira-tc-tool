@@ -45,7 +45,7 @@ a warning before Apply.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
+MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
 
 import json
 from typing import Any, Dict, List, Optional
@@ -157,6 +157,23 @@ def fetch_closed_tour_options(client, supplier_id: str, tour_code: str) -> Dict[
     return {"tour": tour, "options": options}
 
 
+def fetch_ticket_options(client, supplier_id: str, ticket_code: str) -> Dict[str, Any]:
+    """The ticket plus each of its options, since stop sales live on the OPTIONS — same shape as
+    fetch_closed_tour_options, because ContractTicketModalityVO.stopSales mirrors
+    ContractClosedTourOptionVO.stopSales exactly (schemas.py)."""
+    ticket = client.get_ticket(supplier_id, ticket_code)
+    if not isinstance(ticket, dict) or "error" in ticket:
+        return {"error": ticket if isinstance(ticket, dict) else {"message": str(ticket)}}
+    options = []
+    for code in (ticket.get("modalityCodes") or []):
+        opt = client.get_ticket_option(supplier_id, ticket_code, code)
+        if isinstance(opt, dict) and "error" not in opt:
+            options.append(opt)
+        else:
+            options.append({"code": code, "_fetch_error": True, "stopSales": []})
+    return {"tour": ticket, "options": options}
+
+
 def existing_tour_stop_sales(option: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [s for s in (option.get("stopSales") or []) if isinstance(s, dict)]
 
@@ -206,6 +223,36 @@ def apply_to_tour_option(client, supplier_id: str, tour_code: str, option: Dict[
     payload["stopSales"] = result["merged"]
     try:
         res = client.update_closed_tour_option(supplier_id, tour_code, payload)
+    except Exception as e:
+        return {"status": "failed", "code": option.get("code"),
+                "detail": friendly_error_message(e)}
+    if isinstance(res, dict) and "error" in res:
+        return {"status": "failed", "code": option.get("code"),
+                "detail": str(res.get("message") or res.get("error"))}
+    return {"status": "updated", "code": option.get("code"), "changed": changed,
+            "not_found": result.get("not_found", [])}
+
+
+def apply_to_ticket_option(client, supplier_id: str, ticket_code: str, option: Dict[str, Any],
+                           new_ranges: List[Dict[str, Any]], is_release: bool = False) -> Dict[str, Any]:
+    """Same merge-or-remove-then-PUT-whole-option logic as apply_to_tour_option, against
+    update_ticket_option instead of update_closed_tour_option - the two payload shapes are
+    identical (schemas.py), only the API endpoint differs."""
+    live = existing_tour_stop_sales(option)
+    if is_release:
+        result = ssp.remove_stop_sales(live, new_ranges)
+        changed, unchanged_detail = result["removed"], "none of these dates were found live on this modality - nothing removed"
+    else:
+        result = ssp.merge_stop_sales(live, new_ranges)
+        changed, unchanged_detail = result["added"], "every date was already blocked on this modality"
+    if not changed:
+        return {"status": "unchanged", "code": option.get("code"), "detail": unchanged_detail,
+                "not_found": result.get("not_found", [])}
+    payload = dict(option)
+    payload.pop("_fetch_error", None)
+    payload["stopSales"] = result["merged"]
+    try:
+        res = client.update_ticket_option(supplier_id, ticket_code, payload)
     except Exception as e:
         return {"status": "failed", "code": option.get("code"),
                 "detail": friendly_error_message(e)}
@@ -269,19 +316,23 @@ def apply_to_hotel_rate(client, supplier_id: str, provider_code: str, rate: Dict
 # ======================================================================
 # UI
 # ======================================================================
-def _ranges_editor(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _ranges_editor(parsed: Dict[str, Any], key_suffix: str = "") -> List[Dict[str, Any]]:
     """The editable table of proposed blocks. Returns what is currently on screen.
 
     The supplier's own wording is carried next to each row on purpose: the single most
     valuable check a human can make is 'does this date match what the email actually
-    said', and that is impossible if the quote is somewhere else on the page."""
+    said', and that is impossible if the quote is somewhere else on the page.
+
+    key_suffix keeps each product's table independent when one email names several products
+    (see MULTIPLE PRODUCTS IN ONE EMAIL) - without it, editing one product's dates would bleed
+    into the next product's table under the same shared widget key."""
     rows = [{"Start (YYYY-MM-DD)": r["start"], "End (YYYY-MM-DD)": r["end"],
              "From the email": r.get("quote", "")}
             for r in parsed.get("stop_sales", [])]
     df = pd.DataFrame(rows) if rows else pd.DataFrame(
         columns=["Start (YYYY-MM-DD)", "End (YYYY-MM-DD)", "From the email"])
     edited = st.data_editor(df, num_rows="dynamic", use_container_width=True,
-                            key="ss_ranges_editor",
+                            key=f"ss_ranges_editor{key_suffix}",
                             column_config={"From the email": st.column_config.TextColumn(
                                 "From the email", help="The supplier's own words these dates "
                                                        "came from — check each date against it.",
@@ -375,14 +426,38 @@ def render_stop_sales_tool(client) -> None:
         st.info("No stop sale found in this email. " + (parsed.get("notes") or ""))
         st.stop()
 
-    for warning in ssp.warnings_for(parsed):
+    # CONFIRMED RULE (product owner, 2026-09-27): one supplier email can name several distinct
+    # products (e.g. several ClosedTours), each with its own dates - "one stopsale for
+    # closedtour can have multiple stop sales for multiple closedtours from the same supplier."
+    # The AI splits these into groups (stop_sales_parser.all_groups); a human works through them
+    # ONE AT A TIME, same five-step review each time, rather than everything being merged into a
+    # single confusing screen.
+    all_groups = ssp.all_groups(parsed)
+    group_index = 0
+    if len(all_groups) > 1:
+        st.info(f"ℹ️ This email looks like it names **{len(all_groups)} different products** — "
+                f"go through them one at a time below.")
+        group_labels = [
+            f"{i + 1}. " + " · ".join(
+                b for b in (g.get("product_identifier"), g.get("product_name_hint"),
+                            g.get("product_type")) if b
+            ) or f"{i + 1}. (unnamed product)"
+            for i, g in enumerate(all_groups)
+        ]
+        group_index = st.radio("Which product are you working on?", list(range(len(all_groups))),
+                               format_func=lambda i: group_labels[i], key="ss_group_index",
+                               horizontal=False)
+    active = all_groups[group_index]
+    group_suffix = f":g{group_index}" if group_index else ""
+
+    for warning in ssp.warnings_for(active):
         st.warning(warning)
-    if parsed.get("notes"):
-        st.caption(f"AI notes: {parsed['notes']}")
+    if active.get("notes"):
+        st.caption(f"AI notes: {active['notes']}")
 
     # ---------------- Step 3: match the product ----------------
     st.subheader("Step 3 — Which product?")
-    hint_bits = [b for b in (parsed.get("product_identifier"), parsed.get("product_name_hint"),
+    hint_bits = [b for b in (active.get("product_identifier"), active.get("product_name_hint"),
                              parsed.get("supplier_name_hint")) if b]
     if hint_bits:
         st.caption("Read from the email: " + " · ".join(f"**{b}**" for b in hint_bits))
@@ -424,15 +499,17 @@ def render_stop_sales_tool(client) -> None:
         with st.expander("⚠️ Emergency manual entry"):
             supplier_id = st.text_input("Supplier ID (numeric)", key="ss_supplier_manual").strip()
 
-    default_type = parsed.get("product_type") if parsed.get("product_type") in ("ClosedTour", "Hotel") else "ClosedTour"
-    product_type = st.radio("Product type", ["ClosedTour", "Hotel"], horizontal=True,
-                            index=["ClosedTour", "Hotel"].index(default_type), key="ss_ptype")
+    _PTYPES = ["ClosedTour", "Hotel", "Ticket"]
+    default_type = active.get("product_type") if active.get("product_type") in _PTYPES else "ClosedTour"
+    product_type = st.radio("Product type", _PTYPES, horizontal=True,
+                            index=_PTYPES.index(default_type), key=f"ss_ptype{group_suffix}")
+    code_label = {"ClosedTour": "Tour", "Hotel": "Hotel", "Ticket": "Ticket"}[product_type]
     product_code = st.text_input(
-        f"{'Tour' if product_type == 'ClosedTour' else 'Hotel'} code",
-        value=parsed.get("product_identifier", ""), key="ss_code",
+        f"{code_label} code",
+        value=active.get("product_identifier", ""), key=f"ss_code{group_suffix}",
         help="The code as it exists in Travel Compositor, e.g. ASW-1 or CAI-H1.").strip()
 
-    if st.button("🔎 Load this product", disabled=not (supplier_id and product_code), key="ss_load"):
+    if st.button("🔎 Load this product", disabled=not (supplier_id and product_code), key=f"ss_load{group_suffix}"):
         # A human just confirmed this supplier for this sender - remember it if this is a new
         # sender, or if it already matched this exact supplier (see remember_supplier_for's
         # docstring for why a genuinely conflicting re-match is left alone rather than silently
@@ -443,16 +520,18 @@ def render_stop_sales_tool(client) -> None:
         with st.spinner("Fetching from Travel Compositor…"):
             try:
                 if product_type == "ClosedTour":
-                    st.session_state.ss_product = fetch_closed_tour_options(client, supplier_id, product_code)
+                    st.session_state[f"ss_product{group_suffix}"] = fetch_closed_tour_options(client, supplier_id, product_code)
+                elif product_type == "Ticket":
+                    st.session_state[f"ss_product{group_suffix}"] = fetch_ticket_options(client, supplier_id, product_code)
                 else:
-                    st.session_state.ss_product = {"hotel": client.get_hotel(supplier_id, product_code)}
-                st.session_state.ss_product_key = (supplier_id, product_type, product_code)
+                    st.session_state[f"ss_product{group_suffix}"] = {"hotel": client.get_hotel(supplier_id, product_code)}
+                st.session_state[f"ss_product_key{group_suffix}"] = (supplier_id, product_type, product_code)
             except Exception as e:
-                st.session_state.ss_product = {"error": {"message": friendly_error_message(e)}}
+                st.session_state[f"ss_product{group_suffix}"] = {"error": {"message": friendly_error_message(e)}}
         st.rerun()
 
-    product = _get("ss_product")
-    if product and _get("ss_product_key") != (supplier_id, product_type, product_code):
+    product = _get(f"ss_product{group_suffix}")
+    if product and _get(f"ss_product_key{group_suffix}") != (supplier_id, product_type, product_code):
         st.info("You changed the supplier or code — press **Load this product** again.")
         product = None
     if not product:
@@ -467,30 +546,31 @@ def render_stop_sales_tool(client) -> None:
     with st.expander("📧 The email as received", expanded=False):
         st.text((_get("ss_parsed_raw") or {}).get("body", ""))
 
-    is_release = bool(parsed.get("is_release"))
+    is_release = bool(active.get("is_release"))
     if is_release:
         st.markdown("**Proposed re-openings** — dates to REMOVE from the live block list. Edit "
                     "any date before applying.")
     else:
         st.markdown("**Proposed blocks** — edit any date before applying.")
-    new_ranges = _ranges_editor(parsed)
+    new_ranges = _ranges_editor(active, key_suffix=group_suffix)
     if not new_ranges:
         st.warning("No valid date ranges. Dates must be written as YYYY-MM-DD.")
         st.stop()
 
     targets: List[Dict[str, Any]] = []
-    if product_type == "ClosedTour":
+    if product_type in ("ClosedTour", "Ticket"):
         options = product.get("options") or []
         if not options:
-            st.error("This tour has no modalities, so there is nothing to " +
-                     ("release." if is_release else "block. Stop sales live on a tour's "
-                                                     "modalities, not on the tour itself."))
+            noun = "tour" if product_type == "ClosedTour" else "ticket"
+            st.error(f"This {noun} has no modalities, so there is nothing to " +
+                     ("release." if is_release else f"block. Stop sales live on a {noun}'s "
+                                                     "modalities, not on the record itself."))
             st.stop()
         codes = [o.get("code") for o in options]
-        default = [c for c in codes if c and parsed.get("affected_modality")
-                   and c.lower() == parsed["affected_modality"].lower()] or codes
+        default = [c for c in codes if c and active.get("affected_modality")
+                   and c.lower() == active["affected_modality"].lower()] or codes
         picked = st.multiselect("Which modalities does this block?", codes, default=default,
-                                key="ss_modalities",
+                                key=f"ss_modalities{group_suffix}",
                                 help="The email named one if it could be identified; otherwise all "
                                      "modalities are selected, because a closure usually applies to "
                                      "the whole tour.")
@@ -517,13 +597,13 @@ def render_stop_sales_tool(client) -> None:
             st.stop()
         rate_labels = {f"{r.get('name') or '(unnamed)'} (id {r.get('id')})": r for r in rates}
         picked_rates = st.multiselect("Which rate(s)?", list(rate_labels.keys()),
-                                      default=list(rate_labels.keys()), key="ss_rates",
+                                      default=list(rate_labels.keys()), key=f"ss_rates{group_suffix}",
                                       help="A closure normally applies to every rate on the "
                                            "property; narrow it only if the email says so.")
-        default_rooms = ([parsed["affected_room"]] if parsed.get("affected_room") in rooms
+        default_rooms = ([active["affected_room"]] if active.get("affected_room") in rooms
                          else rooms)
         picked_rooms = st.multiselect("Which room type(s)?", rooms, default=default_rooms,
-                                      key="ss_rooms",
+                                      key=f"ss_rooms{group_suffix}",
                                       help="Blocking the whole property means blocking every room "
                                            "type. The email named one only if it said so.")
         if not picked_rooms:
@@ -539,7 +619,7 @@ def render_stop_sales_tool(client) -> None:
             with st.expander(f"{rate.get('name') or rate.get('id')} — {len(live)} block(s) already live"):
                 st.dataframe(pd.DataFrame(live), use_container_width=True) if live \
                     else st.caption("Nothing blocked yet.")
-        st.session_state.ss_picked_rooms = picked_rooms
+        st.session_state[f"ss_picked_rooms{group_suffix}"] = picked_rooms
 
     if not targets:
         st.warning("Nothing selected to apply to.")
@@ -547,7 +627,7 @@ def render_stop_sales_tool(client) -> None:
 
     # ---------------- Step 5: apply ----------------
     st.subheader("Step 5 — Apply")
-    unit = 'modality' if product_type == 'ClosedTour' else 'rate'
+    unit = 'modality' if product_type in ('ClosedTour', 'Ticket') else 'rate'
     if is_release:
         st.warning(f"This RE-OPENS (removes) **{len(new_ranges)} date range(s)** on "
                    f"**{len(targets)}** {unit}(s), if they match what is currently blocked "
@@ -558,7 +638,7 @@ def render_stop_sales_tool(client) -> None:
                    f"added to them.")
 
     apply_label = "✅ Remove these stop sales" if is_release else "✅ Apply stop sales to Travel Compositor"
-    if st.button(apply_label, type="primary", key="ss_apply"):
+    if st.button(apply_label, type="primary", key=f"ss_apply{group_suffix}"):
         results = []
         bar = st.progress(0.0, text="Applying…")
         for i, target in enumerate(targets):
@@ -566,12 +646,15 @@ def render_stop_sales_tool(client) -> None:
             if product_type == "ClosedTour":
                 results.append(apply_to_tour_option(client, supplier_id, product_code,
                                                     target, new_ranges, is_release=is_release))
+            elif product_type == "Ticket":
+                results.append(apply_to_ticket_option(client, supplier_id, product_code,
+                                                       target, new_ranges, is_release=is_release))
             else:
                 results.append(apply_to_hotel_rate(client, supplier_id, product_code, target,
-                                                   new_ranges, _get("ss_picked_rooms") or [],
+                                                   new_ranges, _get(f"ss_picked_rooms{group_suffix}") or [],
                                                    is_release=is_release))
         bar.empty()
-        st.session_state.ss_result = results
+        st.session_state[f"ss_result{group_suffix}"] = results
 
         # Learn from what the human corrected. The AI's dates are compared against the ones
         # actually applied, so a supplier who always writes dates in a way that gets misread
@@ -579,12 +662,18 @@ def render_stop_sales_tool(client) -> None:
         # the upload flows only learn from what was published.
         if any(r["status"] == "updated" for r in results):
             item = {"data": {"stop_sale_dates": json.dumps(
-                [r["start"] + ".." + r["end"] for r in parsed.get("stop_sales", [])])}}
+                [r["start"] + ".." + r["end"] for r in active.get("stop_sales", [])])}}
             extraction_memory.prepare(supplier_id, "StopSale", item)
             item["data"]["stop_sale_dates"] = json.dumps(
                 [r["start"] + ".." + r["end"] for r in new_ranges])
             extraction_memory.commit(supplier_id, "StopSale", item, product_code)
-            mark_processed(fingerprint, {
+            # Group suffix keeps each product's own processed-record distinct - without it,
+            # applying the second product in a multi-product email would overwrite the first
+            # product's "already processed" record under the same plain fingerprint, and
+            # re-opening the email would wrongly warn about (or skip re-checking) the wrong
+            # product. Suffix is empty for the ordinary one-product-per-email case, so every
+            # already-recorded fingerprint from before this feature still matches exactly.
+            mark_processed(fingerprint + group_suffix, {
                 "applied_at": pd.Timestamp.now("UTC").isoformat(),
                 "supplier_id": supplier_id, "product_type": product_type,
                 "product_code": product_code,
@@ -594,7 +683,7 @@ def render_stop_sales_tool(client) -> None:
             })
         st.rerun()
 
-    results = _get("ss_result")
+    results = _get(f"ss_result{group_suffix}")
     if results:
         updated = [r for r in results if r["status"] == "updated"]
         unchanged = [r for r in results if r["status"] == "unchanged"]
@@ -619,6 +708,10 @@ def render_stop_sales_tool(client) -> None:
                        f"supplier may be releasing only PART of a wider existing block:")
             for code, nf in not_found:
                 st.write(f"- **{code}**: {nf.get('start')} → {nf.get('end')}")
+        remaining = [i for i in range(len(all_groups)) if i != group_index]
+        if remaining and st.button(f"➡️ Next product ({len(remaining)} left)", key="ss_next_group"):
+            st.session_state.ss_group_index = remaining[0]
+            st.rerun()
         if st.button("🆕 Read another email", key="ss_new"):
             _reset_run(keep=("ss_suppliers",))
             st.rerun()

@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
+MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
 
 _PHASE_KEY = "pkr_phase"
 

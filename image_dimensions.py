@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-27-supplement-per-pax-toggle-and-round-up"
+MODULE_BUILD = "2026-09-27-multi-source-closedtour-not-narrowed"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

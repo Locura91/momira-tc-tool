@@ -91,12 +91,30 @@ PRODUCT IDENTIFICATION:
   "CAI-H1". Codes look like LETTERS-DIGIT(S). If the email only gives a NAME ("Four Seasons Cairo",
   "7-day Nile Cruise"), leave product_identifier empty and put the name in product_name_hint.
 - product_type: "Hotel" if the email is about an accommodation property, "ClosedTour" if it is
-  about a tour/cruise/multi-day programme. Leave empty if you genuinely cannot tell.
+  about a tour/cruise/multi-day programme, "Ticket" if it is about a single-destination excursion
+  with no overnight (a day trip, a museum/attraction entry, a short activity). Leave empty if you
+  genuinely cannot tell.
 - affected_room: for a hotel, the exact room name the email names ("Superior Room") if it applies
   to one room type only. Leave empty if the stop sale applies to the whole property - that is the
   common case and assuming a room when none was named would under-block.
-- affected_modality: for a tour, the modality/option code or category name if the email names one.
-  Leave empty if it applies to the whole tour.
+- affected_modality: for a tour or ticket, the modality/option code or category name if the email
+  names one. Leave empty if it applies to the whole tour/ticket.
+
+MULTIPLE PRODUCTS IN ONE EMAIL: a single supplier email can announce stop sales for MORE THAN ONE
+product at once - e.g. "ASW-1 (Abu Simbel) is closed 12-19 Aug, and CAI-H1 (Cairo City Tour) is
+fully booked 20-25 Aug" names two entirely separate ClosedTours, each with its own dates. Do NOT
+merge these into one stop_sales list under a single product_identifier - that would apply BOTH
+date ranges to whichever product happens to be picked, blocking dates on a product the supplier
+never mentioned. Instead: put the FIRST product mentioned in the top-level product_identifier/
+product_name_hint/product_type/affected_room/affected_modality/is_release/stop_sales/confidence/
+notes fields exactly as before, and add ONE ENTRY PER ADDITIONAL PRODUCT to "additional_groups" -
+each entry has the exact same shape (product_identifier, product_name_hint, product_type,
+affected_room, affected_modality, is_release, stop_sales, confidence, notes) but for that one
+other product. Leave "additional_groups" as an empty list for the ordinary case of one product per
+email - do NOT split a single product's own multiple date ranges into separate groups; only use
+this when the email genuinely names DIFFERENT products (different codes/names, e.g. different
+tours or hotels), not different dates for the SAME product. All groups in one email are assumed to
+be from the SAME supplier - supplier_name_hint stays a single top-level field.
 
 If the email contains NO stop sale at all, return "stop_sales": [] and say why in "notes". That is
 a perfectly good answer - many supplier emails are about something else.
@@ -107,7 +125,7 @@ Output ONLY valid JSON, no markdown fences, no explanation:
   "is_release": true or false,
   "product_identifier": "",
   "product_name_hint": "",
-  "product_type": "Hotel" or "ClosedTour" or "",
+  "product_type": "Hotel" or "ClosedTour" or "Ticket" or "",
   "affected_room": "",
   "affected_modality": "",
   "supplier_name_hint": "",
@@ -116,7 +134,13 @@ Output ONLY valid JSON, no markdown fences, no explanation:
      "open_ended": false, "date_format_ambiguous": false}
   ],
   "confidence": "high" or "medium" or "low",
-  "notes": "anything a human should check - assumed years, ambiguous formats, wording you were unsure about"
+  "notes": "anything a human should check - assumed years, ambiguous formats, wording you were unsure about",
+  "additional_groups": [
+    {"product_identifier": "", "product_name_hint": "", "product_type": "Hotel" or "ClosedTour" or "Ticket" or "",
+     "affected_room": "", "affected_modality": "", "is_release": false,
+     "stop_sales": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "quote": "", "open_ended": false, "date_format_ambiguous": false}],
+     "confidence": "high" or "medium" or "low", "notes": ""}
+  ]
 }"""
 
 
@@ -230,6 +254,32 @@ def _as_iso_date(value: str) -> str:
         return ""
 
 
+def _coerce_group(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalizes one product's worth of fields (product_identifier/product_type/stop_sales/...)
+    out of the model's raw JSON for that group - shared by the primary (top-level) group and each
+    entry in "additional_groups" (see MULTIPLE PRODUCTS IN ONE EMAIL in the prompt above), so both
+    get the exact same defensive coercion instead of two copies of the same code drifting apart."""
+    ranges = _dedupe_ranges(_coerce_ranges(data.get("stop_sales")))
+    dropped = len(_coerce_ranges(data.get("stop_sales"))) != len(data.get("stop_sales") or [])
+    notes = str(data.get("notes") or "").strip()
+    if dropped:
+        notes = (notes + " " if notes else "") + \
+            "Some date ranges came back in a form that couldn't be read and were left out - " \
+            "check the email text against the list below."
+    return {
+        "is_stop_sale": bool(data.get("is_stop_sale")) and bool(ranges),
+        "is_release": bool(data.get("is_release")),
+        "product_identifier": str(data.get("product_identifier") or "").strip(),
+        "product_name_hint": str(data.get("product_name_hint") or "").strip(),
+        "product_type": str(data.get("product_type") or "").strip(),
+        "affected_room": str(data.get("affected_room") or "").strip(),
+        "affected_modality": str(data.get("affected_modality") or "").strip(),
+        "stop_sales": ranges,
+        "confidence": str(data.get("confidence") or "").strip().lower() or "low",
+        "notes": notes,
+    }
+
+
 def extract_stop_sales_from_email(raw_text: str, model: str = "claude-sonnet-5",
                                   subject: str = "", sent_date: str = "") -> Dict[str, Any]:
     """Read one email and return the stop sales it announces.
@@ -240,7 +290,14 @@ def extract_stop_sales_from_email(raw_text: str, model: str = "claude-sonnet-5",
     reasonable stand-in when the email has no header (a pasted body usually doesn't).
 
     Returns a dict shaped like the prompt, always with the keys the UI reads, so a partial
-    answer from the model can never surface as a KeyError on screen."""
+    answer from the model can never surface as a KeyError on screen. The top-level fields are
+    always the FIRST product the email mentions (unchanged shape/behavior from before
+    "additional_groups" existed, so this stays a drop-in replacement for the ordinary
+    one-product-per-email case). `additional_groups` (CONFIRMED PRODUCT-OWNER RULE, 2026-09-27:
+    "one supplier mail has multiple products matched to the stop sales... one stopsale for
+    closedtour can have multiple stop sales for multiple closedtours from the same supplier") is
+    an empty list for that ordinary case, and one entry per EXTRA product the same email names -
+    see all_groups() below for iterating every product in one call."""
     # Normalise the header date to ISO. A .eml carries an RFC-2822 string
     # ("Wed, 01 Jul 2026 09:00:00 +0000"); handing that to the model as-is invites it to
     # re-parse a date format when the whole point of passing it is to remove guesswork.
@@ -253,28 +310,31 @@ def extract_stop_sales_from_email(raw_text: str, model: str = "claude-sonnet-5",
     data = ai_extractor._call_claude(STOP_SALES_EXTRACTION_SYSTEM_PROMPT, user_content,
                                      model, max_tokens=4096) or {}
 
-    ranges = _dedupe_ranges(_coerce_ranges(data.get("stop_sales")))
-    dropped = len(_coerce_ranges(data.get("stop_sales"))) != len(data.get("stop_sales") or [])
-    notes = str(data.get("notes") or "").strip()
-    if dropped:
-        notes = (notes + " " if notes else "") + \
-            "Some date ranges came back in a form that couldn't be read and were left out - " \
-            "check the email text against the list below."
+    primary = _coerce_group(data)
+    additional_groups = [
+        _coerce_group(g) for g in (data.get("additional_groups") or []) if isinstance(g, dict)
+    ]
+    # A group with no valid dates and nothing else useful is not worth a human clicking through -
+    # only keep additional groups that actually found something.
+    additional_groups = [g for g in additional_groups if g["stop_sales"]]
 
     return {
-        "is_stop_sale": bool(data.get("is_stop_sale")) and bool(ranges),
-        "is_release": bool(data.get("is_release")),
-        "product_identifier": str(data.get("product_identifier") or "").strip(),
-        "product_name_hint": str(data.get("product_name_hint") or "").strip(),
-        "product_type": str(data.get("product_type") or "").strip(),
-        "affected_room": str(data.get("affected_room") or "").strip(),
-        "affected_modality": str(data.get("affected_modality") or "").strip(),
+        **primary,
         "supplier_name_hint": str(data.get("supplier_name_hint") or "").strip(),
-        "stop_sales": ranges,
-        "confidence": str(data.get("confidence") or "").strip().lower() or "low",
-        "notes": notes,
+        "additional_groups": additional_groups,
         "_context_date": context_date,
     }
+
+
+def all_groups(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every product this parsed email mentions, primary first - the list a UI iterates over to
+    let a human match and apply each product's stop sales in turn. Always at least one entry
+    (the primary group, built from parsed's own top-level fields) even when additional_groups is
+    empty, so callers never need a special case for the ordinary one-product email."""
+    primary_keys = ("is_release", "product_identifier", "product_name_hint", "product_type",
+                    "affected_room", "affected_modality", "stop_sales", "confidence", "notes")
+    primary = {k: parsed.get(k) for k in primary_keys}
+    return [primary] + list(parsed.get("additional_groups") or [])
 
 
 def warnings_for(parsed: Dict[str, Any]) -> List[str]:
