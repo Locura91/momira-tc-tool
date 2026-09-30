@@ -16,9 +16,14 @@ already had one (GET /closedtour/{supplierId}, confirmed working there via
 app_helpers.get_existing_tour_names' live duplicate-name check). That same endpoint
 (get_closed_tours) was ported into travelcompositor_api.py, and the picker now calls it directly
 to auto-load "all closedtours from the supplier" instead of asking for pasted codes - exactly
-per this follow-up. Auto-loaded tours default UNCHECKED (loading everything a supplier has is
-not the same as everything that needs translating); a paste-codes-by-hand fallback (the original
-picker) is kept for when the listing call itself fails.
+per this follow-up. A paste-codes-by-hand fallback (the original picker) is kept for when the
+listing call itself fails.
+
+SUPERSEDING FOLLOW-UP (2026-09-30, verbatim): "Human selects supplier, the App fetches AND lists
+all closedtours and human either acept all translations for all clsoedtours or human can unmark
+single closedtours where no translation is needed." Auto-loaded tours now default CHECKED
+(opt-out), overriding the original 2026-09-22 default of unchecked (opt-in) - see
+_closed_tour_bulk_picker's own docstring for the full history.
 
 The "either all languages, or only <6 languages>, or ALL languages" request is served by the
 EXISTING target_languages multiselect (already shared by every entity type, already defaults
@@ -64,14 +69,14 @@ def test_bulk_picker_auto_loads_from_the_real_list_endpoint_not_pasted_codes():
     assert 'st.text_area("Closed Tour codes"' not in src
 
 
-def test_auto_loaded_tours_default_unselected():
-    """"the human selects all closedtorus that need an translation" - loading everything a
-    supplier has is not the same as everything that needs translating, so nothing should be
-    pre-ticked just because it showed up in the auto-loaded list (unlike the manual paste
-    fallback, where a pasted code is by definition something you wanted - see that test below)."""
+def test_auto_loaded_tours_default_selected():
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-30, verbatim): "human either acept all
+    translations for all clsoedtours or human can unmark single closedtours where no translation
+    is needed" - an opt-OUT flow. Supersedes the original 2026-09-22 opt-in default (everything
+    unchecked until ticked) - every auto-loaded tour must now start checked."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     load_block = src[src.index("if st.button(label"):src.index("# A supplier switch invalidates")]
-    assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = False' in load_block
+    assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = True' in load_block
 
 
 def test_select_all_and_select_none_write_session_state_directly():

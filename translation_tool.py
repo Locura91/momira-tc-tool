@@ -251,14 +251,20 @@ def _closed_tour_bulk_picker(supplier_id):
     (get_closed_tours) was ported into travelcompositor_api.py, and this picker now calls it
     directly to auto-load the list instead of asking for pasted codes.
 
-    Auto-loaded tours default UNCHECKED, unlike the old paste-then-fetch flow (where everything
-    pasted was, by definition, something you wanted translated): "everything this supplier has"
-    is not the same as "everything that needs translating", so a bulk translation run should
-    never start with everything silently pre-selected just because it showed up in the list.
+    SUPERSEDING FOLLOW-UP (2026-09-30, verbatim): "Human selects supplier, the App fetches AND
+    lists all closedtours and human either acept all translations for all clsoedtours or human
+    can unmark single closedtours where no translation is needed." Auto-loaded tours now default
+    CHECKED - the opposite of the 2026-09-22 default below this note, which deliberately started
+    everything unchecked on the reasoning that "everything this supplier has" isn't the same as
+    "everything that needs translating". That reasoning is explicitly overridden by this request:
+    the product owner wants an opt-OUT flow (accept the full list, untick what doesn't need
+    translating) rather than an opt-IN one (nothing runs until each one is ticked). Select
+    all/Select none still work exactly as before for bulk-toggling the whole list either way.
 
     If the listing call itself fails (network issue, an unrecognized response shape, etc), falls
     back to the original paste-codes-by-hand picker rather than blocking bulk translation
-    entirely - see _closed_tour_manual_picker.
+    entirely - see _closed_tour_manual_picker. That picker's own pasted-codes default (fully
+    ticked) already matched this opt-out shape and is unchanged.
 
     Returns the list of currently-checked Closed Tour codes.
     """
@@ -294,9 +300,10 @@ def _closed_tour_bulk_picker(supplier_id):
                 "recognized) - you can paste known codes below instead")
             st.session_state.tr_ct_list_error_detail = None
         st.session_state.tr_ct_list_supplier = supplier_id
-        # A fresh load always starts fully unchecked - see the docstring above.
+        # A fresh load now starts fully CHECKED (opt-out) - see the 2026-09-30 note in the
+        # docstring above, superseding the original opt-in default.
         for t in st.session_state.tr_ct_list:
-            st.session_state[f"tr_ct_pick_{t['code']}"] = False
+            st.session_state[f"tr_ct_pick_{t['code']}"] = True
 
     # A supplier switch invalidates the previous load - showing supplier A's tours as selectable
     # while about to translate for supplier B would be a silent cross-supplier bug.
@@ -320,7 +327,8 @@ def _closed_tour_bulk_picker(supplier_id):
     if not tours:
         return []
 
-    st.write(f"**{len(tours)}** closed tour(s) found for this supplier:")
+    st.write(f"**{len(tours)}** closed tour(s) found for this supplier — all selected by default. "
+             f"Untick any that don't need translating.")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Select all", key="tr_ct_select_all"):
