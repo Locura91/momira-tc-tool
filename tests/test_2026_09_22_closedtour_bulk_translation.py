@@ -136,3 +136,27 @@ def test_shared_target_languages_multiselect_still_covers_every_entity_type():
     # nothing special needs to exist for it, it's just unticking the other 13.
     for lang in ("DE", "ES", "FR", "NL", "PL", "IT"):
         assert lang in tt.DEFAULT_TARGET_LANGUAGES
+
+
+def test_listing_failure_shows_the_real_error_instead_of_pointing_at_a_missing_section():
+    """CONFIRMED REAL GAP (2026-09-30): a live listing failure (HTTP 405 for supplier 50696)
+    showed describe_tc_fetch_error's generic fallback message, which tells the human to "See
+    'Full result' below for the exact message" - but that only exists on the run-summary screen,
+    not on this list-load step, so there was nowhere to actually see what Travel Compositor said.
+    The raw error detail must now be captured and shown right here instead."""
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    assert "tr_ct_list_error_detail" in src
+    assert 'st.expander("🔍 Full error from Travel Compositor")' in src
+    assert "st.json(error_detail)" in src
+    # A successful load must clear any previous error detail, so a stale 405 from a prior
+    # supplier can't linger and be shown next to an unrelated, successful list.
+    load_block = src[src.index("if st.button(label"):src.index("# A supplier switch invalidates")]
+    assert 'st.session_state.tr_ct_list_error_detail = None' in load_block
+
+
+def test_listing_failure_still_points_to_the_manual_paste_fallback_for_a_single_or_few_codes():
+    """The existing manual picker already covers "translate just one closed tour ID" (paste one
+    code) as well as "a few specific ones" (paste several) - this must stay reachable, and be
+    called out explicitly, when the auto-load fails, since it's the immediate workaround."""
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    assert "one code for a single tour" in src

@@ -277,6 +277,14 @@ def _closed_tour_bulk_picker(supplier_id):
         if isinstance(result, dict) and "error" in result:
             st.session_state.tr_ct_list_error = describe_tc_fetch_error(
                 result, f"closed tours for supplier {supplier_id}")
+            # CONFIRMED REAL GAP (2026-09-30): describe_tc_fetch_error's generic fallback message
+            # says "See 'Full result' below for the exact message" - but that only exists on the
+            # SUMMARY screen after a translation run, not here on the list-load step. A human
+            # hitting an error at this step (e.g. HTTP 405 for a supplier the listing endpoint
+            # doesn't support) had no way to actually see what Travel Compositor said, despite
+            # the message telling them to look. Keep the raw error dict too so it can be shown
+            # right here instead of pointing at a section that doesn't exist on this screen.
+            st.session_state.tr_ct_list_error_detail = result
             st.session_state.tr_ct_list = []
         else:
             tours = _normalize_closed_tour_list(result)
@@ -284,6 +292,7 @@ def _closed_tour_bulk_picker(supplier_id):
             st.session_state.tr_ct_list_error = None if tours else (
                 "no closed tours found for this supplier (or the response format wasn't "
                 "recognized) - you can paste known codes below instead")
+            st.session_state.tr_ct_list_error_detail = None
         st.session_state.tr_ct_list_supplier = supplier_id
         # A fresh load always starts fully unchecked - see the docstring above.
         for t in st.session_state.tr_ct_list:
@@ -297,6 +306,13 @@ def _closed_tour_bulk_picker(supplier_id):
     if st.session_state.get("tr_ct_list_error"):
         st.warning(f"⚠️ Couldn't load the closed tour list automatically: "
                    f"{st.session_state.tr_ct_list_error}")
+        error_detail = st.session_state.get("tr_ct_list_error_detail")
+        if error_detail is not None:
+            with st.expander("🔍 Full error from Travel Compositor"):
+                st.json(error_detail)
+        st.info("You can still translate this supplier's closed tours by entering their code(s) "
+                "below - one code for a single tour, or several (one per line) for a batch - "
+                "while this is worked out.")
         with st.expander("➕ Paste codes by hand instead", expanded=True):
             return _closed_tour_manual_picker(supplier_id)
 
