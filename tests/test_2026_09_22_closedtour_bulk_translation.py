@@ -21,9 +21,16 @@ listing call itself fails.
 
 SUPERSEDING FOLLOW-UP (2026-09-30, verbatim): "Human selects supplier, the App fetches AND lists
 all closedtours and human either acept all translations for all clsoedtours or human can unmark
-single closedtours where no translation is needed." Auto-loaded tours now default CHECKED
-(opt-out), overriding the original 2026-09-22 default of unchecked (opt-in) - see
-_closed_tour_bulk_picker's own docstring for the full history.
+single closedtours where no translation is needed." Auto-loaded tours defaulted CHECKED
+(opt-out), overriding the original 2026-09-22 default of unchecked (opt-in).
+
+CONFIRMED REAL FINDING + PRODUCT-OWNER DECISION (2026-09-30, same day): live testing showed the
+"confirmed working" get_closed_tours endpoint failing with HTTP 405 for TWO different suppliers
+(50696, then 51216) - not a per-supplier fluke, and consistent with bulk_notes.needs_manual_codes()
+already documenting, before this picker existed, that Travel Compositor has no list endpoint for
+ClosedTour at all. Manual code entry is now the PRIMARY path (shown directly, no failing "load"
+button in front of it); the auto-load call is kept only as an optional, collapsed "try anyway"
+expander. See _closed_tour_bulk_picker's own docstring for the full history.
 
 The "either all languages, or only <6 languages>, or ALL languages" request is served by the
 EXISTING target_languages multiselect (already shared by every entity type, already defaults
@@ -62,11 +69,21 @@ def test_travelcompositor_api_has_a_real_closed_tour_list_endpoint():
     assert "first" in src and "limit" in src
 
 
-def test_bulk_picker_auto_loads_from_the_real_list_endpoint_not_pasted_codes():
+def test_manual_entry_is_the_primary_path_not_gated_behind_a_load_attempt():
+    """CONFIRMED REAL FINDING (2026-09-30): the auto-load endpoint failed with HTTP 405 for two
+    different suppliers, consistent with bulk_notes.needs_manual_codes() already documenting
+    Travel Compositor has no list endpoint for ClosedTour. Manual entry must be called
+    unconditionally, not only after a load attempt fails."""
+    src = inspect.getsource(tt._closed_tour_bulk_picker)
+    assert "manual_selected = _closed_tour_manual_picker(supplier_id)" in src
+    # It must be called before any button/load gating, not nested inside a failure branch.
+    assert src.index("manual_selected = _closed_tour_manual_picker") < src.index('st.button(label')
+
+
+def test_auto_load_is_still_available_but_optional_and_collapsed():
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     assert "api.get_closed_tours(supplier_id, first=0, limit=200)" in src
-    # The old "paste codes into a text area" UI must not be the primary path any more.
-    assert 'st.text_area("Closed Tour codes"' not in src
+    assert 'st.expander("🔍 Try auto-loading the full list instead' in src
 
 
 def test_auto_loaded_tours_default_selected():
@@ -75,7 +92,8 @@ def test_auto_loaded_tours_default_selected():
     is needed" - an opt-OUT flow. Supersedes the original 2026-09-22 opt-in default (everything
     unchecked until ticked) - every auto-loaded tour must now start checked."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
-    load_block = src[src.index("if st.button(label"):src.index("# A supplier switch invalidates")]
+    load_block = src[src.index("if st.button(label"):
+                      src.index('if st.session_state.get("tr_ct_list_supplier") == supplier_id:')]
     assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = True' in load_block
 
 
@@ -89,14 +107,17 @@ def test_select_all_and_select_none_write_session_state_directly():
     assert 'st.session_state[f"tr_ct_pick_{t[\'code\']}"] = False' in src
 
 
-def test_supplier_switch_invalidates_the_previously_loaded_list():
+def test_supplier_switch_hides_the_previously_loaded_auto_list():
+    """Showing supplier A's auto-loaded tours as selectable while about to translate for
+    supplier B would be a silent cross-supplier bug - the auto-load result section only renders
+    when the stored list's supplier still matches the currently selected one."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
-    assert 'st.session_state.get("tr_ct_list_supplier") != supplier_id' in src
+    assert 'if st.session_state.get("tr_ct_list_supplier") == supplier_id:' in src
 
 
-def test_listing_failure_falls_back_to_the_manual_paste_picker():
-    """A listing-endpoint outage must not block bulk translation entirely - it degrades to the
-    original paste-codes-by-hand flow instead."""
+def test_manual_picker_is_reachable_regardless_of_auto_load_outcome():
+    """Manual entry is now the primary path (see test_manual_entry_is_the_primary_path... above),
+    called unconditionally rather than only as a fallback when the auto-load fails."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     assert "_closed_tour_manual_picker(supplier_id)" in src
     assert "tr_ct_list_error" in src
@@ -144,24 +165,25 @@ def test_shared_target_languages_multiselect_still_covers_every_entity_type():
 
 
 def test_listing_failure_shows_the_real_error_instead_of_pointing_at_a_missing_section():
-    """CONFIRMED REAL GAP (2026-09-30): a live listing failure (HTTP 405 for supplier 50696)
-    showed describe_tc_fetch_error's generic fallback message, which tells the human to "See
-    'Full result' below for the exact message" - but that only exists on the run-summary screen,
-    not on this list-load step, so there was nowhere to actually see what Travel Compositor said.
-    The raw error detail must now be captured and shown right here instead."""
+    """CONFIRMED REAL GAP (2026-09-30): a live listing failure (HTTP 405) showed
+    describe_tc_fetch_error's generic fallback message, which tells the human to "See 'Full
+    result' below for the exact message" - but that only exists on the run-summary screen, not on
+    this list-load step, so there was nowhere to actually see what Travel Compositor said. The raw
+    error detail must be captured and shown right here instead."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     assert "tr_ct_list_error_detail" in src
     assert 'st.expander("🔍 Full error from Travel Compositor")' in src
     assert "st.json(error_detail)" in src
     # A successful load must clear any previous error detail, so a stale 405 from a prior
     # supplier can't linger and be shown next to an unrelated, successful list.
-    load_block = src[src.index("if st.button(label"):src.index("# A supplier switch invalidates")]
+    load_block = src[src.index("if st.button(label"):
+                      src.index('if st.session_state.get("tr_ct_list_supplier") == supplier_id:')]
     assert 'st.session_state.tr_ct_list_error_detail = None' in load_block
 
 
-def test_listing_failure_still_points_to_the_manual_paste_fallback_for_a_single_or_few_codes():
-    """The existing manual picker already covers "translate just one closed tour ID" (paste one
-    code) as well as "a few specific ones" (paste several) - this must stay reachable, and be
-    called out explicitly, when the auto-load fails, since it's the immediate workaround."""
+def test_manual_entry_explains_one_code_for_single_or_several_for_a_batch():
+    """The manual picker already covers "translate just one closed tour ID" (paste one code) as
+    well as "a few specific ones" (paste several) - this is now the primary path, so the intro
+    text must say so plainly rather than only appearing after a failed auto-load."""
     src = inspect.getsource(tt._closed_tour_bulk_picker)
     assert "one code for a single tour" in src
