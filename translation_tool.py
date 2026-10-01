@@ -774,13 +774,15 @@ def render_translation_tool():
 
     if fallback_warnings:
         st.warning(
-            f"⚠️ {len(fallback_warnings)} field/language combination(s) came back from the "
-            f"translator without a value and fell back to the English source - the translator's "
-            f"response left them out (common on long fields like a Closed Tour's accommodation "
-            f"blurb). These still count as translated, so they won't be retried automatically - "
-            f"use **Force re-translate** if you want another attempt."
+            f"⚠️ {len(fallback_warnings)} field/language combination(s) need a look: either the "
+            f"translator's response left the field out entirely (it fell back to the English "
+            f"source - common on long fields like a Closed Tour's accommodation blurb), or it "
+            f"came back with a different number of bullet-list items than the English source "
+            f"(e.g. a bullet point in the source wasn't carried over to that language). These "
+            f"still count as translated, so they won't be retried automatically - use "
+            f"**Force re-translate** if you want another attempt."
         )
-        with st.expander("⚠️ Fields that fell back to English"):
+        with st.expander("⚠️ Fields flagged for review (fell back to English, or list formatting didn't match)"):
             for label, lang, fields in fallback_warnings:
                 st.write(f"- **{label}**, {lang}: {', '.join(fields)}")
 

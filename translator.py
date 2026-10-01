@@ -84,7 +84,11 @@ Rules you must always follow:
   place name plus ordinary descriptive words is not a product code.
 - Formatting integrity: preserve HTML tags (<b>, <br>, etc.), Markdown, and template
   variables (e.g. {duration}, {pickupTime}) EXACTLY as they appear, untouched, in the
-  same position.
+  same position. This applies in full to list structure: if the source has a bullet list
+  (<ul><li>...</li></ul>, or plain lines starting with "- "/"* "), the translation MUST have
+  the exact same number of list items, each still marked as its own list item - translate the
+  text inside each <li> (or each "- "/"* " line), never collapse the list into a single
+  paragraph or drop the markers while keeping the text.
 - Tone: professional, inviting, conversion-oriented — the register a travel consumer
   expects in that market, not a stiff literal translation.
 - Locale-variant awareness: PT vs PT_BR (European vs Brazilian Portuguese) must reflect
@@ -93,6 +97,72 @@ Rules you must always follow:
   do not invent content.
 
 You must respond ONLY by calling the submit_translations tool. Do not write any other text."""
+
+
+def _list_marker_count(text) -> int:
+    """Counts bullet-list markers in a field's text, so translate_fields can tell when a
+    translation silently dropped list structure the source actually had.
+
+    CONFIRMED REAL REPORT (2026-10-01, verbatim): "When Translating transfers and in the
+    description of the origin is added a bullet point, we shall also add a bullet point to
+    the other languages. This is not done all the time." Travel Compositor field content is
+    raw HTML, so a bullet list is normally <ul><li>...</li></ul> (counted here by "<li"
+    occurrences, case-insensitive, regardless of attributes) - but a field can also carry the
+    plain-text "- "/"* " convention this codebase uses elsewhere (see
+    ui_components._html_to_plain_for_editing's leading "- " marker), so both are counted and
+    summed. This is the SAME underlying gap as the 2026-09-30 field-fallback bug (translate_fields
+    only ever checked whether a field came back present/non-empty) - this closes the other half:
+    a field CAN come back present and non-empty while still having silently lost its formatting,
+    which that check alone can never catch.
+    """
+    if not isinstance(text, str):
+        return 0
+    html_items = text.lower().count("<li")
+    md_items = sum(1 for line in text.split("\n") if line.strip().startswith(("- ", "* ")))
+    return html_items + md_items
+
+
+def _fill_translation_gaps(
+    source_fields: Dict[str, str],
+    non_empty_fields: Dict[str, str],
+    raw_translations: Dict,
+    target_languages: List[str],
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
+    """Shared by ClaudeTranslator.translate_fields and GeminiTranslator.translate_fields: turns
+    the model's raw {lang: {field: text}} response into the final per-language result, filling
+    in any gap with the English source and flagging it, plus (2026-10-01) flagging a field that
+    came back present and non-empty but with a different bullet-list marker count than the
+    source had. See _list_marker_count's and translate_in_batches' docstrings for the two real
+    reports this covers. Extracted out of both translate_fields methods (2026-10-01) so this
+    logic has exactly one copy to fix and one place to unit-test directly, instead of two
+    methods that have to be kept in lockstep by hand.
+    """
+    result = {}
+    fallback_fields: Dict[str, List[str]] = {}
+    for lang in target_languages:
+        lang_result = {}
+        lang_data = raw_translations.get(lang, {}) if isinstance(raw_translations, dict) else {}
+        for field, source_value in source_fields.items():
+            translated = lang_data.get(field)
+            if not translated or not str(translated).strip():
+                if field in non_empty_fields:
+                    print(f"⚠️  Missing/empty translation for '{field}' -> {lang}; falling back to English source.")
+                    fallback_fields.setdefault(lang, []).append(field)
+                translated = source_value
+            else:
+                # Present and non-empty isn't the whole story - the translation can still have
+                # silently dropped list/bullet-point structure the source had (2026-10-01
+                # report). Flag it the same way, but keep the AI's real translated text - unlike
+                # the missing-value case above, there's nothing wrong to fall back from.
+                src_markers = _list_marker_count(source_value)
+                if src_markers and _list_marker_count(str(translated)) != src_markers:
+                    print(f"⚠️  '{field}' -> {lang}: source has {src_markers} bullet-list "
+                          f"marker(s) but the translation has {_list_marker_count(str(translated))} "
+                          f"- flagging for review (keeping the translated text as returned).")
+                    fallback_fields.setdefault(lang, []).append(field)
+            lang_result[field] = translated
+        result[lang] = lang_result
+    return result, fallback_fields
 
 
 class TranslationError(Exception):
@@ -184,22 +254,7 @@ class ClaudeTranslator:
                 if attempt == retries:
                     raise ProviderRateLimitError(f"Claude rate limit exhausted after {retries+1} attempts")
 
-        # Build result, filling gaps
-        result = {}
-        fallback_fields: Dict[str, List[str]] = {}
-        for lang in target_languages:
-            lang_result = {}
-            lang_data = raw_translations.get(lang, {}) if isinstance(raw_translations, dict) else {}
-            for field, source_value in source_fields.items():
-                translated = lang_data.get(field)
-                if not translated or not str(translated).strip():
-                    if field in non_empty_fields:
-                        print(f"⚠️  Missing/empty translation for '{field}' -> {lang}; falling back to English source.")
-                        fallback_fields.setdefault(lang, []).append(field)
-                    translated = source_value
-                lang_result[field] = translated
-            result[lang] = lang_result
-        return result, fallback_fields
+        return _fill_translation_gaps(source_fields, non_empty_fields, raw_translations, target_languages)
 
 
 def _build_gemini_response_schema(fields: Dict[str, str], target_languages: List[str]) -> dict:
@@ -302,21 +357,7 @@ class GeminiTranslator:
                 if attempt == retries:
                     raise ProviderRateLimitError(f"Gemini rate limit exhausted after {retries+1} attempts")
 
-        result = {}
-        fallback_fields: Dict[str, List[str]] = {}
-        for lang in target_languages:
-            lang_result = {}
-            lang_data = raw_translations.get(lang, {}) if isinstance(raw_translations, dict) else {}
-            for field, source_value in source_fields.items():
-                translated = lang_data.get(field)
-                if not translated or not str(translated).strip():
-                    if field in non_empty_fields:
-                        print(f"⚠️  Missing/empty translation for '{field}' -> {lang}; falling back to English source.")
-                        fallback_fields.setdefault(lang, []).append(field)
-                    translated = source_value
-                lang_result[field] = translated
-            result[lang] = lang_result
-        return result, fallback_fields
+        return _fill_translation_gaps(source_fields, non_empty_fields, raw_translations, target_languages)
 
 
 class FallbackTranslator:
@@ -406,6 +447,16 @@ def translate_in_batches(
         language with a per-field fallback still counts as translated (not
         retried automatically); use Force re-translate if you want another
         attempt after noticing one.
+
+        2026-10-01 addition, same dict/same policy: a field can also come back present and
+        non-empty while still silently losing its list/bullet-point structure (real report,
+        verbatim: "when Translating transfers and in the description of the origin is added
+        a bullet point, we shall also add a bullet point to the other languages. This is not
+        done all the time"). translate_fields() now also flags a field into this same dict
+        whenever the source has bullet-list markers (<li>, or "- "/"* " lines) and the
+        translation's marker count doesn't match - see _list_marker_count(). Unlike the
+        missing-value case, the AI's real translated text is kept (there's nothing to fall
+        back from); it's flagged purely so a human notices and can Force re-translate it.
 
     CONFIRMED live bug this fixes (failed_languages, pre-existing): every
     calling sync_*.py file used to decide "did this language actually

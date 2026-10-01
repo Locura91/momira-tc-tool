@@ -221,7 +221,9 @@ def test_summary_section_surfaces_fallback_warnings():
     src = inspect.getsource(tt.render_translation_tool)
     assert "fields_fallback_to_english" in src
     assert "fallback_warnings" in src
-    assert 'st.expander("⚠️ Fields that fell back to English")' in src
+    # 2026-10-01: generalized to also cover bullet-list-formatting mismatches, not just
+    # missing values - see tests/test_2026_10_01_bullet_list_formatting_mismatch_flagged.py.
+    assert 'st.expander("⚠️ Fields flagged for review' in src
 
 
 def test_summary_warning_mentions_force_retranslate_as_the_manual_remedy():
