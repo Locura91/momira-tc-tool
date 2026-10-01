@@ -319,7 +319,7 @@ def sync_hotel_main(api, translator, store: StateStore,
 
     # Translate
     compressed = compress_translatable_fields(translatable)
-    combined, failed_languages = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
+    combined, failed_languages, fallback_fields = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
 
     # NOTE: no longer treats "translation identical to source" as a failure
     # signal — a hotel name/description can legitimately be the same word
@@ -335,6 +335,12 @@ def sync_hotel_main(api, translator, store: StateStore,
     if not successful:
         return {"status": "skipped", "contract_id": contract_id, "reason": "no successful translations"}
 
+    # See translator.translate_in_batches' own docstring (2026-09-30) - a field missing from the
+    # model's response for a language silently falls back to the English source, still counted
+    # as a successful translation. Surfaced here rather than only reaching a server log.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     en_name = translatable.get("hotelname", "")
     en_desc = translatable.get("description", "")
     new_descriptions = build_updated_hotel_descriptions(
@@ -348,7 +354,8 @@ def sync_hotel_main(api, translator, store: StateStore,
         preview = {lang: {k: v for k, v in trans.items() if k in HOTEL_TEXT_FIELDS}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "contract_id": contract_id,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     payload = dict(hotel_entry)
     payload["descriptions"] = new_descriptions
@@ -361,7 +368,8 @@ def sync_hotel_main(api, translator, store: StateStore,
     prior_langs = prior_state["translated_languages"] if prior_state and prior_state["source_hash"] == source_hash else []
     all_langs = sorted(set(prior_langs) | set(written_langs))
     store.upsert_state("hotel", supplier_id, contract_id, source_hash, all_langs)
-    return {"status": "updated", "contract_id": contract_id, "languages_written": written_langs}
+    return {"status": "updated", "contract_id": contract_id, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 def sync_hotel(api, translator, store: StateStore,
@@ -584,7 +592,7 @@ def sync_room(api, translator, store: StateStore,
 
     # Translate
     compressed = compress_translatable_fields(translatable)
-    combined, failed_languages = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
+    combined, failed_languages, fallback_fields = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
 
     # See the main-hotel translate call above: identical-to-source is not a
     # failure signal on its own — only translate_in_batches-reported
@@ -599,12 +607,16 @@ def sync_room(api, translator, store: StateStore,
     if not successful:
         return {"status": "skipped", "room_code": room_provider_code, "reason": "no successful translations"}
 
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     updated_room = build_updated_room(room_entry, successful)
     return {
         "status": "updated",
         "room_code": room_provider_code,
         "updated_room": updated_room,
-        "languages_written": list(successful.keys())
+        "languages_written": list(successful.keys()),
+        "fields_fallback_to_english": fields_fallback_to_english,
     }
 
 
@@ -681,7 +693,7 @@ def sync_supplement(api, translator, store: StateStore,
 
     # Translate
     compressed = compress_translatable_fields(translatable)
-    combined, failed_languages = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
+    combined, failed_languages, fallback_fields = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
 
     # See the main-hotel translate call above: identical-to-source is not a
     # failure signal on its own — only translate_in_batches-reported
@@ -696,12 +708,16 @@ def sync_supplement(api, translator, store: StateStore,
     if not successful:
         return {"status": "skipped", "supplement_code": supp_provider_code, "reason": "no successful translations"}
 
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     updated_supp = build_updated_supplement(supp_entry, successful)
     return {
         "status": "updated",
         "supplement_code": supp_provider_code,
         "updated_supplement": updated_supp,
-        "languages_written": list(successful.keys())
+        "languages_written": list(successful.keys()),
+        "fields_fallback_to_english": fields_fallback_to_english,
     }
 
 
@@ -778,7 +794,7 @@ def sync_offer(api, translator, store: StateStore,
 
     # Translate
     compressed = compress_translatable_fields(translatable)
-    combined, failed_languages = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
+    combined, failed_languages, fallback_fields = translate_in_batches(translator, compressed, needed, batch_size=BATCH_SIZE)
 
     # See the main-hotel translate call above: identical-to-source is not a
     # failure signal on its own — only translate_in_batches-reported
@@ -793,12 +809,16 @@ def sync_offer(api, translator, store: StateStore,
     if not successful:
         return {"status": "skipped", "offer_code": offer_provider_code, "reason": "no successful translations"}
 
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     updated_offer = build_updated_offer(offer_entry, successful)
     return {
         "status": "updated",
         "offer_code": offer_provider_code,
         "updated_offer": updated_offer,
-        "languages_written": list(successful.keys())
+        "languages_written": list(successful.keys()),
+        "fields_fallback_to_english": fields_fallback_to_english,
     }
 
 

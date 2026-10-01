@@ -207,7 +207,7 @@ def sync_transfer_from_data(
 
     # Translate in batches, run concurrently instead of one-after-another
     translation_start = time.time()
-    combined_translations, failed_languages = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
     translation_time = time.time() - translation_start
 
     # NOTE: this used to filter out any language whose translated text was
@@ -228,6 +228,12 @@ def sync_transfer_from_data(
     if not successful:
         return {"status": "skipped", "transfer_id": transfer_id, "reason": "no successful translations"}
 
+    # See translator.translate_in_batches' own docstring (2026-09-30) - a field missing from the
+    # model's response for a language silently falls back to the English source, still counted
+    # as a successful translation. Surfaced here rather than only reaching a server log.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     en_entry = datasheets.get("EN") or datasheets.get("EN_US") or {}
     new_datasheets = build_updated_datasheets(datasheets, successful, en_entry)
 
@@ -235,7 +241,8 @@ def sync_transfer_from_data(
         preview = {lang: {k: v for k, v in trans.items() if k in TEXT_FIELDS}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "transfer_id": transfer_id,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     # Write
     write_start = time.time()
@@ -255,7 +262,8 @@ def sync_transfer_from_data(
     total_time = time.time() - start_time
     print(f"✅ Transfer {transfer_id} done in {total_time:.1f}s "
           f"(verify: {verify_time:.1f}s, translate: {translation_time:.1f}s, write: {write_time:.1f}s)")
-    return {"status": "updated", "transfer_id": transfer_id, "languages_written": written_langs}
+    return {"status": "updated", "transfer_id": transfer_id, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 def sync_transfer(api, translator, store: StateStore,

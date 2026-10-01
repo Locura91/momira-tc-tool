@@ -36,10 +36,12 @@ class FakeTranslator:
     the translation-failure path (covered separately in the ai_extractor/translator tests)."""
 
     def translate_fields(self, source_fields, target_languages, retries=5):
+        # Real translate_fields returns (result, fallback_fields) since 2026-09-30 - see
+        # translator.py. No field ever falls back here, so the second element is always {}.
         return {
             lang: {field: f"[{lang}] {text}" for field, text in source_fields.items()}
             for lang in target_languages
-        }
+        }, {}
 
 
 class FakeAPI:
@@ -216,7 +218,7 @@ def test_a_partial_batch_translation_failure_still_writes_only_the_real_successe
         def translate_fields(self, source_fields, target_languages, retries=5):
             if "DE" in target_languages:
                 raise RuntimeError("simulated provider outage for this batch")
-            return {lang: {f: f"[{lang}] {v}" for f, v in source_fields.items()} for lang in target_languages}
+            return {lang: {f: f"[{lang}] {v}" for f, v in source_fields.items()} for lang in target_languages}, {}
 
     api = FakeAPI(succeed_after=0)
     entry = ticket_entry(code="TEST-TICKET-PARTIAL-TRANSLATE")

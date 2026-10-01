@@ -31,7 +31,7 @@ risked truncating mid-JSON at 8192.
 import os
 import json
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
@@ -123,10 +123,10 @@ class ClaudeTranslator:
         source_fields: Dict[str, str],
         target_languages: List[str],
         retries: int = 5,
-    ) -> Dict[str, Dict[str, str]]:
+    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
         non_empty_fields = {k: v for k, v in source_fields.items() if isinstance(v, str) and v.strip()}
         if not non_empty_fields:
-            return {lang: dict(source_fields) for lang in target_languages}
+            return {lang: dict(source_fields) for lang in target_languages}, {}
 
         prompt = (
             f"Translate the following fields from English into these target languages: "
@@ -186,6 +186,7 @@ class ClaudeTranslator:
 
         # Build result, filling gaps
         result = {}
+        fallback_fields: Dict[str, List[str]] = {}
         for lang in target_languages:
             lang_result = {}
             lang_data = raw_translations.get(lang, {}) if isinstance(raw_translations, dict) else {}
@@ -194,10 +195,11 @@ class ClaudeTranslator:
                 if not translated or not str(translated).strip():
                     if field in non_empty_fields:
                         print(f"⚠️  Missing/empty translation for '{field}' -> {lang}; falling back to English source.")
+                        fallback_fields.setdefault(lang, []).append(field)
                     translated = source_value
                 lang_result[field] = translated
             result[lang] = lang_result
-        return result
+        return result, fallback_fields
 
 
 def _build_gemini_response_schema(fields: Dict[str, str], target_languages: List[str]) -> dict:
@@ -231,10 +233,10 @@ class GeminiTranslator:
         source_fields: Dict[str, str],
         target_languages: List[str],
         retries: int = 5,
-    ) -> Dict[str, Dict[str, str]]:
+    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
         non_empty_fields = {k: v for k, v in source_fields.items() if isinstance(v, str) and v.strip()}
         if not non_empty_fields:
-            return {lang: dict(source_fields) for lang in target_languages}
+            return {lang: dict(source_fields) for lang in target_languages}, {}
 
         schema = _build_gemini_response_schema(non_empty_fields, target_languages)
         prompt = USER_PROMPT_TEMPLATE.format(
@@ -301,6 +303,7 @@ class GeminiTranslator:
                     raise ProviderRateLimitError(f"Gemini rate limit exhausted after {retries+1} attempts")
 
         result = {}
+        fallback_fields: Dict[str, List[str]] = {}
         for lang in target_languages:
             lang_result = {}
             lang_data = raw_translations.get(lang, {}) if isinstance(raw_translations, dict) else {}
@@ -309,10 +312,11 @@ class GeminiTranslator:
                 if not translated or not str(translated).strip():
                     if field in non_empty_fields:
                         print(f"⚠️  Missing/empty translation for '{field}' -> {lang}; falling back to English source.")
+                        fallback_fields.setdefault(lang, []).append(field)
                     translated = source_value
                 lang_result[field] = translated
             result[lang] = lang_result
-        return result
+        return result, fallback_fields
 
 
 class FallbackTranslator:
@@ -325,9 +329,9 @@ class FallbackTranslator:
         source_fields: Dict[str, str],
         target_languages: List[str],
         retries: int = 5,
-    ) -> Dict[str, Dict[str, str]]:
+    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
         try:
-            result = self.primary.translate_fields(source_fields, target_languages, retries)
+            result, fallback_fields = self.primary.translate_fields(source_fields, target_languages, retries)
             # Check if all languages are still English (no changes)
             all_english = True
             for lang in target_languages:
@@ -340,7 +344,7 @@ class FallbackTranslator:
             if all_english:
                 print("⚠️  Primary provider returned only English fallback. Switching to Claude for this batch...")
                 return self.fallback.translate_fields(source_fields, target_languages, retries)
-            return result
+            return result, fallback_fields
         except (ProviderRateLimitError, Exception) as e:
             print(f"⚠️  Primary provider failed: {e}. Switching to Claude for this batch...")
             return self.fallback.translate_fields(source_fields, target_languages, retries)
@@ -376,38 +380,61 @@ def translate_in_batches(
     (number of batches / max_workers) * (single batch's own latency),
     instead of (number of batches) * (single batch's own latency + 2s).
 
-    Returns (combined_translations, failed_languages):
+    Returns (combined_translations, failed_languages, fallback_fields):
       - combined_translations: Dict[lang -> {field: translated_text}], same
         as before.
       - failed_languages: set of languages whose BATCH ITSELF failed (the
         translate_fields() call raised after exhausting retries), and which
         therefore got a verbatim copy of the English source instead of a
         real translation.
+      - fallback_fields: Dict[lang -> [field, ...]] (2026-09-30 addition).
+        CONFIRMED REAL BUG (real report: a Closed Tour's "hotels"/
+        accommodation blurb stayed in English on an otherwise-translated
+        page): translate_fields() has always silently substituted the
+        English source for any ONE field the model's response happened to
+        leave out or return empty for a given language - common on a long,
+        multi-field batch (a Closed Tour's name/description/included/
+        excluded/hotels/remarks... all in one call) where the model
+        truncates or skips a field. That used to be a print() statement
+        nobody saw in production - the language still counted as fully
+        translated (correctly so for every OTHER field in it), so the one
+        silently-English field was invisible and never retried. This dict
+        surfaces exactly which (language, field) pairs fell back this run,
+        for every entity type that calls translate_in_batches, so callers
+        can show it instead of burying it in a server log. By product-owner
+        decision (2026-09-30): surfaced as a visible warning only - a
+        language with a per-field fallback still counts as translated (not
+        retried automatically); use Force re-translate if you want another
+        attempt after noticing one.
 
-    CONFIRMED live bug this fixes: every calling sync_*.py file used to
-    decide "did this language actually translate?" by comparing the
-    translated text to the source text field-by-field — if identical,
-    it assumed the call had silently failed and dropped that language
-    entirely (never written, never marked done). That heuristic breaks for
-    short, commonly-borrowed words: a ticket modality literally named
-    "Standard" legitimately translates to "Standard" in French, German,
-    Polish, etc. (real value, not a fallback) — but the old "identical =
-    failed" check couldn't tell that apart from a genuine failure and
-    silently discarded it, every single run, forever. `failed_languages`
-    gives calling code a real signal to filter on instead: a language is
-    only unreliable if its batch actually raised, not merely because its
-    correct translation happens to match the English source.
+    CONFIRMED live bug this fixes (failed_languages, pre-existing): every
+    calling sync_*.py file used to decide "did this language actually
+    translate?" by comparing the translated text to the source text
+    field-by-field - if identical, it assumed the call had silently failed
+    and dropped that language entirely (never written, never marked done).
+    That heuristic breaks for short, commonly-borrowed words: a ticket
+    modality literally named "Standard" legitimately translates to
+    "Standard" in French, German, Polish, etc. (real value, not a
+    fallback) - but the old "identical = failed" check couldn't tell that
+    apart from a genuine failure and silently discarded it, every single
+    run, forever. `failed_languages` gives calling code a real signal to
+    filter on instead: a language is only unreliable if its batch actually
+    raised, not merely because its correct translation happens to match
+    the English source.
     """
     failed_languages = set()
+    fallback_fields: Dict[str, List[str]] = {}
     batches = [target_languages[i:i + batch_size] for i in range(0, len(target_languages), batch_size)]
     if len(batches) <= 1:
         # No concurrency needed/possible for a single batch.
         try:
-            return translator.translate_fields(fields, target_languages), failed_languages
+            result, batch_fallback = translator.translate_fields(fields, target_languages)
+            fallback_fields.update(batch_fallback)
+            return result, failed_languages, fallback_fields
         except Exception as e:
             print(f"⚠️  Batch {target_languages} failed entirely: {e} — falling back to English for these languages.")
             failed_languages.update(target_languages)
-            return {lang: dict(fields) for lang in target_languages}, failed_languages
+            return {lang: dict(fields) for lang in target_languages}, failed_languages, fallback_fields
 
     combined: Dict[str, Dict[str, str]] = {}
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as executor:
@@ -418,14 +445,15 @@ def translate_in_batches(
         for future in as_completed(future_to_batch):
             batch = future_to_batch[future]
             try:
-                result = future.result()
+                result, batch_fallback = future.result()
                 combined.update(result)
+                fallback_fields.update(batch_fallback)
             except Exception as e:
                 print(f"⚠️  Batch {batch} failed entirely: {e} — falling back to English for these languages.")
                 for lang in batch:
                     combined[lang] = dict(fields)
                     failed_languages.add(lang)
-    return combined, failed_languages
+    return combined, failed_languages, fallback_fields
 
 
 def required_api_key_env_var() -> str:

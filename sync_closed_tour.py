@@ -307,7 +307,7 @@ def sync_closed_tour_from_data(
 
     compressed_translatable = compress_translatable_fields(translatable)
     translation_start = time.time()
-    combined_translations, failed_languages = translate_in_batches(
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(
         translator, compressed_translatable, needed, batch_size=DATASHEET_BATCH_SIZE
     )
     translation_time = time.time() - translation_start
@@ -326,6 +326,15 @@ def sync_closed_tour_from_data(
     if not successful:
         return {"status": "skipped", "closed_tour_code": closed_tour_code, "reason": "no successful translations"}
 
+    # CONFIRMED REAL BUG (2026-09-30, real report: a Closed Tour's "hotels"/accommodation blurb
+    # stayed in English on an otherwise-translated page) - translate_in_batches' fallback_fields
+    # tells us which (language, field) pairs the model's response left out, silently kept as
+    # English. Surfaced here so the caller (translation_tool.py) can show it, instead of it only
+    # ever reaching a server log. These languages still count as fully translated per the
+    # product-owner's 2026-09-30 decision - not auto-retried, just visible.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     en_entry = datasheets.get("EN") or datasheets.get("EN_US") or {}
     new_datasheets = build_updated_datasheets(datasheets, successful, en_entry)
 
@@ -333,7 +342,8 @@ def sync_closed_tour_from_data(
         preview = {lang: {k: v for k, v in trans.items() if k in TEXT_FIELDS}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "closed_tour_code": closed_tour_code,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     write_start = time.time()
     # Full copy of the original entry, only datasheets replaced — itinerary,
@@ -357,7 +367,11 @@ def sync_closed_tour_from_data(
     total_time = time.time() - start_time
     print(f"✅ Closed tour {closed_tour_code} done in {total_time:.1f}s "
           f"(translate: {translation_time:.1f}s, write: {write_time:.1f}s)")
-    return {"status": "updated", "closed_tour_code": closed_tour_code, "languages_written": written_langs}
+    if fields_fallback_to_english:
+        print(f"⚠️  Closed tour {closed_tour_code}: some fields fell back to English where the "
+              f"translator's response was missing them: {fields_fallback_to_english}")
+    return {"status": "updated", "closed_tour_code": closed_tour_code, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 # =========================================================================
@@ -436,7 +450,7 @@ def sync_closed_tour_option_from_data(
         return {"status": "up_to_date", "option_code": option_code}
 
     compressed_translatable = compress_translatable_fields(translatable)
-    combined_translations, failed_languages = translate_in_batches(
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(
         translator, compressed_translatable, needed, batch_size=OPTION_BATCH_SIZE
     )
 
@@ -453,13 +467,18 @@ def sync_closed_tour_option_from_data(
     if not successful:
         return {"status": "skipped", "option_code": option_code, "reason": "no successful translations"}
 
+    # See sync_closed_tour_from_data's own comment above on fields_fallback_to_english.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     updated_option = build_updated_option(option_entry, successful)
 
     if dry_run:
         preview = {lang: {k: v for k, v in trans.items() if k in OPTION_TEXT_FIELDS}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "option_code": option_code,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     result = api.update_closed_tour_option(supplier_id, closed_tour_code, updated_option)
     if isinstance(result, dict) and "error" in result:
@@ -473,7 +492,10 @@ def sync_closed_tour_option_from_data(
 
     elapsed = time.time() - start_time
     print(f"✅ Option {option_code} done in {elapsed:.1f}s")
-    return {"status": "updated", "option_code": option_code, "languages_written": written_langs}
+    if fields_fallback_to_english:
+        print(f"⚠️  Option {option_code}: some fields fell back to English: {fields_fallback_to_english}")
+    return {"status": "updated", "option_code": option_code, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 def sync_all_options_for_closed_tour_from_data(

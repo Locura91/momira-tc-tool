@@ -248,7 +248,7 @@ def sync_one_package_entry(api, translator, store: StateStore,
 
     # --- BATCH TRANSLATIONS (run concurrently instead of one-after-another) ---
     print(f"🌐 Translating package {package_id}: {list(translatable.keys())} -> {needed}")
-    combined_translations, failed_languages = translate_in_batches(translator, translatable, needed, batch_size=BATCH_SIZE)
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(translator, translatable, needed, batch_size=BATCH_SIZE)
 
     # Filter out only languages whose batch genuinely failed (see
     # filter_successful_translations' docstring — no longer "identical to
@@ -258,6 +258,14 @@ def sync_one_package_entry(api, translator, store: StateStore,
     if not translations:
         return {"status": "skipped", "package_id": package_id,
                 "reason": "no successful translations (all batches failed)"}
+
+    # CONFIRMED REAL BUG (2026-09-30, see translator.translate_in_batches' own docstring): a
+    # field missing from the model's response for a language silently falls back to the English
+    # source - still counted as a successful translation, but worth surfacing rather than only
+    # reaching a server log. Still counts as translated (not auto-retried) per the product-owner's
+    # 2026-09-30 decision.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in translations and fields}
 
     per_lang_status = {}
     written_languages = []
@@ -285,6 +293,7 @@ def sync_one_package_entry(api, translator, store: StateStore,
         "status": "dry_run_preview" if dry_run else "updated",
         "package_id": package_id,
         "languages": per_lang_status,
+        "fields_fallback_to_english": fields_fallback_to_english,
     }
 
 

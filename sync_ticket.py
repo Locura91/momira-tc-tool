@@ -239,7 +239,7 @@ def sync_ticket_from_data(
     total_batches = (len(needed) + BATCH_SIZE - 1) // BATCH_SIZE
     print(f"   translating {len(needed)} language(s) in {total_batches} batch(es), running concurrently")
     translation_start = time.time()
-    combined_translations, failed_languages = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
     translation_time = time.time() - translation_start
 
     # NOTE: this used to filter out any language whose translated text was
@@ -259,6 +259,12 @@ def sync_ticket_from_data(
     if not successful:
         return {"status": "skipped", "ticket_code": ticket_code, "reason": "no successful translations"}
 
+    # See translator.translate_in_batches' own docstring (2026-09-30) - a field missing from the
+    # model's response for a language silently falls back to the English source, still counted
+    # as a successful translation. Surfaced here rather than only reaching a server log.
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     en_entry = datasheets.get("EN") or datasheets.get("EN_US") or {}
     new_datasheets = build_updated_datasheets(datasheets, successful, en_entry)
 
@@ -266,7 +272,8 @@ def sync_ticket_from_data(
         preview = {lang: {k: v for k, v in trans.items() if k in TEXT_FIELDS or k in LIST_FIELDS}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "ticket_code": ticket_code,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     write_start = time.time()
     payload = dict(ticket_entry)
@@ -285,7 +292,8 @@ def sync_ticket_from_data(
     total_time = time.time() - start_time
     print(f"✅ Ticket {ticket_code} done in {total_time:.1f}s "
           f"(verify: {verify_time:.1f}s, translate: {translation_time:.1f}s, write: {write_time:.1f}s)")
-    return {"status": "updated", "ticket_code": ticket_code, "languages_written": written_langs}
+    return {"status": "updated", "ticket_code": ticket_code, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 # Original sync_ticket wrapper (for single ticket mode)
@@ -404,7 +412,7 @@ def sync_ticket_option_from_data(
         return {"status": "up_to_date", "option_code": option_code}
 
     compressed_translatable = compress_translatable_fields(translatable)
-    combined_translations, failed_languages = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
+    combined_translations, failed_languages, fallback_fields = translate_in_batches(translator, compressed_translatable, needed, batch_size=BATCH_SIZE)
 
     # See the comment on the main-ticket translate call above: a modality
     # name like "Standard" can legitimately translate to "Standard" in
@@ -420,13 +428,17 @@ def sync_ticket_option_from_data(
     if not successful:
         return {"status": "skipped", "option_code": option_code, "reason": "no successful translations"}
 
+    fields_fallback_to_english = {lang: fields for lang, fields in fallback_fields.items()
+                                   if lang in successful and fields}
+
     updated_option = build_updated_option(option_entry, successful)
 
     if dry_run:
         preview = {lang: {k: v for k, v in trans.items() if k.startswith(("remarks_", "supplement_"))}
                    for lang, trans in successful.items()}
         return {"status": "dry_run_preview", "option_code": option_code,
-                "languages": list(successful.keys()), "preview": preview}
+                "languages": list(successful.keys()), "preview": preview,
+                "fields_fallback_to_english": fields_fallback_to_english}
 
     result = api.update_ticket_option(supplier_id, ticket_code, updated_option)
     if isinstance(result, dict) and "error" in result:
@@ -440,7 +452,8 @@ def sync_ticket_option_from_data(
 
     elapsed = time.time() - start_time
     print(f"✅ Option {option_code} done in {elapsed:.1f}s")
-    return {"status": "updated", "option_code": option_code, "languages_written": written_langs}
+    return {"status": "updated", "option_code": option_code, "languages_written": written_langs,
+            "fields_fallback_to_english": fields_fallback_to_english}
 
 
 def sync_all_options_for_ticket_from_data(

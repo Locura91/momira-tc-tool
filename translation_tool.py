@@ -722,6 +722,28 @@ def render_translation_tool():
 
     # ---- Summary ----
     by_status = {}
+    # CONFIRMED REAL BUG (2026-09-30, real report: a Closed Tour's "hotels"/accommodation blurb
+    # stayed in English on an otherwise-translated page) - every sync_*_from_data function now
+    # returns a "fields_fallback_to_english" dict (see translator.translate_in_batches) whenever
+    # the AI model's response left a field out for some language. By product-owner decision
+    # (2026-09-30): that language still counts as translated - not auto-retried - but must be
+    # visible here instead of only ever reaching a server log.
+    fallback_warnings = []  # list of (entity label, language, [fields])
+
+    def _entity_label(r):
+        for key in ("closed_tour_code", "ticket_code", "transfer_id", "transport_id",
+                    "contract_id", "room_code", "supplement_code", "offer_code",
+                    "package_id", "option_code"):
+            if r.get(key):
+                return f"{key}={r[key]}"
+        return "?"
+
+    def _collect_fallback(r):
+        fallback = r.get("fields_fallback_to_english")
+        if fallback:
+            label = _entity_label(r)
+            for lang, fields in fallback.items():
+                fallback_warnings.append((label, lang, fields))
 
     def count(r):
         if isinstance(r, dict):
@@ -729,12 +751,14 @@ def render_translation_tool():
                 main = r["main"]
                 if isinstance(main, dict):
                     by_status.setdefault(main.get("status", "unknown"), []).append(main)
+                    _collect_fallback(main)
                 for room in r.get("rooms", []):
                     count(room)
                 for supp in r.get("supplements", []):
                     count(supp)
             else:
                 by_status.setdefault(r.get("status", "unknown"), []).append(r)
+                _collect_fallback(r)
                 if isinstance(r.get("options"), list):
                     for opt in r["options"]:
                         count(opt)
@@ -747,5 +771,18 @@ def render_translation_tool():
     st.subheader("Summary")
     for status, items in by_status.items():
         st.write(f"**{status}**: {len(items)}")
+
+    if fallback_warnings:
+        st.warning(
+            f"⚠️ {len(fallback_warnings)} field/language combination(s) came back from the "
+            f"translator without a value and fell back to the English source - the translator's "
+            f"response left them out (common on long fields like a Closed Tour's accommodation "
+            f"blurb). These still count as translated, so they won't be retried automatically - "
+            f"use **Force re-translate** if you want another attempt."
+        )
+        with st.expander("⚠️ Fields that fell back to English"):
+            for label, lang, fields in fallback_warnings:
+                st.write(f"- **{label}**, {lang}: {', '.join(fields)}")
+
     with st.expander("Full result"):
         st.json(results)
