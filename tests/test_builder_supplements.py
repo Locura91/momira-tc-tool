@@ -65,15 +65,20 @@ def test_single_and_double_fall_back_to_the_flat_price_when_not_given_separately
 
 
 def test_per_occupancy_prices_override_the_flat_price():
+    """CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    prices from a document, we round up. So if there's a price of 35 and 10 cents, we would say
+    36") - _safe_supplement_price now rounds every supplement price up to the next whole
+    currency unit (see its docstring in builder.py), so a document price with cents (35.5,
+    23.67, 17.75 below) is expected to come out whole, not passed through unchanged."""
     vos = build_supplement_vos([{
         "name": "Per-room surcharge", "price": 71,
         "single_price": 71, "double_price": 35.5, "triple_price": 23.67, "quadruple_price": 17.75,
     }])
     vo = vos[0]
     assert vo.price.singlePrice == 71.0
-    assert vo.price.doublePrice == 35.5
-    assert vo.price.triplePrice == 23.67
-    assert vo.price.quadruplePrice == 17.75
+    assert vo.price.doublePrice == 36.0
+    assert vo.price.triplePrice == 24.0
+    assert vo.price.quadruplePrice == 18.0
 
 
 def test_travel_window_only_set_when_both_dates_present():

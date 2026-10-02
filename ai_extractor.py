@@ -111,6 +111,22 @@ impossible result (e.g. "13/25/2026"), say so in the notes field rather than pic
 ALWAYS OUTPUT YYYY-MM-DD. That is the format Travel Compositor's API accepts and the format every
 date field below expects; the app converts it back to DD/MM/YYYY for the human to read. Do not
 output DD/MM/YYYY yourself, whatever the source used.
+
+ROUNDING - CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim): "if we ever have numbers
+or prices from a document, we round up. So if there's a price of 35 and 10 cents, we would say
+36." Applies to EVERY price you extract from this document, for every product type and every
+price field - a base/per-occupancy price, a supplement, a tax amount, a hotel rate, an
+additional-service charge, a meal-plan price - whatever cents the source states, round UP to the
+next whole currency unit before writing the number into any price field (35.10 -> 36, 30.89 ->
+31, 0.75 -> 1, and an already-whole price like 120 stays 120). Always round UP, never to the
+nearest whole number and never down. This is separate from, and in addition to, the existing rule
+further below about rounding a COMPUTED per-occupancy split (a flat total divided by 1/2/3/4) up
+to a whole number - that rule still applies on top of this one once the division is done. Do NOT
+apply this rounding to a PERCENTAGE value (a discount %, a surcharge stated as "X% of the base
+price", a refund/cancellation percentage) - those are rates, not currency amounts, and must be
+written exactly as stated. The app also enforces this rounding itself as a safety net before
+publishing, but get it right here first so what the human reviews already matches what gets
+published, rather than seeing a cents figure that then silently changes.
 """
 
 
