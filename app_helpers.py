@@ -32,6 +32,7 @@ import streamlit as st
 
 import widget_state
 import masterdata_store
+from list_response_utils import normalize_list_response
 import masterdata_matcher
 import hotel_automap
 import bulk_notes
@@ -420,6 +421,31 @@ def _modality_code_suspicious(code):
         return True
     lowered = c.lower()
     return any(junk in lowered for junk in ("people", " pax", "person", " min ", " max ", "min ", "max "))
+
+
+def reset_session_keep_core():
+    """CONSOLIDATED 2026-10-02 (weekly duplicate-code audit; product-owner request, verbatim:
+    "please start the weekly check ... with the focus on duplicates ... we need to check
+    completely"). This exact 9-line "clear the whole session but keep the 4 keys that must survive
+    a flow reset" block was hand-copied byte-for-byte 8 times - 3 in app.py (the inactive-tour,
+    active-tour, and "add another Modality" post-publish buttons), 2 more in flows/multi_tour.py,
+    and 3 in flows/ticket.py - each used right before st.session_state.clear() wipes everything
+    else (the chosen API client, the cached supplier list, the selected product type, and which
+    tool card is active all need to survive a "start fresh" click; everything else genuinely
+    shouldn't). Every call site's own flow-specific prefill keys set AFTER this reset (e.g.
+    cfg_action/cfg_supplier_id for "add another Modality") are deliberately NOT touched here -
+    those differ per flow (and, in flows/multi_tour.py's "Do something else with this Code"
+    variant, are deliberately skipped altogether so a human re-picks the action) and stay at each
+    call site."""
+    keep_client = st.session_state.client
+    keep_suppliers = st.session_state.suppliers_cache
+    keep_product_type = st.session_state.product_type
+    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
+    st.session_state.clear()
+    st.session_state.client = keep_client
+    st.session_state.suppliers_cache = keep_suppliers
+    st.session_state.product_type = keep_product_type
+    st.session_state.active_tool = keep_tool
 
 
 def _reset_mct_state():
@@ -1185,14 +1211,7 @@ def get_existing_tour_names(client, supplier_id):
 
     # Normalize whatever shape came back - a bare list, or a dict wrapping
     # the list under one of a few likely keys - into a flat list of items.
-    items = []
-    if isinstance(result, list):
-        items = result
-    elif isinstance(result, dict):
-        for key in ("closedTour", "closedTours", "items", "data", "results", "content"):
-            if isinstance(result.get(key), list):
-                items = result[key]
-                break
+    items = normalize_list_response(result, ("closedTour", "closedTours", "items", "data", "results", "content"))
 
     names = []
     for item in items:
@@ -1233,14 +1252,7 @@ def get_existing_ticket_codes(client, supplier_id):
         cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing tickets")
         return cache[supplier_id]
 
-    items = []
-    if isinstance(result, list):
-        items = result
-    elif isinstance(result, dict):
-        for key in ("ticket", "tickets", "items", "data", "results", "content"):
-            if isinstance(result.get(key), list):
-                items = result[key]
-                break
+    items = normalize_list_response(result, ("ticket", "tickets", "items", "data", "results", "content"))
 
     names = []
     for item in items:
@@ -1400,14 +1412,7 @@ def get_existing_hotel_names(client, supplier_id):
         cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing hotels")
         return cache[supplier_id]
 
-    items = []
-    if isinstance(result, list):
-        items = result
-    elif isinstance(result, dict):
-        for key in ("hotel", "hotels", "items", "data", "results", "content"):
-            if isinstance(result.get(key), list):
-                items = result[key]
-                break
+    items = normalize_list_response(result, ("hotel", "hotels", "items", "data", "results", "content"))
 
     names = []
     for item in items:

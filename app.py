@@ -138,6 +138,7 @@ from app_helpers import (
     _clean_modality_code,
     _modality_code_suspicious,
     _reset_mct_state,
+    reset_session_keep_core,
     _new_mct_tour,
     _PUBLISH_ERROR_PATTERNS,
     _LEGACY_TOUR_STEP_NAMES,
@@ -3192,43 +3193,19 @@ if st.session_state.get("just_published_tour_code"):
                   "Modalities or make further changes, first **activate it manually inside Travel "
                   "Compositor**, then come back and use 'Add new Modality to existing ClosedTour'.")
         if st.button("🆕 Start a new ClosedTour", type="primary"):
-            keep_client = st.session_state.client
-            keep_suppliers = st.session_state.suppliers_cache
-            keep_product_type = st.session_state.product_type
-            keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-            st.session_state.clear()
-            st.session_state.client = keep_client
-            st.session_state.suppliers_cache = keep_suppliers
-            st.session_state.product_type = keep_product_type
-            st.session_state.active_tool = keep_tool
+            reset_session_keep_core()
             st.rerun()
     else:
         fcol1, fcol2 = st.columns(2)
         with fcol1:
             if st.button("🆕 Start a new ClosedTour", type="primary"):
-                keep_client = st.session_state.client
-                keep_suppliers = st.session_state.suppliers_cache
-                keep_product_type = st.session_state.product_type
-                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                st.session_state.clear()
-                st.session_state.client = keep_client
-                st.session_state.suppliers_cache = keep_suppliers
-                st.session_state.product_type = keep_product_type
-                st.session_state.active_tool = keep_tool
+                reset_session_keep_core()
                 st.rerun()
         with fcol2:
             if st.button("➕ Add another Modality to this same ClosedTour"):
                 prefill_tour_code = st.session_state.just_published_tour_code
                 prefill_supplier_id = st.session_state.just_published_supplier_id
-                keep_client = st.session_state.client
-                keep_suppliers = st.session_state.suppliers_cache
-                keep_product_type = st.session_state.product_type
-                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                st.session_state.clear()
-                st.session_state.client = keep_client
-                st.session_state.suppliers_cache = keep_suppliers
-                st.session_state.product_type = keep_product_type
-                st.session_state.active_tool = keep_tool
+                reset_session_keep_core()
                 st.session_state.cfg_action = "add_option"
                 st.session_state.cfg_supplier_id = prefill_supplier_id
                 st.session_state.cfg_existing_tour_code = prefill_tour_code

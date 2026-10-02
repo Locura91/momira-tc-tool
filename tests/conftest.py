@@ -80,6 +80,24 @@ class FakeTravelCompositorAPI:
         return []
 
 
+def read_flow_source(filename: str) -> str:
+    """CONSOLIDATED 2026-10-02 (weekly duplicate-code audit): flows/*.py modules can't be
+    imported standalone in a test process - they're designed to be loaded only via app.py's own
+    controlled circular-import sequence (see e.g. flows/multi_tour.py's own module docstring on
+    late-binding `from app import (...)`) - so tests that need to pin something about a flow
+    module's wiring read its source as text instead. A byte-identical `_read_multi_tour_source()`
+    helper used to be hand-copied in test_2026_09_18_closedtour_season_date_range_fixes.py and
+    test_2026_09_18_max_occupancy_extraction_hint.py; other test files had their own slightly
+    different variants of the same idea (test_2026_09_11_id_suffix_unbound_local_fix.py,
+    test_2026_10_02_multi_modality_touching_boundary_fix.py). This one shared, parameterized
+    helper replaces the byte-identical copies - the two files with extra logic layered on top
+    (function-slicing, etc.) still call this for the base read.
+    `filename` is relative to the flows/ directory, e.g. "multi_tour.py"."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "flows", filename)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 @pytest.fixture
 def fake_api_client():
     return FakeTravelCompositorAPI()

@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from state_store import StateStore, compute_hash
 from translator import get_translator, translate_in_batches
+from sync_shared import strip_html_and_compress, compress_translatable_fields
 
 # ---- Configuration ----
 BATCH_SIZE = 10
@@ -23,32 +24,11 @@ ROOM_TEXT_FIELDS = ("description",)   # only description, name excluded
 SUPPLEMENT_TEXT_FIELDS = ("description",)
 OFFER_TEXT_FIELDS = ("description",)
 
-
-def strip_html_and_compress(text: str) -> str:
-    """
-    NO-OP passthrough now. This used to strip every HTML tag out of a
-    field before sending it to the translator, which silently destroyed
-    any real formatting the source field had (bullet lists, bold, etc.).
-    translator.py's SYSTEM_PROMPT already explicitly instructs the model
-    to "preserve HTML tags ... EXACTLY as they appear, untouched, in the
-    same position" — but that instruction is meaningless if the tags are
-    stripped out before the model ever sees them. Confirmed as the cause
-    of translated Closed Tour fields losing all formatting (came back as
-    flat <p> text instead of the original's <ul><li>/<b> structure); this
-    file shares the exact same bug for any HTML-bearing field, so it's
-    fixed the same way here.
-    """
-    return text
-
-
-def compress_translatable_fields(fields: Dict[str, str]) -> Dict[str, str]:
-    compressed = {}
-    for key, value in fields.items():
-        if isinstance(value, str):
-            compressed[key] = strip_html_and_compress(value)
-        else:
-            compressed[key] = value
-    return compressed
+# strip_html_and_compress and compress_translatable_fields moved to sync_shared.py (2026-10-02
+# duplicate-code audit) - byte-identical across every sync_*.py module, imported above instead
+# of redefined here. Hotel's own room/supplement/offer extract/get_existing/build_updated
+# functions stay here unchanged - their field shapes (a "descriptions" array, not "datasheets")
+# are genuinely different from the other entity types, not just hand-copied duplication.
 
 
 # ---------- Main hotel ----------

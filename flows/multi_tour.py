@@ -37,6 +37,7 @@ from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 import cancellation_links
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from image_dimensions import FALLBACK_IMAGE
+from app_helpers import reset_session_keep_core
 from ui_components import (
     editable_table, editable_field, render_cancellation_policy_editor,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
@@ -1343,15 +1344,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if st.button("➕ Add another Modality to this same ClosedTour"):
                     prefill_tour_code = st.session_state.just_published_tour_code
                     prefill_supplier_id = st.session_state.just_published_supplier_id
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     st.session_state.cfg_action = "add_option"
                     st.session_state.cfg_supplier_id = prefill_supplier_id
                     st.session_state.cfg_existing_tour_code = prefill_tour_code
@@ -1365,15 +1358,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                  "filled in for you once you reach Step 3."):
                     prefill_tour_code = st.session_state.just_published_tour_code
                     prefill_supplier_id = st.session_state.just_published_supplier_id
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     # Deliberately NOT setting cfg_action/step1_confirmed here - the human still
                     # picks which action they want at Step 1, same as any fresh run. Only the
                     # code (and, as a convenience, the supplier) are carried forward so whichever

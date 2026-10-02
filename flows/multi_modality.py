@@ -20,7 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from schemas import HumanPreConfig
-from builder import build_closed_tour_payloads, coerce_price_list_shape
+from builder import build_closed_tour_payloads, coerce_price_list_shape, fix_touching_season_boundaries
 from document_reader import extract_raw_text
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import (
@@ -270,10 +270,18 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
                 if name:
                     entry["name"] = name
                 return entry
-            data["price_list"] = sorted(
+            # CONFIRMED BUG FIX (2026-10-02 weekly duplicate-code audit): this callback was
+            # missing the same product-owner-mandated "End date must be one day before next
+            # season start date" rule app.py (on display) and flows/multi_tour.py's own
+            # equivalent manual-edit callback (on save) already apply - see
+            # fix_touching_season_boundaries's docstring in builder.py for the full reasoning
+            # and quote. Without it, a human editing this table into two touching seasons here
+            # (unlike in multi_tour.py's flow) would have the overlap silently reach Travel
+            # Compositor's publish call unfixed.
+            data["price_list"] = fix_touching_season_boundaries(sorted(
                 [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
                 key=lambda e: e.get("startDate", "")
-            )
+            ))
 
         editable_table(f"Pricing - {current['code']}", price_df, f"mm_pricing_{idx}", on_save=_save_mm_price_list)
         render_extra_child_notice(data, f"mm_{idx}")

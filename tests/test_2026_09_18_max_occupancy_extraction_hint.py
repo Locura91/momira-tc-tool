@@ -129,10 +129,8 @@ def test_extract_modality_data_adds_nothing_when_hint_is_none(monkeypatch):
 # ---------------------------------------------------------------------------------------------
 
 def _read_multi_tour_source():
-    import os
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "flows", "multi_tour.py")
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    from conftest import read_flow_source
+    return read_flow_source("multi_tour.py")
 
 
 def test_multi_tour_flow_passes_max_pax_through_to_both_extraction_calls():

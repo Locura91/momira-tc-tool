@@ -25,18 +25,13 @@ from sync_ticket import (
     sync_all_options_for_ticket,
     fetch_all_tickets,
 )
+# CONSOLIDATED 2026-10-02 (weekly duplicate-code audit): this script had its own byte-identical
+# copy of translation_tool.py's DEFAULT_TARGET_LANGUAGES ("reduced from 30 to 19" - same
+# product-owner decision, hand-copied rather than shared). sync_shared.py is already a dependency
+# of this script (via sync_ticket.py), so importing from there instead of redefining locally
+# carries no new dependency and keeps a future language-list change to one place.
+from sync_shared import DEFAULT_TARGET_LANGUAGES
 
-# Reduced from 30 to 19 target languages per your instruction: removed
-# Albanian (SQ), Arabic (AR), Azerbaijani (AZ), Georgian (KA), Japanese (JA),
-# Croatian (HR), Malay (MS), Serbian (SR), Thai (TH), Uzbek (UZ), and
-# Bulgarian (BG) — 11 languages dropped, same list shared across every
-# entity type. Persian/Farsi (Iran) was already absent from the 30-language
-# list before this change, so it wasn't removed again here.
-DEFAULT_TARGET_LANGUAGES = [
-    "FR", "SL", "PL", "DE", "SK", "HU", "NL", "ES", "TR",
-    "RU", "NO", "SV", "RO", "CS", "EL", "FI",
-    "PT", "DA", "IT",
-]
 TEST_LANGUAGES = ["FR", "DE"]
 
 

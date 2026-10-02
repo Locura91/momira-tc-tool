@@ -28,6 +28,7 @@ import price_validity
 import cancellation_links
 import draft_autosave
 from image_dimensions import FALLBACK_IMAGE
+from app_helpers import reset_session_keep_core
 from ui_components import (
     editable_table, editable_field, merge_what_to_bring_into_voucher_remarks,
     render_stop_sales_editor, render_cancellation_policy_editor,
@@ -1610,43 +1611,19 @@ def render_ticket_flow(client):
                       "Modalities or make further changes, first **activate it manually inside Travel "
                       "Compositor**, then come back and use 'Add new Modality to existing Ticket'.")
             if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_inactive"):
-                keep_client = st.session_state.client
-                keep_suppliers = st.session_state.suppliers_cache
-                keep_product_type = st.session_state.product_type
-                keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                st.session_state.clear()
-                st.session_state.client = keep_client
-                st.session_state.suppliers_cache = keep_suppliers
-                st.session_state.product_type = keep_product_type
-                st.session_state.active_tool = keep_tool
+                reset_session_keep_core()
                 st.rerun()
         else:
             fcol1, fcol2 = st.columns(2)
             with fcol1:
                 if st.button("🆕 Start a new Ticket", type="primary", key="tk_new_import_active"):
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     st.rerun()
             with fcol2:
                 if st.button("➕ Add another Modality to this same Ticket", key="tk_add_modality_followup"):
                     prefill_ticket_code = st.session_state.tk_just_published_code
                     prefill_supplier_id = st.session_state.tk_just_published_supplier_id
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     st.session_state.tk_cfg_action = "add_option"
                     st.session_state.tk_cfg_supplier_id = prefill_supplier_id
                     st.session_state.tk_cfg_existing_ticket_code = prefill_ticket_code

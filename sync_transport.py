@@ -11,6 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from bulk_notes import normalize_for_put
 from state_store import StateStore, compute_hash
 from translator import get_translator, translate_in_batches
+from sync_shared import (
+    strip_html_and_compress,
+    compress_translatable_fields,
+    build_updated_datasheets as _shared_build_updated_datasheets,
+    verify_and_filter_needed as _shared_verify_and_filter_needed,
+)
 
 # ---- Configuration ----
 BATCH_SIZE = 10
@@ -19,33 +25,6 @@ MAX_OPTION_WORKERS = 5
 
 # ---- Main transport fields ----
 MAIN_TEXT_FIELDS = ("name", "description")
-
-
-def strip_html_and_compress(text: str) -> str:
-    """
-    NO-OP passthrough now. This used to strip every HTML tag out of a
-    field before sending it to the translator, which silently destroyed
-    any real formatting the source field had (bullet lists, bold, etc.).
-    translator.py's SYSTEM_PROMPT already explicitly instructs the model
-    to "preserve HTML tags ... EXACTLY as they appear, untouched, in the
-    same position" — but that instruction is meaningless if the tags are
-    stripped out before the model ever sees them. Confirmed as the cause
-    of translated Closed Tour fields losing all formatting (came back as
-    flat <p> text instead of the original's <ul><li>/<b> structure); this
-    file shares the exact same bug for any HTML-bearing field, so it's
-    fixed the same way here.
-    """
-    return text
-
-
-def compress_translatable_fields(fields: Dict[str, str]) -> Dict[str, str]:
-    compressed = {}
-    for key, value in fields.items():
-        if isinstance(value, str):
-            compressed[key] = strip_html_and_compress(value)
-        else:
-            compressed[key] = value
-    return compressed
 
 
 def extract_translatable_fields_from_transport(transport_entry: Dict[str, Any]) -> Dict[str, str]:
@@ -134,17 +113,7 @@ def build_updated_datasheets(
     translations_by_lang: Dict[str, Dict[str, str]],
     en_entry: Dict[str, Any],
 ) -> Dict[str, Any]:
-    new_datasheets = dict(original_datasheets)
-    for lang, trans in translations_by_lang.items():
-        base = dict(en_entry)
-        for f, text in trans.items():
-            base[f] = text
-        if lang in original_datasheets:
-            for k, v in original_datasheets[lang].items():
-                if k not in base:
-                    base[k] = v
-        new_datasheets[lang] = base
-    return new_datasheets
+    return _shared_build_updated_datasheets(original_datasheets, translations_by_lang, en_entry)
 
 
 def verify_and_filter_needed(
@@ -158,40 +127,10 @@ def verify_and_filter_needed(
     source_fields: Dict[str, str],
     option_code: str = "",
 ) -> List[str]:
-    state = store.get_state(entity_type, supplier_id, entity_id, option_code)
-    if state is None or state["source_hash"] != source_hash:
-        needed = list(target_languages)
-    else:
-        already_done = set(state["translated_languages"])
-        needed = [lang for lang in target_languages if lang not in already_done]
-
-    truly_needed = []
-    languages_to_add_to_state = []
-
-    for lang in needed:
-        existing = get_existing_content_for_language(current_entry, lang)
-        if not existing:
-            truly_needed.append(lang)
-            continue
-
-        is_identical = True
-        for field, src_text in source_fields.items():
-            if existing.get(field) != src_text:
-                is_identical = False
-                break
-
-        if is_identical:
-            truly_needed.append(lang)
-        else:
-            languages_to_add_to_state.append(lang)
-
-    if languages_to_add_to_state:
-        prior_state = store.get_state(entity_type, supplier_id, entity_id, option_code)
-        prior_langs = prior_state["translated_languages"] if prior_state and prior_state["source_hash"] == source_hash else []
-        all_langs = sorted(set(prior_langs) | set(languages_to_add_to_state))
-        store.upsert_state(entity_type, supplier_id, entity_id, source_hash, all_langs, option_code=option_code)
-
-    return truly_needed
+    return _shared_verify_and_filter_needed(
+        store, entity_type, supplier_id, entity_id, source_hash, target_languages,
+        current_entry, source_fields, get_existing_content_for_language, option_code=option_code,
+    )
 
 
 def sync_transport_from_data(

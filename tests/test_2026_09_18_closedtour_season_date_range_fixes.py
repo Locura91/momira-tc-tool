@@ -197,10 +197,8 @@ def test_build_closed_tour_payloads_reapplies_touching_boundary_fix_before_sorti
 # ---------------------------------------------------------------------------------------------
 
 def _read_multi_tour_source():
-    import os
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "flows", "multi_tour.py")
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    from conftest import read_flow_source
+    return read_flow_source("multi_tour.py")
 
 
 def test_multi_tour_imports_both_new_builder_functions():

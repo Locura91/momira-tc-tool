@@ -74,6 +74,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from state_store import StateStore, compute_hash
 from translator import translate_in_batches
+from sync_shared import (
+    strip_html_and_compress,
+    compress_translatable_fields,
+    build_updated_datasheets as _shared_build_updated_datasheets,
+    get_existing_content_for_language as _shared_get_existing_content_for_language,
+    verify_and_filter_needed as _shared_verify_and_filter_needed,
+)
 
 ENTITY_TYPE = "closed_tour"
 OPTION_ENTITY_TYPE = "closed_tour_option"
@@ -120,30 +127,10 @@ TEXT_FIELDS = (
 OPTION_TEXT_FIELDS = ("name", "remarks")
 
 
-def strip_html_and_compress(text: str) -> str:
-    """
-    NO-OP passthrough now. This used to strip every HTML tag out of a
-    field before sending it to the translator — which is exactly why the
-    live ASW-3 test came back with description/included/excluded/hotels
-    flattened to plain <p> text instead of keeping the source's <ul><li>,
-    <b>, etc. structure. translator.py's SYSTEM_PROMPT already explicitly
-    instructs the model to "preserve HTML tags ... EXACTLY as they
-    appear, untouched, in the same position" — but that instruction was
-    meaningless here because the tags were being stripped out before the
-    model ever saw them. Fix: stop stripping; let the model see (and
-    preserve) the real HTML.
-    """
-    return text
-
-
-def compress_translatable_fields(fields: Dict[str, str]) -> Dict[str, str]:
-    compressed = {}
-    for key, value in fields.items():
-        if isinstance(value, str):
-            compressed[key] = strip_html_and_compress(value)
-        else:
-            compressed[key] = value
-    return compressed
+# strip_html_and_compress and compress_translatable_fields moved to sync_shared.py (2026-10-02
+# duplicate-code audit) - byte-identical (as a no-op passthrough) across every sync_*.py module,
+# imported above instead of redefined here. The ASW-3 live-test story behind the no-op is kept
+# in sync_shared.strip_html_and_compress's docstring.
 
 
 # =========================================================================
@@ -176,16 +163,7 @@ def extract_translatable_fields_from_closed_tour(entry: Dict[str, Any]) -> Dict[
 
 
 def get_existing_content_for_language(entry: Dict[str, Any], lang: str) -> Dict[str, str]:
-    datasheets = entry.get("datasheets", {})
-    lang_entry = datasheets.get(lang, {})
-    if not lang_entry:
-        return {}
-    fields = {}
-    for f in TEXT_FIELDS:
-        val = lang_entry.get(f)
-        if isinstance(val, str) and val.strip():
-            fields[f] = val
-    return fields
+    return _shared_get_existing_content_for_language(entry, lang, TEXT_FIELDS)
 
 
 def build_updated_datasheets(
@@ -193,17 +171,7 @@ def build_updated_datasheets(
     translations_by_lang: Dict[str, Dict[str, str]],
     en_entry: Dict[str, Any],
 ) -> Dict[str, Any]:
-    new_datasheets = dict(original_datasheets)
-    for lang, trans in translations_by_lang.items():
-        base = dict(en_entry)
-        for f, text in trans.items():
-            base[f] = text
-        if lang in original_datasheets:
-            for k, v in original_datasheets[lang].items():
-                if k not in base:
-                    base[k] = v
-        new_datasheets[lang] = base
-    return new_datasheets
+    return _shared_build_updated_datasheets(original_datasheets, translations_by_lang, en_entry)
 
 
 def verify_and_filter_needed(
@@ -217,35 +185,16 @@ def verify_and_filter_needed(
     source_fields: Dict[str, str],
     option_code: str = "",
 ) -> List[str]:
-    state = store.get_state(entity_type, supplier_id, entity_id, option_code)
-    if state is None or state["source_hash"] != source_hash:
-        needed = list(target_languages)
-    else:
-        already_done = set(state["translated_languages"])
-        needed = [lang for lang in target_languages if lang not in already_done]
-
-    truly_needed = []
-    languages_to_add_to_state = []
-
-    for lang in needed:
-        existing = get_existing_content_for_language(current_entry, lang) if not option_code \
-            else get_existing_option_content_for_language(current_entry, lang)
-        if not existing:
-            truly_needed.append(lang)
-            continue
-        is_identical = all(existing.get(f) == src for f, src in source_fields.items())
-        if is_identical:
-            truly_needed.append(lang)
-        else:
-            languages_to_add_to_state.append(lang)
-
-    if languages_to_add_to_state:
-        prior_state = store.get_state(entity_type, supplier_id, entity_id, option_code)
-        prior_langs = prior_state["translated_languages"] if prior_state and prior_state["source_hash"] == source_hash else []
-        all_langs = sorted(set(prior_langs) | set(languages_to_add_to_state))
-        store.upsert_state(entity_type, supplier_id, entity_id, source_hash, all_langs, option_code=option_code)
-
-    return truly_needed
+    # Preserves the exact original behavior: no explicit "which content-checker" choice was ever
+    # exposed here before - it always picked get_existing_content_for_language for the main
+    # entity, or get_existing_option_content_for_language whenever option_code was set.
+    existing_content_fn = (
+        get_existing_option_content_for_language if option_code else get_existing_content_for_language
+    )
+    return _shared_verify_and_filter_needed(
+        store, entity_type, supplier_id, entity_id, source_hash, target_languages,
+        current_entry, source_fields, existing_content_fn, option_code=option_code,
+    )
 
 
 def sync_closed_tour_from_data(

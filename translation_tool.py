@@ -64,18 +64,13 @@ from sync_hotel import sync_hotel, fetch_all_hotels
 from sync_closed_tour import sync_closed_tour
 from api_client import describe_tc_fetch_error
 from bulk_notes import label_for as _label_for_closed_tour
-
-
-# Reduced from 30 to 19 target languages per the product owner: removed
-# Albanian (SQ), Arabic (AR), Azerbaijani (AZ), Georgian (KA), Japanese (JA),
-# Croatian (HR), Malay (MS), Serbian (SR), Thai (TH), Uzbek (UZ) and
-# Bulgarian (BG). Applies to every entity type, since they all share this
-# one list. Persian/Farsi was already absent before that change.
-DEFAULT_TARGET_LANGUAGES = [
-    "FR", "SL", "PL", "DE", "SK", "HU", "NL", "ES", "TR",
-    "RU", "NO", "SV", "RO", "CS", "EL", "FI",
-    "PT", "DA", "IT",
-]
+from list_response_utils import normalize_list_response
+# CONSOLIDATED 2026-10-02 (weekly duplicate-code audit): this list used to be defined here
+# independently of run_sync_tickets.py's own byte-identical copy - both applied the same
+# product-owner "reduced from 30 to 19 target languages" decision by hand. Re-exported under this
+# name (app_helpers.py and others already import DEFAULT_TARGET_LANGUAGES from this module) so no
+# other call site had to change.
+from sync_shared import DEFAULT_TARGET_LANGUAGES
 
 # Entity types this tool can translate. Note these are the things ALREADY
 # LIVE in Travel Compositor - which is why the list differs from the Upload
@@ -217,17 +212,12 @@ def _closed_tour_manual_picker(supplier_id):
 
 
 def _normalize_closed_tour_list(result):
-    """Same "don't assume the shape" normalization app_helpers.get_existing_tour_names already
-    uses for this exact endpoint - a bare list, or a dict wrapping the list under one of a few
-    likely keys depending on account/version. Returns a list of {"code", "name"} dicts."""
-    items = []
-    if isinstance(result, list):
-        items = result
-    elif isinstance(result, dict):
-        for key in ("closedTour", "closedTours", "items", "data", "results", "content"):
-            if isinstance(result.get(key), list):
-                items = result[key]
-                break
+    """CONSOLIDATED 2026-10-02 (weekly duplicate-code audit): the shape-sniffing below - "a bare
+    list, or a dict wrapping the list under one of a few likely keys depending on account/version"
+    - used to be a hand-copied twin of app_helpers.get_existing_tour_names's own identical block
+    (this function's docstring said so before this refactor); now both call the same
+    list_response_utils.normalize_list_response. Returns a list of {"code", "name"} dicts."""
+    items = normalize_list_response(result, ("closedTour", "closedTours", "items", "data", "results", "content"))
     tours = []
     for item in items:
         if isinstance(item, dict) and item.get("code"):
