@@ -2206,6 +2206,48 @@ INDONESIA_ALWAYS_BLOCKED_HOLIDAYS: Dict[str, Dict[int, str]] = {
 }
 
 
+# Chinese Golden Week (National Day Holiday): October 1-7 every year. Fixed dates -
+# no lunar variation. Confirmed official public holiday block; China closes for the full
+# 7-day period and tourism to China is severely disrupted. Sourced from official PRC
+# government holiday schedule (checked 2026-10-03).
+CHINESE_GOLDEN_WEEK_DATES: Dict[int, Dict[str, str]] = {
+    year: {"start": f"{year}-10-01", "end": f"{year}-10-07"} for year in range(2025, 2041)
+}
+
+# Chinese Spring Festival (Lunar New Year): 7-day block from New Year's Day.
+# The lunar calendar means the date shifts every year - hardcoded through 2040.
+# Sourced from chinesenewyear.net and official PRC public holiday calendars (checked 2026-10-03).
+# CONFIRMED PRODUCT-OWNER RULE (2026-10-03): "add generally a stop sale for each year of
+# chinese new years spring holiday" - treat identically to Golden Week as a hard block.
+CHINESE_SPRING_FESTIVAL_DATES: Dict[int, Dict[str, str]] = {
+    2025: {"start": "2025-01-29", "end": "2025-02-04"},
+    2026: {"start": "2026-02-17", "end": "2026-02-23"},
+    2027: {"start": "2027-02-06", "end": "2027-02-12"},
+    2028: {"start": "2028-01-26", "end": "2028-02-01"},
+    2029: {"start": "2029-02-13", "end": "2029-02-19"},
+    2030: {"start": "2030-02-03", "end": "2030-02-09"},
+    2031: {"start": "2031-01-23", "end": "2031-01-29"},
+    2032: {"start": "2032-02-11", "end": "2032-02-17"},
+    2033: {"start": "2033-01-31", "end": "2033-02-06"},
+    2034: {"start": "2034-02-19", "end": "2034-02-25"},
+    2035: {"start": "2035-02-08", "end": "2035-02-14"},
+    2036: {"start": "2036-01-28", "end": "2036-02-03"},
+    2037: {"start": "2037-02-15", "end": "2037-02-21"},
+    2038: {"start": "2038-02-04", "end": "2038-02-10"},
+    2039: {"start": "2039-01-24", "end": "2039-01-30"},
+    2040: {"start": "2040-02-12", "end": "2040-02-18"},
+}
+
+# Registry of "always block this date range, every year, for a China ClosedTour/Ticket/Transfer"
+# holidays. Add a new one here (name + confirmed date ranges by year) rather than writing
+# bespoke merge/note code each time - see chinese_holiday_stop_sales()/
+# chinese_holiday_coverage_note() below, which fold every entry in automatically.
+CHINA_ALWAYS_BLOCKED_HOLIDAYS: Dict[str, Dict[int, Dict[str, str]]] = {
+    "Golden Week (National Day)": CHINESE_GOLDEN_WEEK_DATES,
+    "Spring Festival (Lunar New Year)": CHINESE_SPRING_FESTIVAL_DATES,
+}
+
+
 def _is_indonesia_country_value(country_value) -> bool:
     """
     Matches Travel Compositor's own 'country' field on a DestinationVO,
@@ -2325,6 +2367,44 @@ def _detect_vietnam_tour(raw_locations: List[str], api_client: TravelCompositorA
     return False
 
 
+def _is_china_country_value(country_value) -> bool:
+    """Same reasoning as _is_indonesia_country_value - Travel Compositor's 'country' field may
+    hold either an ISO code ("CN") or a full name ("China")."""
+    if not country_value:
+        return False
+    value = str(country_value).strip().lower()
+    return value == "cn" or "china" in value
+
+
+def _is_china_place_name(display_name: str) -> bool:
+    return bool(display_name) and "china" in display_name.lower()
+
+
+def _is_china_destination(place_name: str, api_client: TravelCompositorAPI = None) -> bool:
+    """China counterpart to _is_indonesia_destination - TC-first, geocoder-fallback approach,
+    kept as its own function so each country check can be read and changed independently."""
+    if not place_name:
+        return False
+    if api_client is not None:
+        try:
+            country = api_client.get_destination_country(place_name)
+        except Exception:
+            country = None
+        if country is not None:
+            return _is_china_country_value(country)
+    geo_result = geocode(place_name)
+    return geo_result.get("valid") and _is_china_place_name(geo_result.get("display_name"))
+
+
+def _detect_china_tour(raw_locations: List[str], api_client: TravelCompositorAPI = None) -> bool:
+    """China counterpart to _detect_indonesia_tour - checks each raw destination name
+    and stops as soon as one resolves to a place inside China."""
+    for loc_name in raw_locations:
+        if loc_name and _is_china_destination(loc_name, api_client):
+            return True
+    return False
+
+
 def tet_holiday_overlap(start_date: str, end_date: str) -> Optional[Dict[str, str]]:
     """
     Returns the Tet Holiday window (a {"start", "end", "year"} dict) that overlaps this
@@ -2417,6 +2497,28 @@ def indonesia_holiday_coverage_note() -> str:
             "once announced.")
 
 
+def chinese_holiday_stop_sales() -> List[Dict[str, str]]:
+    """Every date range from every registered CHINA_ALWAYS_BLOCKED_HOLIDAYS entry (currently
+    Golden Week + Spring Festival), as {"start", "end"} stop-sale entries. Safe to always include
+    all known years regardless of the product's selling window - a stop-sale date outside the real
+    range is simply unused, never harmful."""
+    out = []
+    for dates_by_year in CHINA_ALWAYS_BLOCKED_HOLIDAYS.values():
+        out.extend({"start": d["start"], "end": d["end"]} for d in dates_by_year.values())
+    return out
+
+
+def chinese_holiday_coverage_note() -> str:
+    """Plain-language note for the UI so a human reviewing a China product can see at a glance
+    which holidays are automatically blocked and how far each reaches."""
+    parts = []
+    for name, dates_by_year in CHINA_ALWAYS_BLOCKED_HOLIDAYS.items():
+        years = sorted(dates_by_year.keys())
+        parts.append(f"{name} ({years[0]}-{years[-1]})")
+    return ("Automatically blocked every year: " + "; ".join(parts) + ". For years beyond what's "
+            "listed, add the dates manually as a stop-sale once confirmed.")
+
+
 def _merge_stop_sales(existing: List[Dict[str, str]], additions: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Merges two stop-sale lists, skipping any addition that's already present (same start+end)."""
     existing = list(existing or [])
@@ -2493,6 +2595,10 @@ def build_closed_tour_payloads(
     # reminded when this tour's own dates overlap a known Tet window - see below, once the
     # price list's real date range is known.
     is_vietnam = _detect_vietnam_tour(raw_locations, api_client)
+    # China / Golden Week + Spring Festival rule (product owner, 2026-10-03): tours in China
+    # must never be bookable during either Chinese public holiday block - automatically add them
+    # as stop-sales below (same pattern as Indonesia's Vesak Day + Nyepi above).
+    is_china = _detect_china_tour(raw_locations, api_client)
 
     # Transports = number of destination CHANGES along the itinerary (not total stops)
     transports_count = sum(
@@ -2691,6 +2797,8 @@ def build_closed_tour_payloads(
     combined_stop_sales = extracted_dmc_data.get("stop_sales", []) or []
     if is_indonesia:
         combined_stop_sales = _merge_stop_sales(combined_stop_sales, indonesia_holiday_stop_sales())
+    if is_china:
+        combined_stop_sales = _merge_stop_sales(combined_stop_sales, chinese_holiday_stop_sales())
 
     # Collects a message whenever a child-discount value (this tour's document-wide field, or a
     # row's own value straight from AI extraction) had to be capped to 0-100% - see
@@ -2782,6 +2890,8 @@ def build_closed_tour_payloads(
         "is_vietnam": is_vietnam,
         "tet_overlap": tet_overlap,
         "tet_holiday_note": tet_holiday_reminder_note() if is_vietnam else None,
+        "is_china": is_china,
+        "china_holiday_note": chinese_holiday_coverage_note() if is_china else None,
         "effective_release_days": effective_release_days,
         "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
         # Manual-only reminder - see compute_extra_child_plan's docstring for why this can't be sent
@@ -2882,6 +2992,10 @@ def build_ticket_payloads(
     tet_overlap = tet_holiday_overlap(
         extracted_ticket_data.get("start_date"), extracted_ticket_data.get("end_date")
     ) if is_vietnam else None
+    # China / Golden Week + Spring Festival rule (product owner, 2026-10-03): same pattern as
+    # Indonesia above - excursions in China must never be bookable during either Chinese public
+    # holiday block.
+    is_china = _is_china_destination(city, api_client)
 
     # Resolve each meeting point's own coordinates; fall back to the main
     # city's coordinates if a specific meeting point can't be resolved on
@@ -3269,6 +3383,8 @@ def build_ticket_payloads(
         combined_ticket_stop_sales = extracted_ticket_data.get("stop_sales", []) or []
         if is_indonesia:
             combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, indonesia_holiday_stop_sales())
+        if is_china:
+            combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, chinese_holiday_stop_sales())
 
         ticket_option = ContractTicketModalityVO(
             code=pre_config.modality_code,
@@ -3374,6 +3490,8 @@ def build_ticket_payloads(
         "is_vietnam": is_vietnam,
         "tet_overlap": tet_overlap,
         "tet_holiday_note": tet_holiday_reminder_note() if is_vietnam else None,
+        "is_china": is_china,
+        "china_holiday_note": chinese_holiday_coverage_note() if is_china else None,
         "effective_release_days": effective_release_days,
         "release_days_overridden": effective_release_days != pre_config.days_available_before_release,
         "has_real_pricing": any([
@@ -3840,6 +3958,15 @@ def build_transfer_payload(
             raw_transfer_supplements, effective_start_date, effective_end_date,
             notes=_transfer_supplement_zero_price_notes)
 
+        # China / Golden Week + Spring Festival rule (product owner, 2026-10-03): transfers
+        # in China must also block both Chinese public holiday periods as stop-sales.
+        # departure_name and arrival_name cover both ends of the route - block if either is China.
+        _is_china_transfer = (
+            _is_china_destination(departure_name, api_client) or
+            _is_china_destination(arrival_name, api_client)
+        )
+        transfer_stop_sales = chinese_holiday_stop_sales() if _is_china_transfer else []
+
         transfer_kwargs = dict(
             active=True,
             id=existing_transfer_id,
@@ -3871,7 +3998,7 @@ def build_transfer_payload(
             pricesByOccupancy=prices_by_occupancy,
             priceByPax=price_by_pax,
             supplements=supplements,
-            stopSales=[],
+            stopSales=transfer_stop_sales,
             additionalServices=additional_services,
         )
         transfer = ContractTransferVO(**transfer_kwargs)
@@ -3895,6 +4022,8 @@ def build_transfer_payload(
         "is_zone_based": is_zone_based,
         "existing_transfer_id": existing_transfer_id,
         "synthesized_solo_tier": synthesized_solo_tier,
+        "is_china": _is_china_transfer,
+        "china_holiday_note": chinese_holiday_coverage_note() if _is_china_transfer else None,
         # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
         "expired_validity_error": expired_validity_window(
             extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),

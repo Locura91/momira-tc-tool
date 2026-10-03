@@ -1210,6 +1210,11 @@ def render_ticket_flow(client):
                                 f"stop-sale dates, no excursion may start on either day. "
                                 f"{payloads.get('indonesia_holiday_note', '')}")
 
+                    if payloads.get("is_china"):
+                        st.info(f"🇨🇳 China detected — Golden Week (Oct 1–7) and Spring Festival are "
+                                f"automatically blocked as stop-sale dates for all years through 2040. "
+                                f"{payloads.get('china_holiday_note', '')}")
+
                     if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
                         _tk_tet = payloads["tet_overlap"]
                         st.warning(f"🇻🇳 This Ticket's validity dates overlap **Tet Holiday {_tk_tet['year']}** "
