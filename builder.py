@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-09-18-r2-public-url-verification"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import copy
 import math
@@ -10,7 +10,7 @@ import re
 import html as _html_module
 from typing import Dict, Any, List, Optional, Tuple
 from pydantic import ValidationError
-from numeric_helpers import _safe_float, _safe_int
+from numeric_helpers import _safe_float, _safe_int, round_up_currency
 from schemas import HumanPreConfig, ContractClosedTourVO, build_datasheets, DatasheetEN, ItineraryItem, ContractClosedTourOptionVO, WEEKDAY_NAMES, SupplementVO, SupplementPriceVO, SupplementTranslation, OptionTranslation, CancellationRange
 from schemas import TicketHumanPreConfig, ApiStaticContentTicketVO, ContractTicketModalityVO, GeolocationVO, MeetingPointVO, TicketDatasheetEN, TicketCancellationRange, TicketSupplementVO, TicketSupplementTranslation, TicketRemark
 from schemas import TransferHumanPreConfig, ContractTransferVO, TransferLocationVO, TransferDescriptorVO, TransferAdditionalServiceVO, TransferAdditionalServiceTranslation, TransferMoneyVO, TransferOccupancyPriceVO, TransferSupplementVO, TransferPropertyVO, TransferPropertyTranslation
@@ -205,9 +205,15 @@ def transport_base_child_price(base_bracket: Optional[Dict[str, Any]], base_pric
     child rate as free. infant pricing is deliberately NOT covered - infants being free by
     convention when unstated is the confirmed, correct behavior, unlike children (see
     transport_base_infant_price / the base_infant_price computation at the call site).
+
+    CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    prices from a document, we round up ... 35 and 10 cents ... would say 36") - the explicit
+    child_price branch is rounded here; the `base_price` fallback branch is already rounded by
+    the caller before being passed in, so round_up_currency there is idempotent, not redundant
+    risk.
     """
     if base_bracket and base_bracket.get("child_price") is not None:
-        return _safe_float(base_bracket.get("child_price"))
+        return round_up_currency(_safe_float(base_bracket.get("child_price")))
     return base_price
 
 
@@ -224,10 +230,19 @@ def _safe_supplement_price(value, fallback=0.0):
     common dict shape if present, then run it through _safe_float() (which
     also catches the separate NaN class of bug above) instead of ever
     calling float() on a raw, unchecked value.
+
+    CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    prices from a document, we round up. So if there's a price of 35 and 10 cents, we would
+    say 36"). This is the one choke point every ClosedTour Supplement price field passes
+    through (single/double/triple/quadruple), so rounding here - via round_up_currency,
+    numeric_helpers.py - is a code-enforced safety net independent of whether the AI
+    extraction prompt itself already rounded. round_up_currency is idempotent on an already-
+    whole number, so this is safe even for a price the AI (or build_room_package_transfer_
+    occupancy_prices, builder.py) already rounded upstream.
     """
     if isinstance(value, dict):
         value = value.get("amount", fallback)
-    return _safe_float(value, fallback)
+    return round_up_currency(_safe_float(value, fallback))
 
 
 _MONEY_KEYS = ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice")
@@ -252,11 +267,19 @@ def _money_or_none(value, currency):
 
     ABSENT AND ZERO ARE DIFFERENT and must stay that way: {} means this tour does not sell
     triple occupancy, and None is how the API says so. {"amount": 0} means it IS sold, at no
-    extra charge, and dropping that to None would silently stop it being sellable."""
+    extra charge, and dropping that to None would silently stop it being sellable.
+
+    CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    prices from a document, we round up. So if there's a price of 35 and 10 cents, we would
+    say 36"). This is the one choke point every ClosedTour price_list occupancy amount
+    (single/double/triple/quadruplePrice) passes through, so round_up_currency
+    (numeric_helpers.py) is applied here as a code-enforced safety net - idempotent on an
+    already-whole number, so safe even when the AI extraction already rounded upstream.
+    round_up_currency(0) == 0, so the "sold at no extra charge" case above is unaffected."""
     if value is None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return {"amount": float(value), "currency": currency}
+        return {"amount": round_up_currency(value), "currency": currency}
     if not isinstance(value, dict):
         return None
     if not value:
@@ -274,7 +297,7 @@ def _money_or_none(value, currency):
     amount = _safe_float(amount, fallback=None)
     if amount is None:
         return None
-    return {"amount": amount, "currency": (value.get("currency") or currency or "EUR")}
+    return {"amount": round_up_currency(amount), "currency": (value.get("currency") or currency or "EUR")}
 
 
 # CONFIRMED SAFETY RULE (product owner, 2026-08-31): "we must make sure, that the app never
@@ -330,16 +353,22 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     recorded in `notes` (when given), same "flag it, don't silently change it" convention as the
     child-discount clamp below.
 
-    fallback_child_discount_percentage: CONFIRMED HOUSE RULE (product owner, 2026-08-24) - Travel
-    Compositor's ONLY child-price mechanism on a Closed Tour price list entry is
-    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount (a child as the 3rd/4th person
-    sharing a room); there is no equivalent field for single/double occupancy. When the extraction
-    (or a human) states a document-wide child discount percentage but a given row's own
-    tripleChildPercentageDiscount/quadrupleChildPercentageDiscount is missing, apply this fallback
-    to that row instead of silently leaving the discount off - but ONLY on rows that actually sell
-    triplePrice/quadruplePrice (an occupancy this tour doesn't sell can't carry a discount either,
-    same rule as supplements - see strip_unsold_supplement_occupancies). A row's own explicit value
-    (including 0, meaning "confirmed no discount") always wins over this fallback.
+    fallback_child_discount_percentage: ORIGINALLY a CONFIRMED HOUSE RULE (product owner,
+    2026-08-24) that Travel Compositor's ONLY child-price mechanism on a Closed Tour price list
+    entry was tripleChildPercentageDiscount/quadrupleChildPercentageDiscount (a child as the
+    3rd/4th person sharing a room), with no equivalent field for single/double occupancy.
+    REVERSED (product owner, 2026-09-27, verbatim: "a single and a double price can have a child
+    discount. It would be adjusted when someone is travelling 1 adult and one child, therefore it
+    must be included to the upload") - singleChildPercentageDiscount/doubleChildPercentageDiscount
+    now exist on PriceListPriceVO (see its own comment in schemas.py) and are handled identically
+    to Triple/Quadruple below. When the extraction (or a human) states a document-wide child
+    discount percentage but a given row's own singleChildPercentageDiscount/
+    doubleChildPercentageDiscount/tripleChildPercentageDiscount/quadrupleChildPercentageDiscount is
+    missing, apply this fallback to that row instead of silently leaving the discount off - but
+    ONLY on rows that actually sell that occupancy's price (an occupancy this tour doesn't sell
+    can't carry a discount either, same rule as supplements - see
+    strip_unsold_supplement_occupancies). A row's own explicit value (including 0, meaning
+    "confirmed no discount") always wins over this fallback.
 
     Every child-discount value (a row's own, or the fallback) is clamped to 0-100% - see
     _clamp_child_discount_percentage's own comment for why. notes: an optional list to append a
@@ -374,6 +403,14 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
             if money is not None:
                 cleaned[key] = money
         for extra, occupancy_key in (
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "a single and a double price
+            # can have a child discount. It would be adjusted when someone is travelling 1 adult
+            # and one child, therefore it must be included to the upload") - REVERSES the earlier
+            # 2026-08-24 house rule (see this function's own docstring) that Single/Double had no
+            # child-discount mechanism at all. Same shape, same fallback/clamp/notes handling as
+            # Triple/Quadruple below - see PriceListPriceVO's own comment in schemas.py.
+            ("singleChildPercentageDiscount", "singlePrice"),
+            ("doubleChildPercentageDiscount", "doublePrice"),
             ("tripleChildPercentageDiscount", "triplePrice"),
             ("quadrupleChildPercentageDiscount", "quadruplePrice"),
         ):
@@ -411,6 +448,182 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     return out
 
 
+def _parse_price_list_date(row, key):
+    """datetime.date, or None if the row is missing/unparseable at `key` ('startDate'/'endDate') -
+    the shared guard fix_touching_season_boundaries and split_nested_price_list_seasons both use
+    before doing any date arithmetic on a price_list row."""
+    if not isinstance(row, dict):
+        return None
+    try:
+        return datetime.date.fromisoformat(str(row.get(key) or ""))
+    except ValueError:
+        return None
+
+
+def fix_touching_season_boundaries(price_list):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, with a real live Travel Compositor
+    screenshot showing consecutive seasons on a published Modality sharing a boundary date - e.g.
+    one row ending "21/12/2026" immediately followed by the next starting "21/12/2026"): "End
+    date must be one day before next season start date." When two price_list entries for the SAME
+    Modality are sorted by date and one row's endDate lands on the exact SAME calendar day as the
+    next row's startDate, that single day is ambiguously claimed by both seasons at once - Travel
+    Compositor's real behavior on this is exactly the kind of silent data corruption this app
+    exists to prevent. Confirmed via follow-up (AskUserQuestion) to auto-fix this SILENTLY, with
+    no note: shifting the earlier row's endDate back one calendar day is pure date housekeeping,
+    not a content correction the human needs to be told about (unlike normalize_price_list's
+    clamps/drops, which change what gets published and are always flagged via `notes`).
+
+    Deliberately narrow: only fixes an EXACT boundary match between two rows that are otherwise
+    consecutive in sorted-by-startDate order. A deeper/partial overlap - one season's dates
+    genuinely CONTAINED WITHIN or crossing another's, not just touching at a shared edge - is a
+    different, harder problem with no single correct date to shift; see
+    split_nested_price_list_seasons for that case, which this function does not attempt and
+    leaves completely untouched (its own containment check only ever look at rows that are
+    strictly adjacent once sorted, and two rows where one contains the other are not "adjacent"
+    in any useful sense - the container's start is normally far earlier than the nested row's).
+
+    Rows with no parseable startDate/endDate are left exactly as given, appended at the end (same
+    "never crash on bad data, just don't touch what can't be understood" convention as the rest
+    of this module)."""
+    parseable, unparseable = [], []
+    for row in (price_list or []):
+        if isinstance(row, dict) and _parse_price_list_date(row, "startDate") and _parse_price_list_date(row, "endDate"):
+            parseable.append(dict(row))
+        else:
+            unparseable.append(row)
+    parseable.sort(key=lambda r: r["startDate"])
+    for i in range(len(parseable) - 1):
+        if parseable[i]["endDate"] == parseable[i + 1]["startDate"]:
+            fixed_end = _parse_price_list_date(parseable[i], "endDate") - datetime.timedelta(days=1)
+            parseable[i]["endDate"] = fixed_end.isoformat()
+    return parseable + unparseable
+
+
+def split_nested_price_list_seasons(price_list):
+    """CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, same real Travel Compositor screenshot
+    as fix_touching_season_boundaries above): a "Peak Season (Excluding period within High
+    Season)" row, 19/03/2027-29/03/2027, sat entirely INSIDE a separate "High Season" row,
+    04/01/2027-30/04/2027, on the same Modality. His exact words: "If are two modalities in the
+    same time, travel c gives an error, an extra modality has to be build." Two price_list rows
+    on ONE Modality can never legitimately cover overlapping dates at different prices - Travel
+    Compositor has no way to express "this window, nested inside a longer season, costs more" as
+    a single option's price list (see normalize_price_list's own note on same-date-range rows
+    being ADDED together, not chosen between) - so a genuinely nested sub-period has to become an
+    entirely separate Modality/option of its own, with the containing season's price_list cut to
+    leave a gap where the nested dates sit. Confirmed via follow-up (AskUserQuestion) to
+    auto-split this rather than just flag it - the caller (flows/multi_tour.py) is the one that
+    actually builds the new Modality object, since a price_list-only function like this one has
+    no concept of Modality codes/hints/other Modality-level settings.
+
+    Containment (not mere overlap) is the trigger: row B is "nested" inside row A when
+    A.startDate <= B.startDate and B.endDate <= A.endDate and the two rows are not the identical
+    range. A genuine partial overlap that ISN'T full containment (e.g. one season's dates run
+    past the end of another without either fully containing the other) has no single obviously
+    correct way to carve either side and is deliberately left alone here - not detected, not
+    split, not even flagged by this function (the caller's own price_list still contains both
+    rows unchanged, exactly as extracted, so nothing is silently lost; a human reviewing the
+    Prices tab would still see the overlap and can fix it manually, same as before this feature).
+
+    Multi-level nesting (a nested row that is ITSELF a container for a deeper-nested row) is also
+    deliberately declined here - carving a hole out of a row that is itself about to be carved
+    out and turned into a whole new Modality is a real, if rare, case, but getting the two cuts
+    consistent with each other adds a lot of risk for a shape that hasn't actually been seen in a
+    real document yet. Any row caught up in a multi-level chain like this is left in `remaining`
+    completely untouched (as if it had never been examined at all) and reported by name/dates in
+    the third return value, `unhandled_notes`, so the caller can warn a human instead of silently
+    mishandling it.
+
+    Returns (remaining, removed_nested, unhandled_notes):
+      - remaining: the price_list with every genuinely-nested row's dates cut out of its
+        container (a container can end up as 0, 1, or 2 rows depending on whether the nested
+        window sits in the middle, or against one edge, of the container), sorted by startDate,
+        with rows this function couldn't parse a startDate/endDate from passed through untouched
+        at the end.
+      - removed_nested: the nested rows themselves, completely unmodified (same startDate/
+        endDate/price/name as extracted) - these are what the caller turns into a new Modality's
+        own price_list.
+      - unhandled_notes: human-readable strings describing any multi-level nesting chain this
+        function declined to touch, empty in the overwhelming common case.
+    """
+    rows = list(price_list or [])
+    parsed = []
+    for idx, row in enumerate(rows):
+        s, e = _parse_price_list_date(row, "startDate"), _parse_price_list_date(row, "endDate")
+        if s is not None and e is not None:
+            parsed.append((idx, row, s, e))
+    by_idx = {idx: (row, s, e) for idx, row, s, e in parsed}
+
+    # For every row, find the SMALLEST other row that fully contains it (smallest = most
+    # specific container, in case of odd multi-container overlaps in the source data).
+    container_of = {}
+    for idx, row, s, e in parsed:
+        best_idx, best_span = None, None
+        for jdx, jrow, js, je in parsed:
+            if jdx == idx or not (js <= s and e <= je and (js, je) != (s, e)):
+                continue
+            span = (je - js).days
+            if best_span is None or span < best_span:
+                best_idx, best_span = jdx, span
+        if best_idx is not None:
+            container_of[idx] = best_idx
+
+    nested_by_container = {}
+    for nested_idx, container_idx in container_of.items():
+        nested_by_container.setdefault(container_idx, []).append(nested_idx)
+
+    # Multi-level chains (a nested row that is also itself a container) are declined entirely -
+    # every row in the chain (the deepest nested row, every intermediate container-that-is-also-
+    # nested, and the outermost container) is pulled out of consideration and reported instead.
+    declined_idx = set()
+    unhandled_notes = []
+    for idx in list(container_of.keys()):
+        if idx in nested_by_container:  # idx is nested AND itself contains something -> a chain
+            chain = {idx, container_of[idx]} | set(nested_by_container[idx])
+            if not chain & declined_idx:  # report each chain once
+                names = ", ".join(
+                    f"'{by_idx[c][0].get('name') or (by_idx[c][1].isoformat() + ' to ' + by_idx[c][2].isoformat())}'"
+                    for c in sorted(chain)
+                )
+                unhandled_notes.append(
+                    f"Seasons {names} are nested more than one level deep - this needs a human "
+                    f"to split manually, the app only auto-splits a single level of nesting.")
+            declined_idx |= chain
+
+    remaining, removed_nested = [], []
+    for idx, row, s, e in parsed:
+        if idx in declined_idx:
+            remaining.append(row)
+            continue
+        if idx in container_of:
+            removed_nested.append(row)
+            continue
+        nested_here = sorted(
+            (n for n in nested_by_container.get(idx, []) if n not in declined_idx),
+            key=lambda n: by_idx[n][1]
+        )
+        if not nested_here:
+            remaining.append(row)
+            continue
+        cursor = s
+        for n in nested_here:
+            _, ns, ne = by_idx[n][0], by_idx[n][1], by_idx[n][2]
+            if cursor < ns:
+                piece_end = ns - datetime.timedelta(days=1)
+                if cursor <= piece_end:
+                    piece = dict(row)
+                    piece["startDate"], piece["endDate"] = cursor.isoformat(), piece_end.isoformat()
+                    remaining.append(piece)
+            cursor = max(cursor, ne + datetime.timedelta(days=1))
+        if cursor <= e:
+            piece = dict(row)
+            piece["startDate"], piece["endDate"] = cursor.isoformat(), e.isoformat()
+            remaining.append(piece)
+
+    unparseable = [row for i, row in enumerate(rows) if i not in by_idx]
+    remaining = sorted(remaining, key=lambda r: r.get("startDate", "")) + unparseable
+    return remaining, removed_nested, unhandled_notes
+
+
 _TRANSFER_MAX_END_DATE = "2049-12-31"   # the house "runs indefinitely" date, as used for inventory
 
 
@@ -434,7 +647,8 @@ def normalize_supplement_time(value):
     return f"{hour:02d}:{minute:02d}"
 
 
-def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_end_date=""):
+def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_end_date="",
+                                   notes: Optional[List[str]] = None):
     """Mandatory transfer surcharges, as PERCENT or ABSOLUTE, scoped to a time window.
 
     CONFIRMED PRODUCT-OWNER RULES:
@@ -450,7 +664,11 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
         property of the route for as long as the route is sold, not a separate season.
       - The time window may legitimately wrap past midnight (22:00 -> 08:00). That is stored as
         given; it is Travel Compositor's job to interpret it, and "fixing" it by splitting it into
-        two windows would double the surcharge for anyone travelling across midnight."""
+        two windows would double the surcharge for anyone travelling across midnight.
+      - CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+        Euro." A 0-amount supplement was already dropped here (the `amount == 0` check below
+        predates this rule), but silently - see build_supplement_vos' own docstring for the full
+        rule and its "drop with a visible note" handling, now matched here too via `notes`."""
     out = []
     for s in (supplements or []):
         if not isinstance(s, dict):
@@ -459,7 +677,18 @@ def build_transfer_supplement_vos(supplements, transfer_start_date="", transfer_
         amount = _safe_float(s.get("amount", 0))
         raw_type = str(s.get("type") or "").strip().upper()
         is_percent = raw_type in ("PERCENT", "PERCENTAGE", "%") or bool(s.get("is_percentage"))
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36"). Only when
+        # this is a real currency amount (type=ABSOLUTE) - a PERCENT amount (e.g. 12.5%) is a
+        # rate, not a document price, and must never be ceiling-rounded like money (see this
+        # function's own docstring on why a percentage is sent as-is, never pre-calculated).
+        if not is_percent:
+            amount = round_up_currency(amount)
         if not name or amount == 0:
+            if amount == 0 and name and notes is not None:
+                notes.append(f"'{name}' had no price (0 Euro) - a supplement can never be 0 Euro, "
+                             f"so it was dropped, not published. If this was meant to have a real "
+                             f"charge, add the price and re-add it.")
             continue
         out.append(TransferSupplementVO(
             name=name,
@@ -493,10 +722,13 @@ def build_transfer_additional_service_vos(items, default_currency: str = "EUR") 
         svc_name = a.get("name") or ""
         if a.get("on_request") and "request" not in svc_name.lower():
             svc_name = f"{svc_name} (on request)".strip()
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+        # round_up_currency applied as a code-enforced safety net on this document price.
         out.append(TransferAdditionalServiceVO(
             currency=a.get("currency") or default_currency,
             maximum=_safe_int(a.get("max_quantity", 1), fallback=1) or 1,
-            price=_safe_float(a.get("price", 0)),
+            price=round_up_currency(_safe_float(a.get("price", 0))),
             translations={"EN": TransferAdditionalServiceTranslation(name=svc_name)},
         ))
     return out
@@ -1462,6 +1694,119 @@ def per_night_occupancy_prices(nights, per_night_rate):
     return single, round(single / 2, 2)
 
 
+def build_room_package_transfer_occupancy_prices(
+        nights, room_rate_per_night, room_max_occupancy, package_price_per_adult,
+        transfer_one_way_rate=0, package_price_per_child=None, transfer_one_way_rate_return=None):
+    """Per-occupancy ClosedTour Modality prices for a resort/room-category tour where the final
+    price is the SUM of several independently-priced components, rather than one single rate.
+
+    CONFIRMED HOUSE RULE (product owner, 2026-09-27), built from a real Our Jungle Resorts /
+    Khao Sok contract requiring Room + mandatory Package + Transfer to all be reconciled into one
+    ClosedTour price (National Park Fees are deliberately excluded - see the separate
+    park-fee-as-voucher-note handling, not a price component):
+
+    "a closedtour must understand: Room costs (land-based accommodation charged separately per
+    room type/season) the different seasons of this room prices and add them always to the
+    modality. Transfers must be also calculated to the holiday package tours from the beginning...
+    It includes room + package + transfer."
+
+    Per-occupancy formula (N = 1/2/3/4 for single/double/triple/quadruple):
+        price(N) = (room_rate_per_night x nights / N)
+                 + package_price_per_adult (or package_price_per_child for the child column)
+                 + ((transfer_one_way_rate + transfer_one_way_rate_return) / N)
+
+    ROOM: same per-night-times-nights-divided-by-occupancy math as per_night_occupancy_prices
+    above (the quoted rate buys the WHOLE room; two/three/four people sharing it each pay a
+    fraction) - see that function's own docstring for why halving is not a discount.
+
+    TRANSFER: CONFIRMED (product owner, 2026-09-27, real numbers from the same contract): a
+    transfer table gives ONE-WAY rates only, so the round trip is the one-way rate used TWICE
+    (once for arrival, once for departure) - "the 4090 is one way price and must be used double
+    for return price." That total is then divided by the SAME occupancy count as the room -
+    "transfer total price must be devided be the total pax price" - so it contributes a
+    per-person share exactly like every other component here. Pass a different
+    transfer_one_way_rate_return only when the arrival and departure legs genuinely use different
+    rates (e.g. two different pickup/drop-off cities); it defaults to the same rate as the
+    arrival leg (a same-city round trip, the ordinary case).
+
+    OCCUPANCY CAP: only occupancy tiers the room actually sells are returned.
+    room_max_occupancy caps this (e.g. a "Double" room category with max_occupancy=2 returns only
+    singlePrice/doublePrice - never an invented triplePrice/quadruplePrice for a room nobody can
+    book three or four people into). Also capped at 4 regardless, since Travel Compositor's own
+    Modality price schema only has four occupancy slots - a room whose real max_occupancy exceeds
+    4 (e.g. a "2 Storey Family" sleeping 6) has that excess flagged in the returned notes rather
+    than silently dropped or invented.
+
+    Returns (prices, notes) where prices is {"single_price": ..., "double_price": ..., ...} with
+    only the keys the room's occupancy actually supports (adult figures; pass
+    package_price_per_child to also get "single_child_price" etc.), and notes lists anything that
+    had to be capped or couldn't be computed (e.g. a missing/zero room rate)."""
+    notes = []
+    try:
+        nights = int(nights)
+    except (TypeError, ValueError):
+        nights = 0
+    try:
+        room_rate_per_night = float(room_rate_per_night)
+    except (TypeError, ValueError):
+        room_rate_per_night = 0.0
+    try:
+        room_max_occupancy = int(room_max_occupancy)
+    except (TypeError, ValueError):
+        room_max_occupancy = 0
+    try:
+        package_price_per_adult = float(package_price_per_adult)
+    except (TypeError, ValueError):
+        package_price_per_adult = 0.0
+    try:
+        transfer_one_way_rate = float(transfer_one_way_rate or 0)
+    except (TypeError, ValueError):
+        transfer_one_way_rate = 0.0
+    transfer_one_way_rate_return = (
+        transfer_one_way_rate if transfer_one_way_rate_return is None else transfer_one_way_rate_return)
+    try:
+        transfer_one_way_rate_return = float(transfer_one_way_rate_return or 0)
+    except (TypeError, ValueError):
+        transfer_one_way_rate_return = 0.0
+    has_child_price = package_price_per_child is not None
+    try:
+        package_price_per_child = float(package_price_per_child) if has_child_price else None
+    except (TypeError, ValueError):
+        package_price_per_child = None
+        has_child_price = False
+
+    if nights <= 0 or room_rate_per_night <= 0 or room_max_occupancy <= 0:
+        return {}, ["Could not compute room+package+transfer pricing: nights, room rate, and "
+                     "room max occupancy must all be positive."]
+
+    transfer_round_trip_total = transfer_one_way_rate + transfer_one_way_rate_return
+
+    effective_max_occupancy = min(room_max_occupancy, 4)
+    if room_max_occupancy > 4:
+        notes.append(
+            f"This room category's stated max occupancy is {room_max_occupancy}, but Travel "
+            f"Compositor's Modality price only has 4 occupancy slots (single/double/triple/"
+            f"quadruple) - capped at quadruple. Review whether this room needs its own manual "
+            f"handling for the extra {room_max_occupancy - 4} guest(s).")
+
+    # CONFIRMED HOUSE RULE (product owner, 2026-09-27): "Overall rule: we round up, we do not
+    # write in any price 0,75 it will be 1 or 30,89 will be 31." Every occupancy-tier amount here
+    # comes from dividing a total by 1/2/3/4, which routinely produces a fraction - round_up_currency
+    # (numeric_helpers.py) always takes the ceiling, never rounds to nearest or floors.
+    occupancy_labels = {1: "single", 2: "double", 3: "triple", 4: "quadruple"}
+    prices = {}
+    for occ in range(1, effective_max_occupancy + 1):
+        label = occupancy_labels[occ]
+        room_share = (room_rate_per_night * nights) / occ
+        transfer_share = transfer_round_trip_total / occ
+        prices[f"{label}_price"] = round_up_currency(
+            room_share + package_price_per_adult + transfer_share)
+        if has_child_price:
+            prices[f"{label}_child_price"] = round_up_currency(
+                room_share + package_price_per_child + transfer_share)
+    return prices, notes
+
+
 def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12):
     """The child age band to publish, given whatever the document stated.
 
@@ -1501,7 +1846,8 @@ def resolve_child_age_band(stated_min, stated_max, default_min=2, default_max=12
     return low, high
 
 
-def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO]:
+def build_supplement_vos(supplements: List[Dict[str, Any]], notes: Optional[List[str]] = None,
+                          voucher_notes: Optional[List[str]] = None) -> List[SupplementVO]:
     """
     Converts the app's internal flat supplement dicts (name/price/single_price/
     double_price/triple_price/quadruple_price/mandatory/on_request/applies_to/
@@ -1512,6 +1858,37 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
     tour: that Modality's own supplements need to be folded into the tour's
     existing (already-live) supplements list via a follow-up PUT, entirely
     independent of building a full ContractClosedTourVO payload.
+
+    CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro. If so, then there is a mistake. In short, a supplement with 0 Euro costs does not
+    exist and does not need to be included." Confirmed via follow-up (AskUserQuestion) to apply
+    across every product type that has a Supplement concept (Hotel/ClosedTour/Ticket/Transfer),
+    to supersede the earlier "free supplement" concept entirely (no more intentional 0-price
+    supplements, even ones a document explicitly calls "free"/"complimentary"), and to be
+    handled as drop-with-a-visible-note rather than a silent drop or a hard publish block. A
+    supplement where EVERY priced field (flat price, single/double/triple/quadruple) comes out
+    to 0 is therefore dropped here entirely - never built into a SupplementVO, never published -
+    with a human-readable reason appended to `notes` (when the caller passes a list) so nothing
+    disappears without the human being told which supplement and why, same "flag it, don't
+    silently change it" convention as strip_unsold_supplement_occupancies/pricing_notes/
+    child_discount_clamp_notes elsewhere in this file.
+
+    THIS REPLACES the earlier `free` flag on SupplementVO (the "free room upgrade" case is no
+    longer a supported outcome - it is now indistinguishable from a mis-extracted missing price,
+    per the product owner's own framing of the rule, and is dropped exactly the same way).
+    `notes` is optional and defaults to None (silently discarded) so existing callers that
+    don't care about the reason keep working unchanged; pass a list to collect them.
+
+    CONFIRMED FOLLOW-UP RULE (product owner, 2026-09-27, verbatim): "The required holiday dinner
+    must be added in the voucher remark, as this supplement is with no cost but it is important
+    to know for the client. So if supplement has no costs, we must add it to the voucher remark."
+    `notes` above is an INTERNAL review note (never shown to the client) - a genuinely free but
+    important supplement (e.g. a "Required Holiday Dinner (24/31 December)" the source lists at
+    no charge) still needs to reach the CLIENT somehow even though it can never be published as a
+    priced Supplement. `voucher_notes` (optional, same default-None/opt-in shape as `notes`)
+    collects a customer-facing sentence for each dropped free supplement, meant to be appended
+    into the ClosedTour's own voucherRemarks by the caller - same "informational note instead of
+    a price" pattern already used for park_fee_notes/Transfer location_notes.
     """
     supplements_list = []
     for s in (supplements or []):
@@ -1520,6 +1897,18 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
         double_val = _safe_supplement_price(s.get("double_price", price_val), fallback=price_val)
         triple_val = _safe_supplement_price(s.get("triple_price", 0))
         quadruple_val = _safe_supplement_price(s.get("quadruple_price", 0))
+
+        if price_val == 0 and single_val == 0 and double_val == 0 and triple_val == 0 and quadruple_val == 0:
+            _supp_name = s.get("name") or "unnamed supplement"
+            if notes is not None:
+                notes.append(f"'{_supp_name}' had no price (0 Euro) in any "
+                             f"occupancy - a supplement can never be 0 Euro, so it was dropped, not "
+                             f"published. If this was meant to have a real charge, add the price and "
+                             f"re-add it.")
+            if voucher_notes is not None and s.get("name"):
+                voucher_notes.append(f"{_supp_name} is included at no extra charge.")
+            continue
+
         # NOTE: the confirmed schema's singlePrice/doublePrice/etc are inherently
         # per-person amounts (that's what "per occupancy" means in this API).
         # "Per Pax" unchecked is tracked for the human's own clarity, but we don't
@@ -1552,15 +1941,13 @@ def build_supplement_vos(supplements: List[Dict[str, Any]]) -> List[SupplementVO
             # publishing every optional excursion and upgrade as refundable - the opposite of
             # the commercial terms. Set explicitly rather than relying on any default.
             refundable=False,
-            # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:1137): a
-            # supplement priced ONLY via the per-occupancy columns (single/double/triple/
-            # quadruple - e.g. singlePrice=15, doublePrice=10, no flat "price" field at all)
-            # published as free=True, because only the flat price_val was checked here and an
-            # absent "price" key defaults to 0. free must reflect whichever of the actual priced
-            # fields Travel Compositor will read, not just the one this document happened not to
-            # use - a genuinely free supplement is one where NONE of them carry a real charge.
-            free=(price_val == 0 and single_val == 0 and double_val == 0
-                  and triple_val == 0 and quadruple_val == 0),
+            # CONFIRMED HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+            # Euro" - a genuinely all-zero supplement is now dropped above before ever reaching
+            # here (see this function's own docstring), so whatever survives to this point
+            # always carries a real charge in at least one occupancy. free is therefore always
+            # False now - kept as an explicit field (not just the schema default) so this isn't
+            # mistaken for an oversight.
+            free=False,
             travelWindows=travel_windows,
         ))
     return supplements_list
@@ -1617,11 +2004,19 @@ def sanitize_supplement_name(name):
 
 
 def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_start: str = "",
-                                 modality_end: str = "") -> List[TicketSupplementVO]:
+                                 modality_end: str = "", notes: Optional[List[str]] = None) -> List[TicketSupplementVO]:
     """
     Converts the app's internal flat Ticket-Modality supplement dicts (name/
     adult_price_supplement/children_price_supplement/infant_price_supplement/
     start_date/end_date) into the real TicketSupplementVO wire shape.
+
+    CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be 0
+    Euro. If so, then there is a mistake... does not need to be included." Applied here exactly
+    as in build_supplement_vos (ClosedTour) - see that function's own docstring for the full
+    rule and its "drop with a visible note, not a silent drop or a hard block" handling. A
+    supplement where adult/children/infant price supplements are ALL 0 is dropped before it
+    reaches this function's date-window logic below, with a human-readable reason appended to
+    `notes` when the caller passes a list.
 
     CORRECTED 2026-08-12 (product owner): an earlier version of this codebase
     treated Tickets as having no supplements at all - wrong. The main Ticket
@@ -1651,6 +2046,18 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
     m_end = (modality_end or "").strip()
     supplements_list = []
     for s in (supplements or []):
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - checked first, before any date-window logic, since a 0-priced row never
+        # needs those computed at all.
+        if (_safe_float(s.get("adult_price_supplement", 0)) == 0
+                and _safe_float(s.get("children_price_supplement", 0)) == 0
+                and _safe_float(s.get("infant_price_supplement", 0)) == 0):
+            if notes is not None:
+                notes.append(f"'{s.get('name') or 'unnamed supplement'}' had no price (0 Euro) for "
+                             f"adults, children or infants - a supplement can never be 0 Euro, so it "
+                             f"was dropped, not published. If this was meant to have a real charge, "
+                             f"add the price and re-add it.")
+            continue
         # CONFIRMED BUG FIX (audit 2026-09-01, MEDIUM/LOW batch 3): `(value or "").strip()`
         # crashes with an uncaught AttributeError if `value` is a non-string truthy object (e.g.
         # a datetime.date the extractor or a merge produced instead of a string) - `value or ""`
@@ -1691,10 +2098,15 @@ def build_ticket_supplement_vos(supplements: List[Dict[str, Any]], modality_star
             end = m_end
         if not start or not end:
             continue
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up. So if there's a price of 35 and 10 cents, we would
+        # say 36"). Unlike Transport's same-named adultPriceSupplement/etc (a computed DELTA
+        # between two already-rounded prices, see build_transport_payloads), this is a genuine
+        # absolute document price - round_up_currency applied as a code-enforced safety net.
         supplements_list.append(TicketSupplementVO(
-            adultPriceSupplement=_safe_float(s.get("adult_price_supplement", 0)),
-            childrenPriceSupplement=_safe_float(s.get("children_price_supplement", 0)),
-            infantPriceSupplement=_safe_float(s.get("infant_price_supplement", 0)),
+            adultPriceSupplement=round_up_currency(_safe_float(s.get("adult_price_supplement", 0))),
+            childrenPriceSupplement=round_up_currency(_safe_float(s.get("children_price_supplement", 0))),
+            infantPriceSupplement=round_up_currency(_safe_float(s.get("infant_price_supplement", 0))),
             startDate=start,
             endDate=end,
             translations={"EN": TicketSupplementTranslation(name=sanitize_supplement_name(s.get("name")))},
@@ -2136,7 +2548,18 @@ def build_closed_tour_payloads(
             normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
                                   fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
                                   max_occupancy=extracted_dmc_data.get("max_occupancy")))
-        supplements_list = build_supplement_vos(_consistent_supplements)
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - dropped here, with the reason appended to the SAME notes list/review-screen
+        # field as the occupancy-stripping notes just above (both are "a supplement was removed
+        # before publish, and here's why" - see build_supplement_vos' own docstring for the
+        # full rule). `_free_supplement_voucher_notes` collects the CLIENT-facing counterpart
+        # (product owner, 2026-09-27): a genuinely free-but-important supplement (e.g. "Required
+        # Holiday Dinner") still needs to reach the client, so it becomes a voucherRemarks line
+        # instead of a priced Supplement - appended into `_ct_voucher_text` below.
+        _free_supplement_voucher_notes = []
+        supplements_list = build_supplement_vos(
+            _consistent_supplements, notes=_supplement_notes,
+            voucher_notes=_free_supplement_voucher_notes)
 
         # CANCELLATION POLICY (product owner, 2026-09-04): the document's own extracted
         # cancellation_policy_tiers is deliberately NOT read here anymore - see
@@ -2172,15 +2595,38 @@ def build_closed_tour_payloads(
         # exactly what strip_stray_html's own docstring already carves an exception for -
         # included/excluded - description just wasn't added to that exception when it was written.
         _tour_display_name = strip_stray_html(extracted_dmc_data.get("tour_name") or "")
-        datasheet_en = DatasheetEN(
-            name=_tour_display_name,
-            description=extracted_dmc_data.get("description") or "",
-            hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
-            voucherRemarks=_with_manual_notes(
+        # PARK FEE / other pay-on-site costs (product owner, 2026-09-27, verbatim): "It includes
+        # room + package + transfer but the park fee must be stated it is paid on field when
+        # client is there. This information must be added to the voucher remarks as well." A
+        # National Park Fee (or any similar on-site, pay-locally cost) is NEVER folded into the
+        # price - it becomes an informational voucher note instead, exactly the same pattern
+        # already shipped for Transfer's own `location_notes` ("a location-conditional cost that
+        # can't be safely auto-applied to price ... becomes an informational voucher note instead
+        # - never a mandatory charge applied to every booking").
+        _ct_voucher_text = _append_if_new(
+            _with_manual_notes(
                 _with_what_to_bring(
                     _cancellation_voucher_text(None, cancellation_tiers),
                     extracted_dmc_data),
                 extracted_dmc_data),
+            extracted_dmc_data.get("park_fee_notes") or "")
+        # FREE SUPPLEMENT -> VOUCHER NOTE (product owner, 2026-09-27, verbatim): "The required
+        # holiday dinner must be added in the voucher remark, as this supplement is with no cost
+        # but it is important to know for the client. So if supplement has no costs, we must add
+        # it to the voucher remark." Each dropped-as-free supplement (see
+        # `_free_supplement_voucher_notes`, populated by build_supplement_vos above) gets folded
+        # in here too, one sentence per supplement, same _append_if_new dedup as every other note.
+        for _free_note in _free_supplement_voucher_notes:
+            _ct_voucher_text = _append_if_new(_ct_voucher_text, _free_note)
+        # park_fee_notes/free-supplement notes are appended AFTER _with_manual_notes' own
+        # strip_stray_html pass, so it needs its own pass here too - same reasoning as Transfer's
+        # location_notes.
+        _ct_voucher_text = strip_stray_html(_ct_voucher_text)
+        datasheet_en = DatasheetEN(
+            name=_tour_display_name,
+            description=extracted_dmc_data.get("description") or "",
+            hotels=strip_stray_html(extracted_dmc_data.get("hotels_text") or ""),
+            voucherRemarks=_ct_voucher_text,
             included=extracted_dmc_data.get("included") or "",
             excluded=extracted_dmc_data.get("excluded") or "",
             meetingPoint=strip_stray_html(extracted_dmc_data.get("meeting_point") or DEFAULT_MEETING_POINT),
@@ -2252,8 +2698,31 @@ def build_closed_tour_payloads(
     # the review screen below as child_discount_clamp_notes, same "flag it, don't silently
     # change it" convention as pricing_notes/supplement_occupancy_notes.
     _child_discount_clamp_notes = []
+    # CONFIRMED PRODUCT-OWNER RULE (2026-09-18) - belt-and-braces safety net. The primary fix
+    # for both problems lives in flows/multi_tour.py, right after extraction (touching
+    # boundaries silently corrected there, nested seasons auto-split into a new Modality) - but
+    # build_closed_tour_payloads is also called from other paths (the legacy add-option flow in
+    # app.py, price refreshes, etc) that never go through that wiring, so the same silent
+    # touching-boundary fix is re-applied here as a final safety net before every publish,
+    # regardless of source. A genuine nested/overlapping season that reaches this point (should
+    # be rare - the earlier fix normally already caught it) can't be silently auto-split here,
+    # since this function has no access to the tour's other Modalities to append a new one to -
+    # it's flagged instead via price_list_overlap_notes, same "flag it, don't silently drop it"
+    # convention as every other notes list in this function.
+    _price_list_overlap_notes = []
+    _, _still_nested, _deep_nesting_notes = split_nested_price_list_seasons(
+        fix_touching_season_boundaries(extracted_dmc_data.get("price_list", [])))
+    for _nested_row in _still_nested:
+        _price_list_overlap_notes.append(
+            f"'{_nested_row.get('name') or 'A season'}' ({_nested_row.get('startDate')} - "
+            f"{_nested_row.get('endDate')}) overlaps with another season on this Modality - "
+            f"Travel Compositor will reject two overlapping price windows on one Modality. This "
+            f"should have been auto-split into its own Modality already; if you're seeing this, "
+            f"please split it manually before publishing.")
+    _price_list_overlap_notes.extend(_deep_nesting_notes)
     _tour_price_list_sorted = sorted(
-        normalize_price_list(extracted_dmc_data.get("price_list", []), pre_config.currency,
+        normalize_price_list(fix_touching_season_boundaries(extracted_dmc_data.get("price_list", [])),
+                              pre_config.currency,
                               fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
                               notes=_child_discount_clamp_notes,
                               max_occupancy=extracted_dmc_data.get("max_occupancy")),
@@ -2298,6 +2767,12 @@ def build_closed_tour_payloads(
         # normalize_price_list's own docstring for why this can never be skipped, whatever the
         # source of the value.
         "child_discount_clamp_notes": _child_discount_clamp_notes,
+        # Season date ranges that still overlap after the silent touching-boundary fix and the
+        # single-level auto-split have both already run - see the block above for why this can
+        # only be flagged here, never auto-split (this function has no access to the tour's
+        # other Modalities). Should normally be empty; flows/multi_tour.py's extraction-time
+        # wiring is the primary fix and catches this long before publish.
+        "price_list_overlap_notes": _price_list_overlap_notes,
         "tour_option_payload": tour_option_payload,
         "tour_option_error": tour_option_error,
         "unresolved_destinations": unresolved_destinations,  # surface these in the Review UI before publishing
@@ -2509,8 +2984,13 @@ def build_ticket_payloads(
         _all_modality_supplements = [
             s for s in (extracted_ticket_data.get("modality_supplements") or []) if isinstance(s, dict)
         ]
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_ticket_supplement_vos' own docstring. Collected here (not just
+        # discarded) so the review screen can tell the human which supplement(s) were dropped.
+        _ticket_supplement_zero_price_notes = []
         supplements_list = build_ticket_supplement_vos(
-            _all_modality_supplements, _modality_start, _modality_end)
+            _all_modality_supplements, _modality_start, _modality_end,
+            notes=_ticket_supplement_zero_price_notes)
 
         # CONFIRMED REAL RULE (product owner, 2026-08-25): "A Peak Season surcharge can never have
         # an End date earlier than today's date." A dated supplement (a season, a holiday
@@ -2671,9 +3151,12 @@ def build_ticket_payloads(
             datasheets={"EN": datasheet_en},
             currency=pre_config.currency,
             imageUrls=_ticket_images,
-            adultTaxesAmount=_safe_float(extracted_ticket_data.get("adult_taxes_amount", 0)),
-            childTaxesAmount=_safe_float(extracted_ticket_data.get("child_taxes_amount", 0)),
-            infantTaxesAmount=_safe_float(extracted_ticket_data.get("infant_taxes_amount", 0)),
+            # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers
+            # or prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+            # round_up_currency applied as a code-enforced safety net on these document taxes.
+            adultTaxesAmount=round_up_currency(_safe_float(extracted_ticket_data.get("adult_taxes_amount", 0))),
+            childTaxesAmount=round_up_currency(_safe_float(extracted_ticket_data.get("child_taxes_amount", 0))),
+            infantTaxesAmount=round_up_currency(_safe_float(extracted_ticket_data.get("infant_taxes_amount", 0))),
             daysAvailableBeforeRelease=effective_release_days,
             **dict(zip(("duration", "durationType"), _resolve_ticket_duration(
                 extracted_ticket_data.get("duration", 0), extracted_ticket_data.get("duration_type", "HOURS")))),
@@ -2709,11 +3192,16 @@ def build_ticket_payloads(
         # conflicts. Zero out the two unselected modes' fields here, based on
         # the actually-selected price_type, regardless of what's still
         # sitting in the extracted/session data.
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+        # round_up_currency applied to every genuine document price below as a code-enforced
+        # safety net (the base_adult_price=1.0/base_*_price=0.0 PLACEHOLDER overrides further
+        # down for the unselected price modes are not document prices and are left as-is).
         selected_price_type = extracted_ticket_data.get("price_type") or "OCCUPANCY"
-        base_adult_price = _safe_float(extracted_ticket_data.get("base_adult_price", 0))
-        base_children_price = _safe_float(extracted_ticket_data.get("base_children_price", 0))
-        base_infant_price = _safe_float(extracted_ticket_data.get("base_infant_price", 0))
-        base_service_price = _safe_float(extracted_ticket_data.get("base_service_price", 0))
+        base_adult_price = round_up_currency(_safe_float(extracted_ticket_data.get("base_adult_price", 0)))
+        base_children_price = round_up_currency(_safe_float(extracted_ticket_data.get("base_children_price", 0)))
+        base_infant_price = round_up_currency(_safe_float(extracted_ticket_data.get("base_infant_price", 0)))
+        base_service_price = round_up_currency(_safe_float(extracted_ticket_data.get("base_service_price", 0)))
         # Each row can carry the same NaN-from-a-blank-data_editor-cell risk
         # as any other numeric UI field (see _safe_float's docstring) - sanitize
         # every entry rather than trusting the list as passed through.
@@ -2758,10 +3246,10 @@ def build_ticket_payloads(
             occ_n = _safe_int(o.get("occupancy", 1), fallback=1)
             if occ_n > effective_occupancy_cap:
                 continue
-            occupancy_prices.append({"occupancy": occ_n, "amount": _safe_float(o.get("amount", 0))})
+            occupancy_prices.append({"occupancy": occ_n, "amount": round_up_currency(_safe_float(o.get("amount", 0)))})
             if children_allowed_for_pricing and o.get("child_amount") not in (None, ""):
                 occupancy_prices.append({
-                    "occupancy": occ_n, "amount": _safe_float(o.get("child_amount", 0)),
+                    "occupancy": occ_n, "amount": round_up_currency(_safe_float(o.get("child_amount", 0))),
                     "ageRange": {"min": occ_child_age_min, "max": occ_child_age_max},
                 })
         if selected_price_type != "DISTRIBUTION":
@@ -2862,6 +3350,10 @@ def build_ticket_payloads(
         "ticket_option_error": ticket_option_error,
         # Named out loud rather than dropped in silence - see the supplements block above.
         "ignored_ticket_supplements": [n for n in _ignored_ticket_supplements if n],
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_ticket_supplement_vos' own docstring. Shown via
+        # render_supplement_zero_price_notes on the review screen.
+        "supplement_zero_price_notes": _ticket_supplement_zero_price_notes,
         # RETIRED (2026-09-15): "Needs own Modality?" / is_priced_choice no longer excludes
         # anything from supplements_list (see the comment above supplements_list), so there is
         # nothing left to report here. Kept as an always-empty list rather than removed outright,
@@ -3212,7 +3704,10 @@ def build_transfer_payload(
         # guess which single tier TC would treat as "the" implicit default - safer to list
         # every stated tier explicitly here, and use the smallest occupancy's rate as the
         # top-level basePrice (a visible, editable default).
-        base_price = _safe_float(tiers_sorted[0].get("price", 0)) if tiers_sorted else 0.0
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+        # round_up_currency applied as a code-enforced safety net on this document price.
+        base_price = round_up_currency(_safe_float(tiers_sorted[0].get("price", 0))) if tiers_sorted else 0.0
 
         # CONFIRMED REAL RULE (product owner, same rule _locked_on_update's docstring already
         # states): "it also never has to be asked for the min and max passenger" on an UPDATE -
@@ -3270,7 +3765,12 @@ def build_transfer_payload(
         synthesized_solo_tier = any(t.get("synthesized_minimum_charge") for t in tiers_sorted)
 
         def _money(amount):
-            return TransferMoneyVO(amount=_safe_float(amount), currency=currency)
+            # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers
+            # or prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+            # round_up_currency applied as a code-enforced safety net; this is the one choke
+            # point every per-occupancy Transfer price (basePrice/childPrice/infantPrice) passes
+            # through.
+            return TransferMoneyVO(amount=round_up_currency(_safe_float(amount)), currency=currency)
 
         prices_by_occupancy = []
         for t in tiers_sorted:
@@ -3332,8 +3832,13 @@ def build_transfer_payload(
         # exception to the preserve-on-update rule the rest of this block follows.
         effective_images = _effective_images_for_update(extracted_transfer_data, existing_transfer_snapshot)
 
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_transfer_supplement_vos' own docstring. Collected here so the
+        # review screen can tell the human which supplement(s) were dropped.
+        _transfer_supplement_zero_price_notes = []
         supplements = build_transfer_supplement_vos(
-            raw_transfer_supplements, effective_start_date, effective_end_date)
+            raw_transfer_supplements, effective_start_date, effective_end_date,
+            notes=_transfer_supplement_zero_price_notes)
 
         transfer_kwargs = dict(
             active=True,
@@ -3393,16 +3898,29 @@ def build_transfer_payload(
         # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
         "expired_validity_error": expired_validity_window(
             extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro" - see build_transfer_supplement_vos' own docstring. Shown via
+        # render_supplement_zero_price_notes on the review screen.
+        "supplement_zero_price_notes": _transfer_supplement_zero_price_notes,
     }
 
 
-def _swap_route_text(text, old_departure_name, old_arrival_name):
+def _swap_route_text(text, old_departure_name, old_arrival_name, suffix_on_fallback=True):
     """Rewrite a SHORT text (a transfer's name/datasheet name) so it reads in the other
-    direction, by swapping every occurrence of the OLD departure/arrival names. Falls back to
-    appending "(return)" rather than guessing wrong - a name that states the opposite of what it
-    does is worse than one that's merely unpolished and needs a human's edit. Only right for a
-    short label - see _swap_route_text_if_found for prose fields (description/pickup info),
-    where appending "(return)" to a paragraph would look broken rather than helpful.
+    direction, by swapping every occurrence of the OLD departure/arrival names. When the swap
+    can't be done (neither the full name nor an alias was found in the text) and
+    suffix_on_fallback is True (the default, used for Transfer), falls back to appending
+    "(return)" rather than guessing wrong - a name that states the opposite of what it does is
+    worse than one that's merely unpolished and needs a human's edit. Only right for a short
+    label - see _swap_route_text_if_found for prose fields (description/pickup info), where
+    appending "(return)" to a paragraph would look broken rather than helpful.
+
+    CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the Transport
+    when duplicate them." - build_transport_swap_payload now passes suffix_on_fallback=False for
+    Transport's name/datasheet-name swap, so an unmatched Transport name is left exactly as
+    copied from the source (still needs a human's edit either way, same as any other unmatched
+    field) rather than getting "(return)" tacked onto the end. Transfer's own name swap is
+    unaffected - still appends "(return)" as before.
 
     Same swap-with-placeholder approach as app_helpers._swapped_label (candidate-list "Add the
     return direction" button) - duplicated here in builder.py rather than imported, since
@@ -3414,7 +3932,9 @@ def _swap_route_text(text, old_departure_name, old_arrival_name):
         return (text.replace(old_departure_name, placeholder)
                     .replace(old_arrival_name, old_departure_name)
                     .replace(placeholder, old_arrival_name))
-    return f"{text} (return)".strip()
+    if suffix_on_fallback:
+        return f"{text} (return)".strip()
+    return text
 
 
 def _swap_route_text_if_found(text, old_departure_name, old_arrival_name):
@@ -4282,7 +4802,13 @@ def build_transport_payloads(
             max(brackets_sorted, key=lambda b: (b["max_occupancy"] - b["min_occupancy"], -b["min_occupancy"]))
             if brackets_sorted else None
         )
-    base_price = _safe_float(base_bracket.get("price", 0)) if base_bracket else 0.0
+    # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    # prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+    # round_up_currency applied to the base bracket's document price before any per-bracket
+    # delta is computed below (the delta itself must never be independently ceiling-rounded -
+    # it can be negative, and ceiling a negative delta toward zero would silently INCREASE that
+    # bracket's price relative to what the document states).
+    base_price = round_up_currency(_safe_float(base_bracket.get("price", 0))) if base_bracket else 0.0
     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01, was builder.py:3442-3443): child_price
     # is None (not 0) when the document simply didn't state a separate child rate for this
     # bracket - the extraction layer already distinguishes that from a genuine "children are
@@ -4292,7 +4818,7 @@ def build_transport_payloads(
     # free. base_infant_price is deliberately left defaulting to 0.0 - infants being free by
     # convention when unstated is the confirmed, correct behavior, unlike children.
     base_child_price = transport_base_child_price(base_bracket, base_price)
-    base_infant_price = _safe_float(base_bracket.get("infant_price")) if base_bracket and base_bracket.get("infant_price") is not None else 0.0
+    base_infant_price = round_up_currency(_safe_float(base_bracket.get("infant_price"))) if base_bracket and base_bracket.get("infant_price") is not None else 0.0
 
     # House naming: "DEPARTURE - ARRIVAL" (confirmed product-owner template). The service class
     # lives in the description and in the modality codes, not in the product name, so two
@@ -4459,14 +4985,21 @@ def build_transport_payloads(
 
     for b in brackets_sorted:
         min_occ, max_occ = b["min_occupancy"], b["max_occupancy"]
-        bracket_price = _safe_float(b.get("price", 0))
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36") - each
+        # bracket's own document price is rounded up BEFORE the delta against base_price (itself
+        # already rounded above) is computed. The delta is never rounded on its own: it can be
+        # negative, and ceiling a negative delta toward zero would silently INCREASE that
+        # bracket's effective price versus the document. With both operands whole numbers, the
+        # resulting delta is naturally a whole number too.
+        bracket_price = round_up_currency(_safe_float(b.get("price", 0)))
         adult_delta = round(bracket_price - base_price, 2)
         children_delta = 0.0
         if b.get("child_price") is not None:
-            children_delta = round(_safe_float(b.get("child_price")) - base_child_price, 2)
+            children_delta = round(round_up_currency(_safe_float(b.get("child_price"))) - base_child_price, 2)
         infant_delta = 0.0
         if b.get("infant_price") is not None:
-            infant_delta = round(_safe_float(b.get("infant_price")) - base_infant_price, 2)
+            infant_delta = round(round_up_currency(_safe_float(b.get("infant_price"))) - base_infant_price, 2)
 
         # CONFIRMED SEMANTICS (product owner, corrected from an initial wrong guess): a bracket
         # that costs exactly the base rate gets NO price entries at all (matches the real
@@ -4773,12 +5306,29 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     arrival_aliases = _transport_location_name_aliases(old_arrival_name)
 
     def _swap_with_aliases(text: str):
-        """Tries the full formal name pair first, then the shortened alias pair, before falling
-        back to _swap_route_text's own "(return)" suffix - see _transport_location_name_aliases'
-        docstring for why a shortened alias is often what's needed."""
+        """Tries the full formal name pair first, then the shortened alias pair. CONFIRMED
+        PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the Transport when
+        duplicate them" - unlike Transfer, an unmatched Transport name/datasheet name never gets
+        _swap_route_text's own "(return)" suffix appended (suffix_on_fallback=False) - see
+        _transport_location_name_aliases' docstring for why a shortened alias is often what's
+        needed in the first place.
+
+        CONFIRMED PRODUCT-OWNER FOLLOW-UP (same day): "never write '(return)' just better rewrite
+        the correct name: Always FORM - TO, accodingly to the Itinarary." When neither the formal
+        name nor a shortened alias is found anywhere in the text - i.e. the swap genuinely
+        couldn't do anything, suffix_on_fallback=False would otherwise just leave the OLD
+        (wrong-direction) wording in place - the name is rebuilt from scratch as
+        "<new departure> - <new arrival>" (the resolved itinerary's own new direction; matches
+        the "X - Y" naming convention Transport names already use elsewhere in this app), rather
+        than either leaving stale text or appending a suffix."""
         pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
         dep, arr = pair if pair else (old_departure_name, old_arrival_name)
-        return _swap_route_text(text, dep, arr)
+        swapped = _swap_route_text(text, dep, arr, suffix_on_fallback=False)
+        if swapped == text and text:
+            # Route wording wasn't found anywhere in the text - rebuild it outright instead of
+            # leaving the old direction's wording sitting there unchanged.
+            return f"{old_arrival_name} - {old_departure_name}".strip(" -")
+        return swapped
 
     def _swap_with_aliases_if_found(text: str):
         pair = _find_present_transport_aliases(text, departure_aliases, arrival_aliases)
@@ -5059,11 +5609,16 @@ def _build_meal_plan_payload(mp_data):
     if plan_type == "ROOM_ONLY":
         # CONFIRMED REAL RULE: always 0-cost, regardless of anything else extracted for it.
         return ContractMealPlanVO(mealPlan="ROOM_ONLY", basePrice=0.0, adultPrices=[], childPrices=[])
+    # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+    # prices from a document, we round up ... 35 and 10 cents ... would say 36") -
+    # round_up_currency applied as a code-enforced safety net on these document meal-plan
+    # prices (the carried-forward existing_mp branch elsewhere in this file is left unchanged -
+    # that's already-live Travel Compositor data, not a fresh document extraction).
     return ContractMealPlanVO(
         mealPlan=plan_type,
-        basePrice=_safe_float((mp_data or {}).get("base_price", 0)),
-        adultPrices=[_safe_float(p) for p in (mp_data or {}).get("adult_prices") or []],
-        childPrices=[_safe_float(p) for p in (mp_data or {}).get("child_prices") or []],
+        basePrice=round_up_currency(_safe_float((mp_data or {}).get("base_price", 0))),
+        adultPrices=[round_up_currency(_safe_float(p)) for p in (mp_data or {}).get("adult_prices") or []],
+        childPrices=[round_up_currency(_safe_float(p)) for p in (mp_data or {}).get("child_prices") or []],
     )
 
 
@@ -5099,7 +5654,8 @@ def _build_room_payload(room_data, existing_room=None):
     )
 
 
-def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None):
+def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None,
+                                  rooms_to_delete=None):
     """
     PHASE 1 of the two-phase Hotel build - see the section docstring above. Builds the hotel-
     level ContractHotelVO payload (hotel fields + rooms[] + mealPlans[] + descriptions +
@@ -5115,6 +5671,22 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     match is a brand-new room; any EXISTING room the fresh document doesn't mention at all is
     still carried forward unchanged, never dropped.
 
+    `rooms_to_delete` (CONFIRMED PRODUCT-OWNER REQUEST, 2026-09-19: "we must make it possible to
+    delete a complete room and not only occupancy") - an optional list of room names the human
+    has explicitly, deliberately chosen to remove entirely. This is DIFFERENT from a room simply
+    not being mentioned in a fresh document (which is always carried forward unchanged, by
+    design, precisely so an unrelated update - a new price period, a different room's fix -
+    can never accidentally drop a room nobody meant to touch). Only a name in this explicit list
+    skips the carry-forward step, so an existing room is removed from the PUT's rooms[] array -
+    the same "PUT replaces the whole array" mechanism already used to add/update rooms is what
+    actually deletes it, there is no separate delete endpoint (see api_client.py - only
+    create_hotel_room exists). Matched by the same name normalization as everything else here
+    (hotel_matcher.match_room_by_name), so case/whitespace differences still match. Does nothing
+    to any EXISTING rate/season pricing on Travel Compositor that already references this room -
+    those aren't rebuilt unless the same rate is itself part of this run's extracted_rates, so a
+    rate not touched here can still reference the now-deleted room server-side; the caller warns
+    about this on the review screen.
+
     Returns {"hotel_payload": dict|None, "hotel_error": str|None, "is_update": bool,
              "room_name_matches": {room_name: existing_providerCode_or_None}}.
     """
@@ -5122,6 +5694,11 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     is_update = existing_hotel_snapshot is not None
     existing_rooms = (existing_hotel_snapshot or {}).get("rooms") or []
     existing_meal_plans = (existing_hotel_snapshot or {}).get("mealPlans") or []
+    _rooms_to_delete_ids = set()
+    for _del_name in (rooms_to_delete or []):
+        _del_match = hotel_matcher.match_room_by_name(_del_name, existing_rooms)
+        if _del_match is not None:
+            _rooms_to_delete_ids.add(id(_del_match))
 
     def _basic_info_on_update(existing_val, doc_val):
         """Field priority for hotel IDENTITY info (name/address/category/chain/images -
@@ -5166,6 +5743,10 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
 
     for existing_room in existing_rooms:
         if not isinstance(existing_room, dict):
+            continue
+        if id(existing_room) in _rooms_to_delete_ids:
+            # Explicitly deleted (see rooms_to_delete above) - the one case an existing room is
+            # deliberately left OUT of the rebuilt array rather than carried forward.
             continue
         if id(existing_room) not in matched_existing_room_ids:
             # Carried forward unchanged - not mentioned in this document, but never silently dropped.
@@ -5461,15 +6042,27 @@ def _build_offer_or_supplement_common_kwargs(item_data, room_codes, meal_plan_ty
     )
 
 
-def _hotel_offer_supplement_value_changed_error(kind_label, name, item_data, existing_match):
+def _hotel_offer_supplement_value_changed_error(kind_label, name, item_data, existing_match, resolved_type=None):
     """Shared helper for build_hotel_offer_payloads/build_hotel_supplement_payloads - see the
     CONFIRMED BUG FIX note at each call site. Returns a human-readable error string when the
     document's own value/childValue differs from what's already live under the same name, or
-    None when they match (a genuine no-op skip, nothing to flag)."""
+    None when they match (a genuine no-op skip, nothing to flag).
+
+    `resolved_type`: CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have
+    numbers or prices from a document, we round up ... 35 and 10 cents ... would say 36") - the
+    actual create path (build_hotel_offer_payloads/build_hotel_supplement_payloads) now rounds a
+    document's ABSOLUTE/STAY_TO_PAY value up before publishing, so this comparison must do the
+    same before comparing against what's already live - otherwise a document price that now gets
+    published as 36 would still show here as "35.1 differs from 36", a false mismatch this
+    function exists specifically to avoid reporting. A PERCENT value is never rounded (it's a
+    rate, not a document price), so resolved_type gates this exactly like the real create path."""
     extracted_value = _safe_float((item_data or {}).get("value", 0))
     existing_value = _safe_float((existing_match or {}).get("value", 0))
     extracted_child_value = _safe_float((item_data or {}).get("child_value", 0))
     existing_child_value = _safe_float((existing_match or {}).get("childValue", 0))
+    if resolved_type != "PERCENT":
+        extracted_value = round_up_currency(extracted_value)
+        extracted_child_value = round_up_currency(extracted_child_value)
     if round(extracted_value, 2) == round(existing_value, 2) and \
             round(extracted_child_value, 2) == round(existing_child_value, 2):
         return None
@@ -5577,7 +6170,8 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
             # skip itself is still correct, since there's nothing to PUT it to) so the caller's
             # failure list surfaces it instead of staying silent.
             value_changed_error = _hotel_offer_supplement_value_changed_error(
-                "Offer", offer_name, offer_data, existing_match)
+                "Offer", offer_name, offer_data, existing_match,
+                resolved_type=_map_offer_type((offer_data or {}).get("type")))
             results.append({"offer_payload": None, "offer_error": value_changed_error, "action": "skip_duplicate",
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
@@ -5593,6 +6187,13 @@ def build_hotel_offer_payloads(extracted_offers, room_name_to_provider_code, exi
         kwargs["type"] = _map_offer_type((offer_data or {}).get("type"))
         kwargs["stay"] = (offer_data or {}).get("stay")
         kwargs["pay"] = (offer_data or {}).get("pay")
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36"). Only when
+        # this is a real currency amount (type ABSOLUTE/STAY_TO_PAY) - a PERCENT value (e.g.
+        # 12.5%) is a rate, not a document price, and must never be ceiling-rounded like money.
+        if kwargs["type"] != "PERCENT":
+            kwargs["value"] = round_up_currency(kwargs["value"])
+            kwargs["childValue"] = round_up_currency(kwargs["childValue"])
 
         offer_error = None
         offer_payload = None
@@ -5631,7 +6232,8 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
             # build_hotel_offer_payloads - same silent-skip-on-value-change problem, same lack
             # of an update endpoint, same need to surface it instead of reporting a full success.
             value_changed_error = _hotel_offer_supplement_value_changed_error(
-                "Supplement", supp_name, supp_data, existing_match)
+                "Supplement", supp_name, supp_data, existing_match,
+                resolved_type=_map_supplement_type((supp_data or {}).get("type")))
             results.append({"supplement_payload": None, "supplement_error": value_changed_error, "action": "skip_duplicate",
                              "matched_provider_code": existing_match.get("providerCode")})
             continue
@@ -5646,6 +6248,29 @@ def build_hotel_supplement_payloads(extracted_supplements, room_name_to_provider
         kwargs = _build_offer_or_supplement_common_kwargs(supp_data, room_codes, meal_plan_types,
                                                             provider_code=placeholder_code, apply_default=None)
         kwargs["type"] = _map_supplement_type((supp_data or {}).get("type"))
+        # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have numbers or
+        # prices from a document, we round up ... 35 and 10 cents ... would say 36"). Only when
+        # this is a real currency amount (type ABSOLUTE) - a PERCENT value is a rate, not a
+        # document price, and must never be ceiling-rounded like money.
+        if kwargs["type"] != "PERCENT":
+            kwargs["value"] = round_up_currency(kwargs["value"])
+            kwargs["childValue"] = round_up_currency(kwargs["childValue"])
+
+        # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can never be
+        # 0 Euro. If so, then there is a mistake... does not need to be included." Confirmed
+        # (via AskUserQuestion) to be a drop-with-a-note, not a hard publish block - unlike the
+        # "no charging basis" case just below, which really does need a human decision. Uses the
+        # same "action" shape as the past-window skip above (skipped_past) so callers can treat
+        # both as "quietly not published, but tell the human" the same way.
+        if kwargs.get("value", 0) == 0 and kwargs.get("childValue", 0) == 0:
+            results.append({
+                "supplement_payload": None, "supplement_error": None, "action": "skipped_zero_price",
+                "matched_provider_code": None,
+                "skip_reason": (f"'{supp_name or '(unnamed)'}' had no price (0 Euro) - a supplement can "
+                                f"never be 0 Euro, so it was dropped, not published. If this was meant "
+                                f"to have a real charge, add the price and re-add it."),
+            })
+            continue
 
         # CONFIRMED PRODUCT-OWNER RULE: never guess a supplement's basis. Stop here with a
         # readable message instead of publishing a charge whose per-night/per-stay meaning
@@ -5870,6 +6495,17 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         f"{', '.join(still_missing)}, and no same-occupancy-count price to reuse - "
                         f"add a price for {'this combo' if len(still_missing) == 1 else 'these combos'} "
                         f"on the review screen.")
+                # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have
+                # numbers or prices from a document, we round up ... 35 and 10 cents ... would
+                # say 36") - rounded once, here, before any of this block's several downstream
+                # reads (the real distributionPrices entries below, AND the effective_base_price
+                # fallback derivation that reads these same amounts) so every one of them is
+                # consistently a whole-currency-unit figure, never just some of them.
+                distribution_prices_data = [
+                    {**p, "amount": round_up_currency(_safe_float(p.get("amount", 0)))}
+                    if isinstance(p, dict) else p
+                    for p in distribution_prices_data
+                ]
                 # CONFIRMED REAL BUG (2026-09-12, HRG-H1): Travel Compositor rejected the WHOLE
                 # rate with "java.lang.IllegalArgumentException: The 'base price' of the rooms
                 # cannot be zero!" even though this room uses DISTRIBUTION pricing (priced via
@@ -5883,7 +6519,7 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 # otherwise the lowest positive distribution price available. distributionPrices
                 # remains what actually prices the room for every occupancy - this fallback only
                 # satisfies the separate basePrice validation.
-                stated_base_price = _safe_float((rp_data or {}).get("base_price", 0))
+                stated_base_price = round_up_currency(_safe_float((rp_data or {}).get("base_price", 0)))
                 if stated_base_price:
                     effective_base_price = stated_base_price
                 else:
@@ -5929,8 +6565,8 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         children=_safe_int(p.get("children", 0)),
                     ) for p in distribution_prices_data],
                     basePrice=effective_base_price,
-                    adultPrices=[_safe_float(p) for p in (rp_data or {}).get("adult_prices") or []],
-                    childPrices=[_safe_float(p) for p in (rp_data or {}).get("child_prices") or []],
+                    adultPrices=[round_up_currency(_safe_float(p)) for p in (rp_data or {}).get("adult_prices") or []],
+                    childPrices=[round_up_currency(_safe_float(p)) for p in (rp_data or {}).get("child_prices") or []],
                 ))
 
             season_meal_plans = [_build_meal_plan_payload(mp) for mp in (season_data or {}).get("meal_plans") or []]
