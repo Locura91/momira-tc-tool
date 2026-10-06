@@ -131,6 +131,9 @@ published, rather than seeing a cents figure that then silently changes.
 
 
 EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data from a DMC (Destination Management Company) supplier document for Momira Travel.
+-- SCOPE: THIS PROMPT IS USED EXCLUSIVELY FOR CLOSEDTOUR PRODUCTS. --
+-- Ticket, Transfer, Hotel, and Transport products use their own separate prompt constants. --
+-- Any rule here (including supplement definitions) applies to ClosedTour only. --
 
 """ + _TABLE_AND_DATE_READING_HOUSE_RULES + """
 - NET PRICE ONLY - CONFIRMED HOUSE RULE (product owner, 2026-09-27, verbatim): "if contract
@@ -149,6 +152,13 @@ EXTRACTION_SYSTEM_PROMPT = """You are extracting structured travel product data 
 
 Rules:
 - Translate ALL content into English, regardless of the source document's original language.
+  EXCEPTION — MEAL CODES (CONFIRMED PRODUCT-OWNER RULE 2026-10-06): the single-letter meal
+  abbreviations B (Breakfast), L (Lunch), D (Dinner) are universal shorthand that NEVER need
+  translation and are ALWAYS written as the same single letter regardless of the source language.
+  Do not translate them, expand them, or change their spelling. If the source says "B" it stays
+  "B"; if it says "Frühstück" it still becomes "B"; if a meal plan is listed as "B/L/D" it stays
+  "B/L/D". This applies everywhere these letters appear — in descriptions, itinerary day text,
+  included/excluded fields, supplement names, and any other field.
 - Output ONLY valid JSON. No markdown code fences, no explanation, no preamble.
 - Never fabricate information that isn't present in the source document. Use empty string "" or empty list [] for anything you can't determine.
 - nights: the total number of overnight stays in the itinerary - count them directly from the day-by-day
