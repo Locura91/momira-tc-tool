@@ -22,7 +22,8 @@ import pandas as pd
 import streamlit as st
 
 from schemas import HumanPreConfig
-from builder import build_closed_tour_payloads, coerce_price_list_shape
+from builder import (build_closed_tour_payloads, coerce_price_list_shape,
+                     fix_touching_season_boundaries, split_nested_price_list_seasons)
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import (
@@ -36,9 +37,11 @@ from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 import cancellation_links
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from image_dimensions import FALLBACK_IMAGE
+from app_helpers import reset_session_keep_core
 from ui_components import (
     editable_table, editable_field, render_cancellation_policy_editor,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
+    render_auto_added_image_review,
     render_stock_photo_picker, render_child_age_band, render_child_discount_editor,
     render_closedtour_supplements, render_currency_check, render_extra_child_notice,
     render_optional_time_input, render_stop_sales_editor,
@@ -53,9 +56,31 @@ from app import (
     bump_widget_generation, check_code_availability, check_duplicate_tour_name,
     clarify_supplier_id, flow_widget_key, mark_code_as_taken, remember_clarification,
     remember_memory_panel, render_candidate_filter, render_clarify_result,
-    render_house_rule_shortcut, reset_child_age_band_widgets, reset_stale_editable_field_widgets,
-    show_publish_error, try_code_variants, with_learned_guidance,
+    render_house_rule_shortcut, render_supplement_zero_price_notes, reset_child_age_band_widgets,
+    reset_stale_editable_field_widgets, show_publish_error, try_code_variants, with_learned_guidance,
 )
+
+
+def _mct_generate_split_modality_code(parent_code, nested_row, existing_codes):
+    """A unique Modality Code for a season auto-split out of `parent_code` by
+    split_nested_price_list_seasons (see its docstring in builder.py, and the CONFIRMED
+    PRODUCT-OWNER RULE - 2026-09-18 - it implements). Built from the nested season's own name
+    when it has one (e.g. "Peak Season" -> "CABIN-PEAKSEASON"), falling back to its date range
+    when it doesn't, run through the same _clean_modality_code sanitizing every other
+    AI-suggested code in this app already goes through so it can't fail the same way a stray "."
+    or "/" would. A numeric suffix is appended only if that exact code is somehow already taken
+    (belt-and-braces - collisions should be rare given the season name is normally unique per
+    Modality) so this never silently reuses another Modality's code."""
+    season_label = (nested_row or {}).get("name") or (
+        f"{(nested_row or {}).get('startDate', '')}-{(nested_row or {}).get('endDate', '')}")
+    base = _clean_modality_code(f"{parent_code}{season_label}".replace(" ", ""))[:40] or f"{parent_code}SPLIT"
+    existing = set(existing_codes or [])
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}{n}" in existing:
+        n += 1
+    return f"{base}{n}"
 
 
 def render_multi_tour_flow(client, supplier_id, currency, on_request, release_days, url, uploaded_files,
@@ -226,7 +251,29 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                              format_func=lambda i: labels[i], key="mct_tour_choice")
 
         if st.button("➡️ Start Reviewing", type="primary"):
-            st.session_state.mct_tour = _new_mct_tour(candidates[choice_idx], default_tour_code)
+            chosen_candidate = dict(candidates[choice_idx])
+            # CONFIRMED PRODUCT-OWNER FIX (2026-09-27, verbatim: "the information from the
+            # document does not exclude the information form the url. If human adds both
+            # informations to the app, the App must read both of them complete each other and
+            # they are not excluded each others information... better to have one complete
+            # closedtour with multiple modalities, rather than having multiple closedtours").
+            #
+            # is_genuine_variant=True makes PHASE 3 pass this candidate's label to
+            # extract_structured_data as a variant_hint, which tells the AI to focus ONLY on
+            # that label and ignore everything else in the combined text - exactly right for
+            # two genuinely different tour PRODUCTS (different length/itinerary), but exactly
+            # wrong for the "same nights" case just warned about above: there, the document and
+            # the URL (or several documents) almost always describe complementary DETAILS of
+            # the SAME tour (e.g. the URL gives the itinerary, a document gives hotel names and
+            # pricing) - not competing alternatives - so narrowing extraction to "just the
+            # label that matched the document" would silently throw away everything the URL (or
+            # the other document) contributed, and vice versa. Forcing is_genuine_variant=False
+            # here means PHASE 3 extracts from the FULL combined text with no narrowing at all,
+            # so every source's information is merged into this one tour instead of one
+            # excluding the other.
+            if len(distinct_nights) <= 1:
+                chosen_candidate["is_genuine_variant"] = False
+            st.session_state.mct_tour = _new_mct_tour(chosen_candidate, default_tour_code)
             st.session_state.mct_phase = "reviewing_main"
             st.rerun()
 
@@ -260,9 +307,30 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 try:
                     tour["main_data"] = extract_structured_data(
                         st.session_state.mct_raw_text, variant_hint=variant_hint,
-                        human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint)
+                        human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint),
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18): "human selects max
+                        # occupancy by 2 or 3 pax for example, we must make sure that the
+                        # contracts reads max double or triple occupancy for supplements and
+                        # modalities... saves time and AI reader time." max_pax is the Max Pax
+                        # already chosen in app.py's Step 3, before this extraction ever runs.
+                        # 9 is that selector's unconstrained default (list(range(2,10)),
+                        # index=7) - only a genuinely narrowed choice (2-4) is worth passing
+                        # through; see _max_occupancy_focus_clause's own docstring for why this
+                        # is a reading-effort hint, not the same thing as the separate,
+                        # document-derived max_occupancy extraction field.
+                        max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
-                    tour["main_data"]["image_urls"] = [FALLBACK_IMAGE]
+                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
+                    # automatically use the images... at least the images are being detected...
+                    # but i cannot automatically use them for my closedtours and neither for my
+                    # tickets." Same fix as the single-tour ClosedTour/Ticket flows (app.py,
+                    # flows/ticket.py) - every URL in mct_hosted_image_candidates is already a
+                    # verified, R2-hosted image (uploaded AND public-URL-verified inside
+                    # _add_page_images_to_doc_pool/upload_images_with_errors, computed above in
+                    # PHASE 1 before this tour was even selected), so it's used directly instead
+                    # of requiring a manual tick-and-"Add selected" click.
+                    auto_images = list(dict.fromkeys(st.session_state.get("mct_hosted_image_candidates") or []))
+                    tour["main_data"]["image_urls"] = auto_images or [FALLBACK_IMAGE]
                     reset_child_age_band_widgets("mct_main")
                     # Only fills in when this document didn't state its own cancellation
                     # terms - see apply_cancellation_link_default's docstring. Runs once,
@@ -305,7 +373,11 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
 
         editable_field("Tour name", data, "tour_name", widget="text_input", key_suffix="_main")
         editable_field("Description", data, "description", widget="html_text_area", height=150, key_suffix="_main")
-        editable_field("Hotels", data, "hotels_text", widget="text_area", height=100, key_suffix="_main")
+        # CONFIRMED BUG (product-owner screenshot, 2026-09-24) - same fix as app.py's single-tour
+        # ClosedTour flow: hotels_text is stored as HTML, this was the generic no-conversion
+        # widget, so raw HTML tags leaked onto the review screen. See
+        # ui_components._plain_marked_to_display_html's docstring for the full report.
+        editable_field("Hotels", data, "hotels_text", widget="html_text_area", height=100, key_suffix="_main")
         editable_field("Included", data, "included", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Excluded", data, "excluded", widget="html_list_area", height=100, key_suffix="_main")
         editable_field("Meeting point", data, "meeting_point", widget="text_input", key_suffix="_main")
@@ -341,28 +413,32 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         editable_table(
             "Itinerary destinations (in visit order)", dest_df, "mct_destinations_main",
             on_save=_save_mct_destinations,
-            column_config={"#": st.column_config.NumberColumn(disabled=True)}
+            column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
         )
 
         st.markdown("**Images**")
         if data.get("image_urls") == [FALLBACK_IMAGE] or not data.get("image_urls"):
             st.caption("⚠️ No real image picked yet - using a generic placeholder. Pick at least one real image below.")
+        elif st.session_state.get("mct_hosted_image_candidates"):
+            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the extraction-time merge above:
+            # this used to be a manual tick-and-"Add selected" picker (render_url_image_picker);
+            # now it folds straight into image_urls with no click needed to keep any of them.
+            #
+            # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in your
+            # document/page were added automatically. --> human must verify the images as many
+            # images are not good or just logos and therefore is human interaction needed"): a
+            # plain confirmation caption gave no way to actually SEE what got added -
+            # render_auto_added_image_review shows a thumbnail per auto-added image, pre-checked
+            # (no click needed to keep any of them, preserving the 2026-09-23 fix), so unchecking
+            # a bad one (a logo, low quality, unrelated) is the only action needed. data["image_
+            # urls"] is mutated directly, same as _mct_add_doc_image below does when adding one -
+            # no separate text-area widget exists on this batch screen to keep in sync.
+            _mct_reviewed = render_auto_added_image_review(st.session_state.mct_hosted_image_candidates, "mct_auto_img")
+            _mct_unchecked = [u for u in st.session_state.mct_hosted_image_candidates if u not in _mct_reviewed]
+            if _mct_unchecked:
+                data["image_urls"] = [u for u in data.get("image_urls", []) if u not in _mct_unchecked] or [FALLBACK_IMAGE]
         else:
             st.caption(f"{len([u for u in data.get('image_urls', []) if u != FALLBACK_IMAGE])} image(s) selected.")
-
-        def _mct_add_url_images():
-            selected = render_url_image_picker(st.session_state.mct_hosted_image_candidates, "mct_found_main")
-            if selected:
-                current_imgs = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                data["image_urls"] = current_imgs + selected
-                return len(selected)
-            return 0
-
-        render_closable_image_section(
-            bool(st.session_state.get("mct_hosted_image_candidates")),
-            f"🖼️ Images found in your document/page ({len(st.session_state.get('mct_hosted_image_candidates') or [])})",
-            "mct_found_main_closed", _mct_add_url_images
-        )
 
         def _mct_add_doc_image():
             added = render_doc_image_picker(st.session_state.mct_doc_raw_images, "mct_doc_main")
@@ -470,9 +546,15 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 tour["modality_candidates"] = candidates
 
         candidates = tour["modality_candidates"]
-        st.caption("Auto-detected from your document where possible - untick any you don't want, edit the "
-                  "code/hint, or add more manually. At least one Modality is required (a 'Modality' is "
-                  "Travel Compositor's own term for the pricing option, e.g. 'Standard' or 'Deluxe').")
+        st.caption(
+            "**One Modality = one version of the service.** A second Modality is only correct when the "
+            "customer receives a genuinely different service — a different language (English vs German), "
+            "a different cabin/room class (Standard vs Deluxe), a different inclusions tier, etc. "
+            "Different prices at different times of year (High Season, Low Season, Peak, Shoulder) are "
+            "NOT separate Modalities — they are price rows within ONE Modality. "
+            "Untick any auto-detected candidates that are actually just seasonal pricing, edit codes/hints "
+            "as needed, or add a second Modality manually only when the service truly differs."
+        )
 
         suspicious_codes = [c["code"] for c in candidates if c["selected"] and _modality_code_suspicious(c["code"])]
         if suspicious_codes:
@@ -608,7 +690,10 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         st.session_state.mct_raw_text, tour_nights=tour_nights,
                         human_hint=with_learned_guidance(
                             clarify_supplier_id(supplier_id), "ClosedTour",
-                            mod["hint"] or mod["code"])
+                            mod["hint"] or mod["code"]),
+                        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-18) - see the matching
+                        # extract_structured_data call above for the full quote and reasoning.
+                        max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
                     # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): "add to remarks, if there is a
                     # minimum pax number needed for guaranteed departure." ClosedTour's only
@@ -618,6 +703,51 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     _apply_min_pax_guaranteed_departure_note(
                         tour["main_data"], ("policy_remarks",),
                         mod["data"].get("min_pax_guaranteed_departure"), label=mod["code"])
+
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-09-18, verbatim, from a real live
+                    # Travel Compositor screenshot of a published Modality's Prices tab): "End
+                    # date must be one day before next season start date. If are two modalities
+                    # in the same time, travel c gives an error, an extra modality has to be
+                    # build." Two fixes, applied once here right after extraction - see
+                    # fix_touching_season_boundaries and split_nested_price_list_seasons's own
+                    # docstrings in builder.py for the full reasoning and their deliberate
+                    # limits:
+                    #   1. Two seasons sharing an exact boundary date are silently pulled one
+                    #      day apart - pure date housekeeping, no note needed.
+                    #   2. A season nested entirely inside another becomes its own new
+                    #      Modality (appended to `modalities`, so it gets its own turn in this
+                    #      same one-Modality-at-a-time review wizard), with the containing
+                    #      season's price_list cut to leave a gap - Travel Compositor cannot
+                    #      publish two overlapping price windows on one Modality.
+                    mod["data"]["price_list"] = fix_touching_season_boundaries(mod["data"].get("price_list"))
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-10-05): DO NOT auto-create new Modalities
+                    # from overlapping price_list seasons. The previous auto-split created modalities
+                    # without human consent (user selected ONE modality, app produced two or more),
+                    # broke stop sales (TC creates per-Modality stop sales which fail when there are
+                    # extra auto-created codes the human didn't choose), and left date gaps in the
+                    # remaining modality (Jul-Aug disappearing from the price table). Fix: detect the
+                    # overlap and WARN, but keep the original price list intact so the human can edit
+                    # the date ranges in the table below. If the periods genuinely need separate
+                    # Modalities, the human can add one manually in the Modality selection step.
+                    _remaining_price_list, _nested_seasons, _unhandled_nesting_notes = \
+                        split_nested_price_list_seasons(mod["data"]["price_list"])
+                    # Keep the ORIGINAL price list (pre-split) — don't update to _remaining_price_list.
+                    # The overlapping rows stay visible so the human can fix dates manually.
+                    for _nesting_note in _unhandled_nesting_notes:
+                        st.warning(f"⚠️ {_nesting_note}")
+                    for _nested_row in _nested_seasons:
+                        st.warning(
+                            f"⚠️ **'{_nested_row.get('name') or 'A season'}'** "
+                            f"({_nested_row.get('startDate')} – {_nested_row.get('endDate')}) "
+                            f"overlaps with another season in **'{mod['code']}'**'s price list. "
+                            f"Travel Compositor cannot publish two overlapping price windows on one "
+                            f"Modality. Please fix the date ranges in the Pricing table below so the "
+                            f"periods don't overlap (adjust a start or end date on one of the rows). "
+                            f"If these are genuinely two separate pricing categories available at the "
+                            f"same time (e.g. Standard vs Deluxe), go back to Modality selection and "
+                            f"add a second Modality code manually — do not rely on auto-split."
+                        )
+                    # (removed: the for-loop that appended auto-split Modalities to `modalities`)
                 except Exception as e:
                     st.error(f"⚠️ Couldn't extract pricing for '{mod['code']}': {friendly_error_message(e)}")
                     if st.button("🔄 Retry extraction", key=f"mct_mod_retry_{midx}"):
@@ -723,10 +853,17 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if name:
                     entry["name"] = name
                 return entry
-            data["price_list"] = sorted(
+            # CONFIRMED PRODUCT-OWNER RULE (2026-09-18) - see the extraction-time wiring above
+            # for the full quote/reasoning. Applied here too so a human manually editing this
+            # table into a touching boundary gets the same silent fix, not just AI-extracted
+            # data. Nested/overlapping seasons introduced by a manual edit are NOT auto-split
+            # here (this callback only has this one Modality's data in scope, not the tour's
+            # full Modality list needed to append a new one) - build_closed_tour_payloads has
+            # its own belt-and-braces check for that case at publish time instead.
+            data["price_list"] = fix_touching_season_boundaries(sorted(
                 [_row_to_entry(r) for _, r in edited_df.iterrows() if _iso(_safe_cell_str(r.get("Start Date"))) and _iso(_safe_cell_str(r.get("End Date")))],
                 key=lambda e: e.get("startDate", "")
-            )
+            ))
         editable_table(f"Pricing - {mod['code']}", price_df, f"mct_mod_pricing_{midx}", on_save=_save_mct_price_list)
         render_extra_child_notice(data, f"mct_mod_{midx}")
         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the Child Discount % widget
@@ -963,6 +1100,27 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                 unsafe_allow_html=True
                             )
 
+                # CONFIRMED ABSOLUTE HOUSE RULE (product owner, 2026-09-18): "a supplement can
+                # never be 0 Euro. If so, then there is a mistake... does not need to be
+                # included." build_supplement_vos (via build_closed_tour_payloads) already drops
+                # any supplement priced at 0 in every occupancy before it ever reaches the
+                # payload - this is where that removal (and the occupancy-stripping notes it
+                # shares a list with) is actually shown to the human, matching the "flag it,
+                # don't silently change it" convention every other *_notes field in this app
+                # already uses.
+                if preview_payloads:
+                    render_supplement_zero_price_notes(preview_payloads, key="supplement_occupancy_notes")
+
+                # CONFIRMED PRODUCT-OWNER RULE (2026-09-18): season date ranges that still
+                # overlap after both the silent touching-boundary fix and the single-level
+                # auto-split into a new Modality have already run (see builder.py's
+                # build_closed_tour_payloads) - should normally never fire, since the extraction
+                # -time wiring above already catches this before the human ever reaches this
+                # screen, but shown here as a final visible safety net rather than a silently
+                # populated field nobody reads, same convention as every other *_notes field.
+                if preview_payloads:
+                    render_supplement_zero_price_notes(preview_payloads, key="price_list_overlap_notes")
+
                 # CONFIRMED FIX: a human used to be stuck here with no way to fix an
                 # unresolved destination short of abandoning the whole tour ("Start a
                 # new ClosedTour") - the itinerary is editable right on this screen
@@ -985,7 +1143,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 editable_table(
                     "Itinerary destinations (in visit order)", mct_dest_df, "mct_publish_destinations",
                     on_save=_save_mct_publish_destinations,
-                    column_config={"#": st.column_config.NumberColumn(disabled=True)}
+                    column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
                 )
 
             _warn_stale_images(main_data.get("image_urls"))
@@ -1193,15 +1351,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                 if st.button("➕ Add another Modality to this same ClosedTour"):
                     prefill_tour_code = st.session_state.just_published_tour_code
                     prefill_supplier_id = st.session_state.just_published_supplier_id
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     st.session_state.cfg_action = "add_option"
                     st.session_state.cfg_supplier_id = prefill_supplier_id
                     st.session_state.cfg_existing_tour_code = prefill_tour_code
@@ -1215,15 +1365,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                  "filled in for you once you reach Step 3."):
                     prefill_tour_code = st.session_state.just_published_tour_code
                     prefill_supplier_id = st.session_state.just_published_supplier_id
-                    keep_client = st.session_state.client
-                    keep_suppliers = st.session_state.suppliers_cache
-                    keep_product_type = st.session_state.product_type
-                    keep_tool = st.session_state["active_tool"] if "active_tool" in st.session_state else None
-                    st.session_state.clear()
-                    st.session_state.client = keep_client
-                    st.session_state.suppliers_cache = keep_suppliers
-                    st.session_state.product_type = keep_product_type
-                    st.session_state.active_tool = keep_tool
+                    reset_session_keep_core()
                     # Deliberately NOT setting cfg_action/step1_confirmed here - the human still
                     # picks which action they want at Step 1, same as any fresh run. Only the
                     # code (and, as a convenience, the supplier) are carried forward so whichever

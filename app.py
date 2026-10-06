@@ -1905,8 +1905,11 @@ multi_modality_mode = False
 if action == "add_option":
     multi_modality_mode = st.checkbox(
         "📦 I'm adding MULTIPLE modalities from this same source",
-        help="The app will detect distinct pricing categories (e.g. Standard/Deluxe cabin) from one "
-             "shared document/URL, and let you review + publish each one individually, one at a time."
+        help="Only tick this when the source describes genuinely DIFFERENT services — e.g. the same tour "
+             "run in English (Modality 1) AND German (Modality 2), or Standard cabin AND Deluxe cabin. "
+             "Different prices for different seasons (High/Low/Peak) are NOT multiple modalities — they "
+             "are price rows within one Modality. The app will detect distinct service categories and let "
+             "you review + publish each one individually."
     )
 
 if multi_modality_mode:
@@ -2748,6 +2751,11 @@ if st.session_state.extracted:
             st.info(f"🇮🇩 Indonesia detected in this itinerary — Vesak Day and Nyepi are automatically "
                     f"blocked as stop-sale dates, no excursion/tour may start on either day. "
                     f"{payloads.get('indonesia_holiday_note', '')}")
+
+        if payloads.get("is_china"):
+            st.info(f"🇨🇳 China detected in this itinerary — Golden Week (Oct 1–7) and Spring Festival "
+                    f"are automatically blocked as stop-sale dates for all years through 2040. "
+                    f"{payloads.get('china_holiday_note', '')}")
 
         if payloads.get("is_vietnam") and payloads.get("tet_overlap"):
             _ct_tet = payloads["tet_overlap"]

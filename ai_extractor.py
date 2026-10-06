@@ -257,7 +257,21 @@ Rules:
   <p><strong>Planned hotels for this tour (subject to availability; equivalent alternatives may be used and the tour price may be adjusted if necessary)</strong></p><ul><li>City1 – Hotel Name 1</li><li>City2 – Hotel Name 2 (or Alternative Hotel Name)</li></ul>
   IMPORTANT: only add a new bullet when the accommodation actually CHANGES. If the tour is a cruise/riverboat and the client stays in the SAME vessel/cabin the whole time (even while visiting different destinations along the way), that is ONE hotel/accommodation, not one per destination - write a single bullet like "RV [Ship Name] – Deluxe Cabin (entire cruise)" rather than repeating the ship name per city. Only include cities/stops and hotel names actually found in the source - never invent one. If the source gives no hotel names at all, still use the intro paragraph but list each destination with "Hotel to be confirmed" instead of fabricating a name.
 - hotels_count: the number of DIFFERENT accommodations/hotels the client actually stays in (count the bullets you just wrote in hotels_text - e.g. a cruise with one ship the whole way is 1, a land tour through 3 different-hotel cities is 3).
-- supplements: TRUE OPTIONAL add-ons the customer only pays for if they choose them - upgrades (better hotel/room/meal category) or optional excursions (e.g. "Optional: Dinner at X Restaurant - 55 EUR", "Optional half-day excursion to Y - 40 USD"). Do NOT include anything that's already covered in included/excluded - only things explicitly marked optional/extra with their own separate price.
+- supplements: CONFIRMED PRODUCT-OWNER DEFINITION (2026-10-06): a supplement is an OPTIONAL ADD-ON
+  the customer actively chooses YES or NO — they pay extra only if they want it. Classic examples:
+  "Optional dinner on Day 2 - 45 EUR per person" (lunch is already included, dinner is their choice);
+  "Optional airport transfer at tour start/end - 30 USD per person" (the tour can proceed without it).
+  KEY RULE — THREE-WAY DISTINCTION, only one of these three buckets is correct for any given item:
+    1. SUPPLEMENT: item has its own optional price AND the customer chooses whether to include it.
+       Extract it here with its price. Example: "Add airport transfer: +30 USD" or "Optional dinner: +45 EUR".
+    2. INCLUSION (NOT a supplement): item is part of the base product and always included — no choice,
+       no extra cost. Do NOT extract as a supplement, even at price 0. Leave it in the included/excluded
+       fields only. Example: "Airport transfer included", "All meals included".
+    3. MODALITY (NOT a supplement): item represents a genuinely different version of the service (different
+       language, different cabin class, different guide tier). This becomes a separate Modality, not a
+       supplement. Example: "English-language tour" vs "German-language tour" = two Modalities.
+  Do NOT include anything that's already in included/excluded. Only extract as a supplement when the
+  source explicitly marks it optional/extra with its own separate price and the customer can opt in or out.
   CRITICAL - IGNORE voluntary carbon offset/carbon emission compensation charges entirely (e.g. "Optional
   CO2 offset contribution - 5 EUR", "Carbon footprint compensation", "voluntary climate contribution") -
   never add these as a supplement or anywhere else in the extracted data, even though they're technically
@@ -1960,6 +1974,36 @@ traces back to WHEN (season/date), not WHAT (category), this is a SINGLE Modalit
 different seasons of the same category, look for a category/tier NAME attached to each (e.g. "Standard
 Cabin" vs "Deluxe Cabin") - if the only thing distinguishing two price blocks is a date range or season
 name with no category name attached, treat them as ONE Modality's seasonal pricing, never two Modalities.
+
+CONFIRMED PRODUCT-OWNER RULE (2026-10-05): three additional hard rules that override everything else:
+1. SERVICE DIFFERENCE test — the ONLY valid reason for a second Modality (confirmed 2026-10-06,
+   verbatim: "a modality is always a bit different in service, not different in price"):
+   A separate Modality is ONLY created when the customer receives a DIFFERENT SERVICE — a different
+   language of delivery, a different cabin/room class, a different guide tier, a different
+   transport mode, a different inclusions package, etc. A difference in PRICE ALONE — even a large
+   one — never justifies a second Modality. Concrete examples:
+   CORRECT — TWO Modalities: "Same 3-day safari, run in English" (Modality 1) vs "Same 3-day safari,
+     run in German" (Modality 2). The customer gets a different language of service → service differs.
+   CORRECT — TWO Modalities: "Standard Cabin" (Modality 1) vs "Deluxe Cabin" (Modality 2). The
+     customer gets a different physical cabin category → service/product differs.
+   WRONG — ONE Modality: "High Season price" (Nov–Apr) vs "Low Season price" (May–Oct) for the same
+     cabin. These are the same service at different prices → ONE Modality with two dated price rows.
+   WRONG — ONE Modality: "Peak price €200" vs "Shoulder price €150" for the same tour run the same
+     way. Same service, different price → ONE Modality, two price rows.
+   Ask yourself: "Does the customer EXPERIENCE the product differently?" If yes → different Modality.
+   If the only thing changing is a number on the invoice → same Modality, different price row.
+2. SAME TIME PERIOD test: multiple Modalities are only warranted when MULTIPLE DISTINCT OPTIONS (e.g.
+   Standard Cabin AND Deluxe Cabin) are available for the SAME date/period simultaneously - meaning a
+   customer can CHOOSE between them on any given date. If the document only describes ONE option for each
+   period (even if that one option has a different price per period), there is one Modality. "Different
+   prices at different times" = one Modality. "Different categories you can choose between at the same
+   time" = multiple Modalities. When in doubt, ask: could a customer pick between these on the same day?
+   If no, it is seasonal pricing in one Modality.
+3. HUMAN-PROVIDED SINGLE CODE: if the human operator has explicitly entered only ONE modality code for
+   this tour/ticket (rather than letting the system detect them), the answer is always ONE Modality,
+   regardless of what the source document appears to describe. The human's explicit code choice is final.
+   Multiple price rows within that single Modality (different start/end dates, different occupancy prices)
+   are always valid and expected - they are NOT separate Modalities.
 
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing
