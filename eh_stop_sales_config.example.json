@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy this to eh_stop_sales_config.json and fill in the real values. Two of the four Elephant Hills tours share one ehtms.com URL and two share the other; put the matching URL on each tour. Leave modality_codes out (or null) to write the closure to EVERY modality of that tour, which is the right default - a date the camp has closed is closed whichever modality we sell it under. Only list specific codes when that genuinely is not true.",
+  "supplier_id": "MOMIRA_TH_EH",
+  "tours": [
+    {
+      "tour_code": "CNX-3",
+      "name": "FILL IN - the tour's name in Travel Compositor, for the run log only",
+      "url": "https://ehtms.com/booking/checkin?branch_id=1&package_id=1&source_code=thebushcamp&hotel_sec=FILL_IN",
+      "modality_codes": null
+    },
+    {
+      "tour_code": "FILL-IN-2",
+      "name": "FILL IN",
+      "url": "https://ehtms.com/booking/checkin?FILL_IN",
+      "modality_codes": null
+    },
+    {
+      "tour_code": "FILL-IN-3",
+      "name": "FILL IN",
+      "url": "https://ehtms.com/booking/checkin?FILL_IN",
+      "modality_codes": null
+    },
+    {
+      "tour_code": "FILL-IN-4",
+      "name": "FILL IN",
+      "url": "https://ehtms.com/booking/checkin?FILL_IN",
+      "modality_codes": null
+    }
+  ]
+}
