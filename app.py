@@ -862,6 +862,20 @@ if _module_import_failures:
         + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
           "trusting anything this module is used for.")
 
+# The Elephant Hills stop-sale reader runs as a scheduled task with no window, so every way it
+# can fail is silent: the supplier's booking page changes shape, the Travel Compositor login
+# expires, or the scheduled task simply stops running - and the shop carries on selling dates the
+# camp has closed, with nothing anywhere saying so. The warning lives here, on every screen,
+# because this app is what gets opened daily while the reader has nobody watching it. The import
+# is guarded so a machine without the reader, or with an unreadable status file, still loads the
+# app normally - a broken warning system must never become a worse outage than the thing it warns
+# about. See eh_run_status.py for what it reports and why.
+try:
+    import eh_run_status as _eh_run_status
+    _eh_run_status.render_banner(st)
+except Exception:
+    pass
+
 # A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
 # been handed a blank page. See document_reader.scanned_document_warning.

@@ -54,10 +54,15 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-# Stamped on every delivery, matching the convention in stop_sales_tool.py and friends: app.py
-# compares this against its own build string so a partial push surfaces as a clear message rather
-# than a traceback pointing at unrelated code.
-MODULE_BUILD = "2026-10-07-eh-website-stop-sale-reader"
+# NOT named MODULE_BUILD deliberately. app.py's partial-deploy check (and
+# tests/test_2026_09_13_build_stamp_consistency.py) treat every root-level module carrying a
+# MODULE_BUILD stamp as part of the Streamlit app's deploy set, and require it to match app.py's
+# BUILD_VERSION exactly. These two files are standalone command-line scripts that app.py never
+# imports, so stamping them raised a permanent false "Partial deploy" banner the moment they
+# landed - the app was correct that the strings differed, and wrong that it mattered. A module
+# with no MODULE_BUILD is skipped by both checks, which is the right treatment here. The version
+# is still kept, under a name those checks do not look for, because the run banner prints it.
+TOOL_VERSION = "2026-10-07-eh-website-stop-sale-reader"
 
 # CONFIRMED RULE (product owner, 2026-10-07): the scan starts the day AFTER the tour's release
 # period ends and runs to day 365, inclusive. Day 1 is tomorrow.

@@ -53,7 +53,15 @@ try:
 except ImportError:
     pass
 
-MODULE_BUILD = "2026-10-07-eh-website-stop-sale-reader"
+# NOT named MODULE_BUILD deliberately. app.py's partial-deploy check (and
+# tests/test_2026_09_13_build_stamp_consistency.py) treat every root-level module carrying that
+# stamp as part of the Streamlit app's deploy set, and require it to match app.py's BUILD_VERSION
+# exactly. These two files are standalone command-line scripts that app.py never imports, so
+# stamping them raised a permanent false "Partial deploy" banner the moment they landed - the app
+# was right that the strings differed and wrong that it mattered. An unstamped module is skipped
+# by both checks, which is the correct treatment here. The version is kept under a name those
+# checks do not look for, because the run banner prints it.
+TOOL_VERSION = "2026-10-07-eh-website-stop-sale-reader"
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "eh_stop_sales_config.json")
@@ -172,6 +180,9 @@ def main(argv=None) -> int:
     ap.add_argument("--headful", action="store_true", help="show the browser window")
     ap.add_argument("--today", default=None,
                     help="override today's date (YYYY-MM-DD), for testing the window")
+    ap.add_argument("--force-large", action="store_true",
+                    help="apply a reading that was flagged as suspiciously large (see "
+                         "eh_run_status.py for what counts as suspicious and why it is held back)")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -187,7 +198,7 @@ def main(argv=None) -> int:
     dry_run = not args.apply
 
     import eh_availability
-    print(f"Elephant Hills stop-sale check  [{MODULE_BUILD}]")
+    print(f"Elephant Hills stop-sale check  [{TOOL_VERSION}]")
     print(f"  today: {today}   horizon: day 1-{eh_availability.SCAN_TO_DAY}; each tour is scanned "
           f"from the day after its own release period ends")
     print(f"  mode:  {'DRY RUN - nothing will be written' if dry_run else 'APPLY - will write to Travel Compositor'}")
@@ -246,10 +257,49 @@ def main(argv=None) -> int:
         finally:
             browser.close()
 
-    to_write = [r for r in readings if not r.get("error") and r.get("ranges")]
+    # ------------------------------------------------------------------
+    # Does any reading look like a broken parser rather than a real closure?
+    # ------------------------------------------------------------------
+    # Checked BEFORE anything is written. A reader that breaks does not raise - it quietly reads
+    # every day as closed, and that run then blocks the whole year while reporting success. See
+    # eh_run_status.assess_tour for the two tests and why a fixed threshold cannot work here.
+    import eh_run_status
+    previous = eh_run_status.load()
+    status_tours, run_errors, run_warnings = {}, [], []
+
+    for reading in readings:
+        code = reading["tour_code"]
+        if reading.get("error"):
+            status_tours[code] = {"status": "failed", "detail": reading["error"]}
+            run_errors.append(f"{code}: could not read the supplier's calendar - {reading['error']}")
+            continue
+        blocked_days = sum(
+            (_dt.date.fromisoformat(r["end"]) - _dt.date.fromisoformat(r["start"])).days + 1
+            for r in reading["ranges"])
+        scanned_days = eh_availability.SCAN_TO_DAY - reading["from_day"] + 1
+        verdict = eh_run_status.assess_tour(
+            code, blocked_days, scanned_days, eh_run_status.previous_tour(previous, code))
+        status_tours[code] = {"status": "ok", "blocked_days": blocked_days,
+                              "scanned_days": scanned_days}
+        if verdict["suspicious"] and not args.force_large:
+            reading["held_back"] = verdict["reason"]
+            status_tours[code]["status"] = "suspicious"
+            status_tours[code]["detail"] = verdict["reason"]
+            # Not counted as a blocked_days baseline: recording a reading we refused to trust
+            # would make the same wrong number look normal on the next run.
+            status_tours[code].pop("blocked_days", None)
+            run_warnings.append(f"{code}: {verdict['reason']}")
+            print(f"\n  HELD BACK - {code}: {verdict['reason']}")
+        elif verdict["suspicious"]:
+            run_warnings.append(f"{code}: applied with --force-large despite: {verdict['reason']}")
+
+    to_write = [r for r in readings
+                if not r.get("error") and r.get("ranges") and not r.get("held_back")]
     if not to_write:
         print("\nNothing to write.")
-        return 0
+        eh_run_status.save(status_tours, "dry-run" if dry_run else "apply",
+                           run_errors, run_warnings)
+        return 1 if run_errors else 0
 
     # api_client.TravelCompositorAPI, NOT travelcompositor_api.TravelCompositorAPI. This repo has
     # two separate clients (see the NOTE at the top of translation_tool.py); app.py builds the
@@ -278,6 +328,13 @@ def main(argv=None) -> int:
             print(f"    [{status}] {res.get('code')}: {detail}")
             if status == "failed":
                 exit_code = 1
+                run_errors.append(f"{reading['tour_code']} / {res.get('code')}: {detail}")
+                status_tours.setdefault(reading["tour_code"], {})["status"] = "failed"
+
+    # Written whether the run passed or failed - especially when it failed, since a failed run
+    # that leaves no trace is indistinguishable from one that never happened, and "never
+    # happened" is exactly what a silently disabled scheduled task looks like.
+    eh_run_status.save(status_tours, "dry-run" if dry_run else "apply", run_errors, run_warnings)
     return exit_code
 
 
