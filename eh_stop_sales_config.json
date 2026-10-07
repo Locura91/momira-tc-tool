@@ -1,0 +1,36 @@
+{
+  "_comment": "The four Elephant Hills / Bush Camp ClosedTours and the ehtms.com package each one is sold from. URLs confirmed by the product owner, 2026-10-07. branch_id 1 = The Bush Camp (Chiang Mai, CNX), branch_id 2 = Elephant Hills (Khao Sok, HKT); package_id picks the tour within a branch. modality_codes null means write the closure to EVERY modality of that tour, which is the right default - a date the camp has closed is closed whichever modality we sell it under.",
+  "_supplier_id_note": "53911 is the NUMERIC Travel Compositor supplier id for MOMIRA_TH_EH, confirmed live via GET /suppliers on 2026-10-07. The path /closedtour/{supplierId}/{code} wants this number - passing the human-readable name MOMIRA_TH_EH returns 404 on every tour, which reads like a missing tour rather than a wrong supplier.",
+  "supplier_id": "53911",
+  "tours": [
+    {
+      "tour_code": "CNX-3",
+      "name": "TBC2 - The Bush Camp 2 Days 1 Night (Chiang Mai)",
+      "url": "https://ehtms.com/?branch_id=1&package_id=1&source_code=thebushcamp&hotel_sec=5892E9E3917896261E83E0ECCD01277D",
+      "modality_codes": null,
+      "release_days": 45
+    },
+    {
+      "tour_code": "CNX-4",
+      "name": "TBC3 - The Bush Camp 3 Days 2 Nights (Chiang Mai)",
+      "url": "https://ehtms.com/?branch_id=1&package_id=10&source_code=thebushcamp&hotel_sec=5892E9E3917896261E83E0ECCD01277D",
+      "modality_codes": null,
+      "release_days": 45
+    },
+    {
+      "tour_code": "HKT-2",
+      "name": "EH-JS3 - Jungle Safari 3 Days 2 Nights (Elephant Hills)",
+      "url": "https://ehtms.com/?branch_id=2&package_id=5&source_code=elephanthills&hotel_sec=069000BCFFB732BDB6A75EC6BA792D27",
+      "modality_codes": null,
+      "release_days": 60
+    },
+    {
+      "tour_code": "HKT-3",
+      "name": "Elephant Hills package 8 - CONFIRM THE NAME ON FIRST DRY RUN",
+      "url": "https://ehtms.com/?branch_id=2&package_id=8&source_code=elephanthills&hotel_sec=069000BCFFB732BDB6A75EC6BA792D27",
+      "modality_codes": null,
+      "release_days": 60
+    }
+  ],
+  "_release_days_note": "release_days is OUR contractual lead time with the supplier, not anything visible on their website. The scan starts the day AFTER it ends, so 45 -> day 46..365 and 60 -> day 61..365. Dates inside the release period are not ours to sell, so a FULL day there is not a closure worth writing. Confirmed by the product owner 2026-10-07: CNX tours 45 days, HKT tours 60 days."
+}
