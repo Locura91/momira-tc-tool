@@ -214,13 +214,15 @@ def test_extraction_block_applies_touching_boundary_fix_then_nested_split():
     assert fix_idx < split_idx  # boundary fix must run before nesting detection
 
 
-def test_extraction_block_appends_a_new_modality_for_each_nested_season():
+def test_extraction_block_warns_but_never_auto_appends_a_modality_for_nested_seasons():
+    """Replaces the original test that pinned auto-split. Auto-splitting created Modalities the
+    human never chose and broke stop sales, so the flow now only WARNS (see the comment in
+    flows/multi_tour.py) and leaves the price list intact for the human to fix."""
     src = _read_multi_tour_source()
     idx = src.index("for _nested_row in _nested_seasons:")
     snippet = src[idx:idx + 900]
-    assert "modalities.append(" in snippet
-    assert '"confirmed": False' in snippet
-    assert "_mct_generate_split_modality_code(" in snippet
+    assert "st.warning(" in snippet
+    assert "modalities.append(" not in snippet
 
 
 def test_extraction_block_warns_about_unhandled_multi_level_nesting():
