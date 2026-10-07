@@ -35,7 +35,7 @@ from ui_components import (
 
 from app import (
     ALL_WEEKDAYS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES, _clean_modality_code,
-    _clear_batch_widget_state, _fetch_url_text_safe, _modality_code_suspicious,
+    _clear_batch_widget_state, _fetch_url_text_safe, gather_source_content, _modality_code_suspicious,
     apply_clarify_changes, clarify_supplier_id, fetched_tour_matches_code,
     remember_clarification, remember_memory_panel, render_candidate_filter,
     render_clarify_result, render_house_rule_shortcut, render_skip_item_button,
@@ -71,24 +71,8 @@ def render_multi_modality_flow(client, url=None, uploaded_files=None):
         if st.button("🔎 Detect Modalities", disabled=not (url or uploaded_files)):
             with st.spinner("Gathering content and detecting distinct pricing categories..."):
                 try:
-                    combined_parts = []
-                    if url:
-                        page_text, page_text_err = _fetch_url_text_safe(url)
-                        if page_text is not None:
-                            combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
-                        else:
-                            st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
-                    for uploaded in (uploaded_files or []):
-                        suffix = os.path.splitext(uploaded.name)[1]
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                            tmp.write(uploaded.getbuffer())
-                            tmp_path = tmp.name
-                        _doc_text = extract_raw_text(tmp_path)
-                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
-                        if _scan_warning:
-                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
-                        os.remove(tmp_path)
+                    combined_parts, _, _, _ = gather_source_content(
+                        url, uploaded_files, collect_images=False)
 
                     if not combined_parts:
                         st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")

@@ -32,6 +32,11 @@ _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _APP_PY = os.path.join(_REPO_DIR, "app.py")
 
 
+def _app_helpers_src():
+    with open(os.path.join(_REPO_DIR, "app_helpers.py"), "r", encoding="utf-8") as f:
+        return f.read()
+
+
 def _read_app_py():
     """Returns app.py's source concatenated with every module under flows/ - Phase 1
     (2026-09-15) started splitting render_*_flow functions out of app.py into flows/*.py,
@@ -75,9 +80,15 @@ def test_step3_initializes_image_pools():
 
 
 def test_step3_extracts_embedded_document_images():
+    # CONSOLIDATION (2026-10-07): the hotel gather step's embedded-image extraction + R2 upload
+    # was a byte-for-byte duplicate of the ticket/multi-ticket/multi-tour flows and now lives in
+    # app_helpers.gather_source_content. The hotel block must delegate to it (passing its
+    # pre-seeded image pools through), and the helper must still do the extraction + upload.
     block = _hotel_step3_block(_read_app_py())
-    assert "extract_images(tmp_path" in block
-    assert "upload_images_r2_with_errors(embedded_images)" in block
+    assert "gather_source_content(" in block
+    gather = _app_helpers_src().split("def gather_source_content")[1].split("\ndef ")[0]
+    assert "extract_images(tmp_path" in gather
+    assert "upload_images_r2_with_errors(embedded_images)" in gather
 
 
 def test_step3_scrapes_images_from_the_page_url():

@@ -42,7 +42,7 @@ from ui_components import (
 from app import (
     CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES,
     _clear_batch_widget_state, _extract_error_message_detail, _extract_rejected_image_url,
-    _fetch_url_text_safe, _hp_dist_to_str, _hp_first_window, _hp_names_to_str, _hp_nums_to_str,
+    _fetch_url_text_safe, gather_source_content, _hp_dist_to_str, _hp_first_window, _hp_names_to_str, _hp_nums_to_str,
     _hp_str_to_dist, _hp_str_to_names, _hp_str_to_nums, _hp_window_list,
     _render_hotel_masterdata_step, _render_hotel_price_audit_section,
     _warn_page_image_upload_errors, _warn_stale_images, show_publish_error,
@@ -383,36 +383,10 @@ def render_hotel_flow(client):
                     _hp_md_seed = st.session_state.get("hp_masterdata_seed")
                     if _hp_md_seed:
                         doc_image_urls.extend(_hp_md_seed.get("image_urls") or [])
-                    if hp_url:
-                        page_text, page_text_err = _fetch_url_text_safe(hp_url)
-                        if page_text is not None:
-                            combined_parts.append(f"--- SOURCE: WEB PAGE ({hp_url}) ---\n{page_text}")
-                        else:
-                            st.warning(f"⚠️ Couldn't fetch the hotel page URL: {page_text_err}.")
-                    for uploaded in (hp_files or []):
-                        suffix = os.path.splitext(uploaded.name)[1]
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                            tmp.write(uploaded.getbuffer())
-                            tmp_path = tmp.name
-                        _doc_text = extract_raw_text(tmp_path)
-                        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
-                        if _scan_warning:
-                            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
-                        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
-                        remaining_budget = 12 - len(doc_raw_images)
-                        _doc_image_errors = []
-                        embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
-                        if embedded_images:
-                            for i, (img_bytes, ext) in enumerate(embedded_images):
-                                doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
-                            try:
-                                new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
-                                doc_image_urls.extend(new_urls)
-                                _doc_image_errors.extend(_upload_errors)
-                            except Exception as e:
-                                _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
-                        _warn_page_image_upload_errors(_doc_image_errors)
-                        os.remove(tmp_path)
+                    gather_source_content(
+                        hp_url, hp_files, url_label="hotel page",
+                        combined_parts=combined_parts, doc_raw_images=doc_raw_images,
+                        doc_image_urls=doc_image_urls, seen_image_hashes=seen_image_hashes)
 
                     if not combined_parts:
                         st.error("Nothing to extract - the hotel page URL couldn't be fetched and no document(s) were provided.")

@@ -48,11 +48,13 @@ from builder import (transport_company_name as builder_transport_company_name,
 from builder import LANGUAGE_CODE_NAMES
 from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shape
 from date_format import to_iso_date as _iso, to_display_date as _disp
-from document_reader import extract_raw_text
+from document_reader import extract_raw_text, extract_images
+from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ui_components import is_active_supplier, _safe_float, _safe_int
 from numeric_helpers import round_up_currency
 from web_extractor import get_page_text, short_page_text_warning
 from r2_client import stale_image_warning
+from r2_client import upload_images_with_errors as upload_images_r2_with_errors
 from geocoding_client import build_place_query
 from ai_extractor import friendly_error_message, min_pax_guaranteed_departure_note
 from price_audit import run_hotel_price_audit, compare_price_audit_to_extraction, summarize_findings
@@ -391,6 +393,77 @@ def _fetch_url_text_safe(url_val):
         return None, f"couldn't reach the website ({str(e)[:150]})"
     except Exception as e:
         return None, f"unexpected error reading the page ({str(e)[:150]})"
+
+
+def gather_source_content(url, uploaded_files, *, url_label="product page",
+                          collect_images=True, image_budget=12,
+                          combined_parts=None, doc_raw_images=None,
+                          doc_image_urls=None, seen_image_hashes=None):
+    """Shared upload + URL intake for the extraction flows.
+
+    CONSOLIDATION (2026-10-07): this block - fetch the optional product-page URL, then for each
+    uploaded document write it to a temp file, read its text, surface a scanned-document warning,
+    and (optionally) pull + R2-upload its embedded images - was hand-copied, near byte-for-byte,
+    into render_ticket flow, render_multi_ticket flow (twice), render_multi_tour flow,
+    render_hotel flow, and (text-only) render_multi_modality flow. Keeping six copies in sync by
+    hand is exactly the duplication that caused repeated multi-file edits this project; it now
+    lives here once.
+
+    NOT folded in: app.py's own add_option intake is a deliberately different variant (it uses
+    upload_images_r2 rather than _with_errors, guards image work behind action != "add_option",
+    and prints per-file upload captions inline), so it is left as-is on purpose.
+
+    url_label only changes the wording of the fetch-failure warning ("product page" vs "hotel
+    page"). collect_images=False reproduces the text-only multi_modality behaviour exactly.
+
+    The four accumulators are passed in and mutated in place so a caller that pre-seeds them (the
+    hotel flow seeds doc_image_urls from its master-data seed) keeps that content; they are also
+    returned for convenience. Returns (combined_parts, doc_raw_images, doc_image_urls,
+    seen_image_hashes).
+    """
+    if combined_parts is None:
+        combined_parts = []
+    if doc_raw_images is None:
+        doc_raw_images = []
+    if doc_image_urls is None:
+        doc_image_urls = []
+    if seen_image_hashes is None:
+        seen_image_hashes = set()
+
+    if url:
+        page_text, page_text_err = _fetch_url_text_safe(url)
+        if page_text is not None:
+            combined_parts.append(f"--- SOURCE: WEB PAGE ({url}) ---\n{page_text}")
+        else:
+            st.warning(f"⚠️ Couldn't fetch the {url_label} URL: {page_text_err}.")
+
+    for uploaded in (uploaded_files or []):
+        suffix = os.path.splitext(uploaded.name)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded.getbuffer())
+            tmp_path = tmp.name
+        _doc_text = extract_raw_text(tmp_path)
+        _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
+        if _scan_warning:
+            st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
+        combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
+        if collect_images:
+            remaining_budget = image_budget - len(doc_raw_images)
+            _doc_image_errors = []
+            embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
+            if embedded_images:
+                for i, (img_bytes, ext) in enumerate(embedded_images):
+                    doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
+                try:
+                    new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
+                    doc_image_urls.extend(new_urls)
+                    _doc_image_errors.extend(_upload_errors)
+                except Exception as e:
+                    _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
+            _warn_page_image_upload_errors(_doc_image_errors)
+        os.remove(tmp_path)
+
+    return combined_parts, doc_raw_images, doc_image_urls, seen_image_hashes
 
 
 def _clean_modality_code(raw_code):

@@ -47,7 +47,7 @@ from app import (
     _tk_clear_geo_confirmation, _warn_page_image_upload_errors, _warn_stale_images,
     apply_clarify_changes, bump_widget_generation, check_code_availability,
     check_modality_code_availability, clarify_supplier_id, flow_widget_key,
-    floor_start_date_for_new_data, mark_code_as_taken, remember_clarification,
+    floor_start_date_for_new_data, gather_source_content, mark_code_as_taken, remember_clarification,
     remember_memory_panel, render_candidate_filter, render_clarify_result,
     render_code_availability_check, render_house_rule_shortcut, render_modalities_review,
     render_modality_code_availability_check, render_multi_ticket_flow,
@@ -402,40 +402,8 @@ def render_ticket_flow(client):
     if st.button("🔎 Extract", disabled=not (tk_url or tk_files), key="tk_extract_btn"):
         with st.spinner("Gathering content..."):
             try:
-                combined_parts = []
-                doc_raw_images = []
-                doc_image_urls = []
-                seen_image_hashes = set()
-                if tk_url:
-                    page_text, page_text_err = _fetch_url_text_safe(tk_url)
-                    if page_text is not None:
-                        combined_parts.append(f"--- SOURCE: WEB PAGE ({tk_url}) ---\n{page_text}")
-                    else:
-                        st.warning(f"⚠️ Couldn't fetch the product page URL: {page_text_err}.")
-                for uploaded in (tk_files or []):
-                    suffix = os.path.splitext(uploaded.name)[1]
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                        tmp.write(uploaded.getbuffer())
-                        tmp_path = tmp.name
-                    _doc_text = extract_raw_text(tmp_path)
-                    _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
-                    if _scan_warning:
-                        st.session_state.setdefault("_scanned_doc_warnings", []).append(_scan_warning)
-                    combined_parts.append(f"--- SOURCE: UPLOADED DOCUMENT ({uploaded.name}) ---\n{_doc_text}")
-                    remaining_budget = 12 - len(doc_raw_images)
-                    _doc_image_errors = []
-                    embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
-                    if embedded_images:
-                        for i, (img_bytes, ext) in enumerate(embedded_images):
-                            doc_raw_images.append((f"{os.path.splitext(uploaded.name)[0]}_img{i+1}.{ext or 'jpg'}", img_bytes))
-                        try:
-                            new_urls, _upload_errors = upload_images_r2_with_errors(embedded_images)
-                            doc_image_urls.extend(new_urls)
-                            _doc_image_errors.extend(_upload_errors)
-                        except Exception as e:
-                            _doc_image_errors.append(f"'{uploaded.name}': R2 upload failed entirely - {e}")
-                    _warn_page_image_upload_errors(_doc_image_errors)
-                    os.remove(tmp_path)
+                combined_parts, doc_raw_images, doc_image_urls, seen_image_hashes = \
+                    gather_source_content(tk_url, tk_files)
 
                 if not combined_parts:
                     st.error("Nothing to extract - the product page URL couldn't be fetched and no document(s) were provided.")

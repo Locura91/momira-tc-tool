@@ -229,12 +229,19 @@ def test_app_py_every_extract_images_call_passes_errors_and_label():
     PHASE 1 "gather" step reuses the exact same document/page-image discovery as every other
     batch/legacy flow. The count grows accordingly; the guarantee this test protects -
     errors=/label= always passed, never silently dropped - still holds for every site, old and
-    new."""
+    new.
+
+    CONSOLIDATION (2026-10-07): five of those six call sites (the ticket single + batch-update,
+    multi-ticket, multi-tour, and hotel gather steps) were byte-for-byte duplicates and now share
+    one implementation, app_helpers.gather_source_content. So the inline call survives in exactly
+    two places - app.py's own add_option intake (a deliberately different variant kept separate)
+    and the shared helper - and the errors=/label= guarantee is what is actually asserted, once
+    per remaining site."""
     source = _read_app_py()
     count = source.count("embedded_images = extract_images(tmp_path")
-    assert count == 6  # all six call sites present (Ticket batch-update added 2026-09-08)
+    assert count == 2  # app.py's add_option variant + the shared gather_source_content helper
     count_with_errors = source.count("errors=_doc_image_errors, label=uploaded.name")
-    assert count_with_errors == 6  # and every single one now reports failures
+    assert count_with_errors == 2  # and every single one still reports failures
 
 
 def test_app_py_warn_helper_is_generalized_not_r2_specific():

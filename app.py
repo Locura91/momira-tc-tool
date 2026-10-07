@@ -135,6 +135,7 @@ from app_helpers import (
     ACTION_FIELDS,
     _data_fingerprint,
     _fetch_url_text_safe,
+    gather_source_content,
     _clean_modality_code,
     _modality_code_suspicious,
     _reset_mct_state,
