@@ -160,3 +160,83 @@ def test_extra_modality_price_editor_renders_the_adjustment_control():
     ui = _src("ui_components.py")
     editor = ui.split("def render_seasonal_price_editor")[1].split("\ndef ")[0]
     assert "render_price_adjustment_control(target_data, edit_key, currency)" in editor
+
+
+# ----------------------------------------------------------------------
+# pre-fill the editable price table from the live modality (no document needed)
+# ----------------------------------------------------------------------
+from app_helpers import _map_fetched_option_to_data
+
+
+def test_live_option_pricelist_passes_straight_through_to_the_editable_table():
+    opt = {"priceList": [{"name": "High", "startDate": "2027-01-01", "endDate": "2027-03-31",
+                          "price": {"singlePrice": {"amount": 200.0, "currency": "EUR"}}}]}
+    data = _map_fetched_option_to_data(opt)
+    assert data["price_list"] == opt["priceList"]  # same nested-MoneyVO shape the table expects
+
+
+def test_operational_days_and_stop_sales_are_carried_over():
+    opt = {"priceList": [], "operationalDays": ["MONDAY", "TUESDAY"],
+           "stopSales": [{"start": "2027-12-24", "end": "2027-12-26"}]}
+    data = _map_fetched_option_to_data(opt)
+    assert data["operational_days"] == ["MONDAY", "TUESDAY"]
+    assert data["stop_sales"] == [{"start": "2027-12-24", "end": "2027-12-26"}]
+
+
+def test_operational_days_default_to_all_seven_when_the_option_omits_them():
+    data = _map_fetched_option_to_data({"priceList": []})
+    assert data["operational_days"] == ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                                        "FRIDAY", "SATURDAY", "SUNDAY"]
+
+
+def test_an_error_or_non_dict_option_maps_to_empty_not_a_crash():
+    assert _map_fetched_option_to_data({"error": 404, "message": "nope"}) == {}
+    assert _map_fetched_option_to_data(None) == {}
+
+
+def test_fetch_modality_prefills_the_editable_data_so_no_document_is_required():
+    app = _src("app.py")
+    # In the modality fetch handler, the live option is mapped into st.session_state.extracted,
+    # which is the exact gate that makes Step 5 (the editable Pricing table) render - so a human
+    # can re-price an existing modality without uploading any document.
+    # Bound the slice to the fetch handler itself (up to where the fetched option is rendered),
+    # rather than an arbitrary character count that a longer explanatory comment can overrun.
+    fetch_block = app.split('st.button("🔍 Fetch this modality\'s live pricing")')[1]
+    fetch_block = fetch_block.split('if st.session_state.get("fetched_option"):')[0]
+    assert "_map_fetched_option_to_data(" in fetch_block
+    assert "st.session_state.extracted" in fetch_block
+
+
+# ----------------------------------------------------------------------
+# Step 4 presents the choice up front: adjust the live prices, OR new document
+# ----------------------------------------------------------------------
+def test_step4_asks_adjust_vs_new_document_for_an_existing_modality():
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): the human picks ONE clear option at Step 4 when
+    # updating an existing modality - adjust the current prices, or replace them from a document/URL
+    # - instead of having to discover the Step 3 fetch button.
+    app = _src("app.py")
+    assert 'ct_reprice_candidate = action == "update_option" or ct_price_only_via_update_tour' in app
+    assert "ct_adjust_mode = _price_update_mode.startswith" in app
+    # both choices are offered
+    assert "Adjust the current prices" in app
+    assert "Replace the prices from a new document or URL" in app
+
+
+def test_adjust_mode_seeds_live_prices_and_skips_the_document_extract():
+    app = _src("app.py")
+    # The "adjust" branch loads the live option into st.session_state.extracted (so Step 5's
+    # pricing table + bulk-adjust control render) with no document...
+    adjust_block = app.split("if ct_adjust_mode:")[1].split("\nelse:")[0]
+    assert "_map_fetched_option_to_data(" in adjust_block
+    assert "st.session_state.extracted" in adjust_block
+    assert "client.get_closed_tour_option(" in adjust_block
+    # ...and the Extract button is suppressed in adjust mode, so there's no document path on screen.
+    assert "if not ct_adjust_mode and st.button(\"🔎 Extract\"" in app
+
+
+def test_adjust_mode_seeds_only_once_so_human_edits_are_not_clobbered():
+    app = _src("app.py")
+    adjust_block = app.split("if ct_adjust_mode:")[1].split("\nelse:")[0]
+    # Guarded by a per-modality seed flag, checked before re-seeding.
+    assert "_reprice_seed_key" in adjust_block
+    assert "if not st.session_state.get(_reprice_seed_key):" in adjust_block

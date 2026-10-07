@@ -191,6 +191,7 @@ from app_helpers import (
     _diff_tour_price_list,
     _map_fetched_supplements,
     _map_fetched_tour_to_data,
+    _map_fetched_option_to_data,
     _map_fetched_ticket_to_data,
     _merge_extraction_over_baseline,
     merge_closedtour_supplements_over_baseline,
@@ -1681,6 +1682,27 @@ else:
                             st.session_state.fetched_option = client.get_closed_tour_option(
                                 supplier_id, working_code, check_modality
                             )
+                        # CONFIRMED PRODUCT-OWNER NEED (2026-10-07): pre-fill the editable Step 5
+                        # Pricing table from this modality's OWN current live prices, so re-pricing
+                        # an existing modality (e.g. "make all seasons 20% cheaper" via the bulk
+                        # adjust control above that table) never requires uploading a new price
+                        # document. Mirrors update_tour's own pre-fill from live tour data above;
+                        # set ONCE here inside the fetch-button handler (not on every rerun) so a
+                        # human's later edits/adjustments are never clobbered. A fresh document
+                        # extraction, if provided, still merges on top via _merge_extraction_over_baseline.
+                        _opt_fetched = st.session_state.fetched_option
+                        if isinstance(_opt_fetched, dict) and "error" not in _opt_fetched \
+                                and action in ("update_option", "update_tour"):
+                            _opt_baseline = dict(st.session_state.get("extracted") or {})
+                            _opt_baseline.update(_map_fetched_option_to_data(_opt_fetched))
+                            st.session_state.extracted = _opt_baseline
+                            st.session_state.payloads = None
+                            st.session_state.raw_preview = (
+                                f"(No new document/URL provided - this modality's prices, operational "
+                                f"days and stop sales were pre-filled from its CURRENT live data on "
+                                f"Travel Compositor (`{check_modality}`). Edit or bulk-adjust them "
+                                f"below, or provide a new source and click Extract to bring in updates.)"
+                            )
                     if st.session_state.get("fetched_option"):
                         opt = st.session_state.fetched_option
                         if "error" in opt:
@@ -1892,23 +1914,79 @@ is_option_only = action in ("add_option", "update_option") or ct_price_only_via_
 
 
 # ----------------------------------------------------------------------
-# STEP 4: Input source
+# STEP 4: how to update the prices (re-price the live prices, or bring in a new source)
 # ----------------------------------------------------------------------
-st.header("Step 4 — Input Source")
-st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
-           "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): when a human is UPDATING an existing modality,
+# make the choice explicit and up front instead of hiding the "adjust the live prices" path
+# behind a Step 3 button (which was not discoverable - the human reached Step 4 and was only
+# offered a document/URL). update_option - and update_tour "Price only", which is structurally
+# the same thing - now get one plain question: adjust the current prices, or replace them from a
+# new document/URL.
+ct_reprice_candidate = action == "update_option" or ct_price_only_via_update_tour
+ct_adjust_mode = False
+if ct_reprice_candidate:
+    st.header("Step 4 — How do you want to update the prices?")
+    _price_update_mode = st.radio(
+        "Update method", label_visibility="collapsed",
+        options=[
+            "✏️ Adjust the current prices — make every season cheaper or more expensive by a % or a fixed amount (no document needed)",
+            "📄 Replace the prices from a new document or URL",
+        ],
+        key="ct_price_update_mode",
+    )
+    ct_adjust_mode = _price_update_mode.startswith("✏️")
 
-url = st.text_input("Product page URL (optional)")
-uploaded_files = st.file_uploader(
-    "Upload DMC document(s) (optional, multiple allowed)",
-    type=["pdf", "docx", "xlsx", "pptx", "csv"], accept_multiple_files=True
-)
-extraction_hint = st.text_input(
-    "Extraction hint (optional)",
-    placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
-    help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
-         "multiple room categories). Leave blank for normal extraction."
-)
+if ct_adjust_mode:
+    # No document needed: load THIS modality's current live prices into the Step 5 pricing table
+    # ONCE (guarded by a per-modality flag so a human's later edits/adjustments are never clobbered
+    # on a rerun), so the "💶 Adjust all season prices at once" control above that table can re-price
+    # them. _map_fetched_option_to_data returns the option's price_list / operational_days /
+    # stop_sales already in the shape the table expects.
+    url = None
+    uploaded_files = None
+    extraction_hint = None
+    multi_modality_mode = False
+    _reprice_seed_key = f"_ct_reprice_seeded_{existing_tour_code}_{modality_code}"
+    if not st.session_state.get(_reprice_seed_key):
+        with st.spinner("Loading this modality's current live prices…"):
+            _reprice_opt = client.get_closed_tour_option(supplier_id, existing_tour_code, modality_code)
+        if isinstance(_reprice_opt, dict) and "error" not in _reprice_opt:
+            st.session_state.fetched_option = _reprice_opt
+            _reprice_base = dict(st.session_state.get("extracted") or {})
+            _reprice_base.update(_map_fetched_option_to_data(_reprice_opt))
+            st.session_state.extracted = _reprice_base
+            st.session_state.payloads = None
+            st.session_state.raw_preview = (
+                f"(Re-pricing the current live prices of `{modality_code}` - no document used.)"
+            )
+            st.session_state[_reprice_seed_key] = True
+        else:
+            _reprice_msg = _reprice_opt.get("message", _reprice_opt) if isinstance(_reprice_opt, dict) else _reprice_opt
+            st.error(f"❌ Couldn't load the current prices for this modality: {_reprice_msg}")
+            st.stop()
+    st.info("The current live prices are loaded in the **Pricing** table below. To make them all "
+            "cheaper or more expensive, open **💶 Adjust all season prices at once** just above that "
+            "table, set the % or the amount, click Apply — then review and publish. No document needed.")
+else:
+    if ct_reprice_candidate:
+        st.header("Step 4 — New price document or URL")
+        st.caption("The current prices will be replaced by whatever is extracted from this source.")
+    else:
+        st.header("Step 4 — Input Source")
+        st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
+                   "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
+
+    url = st.text_input("Product page URL (optional)")
+    uploaded_files = st.file_uploader(
+        "Upload DMC document(s) (optional, multiple allowed)",
+        type=["pdf", "docx", "xlsx", "pptx", "csv"], accept_multiple_files=True
+    )
+    extraction_hint = st.text_input(
+        "Extraction hint (optional)",
+        placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
+        help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
+             "multiple room categories). Leave blank for normal extraction."
+    )
 
 multi_modality_mode = False
 if action == "add_option":
@@ -1939,7 +2017,7 @@ if action == "create":
                           extraction_hint=extraction_hint or None)
     st.stop()
 
-if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
+if not ct_adjust_mode and st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     spinner_msg = "Gathering pricing/schedule content..." if is_option_only else "Gathering content and checking for multiple tour variants..."
     with st.spinner(spinner_msg):
         try:
