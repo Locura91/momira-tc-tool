@@ -162,10 +162,15 @@ def describe(record: Optional[Dict[str, Any]], now: Optional[_dt.datetime] = Non
     out: List[Dict[str, str]] = []
 
     if record is None:
-        return [{"level": "warning",
-                 "text": ("**Elephant Hills stop-sale check has never reported a run.** If the "
-                          "daily scheduled task is set up, it has not completed once yet - so no "
-                          "closure found on the supplier's website is reaching Travel Compositor.")}]
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): say NOTHING when there is no status file.
+        # This used to warn "has never reported a run", which read as a permanent fault on the
+        # DEPLOYED app: the reader is a scheduled task on the office machine and writes its status
+        # file there (and that file is git-ignored), so it is never present on Streamlit Cloud and
+        # the warning could never be satisfied. "No status file" means "the reader does not run on
+        # this host" - the normal case, not something to report. A reader that IS set up and then
+        # goes quiet is still caught, by the STALE_AFTER_HOURS check below, which needs a previous
+        # run to measure against anyway.
+        return []
 
     finished = _parse_iso(record.get("finished_utc"))
     if finished is not None:

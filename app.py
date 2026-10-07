@@ -864,19 +864,10 @@ if _module_import_failures:
         + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
           "trusting anything this module is used for.")
 
-# The Elephant Hills stop-sale reader runs as a scheduled task with no window, so every way it
-# can fail is silent: the supplier's booking page changes shape, the Travel Compositor login
-# expires, or the scheduled task simply stops running - and the shop carries on selling dates the
-# camp has closed, with nothing anywhere saying so. The warning lives here, on every screen,
-# because this app is what gets opened daily while the reader has nobody watching it. The import
-# is guarded so a machine without the reader, or with an unreadable status file, still loads the
-# app normally - a broken warning system must never become a worse outage than the thing it warns
-# about. See eh_run_status.py for what it reports and why.
-try:
-    import eh_run_status as _eh_run_status
-    _eh_run_status.render_banner(st)
-except Exception:
-    pass
+# (The Elephant Hills stop-sale reader's health notice used to sit here, at the top of every
+# screen. CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): it does not need to be present on every
+# page - it belongs at the BOTTOM of the app, and only when something actually needs a human.
+# Moved to the end of this file; see eh_run_status.render_banner.)
 
 # A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
@@ -3317,3 +3308,20 @@ if st.session_state.get("just_published_tour_code"):
 # sits between the AI's answer and the buttons a person is trying to reach.
 # ============================================================================
 render_memory_panel_footer()
+
+# The Elephant Hills stop-sale reader runs as a scheduled task with no window, so the ways it can
+# fail are silent: the supplier's booking page changes shape, the Travel Compositor login expires,
+# or the task simply stops running - and the shop carries on selling dates the camp has closed.
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): while it is "automatically flowing" it must say
+# NOTHING at all, and when it does have something to say it belongs at the very bottom, not on top
+# of every screen. So this sits last, and render_banner is silent unless a human is actually
+# needed (a failed run, a held-back reading, or a scheduler that has gone quiet) - including
+# complete silence where no status file exists at all, e.g. the deployed app, since the reader
+# runs on the office machine and never reports there. The import is guarded so a machine without
+# the reader, or an unreadable status file, still loads the app normally - a broken warning system
+# must never become a worse outage than the thing it warns about.
+try:
+    import eh_run_status as _eh_run_status
+    _eh_run_status.render_banner(st)
+except Exception:
+    pass

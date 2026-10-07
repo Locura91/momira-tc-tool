@@ -76,10 +76,14 @@ def test_a_previous_record_without_a_count_is_ignored_not_crashed_on():
 # ----------------------------------------------------------------------
 # describe — what the human is told
 # ----------------------------------------------------------------------
-def test_never_having_run_is_reported_rather_than_looking_healthy():
-    msgs = ehs.describe(None, now=NOW)
-    assert msgs and msgs[0]["level"] == "warning"
-    assert "never" in msgs[0]["text"].lower()
+def test_no_status_file_at_all_says_nothing():
+    """REVERSES the original rule (which warned "has never reported a run"). CONFIRMED
+    PRODUCT-OWNER REQUEST (2026-10-07): while the reader is flowing, show nothing - and a host with
+    no status file is not a fault. The reader is a scheduled task on the office machine and writes
+    its status file there (git-ignored), so on the DEPLOYED app the file is never present and the
+    old warning was a permanent, unsatisfiable alarm on every screen. A reader that IS running and
+    then goes quiet is still caught by the staleness check below, which needs a prior run anyway."""
+    assert ehs.describe(None, now=NOW) == []
 
 
 def test_a_clean_recent_run_says_nothing_at_all():
@@ -150,3 +154,21 @@ def test_load_returns_none_rather_than_raising_when_there_is_no_file(tmp_path):
 def test_load_survives_a_corrupt_status_file(tmp_path):
     (tmp_path / ehs.STATUS_FILENAME).write_text("{not json", encoding="utf-8")
     assert ehs.load(directory=str(tmp_path)) is None
+
+
+# ----------------------------------------------------------------------
+# where the notice sits on the page
+# ----------------------------------------------------------------------
+def test_the_notice_is_rendered_at_the_very_bottom_of_the_app():
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): "it just needs to be at the bottom of the
+    app" - it used to render near the top, on every screen, above the actual work."""
+    import os
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo, "app.py"), "r", encoding="utf-8") as f:
+        app = f.read()
+    assert app.count("_eh_run_status.render_banner(st)") == 1, "rendered in exactly one place"
+    banner_idx = app.index("_eh_run_status.render_banner(st)")
+    footer_idx = app.index("render_memory_panel_footer()")
+    assert banner_idx > footer_idx, "the notice must come after the page footer, i.e. last"
+    # and it must be the tail of the file, not buried mid-script
+    assert len(app) - banner_idx < 400, "should sit in the final lines of app.py"
