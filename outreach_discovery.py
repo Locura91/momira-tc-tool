@@ -1268,23 +1268,160 @@ CONTACT_TITLE_PATTERN = re.compile(
 # Terms & Conditions is the second most common place.
 CONTACT_LINK_PATTERN = re.compile(
     r"contact(\s|-|_)?us\b|\bcontact\b|\bkontakt\b|\bimpressum\b|\bimprint\b"
-    r"|\benquire\b|\bquote\b|book(\s|-|_)?now|reservation", re.I)   # expanded
+    r"|\benquire\b|\bquote\b|book(\s|-|_)?now|reservation"
+    # 2026-10-07: the other wordings the product owner actually sees on these sites. A link
+    # saying "Get in touch" or "Write us" leads to the same page a "Contact us" link would.
+    r"|get(\s|-|_)?in(\s|-|_)?touch|write(\s|-|_)?(to(\s|-|_)?)?us|e-?mail(\s|-|_)?us"
+    r"|reach(\s|-|_)?(out|us)", re.I)   # expanded
 TERMS_LINK_PATTERN = re.compile(
     r"terms(\s|-|_)?(and|&)?(\s|-|_)?conditions|terms of (service|use)|\bterms\b|\bagb\b|\blegal\b", re.I)
 
 _PREFERRED_EMAIL_PATTERN = re.compile(r"^(info|contact|bookings|reservations|hello)@", re.I)
 _SCRAPE_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; MomiraTravelBot/1.0)"}
 
+# CONFIRMED PRODUCT-OWNER OBSERVATION (2026-10-07, verbatim): "I find most of the emails just in
+# the footer ... with the headline or with the name email, contact us, or write us or get in touch
+# with us. But the best way is to search in the footer." So the footer is searched FIRST and its
+# answer wins outright - see extract_email_and_instagram_from_page. Matched against class/id
+# because most sites do not use a semantic <footer> element.
+_FOOTERISH_ATTR_PATTERN = re.compile(
+    r"footer|colophon|site-?info|bottom-?bar|copyright|sub-?footer", re.I)
 
-def pick_best_email(emails: List[str]) -> Optional[str]:
-    # dict.fromkeys, not set() - the original's [...new Set()] preserves insertion
-    # order, and "first one found" is the documented fallback below.
-    cleaned = [e for e in dict.fromkeys(emails)
-               if not any(e.lower().startswith(p) for p in GENERIC_EMAIL_PREFIXES)]
+# Short contact-ish labels/headings. The email usually sits in the same block as one of these, so
+# the block AROUND the label is what gets searched (the label itself holds only the words).
+_CONTACT_WORDING_PATTERN = re.compile(
+    r"contact\s*us|\bcontact\b|get\s+in\s+touch|write\s+(to\s+)?us|e-?mail\s*us"
+    r"|reach\s+(out|us)|drop\s+us\s+a\s+line|send\s+us\s+an?\s+e-?mail|\be-?mail\b"
+    r"|\bkontakt\b|schreiben\s+sie\s+uns", re.I)
+# A label is short by nature; without a cap, a wrapper <div> containing the whole page would match
+# "contact" and the "contact block" scope would degenerate into the whole-page scope.
+_CONTACT_LABEL_MAX_CHARS = 60
+
+# "logo@2x.png" and friends match the email regex. Dropped rather than offered as a contact.
+_NON_EMAIL_TLDS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "ico", "woff", "woff2"}
+
+
+def _email_domain(email: str) -> str:
+    return email.lower().rsplit("@", 1)[-1]
+
+
+def _strip_www(host: str) -> str:
+    host = host.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def pick_best_email(emails: List[str], prefer_domain: Optional[str] = None) -> Optional[str]:
+    """Pick the one address to use out of everything found.
+
+    Ranking (first wins, ties keep discovery order - dict.fromkeys, not set(), because "first one
+    found" is the documented fallback):
+      1. on the site's OWN domain, when prefer_domain is given
+      2. a role address the company actually reads (info@/contact@/bookings@/...)
+      3. whatever was found first
+
+    prefer_domain (2026-10-07) exists because footers routinely carry someone else's address next
+    to the company's - the web designer's "site by", a booking widget's support address. An email
+    on the site's own domain is the supplier; one on another domain usually is not. With
+    prefer_domain=None the behaviour is exactly as before: role address first, else first found.
+    """
+    cleaned = []
+    for e in dict.fromkeys(emails):
+        if any(e.lower().startswith(p) for p in GENERIC_EMAIL_PREFIXES):
+            continue
+        if _email_domain(e).rsplit(".", 1)[-1] in _NON_EMAIL_TLDS:
+            continue  # an asset filename, not an address
+        cleaned.append(e)
     if not cleaned:
         return None
-    preferred = next((e for e in cleaned if _PREFERRED_EMAIL_PATTERN.search(e)), None)
-    return preferred or cleaned[0]
+
+    own = _strip_www(prefer_domain) if prefer_domain else None
+
+    def _on_own_domain(email: str) -> bool:
+        if not own:
+            return False
+        dom = _strip_www(_email_domain(email))
+        return dom == own or dom.endswith("." + own) or own.endswith("." + dom)
+
+    # sorted() is stable, so equal-ranked addresses keep the order they were discovered in.
+    return sorted(
+        cleaned,
+        key=lambda e: (0 if _on_own_domain(e) else 1,
+                       0 if _PREFERRED_EMAIL_PATTERN.search(e) else 1),
+    )[0]
+
+
+def footer_nodes(soup: BeautifulSoup) -> List[Any]:
+    """The footer region(s) of a page, best-effort, in document order.
+
+    A real <footer> is the clean case; most sites instead mark it with a class or id, so those are
+    matched too, and <address> is included because it is the semantic home of a contact block.
+    Returns [] when nothing footer-like exists, which simply means the caller moves on to the next
+    scope - never a crash, never a guess at "the bottom N% of the page".
+    """
+    nodes: List[Any] = []
+    seen: set = set()
+
+    def _add(el: Any) -> None:
+        if el is not None and id(el) not in seen:
+            seen.add(id(el))
+            nodes.append(el)
+
+    for el in soup.find_all("footer"):
+        _add(el)
+    for el in soup.find_all(attrs={"class": True}):
+        classes = el.get("class") or []
+        if _FOOTERISH_ATTR_PATTERN.search(" ".join(classes if isinstance(classes, list) else [classes])):
+            _add(el)
+    for el in soup.find_all(attrs={"id": True}):
+        if _FOOTERISH_ATTR_PATTERN.search(str(el.get("id") or "")):
+            _add(el)
+    for el in soup.find_all("address"):
+        _add(el)
+    return nodes
+
+
+def contact_block_nodes(soup: BeautifulSoup) -> List[Any]:
+    """Blocks introduced by a short "Contact us" / "Get in touch" / "Write us" / "Email" label.
+
+    The label itself holds only the words, so the label's container (and its parent) is what gets
+    returned - that is where the address actually sits.
+    """
+    nodes: List[Any] = []
+    seen: set = set()
+
+    def _add(el: Any) -> None:
+        if el is not None and id(el) not in seen:
+            seen.add(id(el))
+            nodes.append(el)
+
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "strong", "b",
+                             "span", "p", "a", "li", "td", "th", "label", "dt"]):
+        text = el.get_text(" ", strip=True)
+        if not text or len(text) > _CONTACT_LABEL_MAX_CHARS:
+            continue
+        if not _CONTACT_WORDING_PATTERN.search(text):
+            continue
+        _add(el)
+        _add(el.parent)
+        if el.parent is not None:
+            _add(el.parent.parent)
+    return nodes
+
+
+def _emails_in_node(node: Any) -> List[str]:
+    """Addresses inside one element: explicit mailto: links first (unambiguous), then text."""
+    found: List[str] = []
+    selector = getattr(node, "select", None)
+    if callable(selector):
+        for a in selector('a[href^="mailto:"]'):
+            href = a.get("href") or ""
+            addr = href[len("mailto:"):].split("?")[0].strip()
+            if addr:
+                found.append(addr)
+    getter = getattr(node, "get_text", None)
+    if callable(getter):
+        found.extend(EMAIL_PATTERN.findall(getter(" ", strip=True)))
+    return found
 
 
 def _fetch_and_parse(url: str) -> BeautifulSoup:
@@ -1303,15 +1440,41 @@ def _fetch_and_parse(url: str) -> BeautifulSoup:
     return BeautifulSoup(res.text, "html.parser")
 
 
-def extract_email_and_instagram_from_page(soup: BeautifulSoup) -> Dict[str, Any]:
+def extract_email_and_instagram_from_page(soup: BeautifulSoup,
+                                          base_url: Optional[str] = None) -> Dict[str, Any]:
+    """Find the one contact address on a page, searching the most reliable places first.
+
+    CONFIRMED PRODUCT-OWNER OBSERVATION (2026-10-07, verbatim): "I find most of the emails just in
+    the footer ... But the best way is to search in the footer." This used to pool every mailto:
+    and every address in the page text into ONE list and hand it to pick_best_email - so a role
+    address anywhere on the page (a press contact, a privacy@ in a cookie notice, an address in a
+    testimonial or a third-party widget) outranked the company's real address sitting in the
+    footer, purely because it matched the info@/contact@ preference first.
+
+    Now each scope is searched in turn and the FIRST scope that yields anything wins outright:
+      1. the footer            - where the product owner finds most of them
+      2. a contact block       - a short "Contact us" / "Get in touch" / "Write us" / "Email" label
+      3. the whole page        - the previous behaviour, kept as the fallback
+
+    Within a scope, pick_best_email decides, now also preferring an address on the site's own
+    domain (base_url) over someone else's - footers often carry the web designer's address too.
+    `bodyText` is unchanged, since callers use it for the contact-name match.
+    """
     body = soup.body or soup
     body_text = body.get_text(" ", strip=True)
-    mailto_emails = []
-    for a in soup.select('a[href^="mailto:"]'):
-        href = a.get("href") or ""
-        mailto_emails.append(href.replace("mailto:", "").split("?")[0])
-    text_emails = EMAIL_PATTERN.findall(body_text)
-    email = pick_best_email(mailto_emails + text_emails)
+    own_host = _hostname(base_url) if base_url else None
+
+    email = None
+    for scope_nodes in (footer_nodes(soup), contact_block_nodes(soup), [body]):
+        if not scope_nodes:
+            continue
+        found: List[str] = []
+        for node in scope_nodes:
+            found.extend(_emails_in_node(node))
+        email = pick_best_email(found, prefer_domain=own_host)
+        if email:
+            break
+
     instagram = None
     for a in soup.select('a[href*="instagram.com"]'):
         if not instagram:
@@ -1388,7 +1551,7 @@ def find_outbound_website_link(soup: BeautifulSoup, base_url: str) -> Optional[s
 def scrape_website_contact(url: str) -> Dict[str, Any]:
     try:
         soup = _fetch_and_parse(url)
-        page = extract_email_and_instagram_from_page(soup)
+        page = extract_email_and_instagram_from_page(soup, base_url=url)
         email, instagram, body_text = page["email"], page["instagram"], page["bodyText"]
 
         contact_match = CONTACT_TITLE_PATTERN.search(body_text)
@@ -1402,7 +1565,7 @@ def scrape_website_contact(url: str) -> Dict[str, Any]:
             for link in subpage_links:
                 try:
                     sub_soup = _fetch_and_parse(link)
-                    sub = extract_email_and_instagram_from_page(sub_soup)
+                    sub = extract_email_and_instagram_from_page(sub_soup, base_url=link)
                 except Exception:
                     continue
                 if sub["email"]:
