@@ -80,22 +80,32 @@ def test_app_py_imports_is_active_supplier_from_ui_components():
     assert "def is_active_supplier(" not in content
 
 
-def test_every_momira_prefix_filter_in_app_py_also_checks_active():
-    # Phase 1 (2026-09-15) deleted the confirmed-dead render_transfer_flow/render_transport_flow
-    # (184 lines, unreferenced anywhere in the repo or tests) - one of their momira-prefix filter
-    # sites went with them, dropping the known floor from 9 to 8.
-    content = _read_app_py()
-    lines = [l for l in content.splitlines() if 'startswith("momira_")' in l]
-    assert len(lines) >= 8, "expected at least the 8 known Select Supplier filter sites"
-    for line in lines:
-        assert "is_active_supplier(" in line, f"momira filter line missing active check: {line!r}"
+def _momira_helper_body():
+    """The body of ui_components.momira_active_suppliers - the one place the Momira-prefix +
+    active-only rule now lives (consolidation 2026-10-07)."""
+    ui = _read(os.path.join(_REPO_DIR, "ui_components.py"))
+    return ui.split("def momira_active_suppliers")[1].split("\ndef ")[0]
 
 
-def test_app_py_momira_filter_count_matches_active_check_count():
+def test_the_shared_momira_helper_enforces_both_the_prefix_and_the_active_check():
+    # CONSOLIDATION (2026-10-07): the ~10 hand-copied "startswith('momira_') and
+    # is_active_supplier(s)" comprehensions were replaced by one helper,
+    # ui_components.momira_active_suppliers. The guarantee this suite protects - a Momira filter
+    # NEVER drops the active check - is now pinned on that single helper instead of on each copy.
+    body = _momira_helper_body()
+    assert 'startswith("momira_")' in body
+    assert "is_active_supplier(" in body
+
+
+def test_app_py_gets_the_momira_filter_via_the_shared_helper_not_an_inline_copy():
     content = _read_app_py()
-    assert content.count('startswith("momira_")') == content.count(
-        "is_active_supplier("
-    ) - content.count("def is_active_supplier(")
+    # The rule is enforced centrally now, so app.py must route through the helper...
+    assert "momira_active_suppliers(" in content
+    # ...and must not carry an inline momira-prefix filter that could silently skip the active
+    # check (every such line was removed in the 2026-10-07 consolidation).
+    for line in content.splitlines():
+        if 'startswith("momira_")' in line:
+            assert "is_active_supplier(" in line, f"inline momira filter re-introduced without active check: {line!r}"
 
 
 # ======================================================================
@@ -107,11 +117,14 @@ def test_stop_sales_tool_imports_is_active_supplier():
 
 
 def test_stop_sales_tool_momira_filter_also_checks_active():
+    # Consolidation (2026-10-07): stop_sales_tool now routes through the shared helper too; the
+    # active-check guarantee is pinned on the helper (see the helper test above). Here we just
+    # confirm stop_sales_tool uses it and has no inline momira filter missing the active check.
     content = _read(_STOP_SALES_TOOL_PY)
-    lines = [l for l in content.splitlines() if 'startswith("momira_")' in l]
-    assert len(lines) >= 1
-    for line in lines:
-        assert "is_active_supplier(" in line
+    assert "momira_active_suppliers(" in content
+    for line in content.splitlines():
+        if 'startswith("momira_")' in line:
+            assert "is_active_supplier(" in line
 
 
 # ======================================================================

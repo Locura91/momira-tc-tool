@@ -57,7 +57,7 @@ import extraction_memory
 import platform_store
 import stop_sales_parser as ssp
 from ai_extractor import friendly_error_message
-from ui_components import is_active_supplier
+from ui_components import is_active_supplier, momira_active_suppliers
 
 _NS_PROCESSED = "processed_stop_sales"
 _NS_SENDER_SUPPLIER = "stop_sale_sender_supplier"
@@ -469,8 +469,7 @@ def render_stop_sales_tool(client) -> None:
             except Exception as e:
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.ss_suppliers = []
-    momira = [s for s in (_get("ss_suppliers") or [])
-              if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)]
+    momira = momira_active_suppliers(_get("ss_suppliers"))
     supplier_id = None
     # CONFIRMED RULE (product owner, 2026-08-16): "Stop sale will come from a specific mail,
     # which must be the first time matched to an existing supplier from our system." The FIRST

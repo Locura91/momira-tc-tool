@@ -50,7 +50,7 @@ from builder import coerce_price_list_shape, coerce_ticket_occupancy_prices_shap
 from date_format import to_iso_date as _iso, to_display_date as _disp
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
-from ui_components import is_active_supplier, _safe_float, _safe_int
+from ui_components import is_active_supplier, momira_active_suppliers, _safe_float, _safe_int
 from numeric_helpers import round_up_currency
 from web_extractor import get_page_text, short_page_text_warning
 from r2_client import stale_image_warning
@@ -3757,10 +3757,7 @@ def _ur_pick_momira_supplier(client, key_prefix):
             st.caption("Only use this if the supplier list above failed to load - type the numeric Travel Compositor supplier ID directly.")
             return st.text_input("Supplier ID (numeric)", value="", key=f"{key_prefix}_supplier_manual").strip() or None
 
-    momira_suppliers = [
-        s for s in st.session_state.suppliers_cache
-        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-    ]
+    momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
     if not momira_suppliers:
         st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
         return None

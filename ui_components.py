@@ -73,6 +73,29 @@ def is_active_supplier(supplier: dict) -> bool:
     return supplier.get("active") is not False
 
 
+def momira_active_suppliers(suppliers_cache):
+    """The active "Momira_"-prefixed suppliers from a loaded suppliers cache.
+
+    CONSOLIDATION (2026-10-07): the exact same comprehension - keep a supplier only if its
+    commercial-or-legal name starts with "momira_" (case-insensitive, stripped) AND it passes
+    is_active_supplier - was hand-copied ~10 times (app.py twice, app_helpers._ur_pick_momira_
+    supplier, stop_sales_tool, flows/hotel, flows/manual_information, flows/price_refresh twice,
+    flows/ticket, flows/transfer_image_bulk). It encodes two confirmed product-owner rules at once
+    - the LOCKED "only Momira_ suppliers may be picked" rule and the 2026-09-02 "only active
+    suppliers in the dropdown" rule - so every copy had to be edited in lockstep whenever either
+    rule changed. Centralised here, next to is_active_supplier, so both rules live in one place.
+
+    This returns the filtered list only; each call site keeps its own widget (its selectbox label,
+    key, any prefill default, refresh button, or - for the two background scans - no widget at
+    all), so nothing about the UI changes. A None/empty cache yields an empty list.
+    """
+    return [
+        s for s in (suppliers_cache or [])
+        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_")
+        and is_active_supplier(s)
+    ]
+
+
 def _safe_cell_str(value):
     """
     Safely converts a single st.data_editor/DataFrame cell value to a plain

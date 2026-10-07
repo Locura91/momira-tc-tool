@@ -16,7 +16,7 @@ import price_validity
 import platform_store
 import service_notes
 import bulk_notes
-from ui_components import is_active_supplier
+from ui_components import is_active_supplier, momira_active_suppliers
 
 from app import _dmy_date_field
 
@@ -43,10 +43,7 @@ def render_manual_information_flow(client):
                 st.session_state.suppliers_cache = []
 
     supplier_id = None
-    momira_suppliers = [
-        s for s in (st.session_state.suppliers_cache or [])
-        if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-    ]
+    momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
     if momira_suppliers:
         options = {f"{s.get('commercialName') or s.get('legalName')} — ID {s.get('id')}": s.get("id")
                    for s in momira_suppliers}

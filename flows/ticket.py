@@ -35,7 +35,7 @@ from ui_components import (
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
     render_readonly_source, render_closable_image_section, render_url_image_picker,
     render_doc_image_picker, render_auto_added_image_review, render_stock_photo_picker, render_child_age_band,
-    render_duration_editor, is_active_supplier,
+    render_duration_editor, is_active_supplier, momira_active_suppliers,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _add_page_images_to_doc_pool,
 )
 
@@ -116,10 +116,7 @@ def render_ticket_flow(client):
             # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
             # the human to explicitly choose a real Momira supplier instead of
             # any other supplier that happens to exist in the account.
-            momira_suppliers = [
-                s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-            ]
+            momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
                         "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")

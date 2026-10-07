@@ -35,7 +35,7 @@ from image_dimensions import FALLBACK_IMAGE
 from ui_components import (
     editable_table, editable_field, render_cancellation_policy_editor,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
-    render_stock_photo_picker, is_active_supplier,
+    render_stock_photo_picker, is_active_supplier, momira_active_suppliers,
     _safe_float, _safe_int, _add_page_images_to_doc_pool,
 )
 
@@ -142,10 +142,7 @@ def render_hotel_flow(client):
 
         supplier_id_choice = None
         if st.session_state.suppliers_cache:
-            momira_suppliers = [
-                s for s in st.session_state.suppliers_cache
-                if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-            ]
+            momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue.")
             else:

@@ -272,7 +272,7 @@ from ui_components import (
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_auto_added_image_review,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
-    render_child_discount_editor, render_duration_editor, is_active_supplier,
+    render_child_discount_editor, render_duration_editor, is_active_supplier, momira_active_suppliers,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
@@ -938,10 +938,7 @@ if price_validity.is_due():
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception:
                 st.session_state.suppliers_cache = []
-        _pv_suppliers = [
-            s for s in (st.session_state.suppliers_cache or [])
-            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-        ]
+        _pv_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
         _pv_flagged = price_validity.scan_expiring_services(client, _pv_suppliers)
         _pv_email_result = price_validity.send_alert_email(_pv_flagged)
         price_validity.mark_reviewed(flagged_count=len(_pv_flagged))
@@ -1492,10 +1489,7 @@ else:
         # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
         # the human to explicitly choose a real Momira supplier instead of
         # any other supplier that happens to exist in the account.
-        momira_suppliers = [
-            s for s in st.session_state.suppliers_cache
-            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
-        ]
+        momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
         if not momira_suppliers:
             st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
                     "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")

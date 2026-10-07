@@ -34,7 +34,7 @@ the one place in the app that had skipped that check).
 """
 import streamlit as st
 
-from ui_components import is_active_supplier
+from ui_components import is_active_supplier, momira_active_suppliers
 
 MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
@@ -51,11 +51,10 @@ def _load_momira_suppliers(client):
             except Exception as e:
                 st.error(f"❌ Couldn't load the supplier list: {type(e).__name__}: {e}")
                 st.session_state.suppliers_cache = []
-    out = []
-    for s in (st.session_state.suppliers_cache or []):
-        name = (s.get("commercialName") or s.get("legalName") or "").strip()
-        if name.lower().startswith("momira_") and is_active_supplier(s):
-            out.append({"id": str(s.get("id")), "name": name})
+    out = [
+        {"id": str(s.get("id")), "name": (s.get("commercialName") or s.get("legalName") or "").strip()}
+        for s in momira_active_suppliers(st.session_state.suppliers_cache)
+    ]
     return sorted(out, key=lambda s: s["name"])
 
 

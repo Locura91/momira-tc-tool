@@ -19,7 +19,7 @@ from fts_transfer_matrix import classify_fts_matrix_file
 from document_reader import extract_raw_text
 from ai_extractor import friendly_error_message
 import price_refresh
-from ui_components import is_active_supplier
+from ui_components import is_active_supplier, momira_active_suppliers
 
 from app import (
     _fetch_url_text_safe, _stamp_proposal_widget_tokens,
@@ -65,8 +65,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
             except Exception as e:
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
-    momira = [x for x in (st.session_state.suppliers_cache or [])
-              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
+    momira = momira_active_suppliers(st.session_state.suppliers_cache)
     supplier_id = None
     if momira:
         options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
@@ -753,8 +752,7 @@ def render_ticket_price_refresh_flow(client):
             except Exception as e:
                 st.error(f"Couldn't load the supplier list: {friendly_error_message(e)}")
                 st.session_state.suppliers_cache = []
-    momira = [x for x in (st.session_state.suppliers_cache or [])
-              if (x.get("commercialName") or x.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(x)]
+    momira = momira_active_suppliers(st.session_state.suppliers_cache)
     supplier_id = None
     if momira:
         options = {f"{x.get('commercialName') or x.get('legalName')} — ID {x.get('id')}": str(x.get("id"))
