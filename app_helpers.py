@@ -1907,6 +1907,40 @@ def _map_fetched_tour_to_data(fetched):
     }
 
 
+def _map_fetched_option_to_data(opt):
+    """Build the internal `data` fields that live on a ClosedTour OPTION (modality) from that
+    option's own live GET response - the counterpart to _map_fetched_tour_to_data, which handles
+    the tour-level fields and deliberately leaves these three empty because they live on the
+    option, not the tour.
+
+    CONFIRMED PRODUCT-OWNER NEED (2026-10-07): re-pricing an existing modality - e.g. "make all
+    seasons 20% cheaper" - must not require uploading a new price document. "Update existing
+    ClosedTour Modality" used to show the live prices read-only and still demand a document/URL at
+    Step 4 before the editable Pricing table (and its bulk-adjust control) would appear at all.
+    Pre-filling the editable `data` from the modality's OWN current live data - exactly as
+    "Update an existing tour's details" already does for its tour-level fields - lets a human load
+    the current prices, bulk-adjust or edit them, and republish, with no document in hand. A new
+    document extraction, if the human does have one, still merges on top of this baseline.
+
+    Returns only the option-owned fields (price_list, operational_days, stop_sales), in the same
+    internal shapes build_closed_tour_payloads reads, so a caller merges them onto whatever
+    tour-level baseline is already in session (or uses them alone for the option-only action).
+    The option's priceList is already the nested-MoneyVO PriceListEntry shape the Pricing table
+    and normalize_price_list expect, so it passes straight through.
+    """
+    if not isinstance(opt, dict) or "error" in opt:
+        return {}
+    return {
+        "price_list": opt.get("priceList") or [],
+        "operational_days": opt.get("operationalDays")
+            or ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "stop_sales": [
+            {"start": s.get("start"), "end": s.get("end")}
+            for s in (opt.get("stopSales") or []) if isinstance(s, dict)
+        ],
+    }
+
+
 def _map_fetched_ticket_to_data(fetched):
     """
     Ticket equivalent of _map_fetched_tour_to_data() - see that function for
