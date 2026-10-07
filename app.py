@@ -268,7 +268,7 @@ from ui_components import (
     editable_table, editable_field, merge_what_to_bring_into_voucher_remarks,
     render_stop_sales_editor, render_cancellation_policy_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
-    render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
+    render_seasonal_price_editor, render_price_adjustment_control, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_auto_added_image_review,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
@@ -2479,6 +2479,7 @@ if st.session_state.extracted:
         )
 
     price_df = pd.DataFrame(price_df_rows)
+    render_price_adjustment_control(data, "pricing", currency)
     editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
     render_extra_child_notice(data, "ct_single")
     render_child_discount_editor(data, "ct_single", currency)

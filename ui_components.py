@@ -34,6 +34,7 @@ from numeric_helpers import _safe_float, _safe_int, round_up_currency
 from builder import (
     coerce_price_list_shape, _MAX_OCCUPANCY_PAX as _TICKET_MAX_OCCUPANCY_PAX,
     resolve_ticket_child_price_ratio, sanitize_supplement_name, format_what_to_bring_line,
+    adjust_price_list_occupancy,
 )
 # HOUSE RULE (product owner): "always for Date: DD/MM/YYYY". That is what a human reads and
 # types; Travel Compositor only accepts the ISO wire format, so every screen converts at the
@@ -184,6 +185,63 @@ def render_currency_check(currency, currency_options, state_key, widget_key):
     return currency
 
 
+def render_price_adjustment_control(target_data, edit_key, currency):
+    """Bulk re-pricing control shown above a ClosedTour modality's seasonal price table.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): when updating an existing ClosedTour the human
+    needs to re-price a whole modality at once ("make all seasons 20% cheaper") rather than retype
+    every occupancy cell in every season row. This renders a small form - by percentage or by a
+    fixed amount, cheaper or more expensive - and on Apply rewrites every season's occupancy
+    prices in target_data["price_list"] via builder.adjust_price_list_occupancy (occupancy prices
+    only; child discounts follow automatically; supplements untouched; round-up house rule), then
+    reruns so the table below shows the new numbers.
+
+    Because each modality on screen has its own control keyed off its own edit_key, the human
+    "chooses which modality" simply by using the control attached to that modality's table - no
+    separate modality picker is needed, and a tour with several modalities gets one control each.
+    """
+    price_list = target_data.get("price_list") or []
+    if not price_list:
+        return  # nothing to adjust yet - the control would have no effect until prices exist
+
+    with st.expander("💶 Adjust all season prices at once", expanded=False):
+        st.caption(
+            "Re-price every season in this modality in one step - e.g. make them all 20% cheaper. "
+            "Only the Single/Double/Triple/Quadruple prices change; child prices follow "
+            "automatically and supplements are left as they are. You can still fine-tune any row "
+            "in the table afterwards."
+        )
+        c1, c2, c3 = st.columns([1.2, 1, 1])
+        with c1:
+            how = st.radio("Change by", ["Percentage", "Fixed amount"],
+                           key=f"{edit_key}_adj_mode", horizontal=True)
+        with c2:
+            direction = st.radio("Direction", ["Cheaper (−)", "More expensive (+)"],
+                                 key=f"{edit_key}_adj_dir")
+        with c3:
+            if how == "Percentage":
+                amount = st.number_input("Percent", min_value=0.0, max_value=100.0, value=0.0,
+                                         step=1.0, key=f"{edit_key}_adj_val")
+            else:
+                amount = st.number_input(f"Amount ({currency or '?'})", min_value=0.0, value=0.0,
+                                         step=1.0, key=f"{edit_key}_adj_val")
+
+        sign = -1 if direction.startswith("Cheaper") else 1
+        mode = "percent" if how == "Percentage" else "absolute"
+        preview = ("−" if sign < 0 else "+") + (f"{amount:g}%" if mode == "percent"
+                                                 else f"{amount:g} {currency or ''}".strip())
+        if st.button(f"Apply {preview} to all {len(price_list)} season(s)",
+                     key=f"{edit_key}_adj_apply", disabled=amount <= 0):
+            target_data["price_list"] = adjust_price_list_occupancy(
+                price_list, mode=mode, sign=sign, value=amount, round_up=True)
+            # Force the table below to re-seed from the new prices: leave edit mode and drop the
+            # data_editor's cached frame so it can't mask the change.
+            st.session_state.pop(f"_editing_table_{edit_key}", None)
+            st.session_state.pop(f"editor_{edit_key}", None)
+            st.success(f"Applied {preview} to every season. Review the updated prices below.")
+            st.rerun()
+
+
 def render_seasonal_price_editor(label, target_data, edit_key, currency):
     """
     Renders an editable seasonal price list table (Name/Start/End/Single/
@@ -236,6 +294,8 @@ def render_seasonal_price_editor(label, target_data, edit_key, currency):
                               "End Date": _disp(entry.get("endDate", "")), "Single": _amt("singlePrice"),
                               "Double": _amt("doublePrice"), "Triple": _amt("triplePrice"), "Quadruple": _amt("quadruplePrice")})
     price_df = pd.DataFrame(price_df_rows)
+
+    render_price_adjustment_control(target_data, edit_key, currency)
 
     def _save(edited_df, target_data=target_data, currency=currency):
         def _row_to_entry(row):

@@ -1349,6 +1349,61 @@ _CHILD_DISCOUNT_COLUMN_ALIASES = {
 }
 
 
+OCCUPANCY_PRICE_KEYS = ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice")
+
+
+def adjust_price_list_occupancy(price_list, *, mode, sign, value, round_up=True):
+    """Apply one bulk human price adjustment to EVERY season's occupancy prices in a ClosedTour
+    option price_list, and return a NEW price_list (the input is never mutated).
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07, verbatim intent): when updating an existing
+    ClosedTour the human needs to re-price a whole modality at once - "the prices need to be 20%
+    cheaper for all the seasons in the modality" - instead of editing every occupancy cell in
+    every season row by hand. Two ways to express the change, each either direction:
+      - mode="percent": `value` is a percentage (20 -> a fifth); sign -1 makes it cheaper, +1 dearer.
+      - mode="absolute": `value` is a flat money amount in the tour's currency, added (+1) to or
+        removed (-1) from each occupancy price.
+
+    SCOPE (confirmed): only the four occupancy prices - singlePrice / doublePrice / triplePrice /
+    quadruplePrice - are touched. Child prices are stored as a discount PERCENTAGE of those, so
+    they follow the new base automatically and must NOT be adjusted here; supplements are left
+    exactly as they are. A missing occupancy (amount None or "") stays missing - a blank price is
+    "this occupancy isn't offered", never 0. A result below zero is clamped to 0 (a discount can
+    never make the tour pay the customer). round_up applies the confirmed round-up house rule
+    (numeric_helpers.round_up_currency) so -20% of 199 becomes 160, not 159.20; pass round_up=
+    False to keep the exact fractional amount.
+
+    Dates, names, currencies and any non-occupancy fields on each entry are preserved exactly.
+    """
+    if mode not in ("percent", "absolute"):
+        raise ValueError(f"mode must be 'percent' or 'absolute', got {mode!r}")
+    if sign not in (1, -1):
+        raise ValueError(f"sign must be +1 or -1, got {sign!r}")
+    value = _safe_float(value)
+
+    new_list = []
+    for entry in (price_list or []):
+        entry = copy.deepcopy(entry)
+        price = entry.get("price")
+        if isinstance(price, dict):
+            for key in OCCUPANCY_PRICE_KEYS:
+                block = price.get(key)
+                if not isinstance(block, dict):
+                    continue
+                amt = block.get("amount")
+                if amt in (None, ""):
+                    continue  # a blank occupancy means "not offered" - never turn it into a price
+                amt = _safe_float(amt)
+                new_amt = amt * (1.0 + sign * value / 100.0) if mode == "percent" else amt + sign * value
+                if new_amt < 0:
+                    new_amt = 0.0
+                if round_up:
+                    new_amt = round_up_currency(new_amt)
+                block["amount"] = float(new_amt)
+        new_list.append(entry)
+    return new_list
+
+
 def coerce_price_list_shape(rows, currency="EUR"):
     """Force a price list into the one shape the screens and the payload expect.
 
@@ -3958,15 +4013,6 @@ def build_transfer_payload(
             raw_transfer_supplements, effective_start_date, effective_end_date,
             notes=_transfer_supplement_zero_price_notes)
 
-        # China / Golden Week + Spring Festival rule (product owner, 2026-10-03): transfers
-        # in China must also block both Chinese public holiday periods as stop-sales.
-        # departure_name and arrival_name cover both ends of the route - block if either is China.
-        _is_china_transfer = (
-            _is_china_destination(departure_name, api_client) or
-            _is_china_destination(arrival_name, api_client)
-        )
-        transfer_stop_sales = chinese_holiday_stop_sales() if _is_china_transfer else []
-
         transfer_kwargs = dict(
             active=True,
             id=existing_transfer_id,
@@ -3998,7 +4044,7 @@ def build_transfer_payload(
             pricesByOccupancy=prices_by_occupancy,
             priceByPax=price_by_pax,
             supplements=supplements,
-            stopSales=transfer_stop_sales,
+            stopSales=[],
             additionalServices=additional_services,
         )
         transfer = ContractTransferVO(**transfer_kwargs)
@@ -4022,8 +4068,6 @@ def build_transfer_payload(
         "is_zone_based": is_zone_based,
         "existing_transfer_id": existing_transfer_id,
         "synthesized_solo_tier": synthesized_solo_tier,
-        "is_china": _is_china_transfer,
-        "china_holiday_note": chinese_holiday_coverage_note() if _is_china_transfer else None,
         # CONFIRMED RULE (product owner, 2026-08-24) - see expired_validity_window().
         "expired_validity_error": expired_validity_window(
             extracted_transfer_data.get("start_date"), extracted_transfer_data.get("end_date")),
