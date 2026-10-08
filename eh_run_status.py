@@ -155,7 +155,40 @@ def save(tours: Dict[str, Any], mode: str, errors: List[str], warnings: List[str
             json.dump(record, fh, indent=2, ensure_ascii=False)
     except Exception:
         pass  # best effort: never fail a successful run over its own bookkeeping
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08, step 1): ALSO record the run in the shared
+    # platform database, so the status is visible everywhere the app runs - above all the deployed
+    # (Streamlit Cloud) app, which never sees the local file because the reader runs on the office
+    # PC. Only durable when DATABASE_URL points the reader at the same database the app uses; if it
+    # does not (or psycopg2 is missing), platform_store falls back to its local store and the
+    # deployed app simply won't see it - so this is additive, never a replacement for the file, and
+    # a DB failure never affects the run.
+    _write_status_to_db(record)
     return record
+
+
+DB_NAMESPACE = "eh_stop_sales"
+DB_KEY = "status"
+
+
+def _write_status_to_db(record: Dict[str, Any]) -> bool:
+    """Best-effort upsert of the latest run into platform_store. Never raises."""
+    try:
+        import platform_store
+        return platform_store.set(DB_NAMESPACE, DB_KEY, record)
+    except Exception:
+        return False
+
+
+def load_from_db() -> Optional[Dict[str, Any]]:
+    """The latest run as recorded in the shared database, or None. Used (step 2) by the app so the
+    automatic view works on the deployed site, not only on the machine that holds the local file."""
+    try:
+        import platform_store
+        value = platform_store.get(DB_NAMESPACE, DB_KEY)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        return None
 
 
 # ======================================================================

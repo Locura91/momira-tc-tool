@@ -1074,7 +1074,7 @@ TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
 # product type, because the source of truth is an EMAIL, not a contract and not Travel
 # Compositor - and because it changes availability on products that are already live.
-TOOL_STOPSALES = "📧 Stop Sales Email Reader"
+TOOL_STOPSALES = "🚫 Stop Sales Reader"
 # PROTOTYPE (2026-08-19): free-text customer trip idea -> structured search criteria. Doesn't
 # touch Travel Compositor at all yet - see trip_idea_tool.py's module docstring for why.
 TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
@@ -1211,9 +1211,10 @@ if st.session_state.active_tool is None:
          "It never changes prices or product data.",
          "Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours"),
         (TOOL_STOPSALES, "tool_btn_stopsales",
-         "Block dates a supplier has closed, from their email.",
-         "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
-         "would change, and blocks them only after you confirm. Existing blocks are kept.",
+         "Block dates a supplier has closed — and see what was added recently.",
+         "Add a stop sale yourself from a supplier email (it reads the dates, finds the product, "
+         "and blocks them after you confirm), or see every stop sale the system added in the last "
+         "24 hours — automatic and manual. Existing blocks are always kept.",
          "Closed Tours · Hotels"),
     ]
 

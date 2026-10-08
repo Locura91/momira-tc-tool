@@ -153,13 +153,55 @@ def test_the_status_view_lives_inside_the_stop_sales_tool():
     with open(os.path.join(repo, "stop_sales_tool.py"), "r", encoding="utf-8") as f:
         sst = f.read()
     assert "eh_run_status.render_today_status(st)" in sst
-    assert "ss_mode" in sst  # the add-email / automatic-reader choice
+    assert "ss_view" in sst  # the two-button add-email / last-24h choice
+    assert 'st.header("🚫 Stop Sales Reader")' in sst  # renamed from "Stop Sales Email Reader"
     with open(os.path.join(repo, "app.py"), "r", encoding="utf-8") as f:
         app = f.read()
-    # the main page no longer carries its own today's-status button, only the silent failure alert
+    # the main-page tool is renamed and no longer carries its own today's-status button
+    assert 'TOOL_STOPSALES = "🚫 Stop Sales Reader"' in app
+    assert "Email Reader" not in app
     assert "render_today_button" not in app
     assert "render_today_status" not in app
     assert "_eh_run_status.render_banner(st)" in app
+
+
+def test_recent_manual_stop_sales_lists_only_the_last_24_hours(monkeypatch):
+    import datetime as dt
+    import stop_sales_tool as sst
+    now = dt.datetime(2026, 10, 8, 12, 0, tzinfo=dt.timezone.utc)
+    records = {
+        "a": {"applied_at": (now - dt.timedelta(hours=2)).isoformat(),
+              "product_code": "CFU-1", "summary": "2 range(s) blocked on CFU-1"},
+        "b": {"applied_at": (now - dt.timedelta(hours=30)).isoformat(),  # too old
+              "product_code": "OLD-1", "summary": "old"},
+        "c": {"applied_at": "not a date", "product_code": "BAD"},         # skipped, no crash
+    }
+    monkeypatch.setattr(sst.platform_store, "get_namespace", lambda ns: records)
+    out = sst.recent_manual_stop_sales(hours=24, now=now)
+    assert [r["product_code"] for r in out] == ["CFU-1"]
+
+
+def test_recent_manual_stop_sales_newest_first(monkeypatch):
+    import datetime as dt
+    import stop_sales_tool as sst
+    now = dt.datetime(2026, 10, 8, 12, 0, tzinfo=dt.timezone.utc)
+    records = {
+        "old": {"applied_at": (now - dt.timedelta(hours=10)).isoformat(), "product_code": "A"},
+        "new": {"applied_at": (now - dt.timedelta(hours=1)).isoformat(), "product_code": "B"},
+    }
+    monkeypatch.setattr(sst.platform_store, "get_namespace", lambda ns: records)
+    out = sst.recent_manual_stop_sales(hours=24, now=now)
+    assert [r["product_code"] for r in out] == ["B", "A"]
+
+
+def test_recent_manual_stop_sales_survives_a_store_failure(monkeypatch):
+    import stop_sales_tool as sst
+
+    def _boom(ns):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(sst.platform_store, "get_namespace", _boom)
+    assert sst.recent_manual_stop_sales() == []
 
 
 def test_runner_stores_ranges_and_the_diff():
@@ -169,3 +211,50 @@ def test_runner_stores_ranges_and_the_diff():
     assert '"ranges": reading["ranges"]' in runner
     assert "eh_run_status.diff_ranges(" in runner
     assert 'previous_finished_utc=(previous or {}).get("finished_utc")' in runner
+
+
+# ----------------------------------------------------------------------
+# step 1: the run is also recorded in the shared database
+# ----------------------------------------------------------------------
+def test_save_also_writes_the_record_to_the_platform_database(tmp_path, monkeypatch):
+    """CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08, step 1): every run is upserted into
+    platform_store too, so the deployed app (which never sees the local file) can show it."""
+    import platform_store
+    captured = {}
+
+    def _fake_set(namespace, key, value):
+        captured["args"] = (namespace, key, value)
+        return True
+
+    monkeypatch.setattr(platform_store, "set", _fake_set)
+    rec = ehs.save({"CNX-3": {"status": "ok", "blocked_days": 3}}, "apply", [], [],
+                   directory=str(tmp_path), now=NOW)
+    assert captured["args"][0] == ehs.DB_NAMESPACE
+    assert captured["args"][1] == ehs.DB_KEY
+    assert captured["args"][2] == rec  # the exact record, not a reshaped copy
+
+
+def test_a_database_failure_never_breaks_the_run(tmp_path, monkeypatch):
+    import platform_store
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(platform_store, "set", _boom)
+    # Must still write the local file and return the record without raising.
+    rec = ehs.save({}, "apply", [], [], directory=str(tmp_path), now=NOW)
+    assert rec["ok"] is True
+    assert ehs.load(directory=str(tmp_path))["finished_utc"] == rec["finished_utc"]
+
+
+def test_load_from_db_returns_the_stored_record(monkeypatch):
+    import platform_store
+    monkeypatch.setattr(platform_store, "get",
+                        lambda ns, k: {"ok": True} if (ns, k) == (ehs.DB_NAMESPACE, ehs.DB_KEY) else None)
+    assert ehs.load_from_db() == {"ok": True}
+
+
+def test_load_from_db_is_none_when_nothing_stored(monkeypatch):
+    import platform_store
+    monkeypatch.setattr(platform_store, "get", lambda ns, k: None)
+    assert ehs.load_from_db() is None

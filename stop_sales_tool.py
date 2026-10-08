@@ -346,32 +346,94 @@ def _ranges_editor(parsed: Dict[str, Any], key_suffix: str = "") -> List[Dict[st
     return out
 
 
-def render_stop_sales_tool(client) -> None:
-    st.header("🚫 Stop Sales")
+def recent_manual_stop_sales(hours: int = 24, now: Optional["datetime"] = None) -> List[Dict[str, Any]]:
+    """Stop sales applied from a supplier email within the last `hours`, newest first.
 
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): everything about stop sales lives here, under
-    # one roof, instead of scattering the automatic Elephant Hills reader across the main page.
-    # Two ways in: add one yourself from a supplier email, or see what the automatic daily reader
-    # has already found and written. "it's all stop sales, so it should all go to the stop sales."
-    ss_mode = st.radio(
-        "What do you want to do?",
-        ["➕ Add a stop sale from a supplier email",
-         "🤖 Automatic stop sales — what the daily reader found (Elephant Hills)"],
-        key="ss_mode", horizontal=False)
-
-    if ss_mode.startswith("🤖"):
-        st.subheader("🤖 Automatic stop sales — Elephant Hills")
-        st.caption("The reader checks the supplier's website once a day and writes any new closure "
-                  "straight onto the tour. Below is its last run and what changed since the run "
-                  "before it. There is nothing to do here — it runs on its own; this is just the "
-                  "record. A problem that needs you is also flagged at the bottom of the app.")
+    Read from the same platform_store record mark_processed writes on every apply (namespace
+    processed_stop_sales), so this is durable and shared - the deployed app sees manual entries
+    made anywhere. Pure enough to test: pass `now`, and a bad/absent applied_at is skipped rather
+    than crashing the view."""
+    import datetime as _dt
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    cutoff = now - _dt.timedelta(hours=hours)
+    out: List[Dict[str, Any]] = []
+    try:
+        records = platform_store.get_namespace(_NS_PROCESSED) or {}
+    except Exception:
+        return []
+    for rec in records.values():
+        if not isinstance(rec, dict):
+            continue
         try:
-            import eh_run_status
-            eh_run_status.render_today_status(st)
-        except Exception as _e:
-            st.info("The automatic reader's status isn't available on this machine.")
-        return
+            when = _dt.datetime.fromisoformat(rec.get("applied_at"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if when >= cutoff:
+            out.append(rec)
+    out.sort(key=lambda r: r.get("applied_at", ""), reverse=True)
+    return out
 
+
+def _render_recent_stop_sales() -> None:
+    """The "last 24 hours" view: automatic (Elephant Hills reader) + manual (from emails)."""
+    st.subheader("🕐 Stop sales added in the last 24 hours")
+
+    st.markdown("##### 🤖 Automatic — Elephant Hills")
+    st.caption("The reader checks the supplier's website once a day and writes any new closure "
+              "straight onto the tour. This is its last run and what changed since the run before.")
+    try:
+        import eh_run_status
+        eh_run_status.render_today_status(st)
+    except Exception:
+        st.info("The automatic reader's status isn't available yet.")
+
+    st.markdown("##### ✍️ Entered from a supplier email")
+    manual = recent_manual_stop_sales(hours=24)
+    if not manual:
+        st.caption("Nothing was entered from an email in the last 24 hours.")
+    else:
+        for rec in manual:
+            when = str(rec.get("applied_at", ""))[:16].replace("T", " ")
+            code = rec.get("product_code") or rec.get("product_type") or "(product)"
+            ranges = rec.get("ranges") or []
+            st.markdown(f"- **{code}** — {rec.get('summary', 'updated')}  \n"
+                       f"  <small>{when} UTC · {', '.join(ranges) if ranges else 'no dates recorded'}</small>",
+                       unsafe_allow_html=True)
+
+
+def render_stop_sales_tool(client) -> None:
+    st.header("🚫 Stop Sales Reader")
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): one place for all stop sales, entered with two
+    # plain buttons - add one yourself from a supplier email, or see everything the system added in
+    # the last 24 hours (the automatic Elephant Hills reader AND manual email entries). The chosen
+    # view is remembered in ss_view so a rerun (e.g. after parsing an email) stays on the email side.
+    ss_view = st.session_state.get("ss_view")
+    _bcol1, _bcol2 = st.columns(2)
+    with _bcol1:
+        if st.button("➕ Add a new stop sale (from a supplier email)", use_container_width=True,
+                     type="primary" if ss_view == "email" else "secondary", key="ss_btn_email"):
+            st.session_state.ss_view = "email"
+            st.rerun()
+    with _bcol2:
+        if st.button("🕐 Stop sales added in the last 24 hours", use_container_width=True,
+                     type="primary" if ss_view == "recent" else "secondary", key="ss_btn_recent"):
+            st.session_state.ss_view = "recent"
+            st.rerun()
+
+    if not ss_view:
+        st.caption("Pick one above: **add** a stop sale yourself from a supplier email, or **see** "
+                  "every stop sale the system added in the last 24 hours — both the automatic "
+                  "Elephant Hills reader and anything entered from an email.")
+        st.stop()
+
+    if ss_view == "recent":
+        _render_recent_stop_sales()
+        st.stop()
+
+    # ss_view == "email" — the supervised email flow.
     st.caption("Paste a supplier's stop-sale email. The tool reads the dates, matches the product, "
               "shows you exactly what would change, and writes nothing until you confirm. A new "
               "closure is **added to** what is already blocked; a reopening **removes** the "
