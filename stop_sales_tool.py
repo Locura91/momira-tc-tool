@@ -347,7 +347,31 @@ def _ranges_editor(parsed: Dict[str, Any], key_suffix: str = "") -> List[Dict[st
 
 
 def render_stop_sales_tool(client) -> None:
-    st.header("📧 Stop Sales Email Reader")
+    st.header("🚫 Stop Sales")
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): everything about stop sales lives here, under
+    # one roof, instead of scattering the automatic Elephant Hills reader across the main page.
+    # Two ways in: add one yourself from a supplier email, or see what the automatic daily reader
+    # has already found and written. "it's all stop sales, so it should all go to the stop sales."
+    ss_mode = st.radio(
+        "What do you want to do?",
+        ["➕ Add a stop sale from a supplier email",
+         "🤖 Automatic stop sales — what the daily reader found (Elephant Hills)"],
+        key="ss_mode", horizontal=False)
+
+    if ss_mode.startswith("🤖"):
+        st.subheader("🤖 Automatic stop sales — Elephant Hills")
+        st.caption("The reader checks the supplier's website once a day and writes any new closure "
+                  "straight onto the tour. Below is its last run and what changed since the run "
+                  "before it. There is nothing to do here — it runs on its own; this is just the "
+                  "record. A problem that needs you is also flagged at the bottom of the app.")
+        try:
+            import eh_run_status
+            eh_run_status.render_today_status(st)
+        except Exception as _e:
+            st.info("The automatic reader's status isn't available on this machine.")
+        return
+
     st.caption("Paste a supplier's stop-sale email. The tool reads the dates, matches the product, "
               "shows you exactly what would change, and writes nothing until you confirm. A new "
               "closure is **added to** what is already blocked; a reopening **removes** the "

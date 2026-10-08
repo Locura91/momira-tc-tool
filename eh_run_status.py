@@ -386,21 +386,24 @@ def sum_days(ranges: List[Dict[str, str]]) -> int:
     return len(_ranges_to_days(ranges))
 
 
-def render_today_button(st, directory: Optional[str] = None) -> None:
-    """A small expander at the very bottom of the app: today's stop-sale status and what changed
-    since the previous run. Wrapped so a problem here can never take the app down."""
+def render_today_status(st, directory: Optional[str] = None) -> None:
+    """Today's automatic stop-sale status, rendered inline - when it last ran, each tour's blocked
+    count, and the short list of what changed since the previous run.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): this lives INSIDE the Stop Sales tool now (one of
+    its two modes: add from an email, or see the automatic checks), not as a separate button on the
+    main page - "it's all stop sales, so it should all go to the stop sales". Wrapped so a problem
+    here can never take the hosting screen down."""
     try:
-        record = load(directory)
-        with st.expander("📅 Elephant Hills stop sales — today's status", expanded=False):
-            for msg in today_lines(record):
-                level = msg["level"]
-                if level == "error":
-                    st.error(msg["text"])
-                elif level == "warning":
-                    st.warning(msg["text"])
-                elif level == "success":
-                    st.success(msg["text"])
-                else:
-                    st.markdown("- " + msg["text"])
+        for msg in today_lines(load(directory)):
+            level = msg["level"]
+            if level == "error":
+                st.error(msg["text"])
+            elif level == "warning":
+                st.warning(msg["text"])
+            elif level == "success":
+                st.success(msg["text"])
+            else:
+                st.markdown("- " + msg["text"])
     except Exception:
         pass

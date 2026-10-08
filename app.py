@@ -3323,10 +3323,9 @@ render_memory_panel_footer()
 try:
     import eh_run_status as _eh_run_status
     _eh_run_status.render_banner(st)
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): and a small button at the very bottom for
-    # today's status on demand, with a short list of what changed since the previous run. The
-    # banner above stays silent while things are fine; this button is the opposite - it is only
-    # shown when the human opens it, so it always reports, without adding noise to every screen.
-    _eh_run_status.render_today_button(st)
+    # (The on-demand "today's status" view used to be a button here too. CONFIRMED PRODUCT-OWNER
+    # REQUEST (2026-10-08): it now lives inside the Stop Sales tool instead - "it's all stop
+    # sales, so it should all go to the stop sales" - see stop_sales_tool.render_stop_sales_tool.
+    # Only this silent failure alert remains on the main page, and only when something is wrong.)
 except Exception:
     pass

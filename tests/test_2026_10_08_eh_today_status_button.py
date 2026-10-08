@@ -4,7 +4,8 @@ Tests for the bottom "today's Elephant Hills stop-sale status" button (product-o
 changed since yesterday."
 
 The diff (diff_ranges) and the wording (today_lines) are pure, so both are tested directly without
-Streamlit. The button itself (render_today_button) is a thin guarded wrapper.
+Streamlit. The inline renderer (render_today_status), shown inside the Stop Sales tool, is a thin
+guarded wrapper over today_lines.
 """
 import datetime as dt
 import os
@@ -145,12 +146,20 @@ def test_save_records_the_previous_runs_timestamp(tmp_path):
     assert back["previous_finished_utc"] == "2026-10-07T06:30:00+00:00"
 
 
-def test_app_renders_the_button_at_the_bottom():
+def test_the_status_view_lives_inside_the_stop_sales_tool():
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): the on-demand status moved OFF the main page
+    # and INTO the Stop Sales tool as one of its two modes.
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo, "stop_sales_tool.py"), "r", encoding="utf-8") as f:
+        sst = f.read()
+    assert "eh_run_status.render_today_status(st)" in sst
+    assert "ss_mode" in sst  # the add-email / automatic-reader choice
     with open(os.path.join(repo, "app.py"), "r", encoding="utf-8") as f:
         app = f.read()
-    assert "_eh_run_status.render_today_button(st)" in app
-    assert app.index("render_today_button") > app.index("render_memory_panel_footer()")
+    # the main page no longer carries its own today's-status button, only the silent failure alert
+    assert "render_today_button" not in app
+    assert "render_today_status" not in app
+    assert "_eh_run_status.render_banner(st)" in app
 
 
 def test_runner_stores_ranges_and_the_diff():
