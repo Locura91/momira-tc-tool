@@ -131,13 +131,19 @@ def previous_tour(record: Optional[Dict[str, Any]], tour_code: str) -> Optional[
 
 
 def save(tours: Dict[str, Any], mode: str, errors: List[str], warnings: List[str],
-         directory: Optional[str] = None, now: Optional[_dt.datetime] = None) -> Dict[str, Any]:
+         directory: Optional[str] = None, now: Optional[_dt.datetime] = None,
+         previous_finished_utc: Optional[str] = None) -> Dict[str, Any]:
     """Record this run. Written even when the run failed - especially then, since a failed run
-    that leaves no trace is indistinguishable from a run that never happened."""
+    that leaves no trace is indistinguishable from a run that never happened.
+
+    previous_finished_utc (2026-10-08): the timestamp of the run this one is being compared
+    against, kept on the record so the app's "what changed since yesterday" button can say WHICH
+    earlier run the per-tour `changed` diffs are measured from, without needing a second file."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     record = {
         "tool_version": TOOL_VERSION,
         "finished_utc": now.replace(microsecond=0).isoformat(),
+        "previous_finished_utc": previous_finished_utc,
         "mode": mode,
         "ok": not errors,
         "tours": tours,
@@ -224,3 +230,177 @@ def _parse_iso(value: Any) -> Optional[_dt.datetime]:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=_dt.timezone.utc)
+
+
+# ======================================================================
+# "What changed since yesterday" - a day-over-day diff of the blocked dates
+# ======================================================================
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-08): a small button at the bottom of the app showing
+# today's stop-sale status and "a short list what changed since yesterday". The status file used
+# to keep only a per-tour COUNT; to say which DATES newly closed (or reopened) we now also store
+# each tour's blocked ranges and the diff against the previous run. These helpers are pure (no
+# files, no clock unless passed one) so the diff and the wording are both testable directly.
+_ONE_DAY = _dt.timedelta(days=1)
+_MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _ranges_to_days(ranges: Optional[List[Dict[str, str]]]) -> set:
+    """Every individual date covered by a list of {start,end} ISO ranges. A malformed range is
+    skipped rather than crashing the whole diff - the status file is best-effort."""
+    days: set = set()
+    for r in ranges or []:
+        try:
+            start = _dt.date.fromisoformat(r["start"])
+            end = _dt.date.fromisoformat(r["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        day = start
+        while day <= end:
+            days.add(day)
+            day += _ONE_DAY
+    return days
+
+
+def _days_to_ranges(days: set) -> List[Dict[str, str]]:
+    """Collapse a set of dates back into consecutive {start,end} ranges, in date order."""
+    out: List[Dict[str, str]] = []
+    for day in sorted(days):
+        if out and day == _dt.date.fromisoformat(out[-1]["end"]) + _ONE_DAY:
+            out[-1]["end"] = day.isoformat()
+        else:
+            out.append({"start": day.isoformat(), "end": day.isoformat()})
+    return out
+
+
+def diff_ranges(previous_ranges: Optional[List[Dict[str, str]]],
+                current_ranges: Optional[List[Dict[str, str]]]) -> Dict[str, List[Dict[str, str]]]:
+    """What is newly closed (added) and newly reopened (removed) between two runs' blocked dates.
+
+    Reopened dates are reported for the human to see, never acted on - the reader only ever ADDS
+    stop sales, it never removes one (that is the whole merge-never-replace safety rule), so a
+    date leaving the supplier's closed list is information, not an instruction to unblock."""
+    prev = _ranges_to_days(previous_ranges)
+    curr = _ranges_to_days(current_ranges)
+    return {"added": _days_to_ranges(curr - prev), "removed": _days_to_ranges(prev - curr)}
+
+
+def _fmt_date(iso: str) -> str:
+    try:
+        d = _dt.date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return iso
+    return f"{d.day} {_MONTHS[d.month]} {d.year}"
+
+
+def _fmt_ranges(ranges: List[Dict[str, str]], limit: int = 6) -> str:
+    """Compact human list: "14 Jan 2027, 2–5 Feb 2027". Long lists are truncated with a count so
+    the "short list" the product owner asked for never becomes a wall of dates."""
+    parts = []
+    for r in ranges:
+        if r["start"] == r["end"]:
+            parts.append(_fmt_date(r["start"]))
+        else:
+            parts.append(f"{_fmt_date(r['start'])} – {_fmt_date(r['end'])}")
+    if len(parts) > limit:
+        extra = len(parts) - limit
+        parts = parts[:limit] + [f"+{extra} more"]
+    return ", ".join(parts)
+
+
+def _relative_when(finished: Optional[_dt.datetime], now: _dt.datetime) -> str:
+    if finished is None:
+        return "at an unknown time"
+    hhmm = finished.strftime("%H:%M UTC")
+    days_ago = (now.date() - finished.date()).days
+    if days_ago <= 0:
+        return f"today at {hhmm}"
+    if days_ago == 1:
+        return f"yesterday at {hhmm}"
+    return f"{days_ago} days ago ({finished.date().isoformat()} {hhmm})"
+
+
+def today_lines(record: Optional[Dict[str, Any]],
+                now: Optional[_dt.datetime] = None) -> List[Dict[str, str]]:
+    """The content of the bottom "today's status" button, as {level, text} entries. Pure.
+
+    Unlike describe() - which is deliberately SILENT while everything is fine, because it drives
+    the always-on banner - this is shown only when the human clicks the button open, so it always
+    says something: when the last run was, whether it was clean, and the short per-tour list of
+    what changed since the previous run."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if record is None:
+        return [{"level": "info",
+                 "text": ("No Elephant Hills stop-sale run has been recorded on this machine yet. "
+                          "The daily check runs on the office PC; this is normal everywhere else.")}]
+
+    out: List[Dict[str, str]] = []
+    finished = _parse_iso(record.get("finished_utc"))
+    when = _relative_when(finished, now)
+    ran_today = finished is not None and finished.date() >= now.date()
+
+    if record.get("errors"):
+        out.append({"level": "error", "text": f"Last run ({when}) **failed** — see the alert above."})
+    elif not ran_today:
+        out.append({"level": "warning",
+                    "text": (f"Last completed run was **{when}** — today's run has not completed "
+                             f"yet (the PC may have been off at the scheduled time).")})
+    else:
+        out.append({"level": "success", "text": f"Ran **{when}**. All tours checked."})
+
+    prev_when = _parse_iso(record.get("previous_finished_utc"))
+    since = f" since {_relative_when(prev_when, now)}" if prev_when else " since the previous run"
+
+    tours = record.get("tours") or {}
+    for code in sorted(tours):
+        entry = tours[code] if isinstance(tours.get(code), dict) else {}
+        status = entry.get("status")
+        if status == "failed":
+            out.append({"level": "error", "text": f"**{code}**: could not be read this run."})
+            continue
+        if status == "suspicious":
+            out.append({"level": "warning",
+                        "text": f"**{code}**: an unusually large reading was held back for review."})
+            continue
+        blocked = entry.get("blocked_days")
+        changed = entry.get("changed") or {}
+        added, removed = changed.get("added") or [], changed.get("removed") or []
+        bits = []
+        if added:
+            bits.append(f"🔒 {sum_days(added)} newly closed{since}: {_fmt_ranges(added)}")
+        if removed:
+            bits.append(f"🔓 {sum_days(removed)} reopened on the supplier (not unblocked): {_fmt_ranges(removed)}")
+        if bits:
+            tail = " — " + "; ".join(bits)
+        elif "changed" in entry:
+            tail = " — no change" + since
+        else:
+            # An older status file written before day-over-day diffs existed: we have the count
+            # but nothing to compare against, so don't claim "no change".
+            tail = ""
+        out.append({"level": "info", "text": f"**{code}**: {blocked} day(s) blocked{tail}"})
+    return out
+
+
+def sum_days(ranges: List[Dict[str, str]]) -> int:
+    return len(_ranges_to_days(ranges))
+
+
+def render_today_button(st, directory: Optional[str] = None) -> None:
+    """A small expander at the very bottom of the app: today's stop-sale status and what changed
+    since the previous run. Wrapped so a problem here can never take the app down."""
+    try:
+        record = load(directory)
+        with st.expander("📅 Elephant Hills stop sales — today's status", expanded=False):
+            for msg in today_lines(record):
+                level = msg["level"]
+                if level == "error":
+                    st.error(msg["text"])
+                elif level == "warning":
+                    st.warning(msg["text"])
+                elif level == "success":
+                    st.success(msg["text"])
+                else:
+                    st.markdown("- " + msg["text"])
+    except Exception:
+        pass

@@ -170,5 +170,7 @@ def test_the_notice_is_rendered_at_the_very_bottom_of_the_app():
     banner_idx = app.index("_eh_run_status.render_banner(st)")
     footer_idx = app.index("render_memory_panel_footer()")
     assert banner_idx > footer_idx, "the notice must come after the page footer, i.e. last"
-    # and it must be the tail of the file, not buried mid-script
-    assert len(app) - banner_idx < 400, "should sit in the final lines of app.py"
+    # It sits in the closing block of the file, after the footer. (The on-demand "today's status"
+    # button, added 2026-10-08, is rendered right after it, so the banner is no longer literally
+    # the final bytes - "after the footer, near the end" is the guarantee that matters.)
+    assert len(app) - banner_idx < 1200, "should sit in the closing block of app.py"

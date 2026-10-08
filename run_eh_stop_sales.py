@@ -280,14 +280,22 @@ def main(argv=None) -> int:
         verdict = eh_run_status.assess_tour(
             code, blocked_days, scanned_days, eh_run_status.previous_tour(previous, code))
         status_tours[code] = {"status": "ok", "blocked_days": blocked_days,
-                              "scanned_days": scanned_days}
+                              "scanned_days": scanned_days,
+                              # Keep the actual blocked ranges so the next run (and the app's
+                              # "what changed since yesterday" button) can diff against them.
+                              "ranges": reading["ranges"],
+                              "changed": eh_run_status.diff_ranges(
+                                  (eh_run_status.previous_tour(previous, code) or {}).get("ranges"),
+                                  reading["ranges"])}
         if verdict["suspicious"] and not args.force_large:
             reading["held_back"] = verdict["reason"]
             status_tours[code]["status"] = "suspicious"
             status_tours[code]["detail"] = verdict["reason"]
-            # Not counted as a blocked_days baseline: recording a reading we refused to trust
-            # would make the same wrong number look normal on the next run.
+            # Not counted as a baseline: recording a reading we refused to trust would make the
+            # same wrong number (and its dates) look normal on the next run's diff.
             status_tours[code].pop("blocked_days", None)
+            status_tours[code].pop("ranges", None)
+            status_tours[code].pop("changed", None)
             run_warnings.append(f"{code}: {verdict['reason']}")
             print(f"\n  HELD BACK - {code}: {verdict['reason']}")
         elif verdict["suspicious"]:
@@ -298,7 +306,8 @@ def main(argv=None) -> int:
     if not to_write:
         print("\nNothing to write.")
         eh_run_status.save(status_tours, "dry-run" if dry_run else "apply",
-                           run_errors, run_warnings)
+                           run_errors, run_warnings,
+                           previous_finished_utc=(previous or {}).get("finished_utc"))
         return 1 if run_errors else 0
 
     # api_client.TravelCompositorAPI, NOT travelcompositor_api.TravelCompositorAPI. This repo has
@@ -334,7 +343,8 @@ def main(argv=None) -> int:
     # Written whether the run passed or failed - especially when it failed, since a failed run
     # that leaves no trace is indistinguishable from one that never happened, and "never
     # happened" is exactly what a silently disabled scheduled task looks like.
-    eh_run_status.save(status_tours, "dry-run" if dry_run else "apply", run_errors, run_warnings)
+    eh_run_status.save(status_tours, "dry-run" if dry_run else "apply", run_errors, run_warnings,
+                       previous_finished_utc=(previous or {}).get("finished_utc"))
     return exit_code
 
 
