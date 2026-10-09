@@ -191,6 +191,18 @@ def load_from_db() -> Optional[Dict[str, Any]]:
         return None
 
 
+def load_for_display(directory: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The record to SHOW in the app (step 2). The shared database comes FIRST, so the deployed
+    site and every machine see the same thing wherever the reader actually ran; the local file is
+    only a fallback for a machine that has the file but no database. This is what the banner and the
+    automatic-status view read - never the bare local file - so the reader's result reaches the app
+    no matter which PC produced it."""
+    record = load_from_db()
+    if record is not None:
+        return record
+    return load(directory)
+
+
 # ======================================================================
 # What the app should say
 # ======================================================================
@@ -244,7 +256,7 @@ def render_banner(st, directory: Optional[str] = None) -> None:
     """Show the messages in Streamlit. Wrapped so a problem here can never take the app down -
     a broken warning system must not become a worse outage than the thing it warns about."""
     try:
-        for msg in describe(load(directory)):
+        for msg in describe(load_for_display(directory)):
             if msg["level"] == "error":
                 st.error("🚨 " + msg["text"])
             elif msg["level"] == "warning":
@@ -428,7 +440,7 @@ def render_today_status(st, directory: Optional[str] = None) -> None:
     main page - "it's all stop sales, so it should all go to the stop sales". Wrapped so a problem
     here can never take the hosting screen down."""
     try:
-        for msg in today_lines(load(directory)):
+        for msg in today_lines(load_for_display(directory)):
             level = msg["level"]
             if level == "error":
                 st.error(msg["text"])

@@ -258,3 +258,38 @@ def test_load_from_db_is_none_when_nothing_stored(monkeypatch):
     import platform_store
     monkeypatch.setattr(platform_store, "get", lambda ns, k: None)
     assert ehs.load_from_db() is None
+
+
+# ----------------------------------------------------------------------
+# step 2: the app reads the status from the database (visible everywhere)
+# ----------------------------------------------------------------------
+def test_display_prefers_the_database_over_the_local_file(tmp_path, monkeypatch):
+    # A local file exists, but the DB has a (newer) record - the app must show the DB one, so the
+    # deployed site and every machine see what the reader actually wrote wherever it ran.
+    ehs.save({"CNX-3": {"status": "ok", "blocked_days": 3}}, "apply", [], [],
+             directory=str(tmp_path), now=NOW)
+    monkeypatch.setattr(ehs, "load_from_db", lambda: {"ok": True, "from": "db"})
+    assert ehs.load_for_display(directory=str(tmp_path)) == {"ok": True, "from": "db"}
+
+
+def test_display_falls_back_to_the_local_file_when_the_db_is_empty(tmp_path, monkeypatch):
+    rec = ehs.save({"CNX-3": {"status": "ok", "blocked_days": 3}}, "apply", [], [],
+                   directory=str(tmp_path), now=NOW)
+    monkeypatch.setattr(ehs, "load_from_db", lambda: None)
+    assert ehs.load_for_display(directory=str(tmp_path))["finished_utc"] == rec["finished_utc"]
+
+
+def test_display_is_none_when_neither_db_nor_file_has_anything(tmp_path, monkeypatch):
+    monkeypatch.setattr(ehs, "load_from_db", lambda: None)
+    assert ehs.load_for_display(directory=str(tmp_path)) is None
+
+
+def test_banner_and_status_view_read_through_load_for_display():
+    # Source check: the two things shown in the app go through load_for_display (DB-first), not the
+    # bare local file - otherwise the deployed app would never see the reader's result.
+    import os
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo, "eh_run_status.py"), "r", encoding="utf-8") as f:
+        src = f.read()
+    assert "describe(load_for_display(directory))" in src
+    assert "today_lines(load_for_display(directory))" in src
