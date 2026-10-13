@@ -31,6 +31,7 @@ for the AI Trip Idea feature's "never book" boundary). Instead it shows an expli
 comparison (current departure/price vs. proposed departure/price) and tells the human to make
 that exact change in Travel Compositor's normal edit screen and click Save there themselves.
 """
+import re
 from datetime import date
 
 import streamlit as st
@@ -43,6 +44,26 @@ from travelcompositor_api import TravelCompositorAPI
 MODULE_BUILD = "2026-10-13-package-staleness-list"
 
 _PHASE_KEY = "pkr_phase"
+
+
+def _make_slug(title: str) -> str:
+    """Converts a package title to a URL slug matching momira.travel's format."""
+    s = title.lower()
+    s = re.sub(r'[&]', 'and', s)
+    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'\s+', '-', s.strip())
+    return re.sub(r'-+', '-', s)
+
+
+def _momira_url(pkg_id: str, title: str) -> str:
+    return f"https://momira.travel/en/idea/{pkg_id}/{_make_slug(title)}"
+
+
+def _extract_title(info: dict) -> str:
+    raw = (info.get("title") or info.get("name") or info.get("description") or "")
+    if isinstance(raw, dict):
+        raw = raw.get("value") or raw.get("text") or ""
+    return str(raw).strip()
 
 
 def _reset():
@@ -176,6 +197,31 @@ def _render_service_comparison(cmp: dict):
                         st.caption("None")
 
 
+def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
+    """Shows the proposed date prominently and a direct link to the momira.travel package page."""
+    st.divider()
+    st.markdown("##### ✅ Ready to roll — open the package and apply the new date")
+    st.markdown(
+        f"<div style='background:#e8f5e9;border-radius:8px;padding:12px 18px;"
+        f"font-size:1.1em;margin-bottom:8px'>"
+        f"📅 New departure date to enter in TC: "
+        f"<strong style='font-size:1.3em'>{proposed_date.strftime('%d.%m.%Y')}</strong>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    st.link_button(
+        "🌐 Open package in TC →",
+        url=url,
+        use_container_width=True,
+        type="primary",
+    )
+    st.caption(
+        "Steps: click **Book directly without changes** → enter the date above → "
+        "**Search** → verify services match → click **Override existing trip**"
+    )
+
+
 def render_package_rollover_tool():
     st.subheader("🔁 Package Rollover (prototype)")
     st.info("🔁 Looks up a Holiday Package and proposes a replacement departure date "
@@ -286,11 +332,10 @@ def render_package_rollover_tool():
                       "cruise or coach tour that only departs on specific weekdays, like a "
                       "Nile cruise), this proposed date is NOT checked against that schedule — "
                       "confirm it matches before applying it in Travel Compositor.")
-            st.info(
-                f"👉 Open package **{st.session_state.get('pkr_package_id')}** in Travel "
-                f"Compositor's own edit screen, set the departure date to "
-                f"**{dyn['proposed_date'].strftime('%d/%m/%Y')}**, verify the new price "
-                f"is within +3.5% of {current_price}, and click Save."
+            _render_open_in_tc(
+                pkg_id=st.session_state.get("pkr_package_id", ""),
+                title=_extract_title(info),
+                proposed_date=dyn["proposed_date"],
             )
         else:
             result = prr.propose_rollover(candidates, current_price, today=date.today())
@@ -374,11 +419,11 @@ def render_package_rollover_tool():
                 cmp = psc.compare_components(day_to_day, best.get("raw", {}))
                 _render_service_comparison(cmp)
 
-                st.info("👉 **This app never applies this change.** Open this package in "
-                       "Travel Compositor's own edit screen, enter this departure date and "
-                       "price the same way you would for any regular update, double-check "
-                       "the hotel's rating, and click **Save there** — the normal, manual "
-                       "step you already do today.")
+                _render_open_in_tc(
+                    pkg_id=st.session_state.get("pkr_package_id", ""),
+                    title=_extract_title(info),
+                    proposed_date=best["date"],
+                )
 
     with st.expander("🔎 Raw API responses"):
         st.markdown("**Package info** (`GET /package/{micrositeId}/info/{id}`)")
