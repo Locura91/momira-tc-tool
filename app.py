@@ -1222,6 +1222,12 @@ if st.session_state.active_tool is None:
          "and blocks them after you confirm), or see every stop sale the system added in the last "
          "24 hours — automatic and manual. Existing blocks are always kept.",
          "Closed Tours · Hotels"),
+        (TOOL_PACKAGESTALENESS, "tool_btn_packagestaleness",
+         "See which Holiday Packages need their departure date updated.",
+         "Lists all packages sorted by departure date — soonest and most overdue first — "
+         "so you always know what needs attention next. Opens directly into the Package "
+         "Rollover tool for any package on the list.",
+         "Holiday Packages"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -1263,12 +1269,6 @@ if st.session_state.active_tool is None:
         st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
                   "beach in Spain\") into structured destination/dates/party/theme fields. "
                   "Doesn't touch Travel Compositor — not a real search yet.")
-        if st.button(TOOL_PACKAGESTALENESS, key="tool_btn_packagestaleness", use_container_width=True):
-            st.session_state.active_tool = TOOL_PACKAGESTALENESS
-            st.rerun()
-        st.caption("All Holiday Packages sorted by departure date — soonest / most-overdue first, "
-                  "so you can see at a glance which ones need their departure updated. "
-                  "Read-only — real GET calls, never writes anything.")
         if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
             st.session_state.active_tool = TOOL_PACKAGEROLLOVER
             st.rerun()

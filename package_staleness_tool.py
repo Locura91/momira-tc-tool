@@ -36,7 +36,6 @@ _STATUS_OVERDUE = "OVERDUE"
 _STATUS_URGENT = "URGENT"
 _STATUS_DUE_SOON = "DUE SOON"
 _STATUS_OK = "OK"
-_STATUS_NO_DATE = "NO DATE"
 
 # Sort weight — lower = higher urgency = appears first
 _STATUS_SORT = {
@@ -44,7 +43,6 @@ _STATUS_SORT = {
     _STATUS_URGENT: 1,
     _STATUS_DUE_SOON: 2,
     _STATUS_OK: 3,
-    _STATUS_NO_DATE: 4,
 }
 
 _STATUS_EMOJI = {
@@ -52,7 +50,6 @@ _STATUS_EMOJI = {
     _STATUS_URGENT: "🟠",
     _STATUS_DUE_SOON: "🟡",
     _STATUS_OK: "🟢",
-    _STATUS_NO_DATE: "⚪",
 }
 
 _STATUS_COLOUR = {
@@ -60,7 +57,6 @@ _STATUS_COLOUR = {
     _STATUS_URGENT: "#ffe5cc",
     _STATUS_DUE_SOON: "#fffacc",
     _STATUS_OK: "#d6f5d6",
-    _STATUS_NO_DATE: "#f0f0f0",
 }
 
 
@@ -73,7 +69,7 @@ def _get_api_client() -> TravelCompositorAPI:
 
 def _classify(dep_date: Optional[date], today: date) -> str:
     if dep_date is None:
-        return _STATUS_NO_DATE
+        return _STATUS_OVERDUE  # shouldn't happen in TC, treat as urgent
     delta = (dep_date - today).days
     if delta < 0:
         return _STATUS_OVERDUE
@@ -181,7 +177,7 @@ def render_package_staleness_tool():
     with col_filter:
         status_filter = st.multiselect(
             "Show statuses",
-            options=[_STATUS_OVERDUE, _STATUS_URGENT, _STATUS_DUE_SOON, _STATUS_OK, _STATUS_NO_DATE],
+            options=[_STATUS_OVERDUE, _STATUS_URGENT, _STATUS_DUE_SOON, _STATUS_OK],
             default=[_STATUS_OVERDUE, _STATUS_URGENT, _STATUS_DUE_SOON],
             format_func=lambda s: f"{_STATUS_EMOJI[s]} {s}",
             label_visibility="collapsed",
@@ -208,15 +204,14 @@ def render_package_staleness_tool():
 
     # ---- Summary badges -----------------------------------------------------
     counts = {s: sum(1 for r in rows if r["status"] == s)
-              for s in [_STATUS_OVERDUE, _STATUS_URGENT, _STATUS_DUE_SOON, _STATUS_OK, _STATUS_NO_DATE]}
+              for s in [_STATUS_OVERDUE, _STATUS_URGENT, _STATUS_DUE_SOON, _STATUS_OK]}
 
-    badge_cols = st.columns(5)
+    badge_cols = st.columns(4)
     for col, (status, label) in zip(badge_cols, [
         (_STATUS_OVERDUE,  "Overdue"),
         (_STATUS_URGENT,   "Urgent (≤14 d)"),
         (_STATUS_DUE_SOON, "Due soon (≤60 d)"),
         (_STATUS_OK,       "OK"),
-        (_STATUS_NO_DATE,  "No date"),
     ]):
         col.metric(f"{_STATUS_EMOJI[status]} {label}", counts[status])
 
