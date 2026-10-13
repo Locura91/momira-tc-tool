@@ -265,13 +265,23 @@ def render_package_rollover_tool():
     # Pre-fill support: the staleness list sets pkr_prefill_id when the human clicks
     # "Open in Package Rollover" from that screen, so the ID arrives ready to look up.
     prefill = st.session_state.pop("pkr_prefill_id", None)
-    if prefill and not st.session_state.get("pkr_input"):
+    auto_lookup = False
+    if prefill:
+        # Clear any previous lookup result so we fetch fresh data for this package
+        for k in ("pkr_info", "pkr_day_to_day", "pkr_calendar", "pkr_package_id"):
+            st.session_state.pop(k, None)
         st.session_state["pkr_input"] = prefill
+        auto_lookup = True
 
     package_id = st.text_input("Holiday Package ID", key="pkr_input",
                                placeholder="e.g. 59582825")
 
-    if st.button("🔍 Look up package", type="primary", disabled=not package_id.strip()):
+    if auto_lookup and package_id.strip():
+        try:
+            _do_lookup(package_id.strip())
+        except Exception as e:
+            st.error(ai_extractor.friendly_error_message(e))
+    elif st.button("🔍 Look up package", type="primary", disabled=not package_id.strip()):
         try:
             _do_lookup(package_id.strip())
         except Exception as e:

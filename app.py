@@ -1330,7 +1330,7 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # inside each product type's own flow. Goal (verbatim): "make the tool less complex and more
 # intuitive for humans."
 # ======================================================================
-if st.session_state.product_type is None:
+if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
     st.caption("Click a section below to open it, then pick where you want to go — like "
               "Travel Compositor's own \"Contracts\" menu.")
