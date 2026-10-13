@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
+MODULE_BUILD = "2026-10-13-package-staleness-list"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

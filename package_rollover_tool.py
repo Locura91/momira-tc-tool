@@ -31,17 +31,39 @@ for the AI Trip Idea feature's "never book" boundary). Instead it shows an expli
 comparison (current departure/price vs. proposed departure/price) and tells the human to make
 that exact change in Travel Compositor's normal edit screen and click Save there themselves.
 """
+import re
 from datetime import date
 
 import streamlit as st
 
 import ai_extractor
 import package_rollover_rules as prr
+import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
+MODULE_BUILD = "2026-10-13-package-staleness-list"
 
 _PHASE_KEY = "pkr_phase"
+
+
+def _make_slug(title: str) -> str:
+    """Converts a package title to a URL slug matching momira.travel's format."""
+    s = title.lower()
+    s = re.sub(r'[&]', 'and', s)
+    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'\s+', '-', s.strip())
+    return re.sub(r'-+', '-', s)
+
+
+def _momira_url(pkg_id: str, title: str) -> str:
+    return f"https://momira.travel/en/idea/{pkg_id}/{_make_slug(title)}"
+
+
+def _extract_title(info: dict) -> str:
+    raw = (info.get("title") or info.get("name") or info.get("description") or "")
+    if isinstance(raw, dict):
+        raw = raw.get("value") or raw.get("text") or ""
+    return str(raw).strip()
 
 
 def _reset():
@@ -107,29 +129,159 @@ def _current_departure_from(info, day_to_day):
     return None, None
 
 
+_COMPONENT_LABELS = {
+    "flight":     "✈️ Flights",
+    "hotel":      "🏨 Hotels",
+    "transfer":   "🚐 Transfers",
+    "ticket":     "🎟️ Tickets",
+    "transport":  "🚌 Transports",
+    "closedtour": "🛳️ Closed Tours",
+}
+
+
+def _render_service_comparison(cmp: dict):
+    """Renders the psc.compare_components() result as a clear match/mismatch table."""
+    all_match = cmp.get("all_match", False)
+    unknown   = cmp.get("unknown_fields", False)
+
+    if all_match and not unknown:
+        st.success("✅ All services match — flights (incl. luggage), hotels (incl. meal type), "
+                   "transfers, tickets, transports and closed tours are identical.")
+    elif all_match and unknown:
+        st.warning("⚠️ Services appear to match, but some component field names could not be "
+                   "read from the API response — see the detail below to confirm.")
+    else:
+        st.error("❌ One or more services differ — auto-update not safe. Review the detail below.")
+
+    if unknown:
+        st.caption(
+            "ℹ️ Some field names are not yet confirmed against a real API response. "
+            "The 'matched field' column shows exactly which key was used — check it "
+            "makes sense for this package, and report anything unexpected."
+        )
+
+    for ctype, label in _COMPONENT_LABELS.items():
+        comp = cmp["components"].get(ctype, {})
+        match  = comp.get("match", False)
+        reason = comp.get("reason", "")
+        cur    = comp.get("current", [])
+        prop   = comp.get("proposed", [])
+        icon = "✅" if match else "❌"
+
+        with st.expander(f"{icon} {label}  —  {reason}", expanded=not match):
+            if not cur and not prop:
+                st.caption("Not present in either current or proposed.")
+                continue
+
+            cols = st.columns(2)
+            for col, side_label, side_list in [
+                (cols[0], "Current package", cur),
+                (cols[1], "Proposed departure", prop),
+            ]:
+                with col:
+                    st.markdown(f"**{side_label}** ({len(side_list)} item(s))")
+                    for item in side_list:
+                        id_field = item.get("id_field") or "*(no id field found)*"
+                        id_val   = item.get("id_value") or "*(unknown)*"
+                        lines = [f"- **{id_val}** *(field: `{id_field}`)*"]
+                        if "meal_value" in item:
+                            mf = item.get("meal_field") or "*(no meal field found)*"
+                            mv = item.get("meal_value") or "*(unknown)*"
+                            lines.append(f"  Meal: **{mv}** *(field: `{mf}`)*")
+                        if "baggage_value" in item:
+                            bf = item.get("baggage_field") or "*(no baggage field found)*"
+                            bv = item.get("baggage_value") or "*(unknown)*"
+                            lines.append(f"  Baggage: **{bv}** *(field: `{bf}`)*")
+                        st.markdown("\n".join(lines))
+                    if not side_list:
+                        st.caption("None")
+
+
+def _make_rollover_script(date_str: str) -> str:
+    """Generates a browser-console JavaScript snippet that automates the TC booking flow."""
+    return (
+        f"(function(){{\n"
+        f"  var d='{date_str}';\n"
+        f"  var btn=[].slice.call(document.querySelectorAll('button')).find(function(b){{\n"
+        f"    return b.textContent.indexOf('Book directly without changes')>-1;\n"
+        f"  }});\n"
+        f"  function go(){{\n"
+        f"    var inp=document.querySelector('input[name*=\"departureDateMultidestination\"]');\n"
+        f"    if(!inp)return false;\n"
+        f"    inp.value=d;\n"
+        f"    inp.dispatchEvent(new Event('input',{{bubbles:true}}));\n"
+        f"    inp.dispatchEvent(new Event('change',{{bubbles:true}}));\n"
+        f"    setTimeout(function(){{\n"
+        f"      var s=[].slice.call(document.querySelectorAll('button')).find(\n"
+        f"        function(b){{return b.textContent.trim()==='Search';}});\n"
+        f"      if(s)s.click();\n"
+        f"    }},900);\n"
+        f"    return true;\n"
+        f"  }}\n"
+        f"  if(btn){{btn.click();var t=0;var i=setInterval(function(){{\n"
+        f"    if(go()||++t>30)clearInterval(i);\n"
+        f"  }},100);}}\n"
+        f"  else if(!go()){{alert('Open the Momira.travel package page first.');}}\n"
+        f"}})();"
+    )
+
+
+def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
+    """Editable date + open-package link + browser-console automation script."""
+    st.divider()
+    st.markdown("##### 🚀 Apply the rollover in Travel Compositor")
+
+    chosen = st.date_input(
+        "New departure date (adjust if needed)",
+        value=proposed_date,
+        key="pkr_chosen_date",
+        format="DD.MM.YYYY",
+        min_value=date.today(),
+    )
+    chosen_str = chosen.strftime("%d.%m.%Y")
+
+    url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    st.link_button("🌐 1. Open package page →", url=url,
+                   use_container_width=True, type="primary")
+
+    st.markdown("**2. Open browser Console (F12 → Console tab), paste this script and press Enter:**")
+    st.code(_make_rollover_script(chosen_str), language="javascript")
+
+    st.caption(
+        "The script clicks **Book directly without changes**, fills in the date, clicks Search — "
+        "you land on the summary page. Review the services, then click **Override existing trip**. "
+        "⚠️ You must be logged in as operator on momira.travel."
+    )
+
+
 def render_package_rollover_tool():
-    st.subheader("🔁 Package Rollover (prototype)")
-    st.warning("⚠️ **Prototype — read-only, nothing is ever booked or written from this "
-              "screen.** It looks up a real package and proposes a replacement departure "
-              "using the confirmed rules (under 14 days out → roll to ~4 months ahead, hotel "
-              "rating 8+, price within +3.5% of today's live price). It makes real GET calls "
-              "to Travel Compositor but has no PUT/write call anywhere in its code — that's "
-              "enforced by a regression test, not just a promise. **Applying a proposed "
-              "change is a manual step you do yourself, inside Travel Compositor's normal "
-              "package-edit screen** — exactly the same click-Save you already do today. See "
-              "the \"package-auto-rollover-rules\" project note for the full picture.")
-    st.info("📌 **Scope, confirmed 2026-08-21:** a Holiday Package ID that's ONLY a ClosedTour "
-           "(e.g. a fixed-schedule cruise) doesn't need this tool — its departures are managed "
-           "through the normal ClosedTour update flow instead. Use this tool for a package "
-           "that's fully dynamic (no ClosedTour component — any day works) or one built around "
-           "a ClosedTour PLUS dynamic flights and a pre/post program. **For now, testing is "
-           "focused on fully dynamic packages (no ClosedTour component)** — those are the ones "
-           "where the 'no calendar found' path below applies.")
+    st.subheader("🔁 Package Rollover")
+    st.caption(
+        "Looks up a Holiday Package, checks whether it needs rolling (departure < 14 days out), "
+        "proposes a new departure ~4 months ahead, and gives you a one-paste script to apply "
+        "it in Travel Compositor — you only need to review the summary and click Override."
+    )
+
+    # Pre-fill support: the staleness list sets pkr_prefill_id when the human clicks
+    # "Open in Package Rollover" from that screen, so the ID arrives ready to look up.
+    prefill = st.session_state.pop("pkr_prefill_id", None)
+    auto_lookup = False
+    if prefill:
+        # Clear any previous lookup result so we fetch fresh data for this package
+        for k in ("pkr_info", "pkr_day_to_day", "pkr_calendar", "pkr_package_id"):
+            st.session_state.pop(k, None)
+        st.session_state["pkr_input"] = prefill
+        auto_lookup = True
 
     package_id = st.text_input("Holiday Package ID", key="pkr_input",
                                placeholder="e.g. 59582825")
 
-    if st.button("🔍 Look up package", type="primary", disabled=not package_id.strip()):
+    if auto_lookup and package_id.strip():
+        try:
+            _do_lookup(package_id.strip())
+        except Exception as e:
+            st.error(ai_extractor.friendly_error_message(e))
+    elif st.button("🔍 Look up package", type="primary", disabled=not package_id.strip()):
         try:
             _do_lookup(package_id.strip())
         except Exception as e:
@@ -212,18 +364,15 @@ def render_package_rollover_tool():
                 st.warning(f"⚠️ The plain ~4-months-out date ({dyn['target_date'].isoformat()}) "
                           f"fell inside a no-departure window ({dyn['blackout_reason']}), so "
                           f"the proposal was pushed forward to the next clear date.")
-            st.warning("⚠️ **This doesn't check price or hotel rating automatically** — a "
-                      "dynamic package has no calendar entry to read those from. Get a real "
-                      "quote for this date in Travel Compositor and confirm the +3.5% price "
-                      "cap and 8+ rating rules yourself before applying it.")
             st.warning("⚠️ **If this package includes a fixed-departure component** (e.g. a "
                       "cruise or coach tour that only departs on specific weekdays, like a "
                       "Nile cruise), this proposed date is NOT checked against that schedule — "
                       "confirm it matches before applying it in Travel Compositor.")
-            st.info("👉 **This app never applies this change.** Open this package in Travel "
-                   "Compositor's own edit screen, enter this departure date the same way you "
-                   "would for any regular update, and click **Save there** — the normal, "
-                   "manual step you already do today.")
+            _render_open_in_tc(
+                pkg_id=st.session_state.get("pkr_package_id", ""),
+                title=_extract_title(info),
+                proposed_date=dyn["proposed_date"],
+            )
         else:
             result = prr.propose_rollover(candidates, current_price, today=date.today())
             if result["status"] == "no_dated_candidates":
@@ -295,11 +444,22 @@ def render_package_rollover_tool():
                               "could NOT be checked automatically. Check the price in Travel "
                               "Compositor yourself before applying this.")
 
-                st.info("👉 **This app never applies this change.** Open this package in "
-                       "Travel Compositor's own edit screen, enter this departure date and "
-                       "price the same way you would for any regular update, double-check "
-                       "the hotel's rating, and click **Save there** — the normal, manual "
-                       "step you already do today.")
+                # ---- Service comparison (flights, hotels+meal, transfers, tickets,
+                # transports, closed tours) — required before any auto-update ----
+                st.markdown("##### 🔍 Service comparison (current vs. proposed)")
+                st.caption(
+                    "All six component types must match exactly before an auto-update "
+                    "is safe. Flights must include the same luggage; hotels must have "
+                    "the same meal type."
+                )
+                cmp = psc.compare_components(day_to_day, best.get("raw", {}))
+                _render_service_comparison(cmp)
+
+                _render_open_in_tc(
+                    pkg_id=st.session_state.get("pkr_package_id", ""),
+                    title=_extract_title(info),
+                    proposed_date=best["date"],
+                )
 
     with st.expander("🔎 Raw API responses"):
         st.markdown("**Package info** (`GET /package/{micrositeId}/info/{id}`)")

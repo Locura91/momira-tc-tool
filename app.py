@@ -324,6 +324,9 @@ from trip_idea_tool import render_trip_idea_tool
 # PUT yet) - see package_rollover_tool.py's module docstring and the
 # "package-auto-rollover-rules" project note.
 from package_rollover_tool import render_package_rollover_tool
+# 2026-10-13: "Packages Needing Update" list — all packages sorted by departure date so the
+# human can see which ones need updating soonest. Mirrors the competitor's ideas_list view.
+from package_staleness_tool import render_package_staleness_tool
 # CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
 # too-small-image fallback (see builder.py's ensure_images_meet_minimum_size) and this app's own
 # "no real image picked" fallback can never drift apart into two different placeholder URLs.
@@ -792,7 +795,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-09-27-social-kit-momira-only-and-image-fallback"
+BUILD_VERSION = "2026-10-13-package-staleness-list"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1081,7 +1084,10 @@ TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # PROTOTYPE (2026-08-19): human enters a Holiday Package ID, tool proposes a replacement
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
-TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
+TOOL_PACKAGEROLLOVER = "🔁 Package Rollover"
+# 2026-10-13: list of ALL packages sorted by departure date (soonest/most-overdue first) so
+# the human knows which ones need updating. Mirrors the competitor's ideas_list view.
+TOOL_PACKAGESTALENESS = "📋 Packages Needing Update"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
@@ -1216,6 +1222,12 @@ if st.session_state.active_tool is None:
          "and blocks them after you confirm), or see every stop sale the system added in the last "
          "24 hours — automatic and manual. Existing blocks are always kept.",
          "Closed Tours · Hotels"),
+        (TOOL_PACKAGESTALENESS, "tool_btn_packagestaleness",
+         "See which Holiday Packages need their departure date updated.",
+         "Lists all packages sorted by departure date — soonest and most overdue first — "
+         "so you always know what needs attention next. Opens directly into the Package "
+         "Rollover tool for any package on the list.",
+         "Holiday Packages"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -1292,6 +1304,11 @@ if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
     render_package_rollover_tool()
     st.stop()
 
+# ---- Packages Needing Update: full list sorted by departure date (soonest first) ----
+if st.session_state.active_tool == TOOL_PACKAGESTALENESS:
+    render_package_staleness_tool()
+    st.stop()
+
 # ---- Hotels awaiting automap: a follow-up checklist, not a product flow. Reads and writes only
 # this app's own durable store - never Travel Compositor (the automap it tracks cannot be set
 # through the API at all; see hotel_automap.py). ----
@@ -1313,7 +1330,7 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # inside each product type's own flow. Goal (verbatim): "make the tool less complex and more
 # intuitive for humans."
 # ======================================================================
-if st.session_state.product_type is None:
+if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
     st.caption("Click a section below to open it, then pick where you want to go — like "
               "Travel Compositor's own \"Contracts\" menu.")
