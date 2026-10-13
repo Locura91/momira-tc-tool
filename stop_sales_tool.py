@@ -48,6 +48,8 @@ a warning before Apply.
 MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import json
+import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -57,6 +59,7 @@ import extraction_memory
 import platform_store
 import stop_sales_parser as ssp
 from ai_extractor import friendly_error_message
+from document_reader import extract_raw_text
 from ui_components import is_active_supplier, momira_active_suppliers
 
 _NS_PROCESSED = "processed_stop_sales"
@@ -444,44 +447,47 @@ def render_stop_sales_tool(client) -> None:
                    "been processed is lost on the next redeploy — the same email could be "
                    "applied twice without warning.")
 
-    # ---------------- Step 1: the email ----------------
-    st.subheader("Step 1 — The email")
-    up = st.file_uploader("Upload a .eml file (optional)", type=["eml"], key="ss_eml")
-    if up is not None and _get("ss_eml_name") != up.name:
+    # ---------------- Step 1: the file or email ----------------
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-13): a stop sale usually arrives as a DOCUMENT
+    # (PDF / Word / Excel / PowerPoint / CSV), not only as a pasted email. Accept all of those (and
+    # still .eml), read the text out of whichever one is given, and DROP the Subject / Date-sent /
+    # Sender fields - they are no longer collected. The product is chosen directly in Step 3 below,
+    # so the sender-to-supplier memory is no longer needed; sender_info stays as an empty value so
+    # the rest of the flow (which still references it) keeps working unchanged.
+    st.subheader("Step 1 — The supplier's stop sale")
+    up = st.file_uploader(
+        "Upload the supplier's file — PDF, Word, Excel, PowerPoint, CSV, or a .eml email",
+        type=["pdf", "docx", "xlsx", "pptx", "csv", "eml"], key="ss_doc")
+    if up is not None and _get("ss_doc_name") != up.name:
         try:
-            parsed_eml = ssp.parse_eml(up.getvalue())
-            st.session_state.ss_subject = parsed_eml["subject"]
-            st.session_state.ss_body = parsed_eml["body"]
-            st.session_state.ss_sent = parsed_eml["date"]
-            st.session_state.ss_message_id = parsed_eml["message_id"]
-            st.session_state.ss_from = parsed_eml["from"]
-            st.session_state.ss_eml_name = up.name
+            if up.name.lower().endswith(".eml"):
+                parsed_eml = ssp.parse_eml(up.getvalue())
+                st.session_state.ss_body = parsed_eml["body"]
+                st.session_state.ss_message_id = parsed_eml["message_id"]
+            else:
+                suffix = os.path.splitext(up.name)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(up.getbuffer())
+                    tmp_path = tmp.name
+                try:
+                    st.session_state.ss_body = extract_raw_text(tmp_path)
+                finally:
+                    os.remove(tmp_path)
+                st.session_state.ss_message_id = ""
+            st.session_state.ss_doc_name = up.name
             st.rerun()
         except Exception as e:
-            st.error(f"Couldn't read that .eml file: {friendly_error_message(e)}")
+            st.error(f"Couldn't read that file: {friendly_error_message(e)}")
 
-    subject = st.text_input("Subject", value=_get("ss_subject", ""), key="ss_subject_in")
-    body = st.text_area("Email body", value=_get("ss_body", ""), height=220, key="ss_body_in",
-                        placeholder="Paste the supplier's email here…")
-    scol1, scol2 = st.columns(2)
-    with scol1:
-        sent = st.text_input("Date the email was sent (optional)", value=_get("ss_sent", ""),
-                             key="ss_sent_in",
-                             help="Supplier emails often write dates without a year. Giving the "
-                                  "send date lets '12–19 August' be resolved instead of guessed.")
-    with scol2:
-        sender = st.text_input("Sender email (optional)", value=_get("ss_from", ""),
-                               key="ss_from_in",
-                               help="Filled in automatically from an uploaded .eml. For a pasted "
-                                    "email, add the sender's address yourself - the FIRST time a "
-                                    "sender is matched to a supplier below, that match is "
-                                    "remembered, so later emails from the same sender pre-select "
-                                    "the right supplier automatically.")
-    sender_info = ssp.normalize_sender(sender)
+    body = st.text_area("Or paste the supplier's email text here (optional)",
+                        value=_get("ss_body", ""), height=220, key="ss_body_in",
+                        placeholder="Paste the supplier's stop-sale email here…")
 
-    st.caption("Reading a mailbox automatically (IMAP) is the obvious next step, and everything "
-              "below it — parsing, matching, review, apply — works the same way when it arrives. "
-              "It is left out on purpose until the supervised path has been used on real emails.")
+    # Subject / send-date are no longer collected; kept as empty constants so the parser and
+    # fingerprint signatures below stay exactly as they were.
+    subject = ""
+    sent = ""
+    sender_info = {"domain": "", "email": ""}
 
     fingerprint = ssp.email_fingerprint(subject, body, _get("ss_message_id", ""))
     seen = already_processed(fingerprint) if body.strip() else None
