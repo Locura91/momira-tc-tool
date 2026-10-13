@@ -116,7 +116,8 @@ def _fetch_all_packages(api: TravelCompositorAPI) -> Tuple[List[Dict[str, Any]],
 
 
 def _build_rows(packages: List[Dict[str, Any]], today: date) -> List[Dict[str, Any]]:
-    """Turns raw TC package objects into flat display rows."""
+    """Turns raw TC package objects into flat display rows, deduplicating by ID."""
+    seen_ids: set = set()
     rows = []
     for pkg in packages:
         if not isinstance(pkg, dict):
@@ -129,6 +130,9 @@ def _build_rows(packages: List[Dict[str, Any]], today: date) -> List[Dict[str, A
             or pkg.get("code")
             or "?"
         )
+        if str(pkg_id) in seen_ids:
+            continue
+        seen_ids.add(str(pkg_id))
         # Title — try common field names
         title = (
             pkg.get("title")
