@@ -197,44 +197,70 @@ def _render_service_comparison(cmp: dict):
                         st.caption("None")
 
 
+def _make_rollover_script(date_str: str) -> str:
+    """Generates a browser-console JavaScript snippet that automates the TC booking flow."""
+    return (
+        f"(function(){{\n"
+        f"  var d='{date_str}';\n"
+        f"  var btn=[].slice.call(document.querySelectorAll('button')).find(function(b){{\n"
+        f"    return b.textContent.indexOf('Book directly without changes')>-1;\n"
+        f"  }});\n"
+        f"  function go(){{\n"
+        f"    var inp=document.querySelector('input[name*=\"departureDateMultidestination\"]');\n"
+        f"    if(!inp)return false;\n"
+        f"    inp.value=d;\n"
+        f"    inp.dispatchEvent(new Event('input',{{bubbles:true}}));\n"
+        f"    inp.dispatchEvent(new Event('change',{{bubbles:true}}));\n"
+        f"    setTimeout(function(){{\n"
+        f"      var s=[].slice.call(document.querySelectorAll('button')).find(\n"
+        f"        function(b){{return b.textContent.trim()==='Search';}});\n"
+        f"      if(s)s.click();\n"
+        f"    }},900);\n"
+        f"    return true;\n"
+        f"  }}\n"
+        f"  if(btn){{btn.click();var t=0;var i=setInterval(function(){{\n"
+        f"    if(go()||++t>30)clearInterval(i);\n"
+        f"  }},100);}}\n"
+        f"  else if(!go()){{alert('Open the Momira.travel package page first.');}}\n"
+        f"}})();"
+    )
+
+
 def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
-    """Shows the proposed date prominently and a direct link to the momira.travel package page."""
+    """Editable date + open-package link + browser-console automation script."""
     st.divider()
-    st.markdown("##### ✅ Ready to roll — open the package and apply the new date")
-    st.markdown(
-        f"<div style='background:#e8f5e9;border-radius:8px;padding:12px 18px;"
-        f"font-size:1.1em;margin-bottom:8px'>"
-        f"📅 New departure date to enter in TC: "
-        f"<strong style='font-size:1.3em'>{proposed_date.strftime('%d.%m.%Y')}</strong>"
-        f"</div>",
-        unsafe_allow_html=True,
+    st.markdown("##### 🚀 Apply the rollover in Travel Compositor")
+
+    chosen = st.date_input(
+        "New departure date (adjust if needed)",
+        value=proposed_date,
+        key="pkr_chosen_date",
+        format="DD.MM.YYYY",
+        min_value=date.today(),
     )
+    chosen_str = chosen.strftime("%d.%m.%Y")
+
     url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
-    st.link_button(
-        "🌐 Open package in TC →",
-        url=url,
-        use_container_width=True,
-        type="primary",
-    )
+    st.link_button("🌐 1. Open package page →", url=url,
+                   use_container_width=True, type="primary")
+
+    st.markdown("**2. Open browser Console (F12 → Console tab), paste this script and press Enter:**")
+    st.code(_make_rollover_script(chosen_str), language="javascript")
+
     st.caption(
-        "Steps: click **Book directly without changes** → enter the date above → "
-        "**Search** → verify services match → click **Override existing trip**"
+        "The script clicks **Book directly without changes**, fills in the date, clicks Search — "
+        "you land on the summary page. Review the services, then click **Override existing trip**. "
+        "⚠️ You must be logged in as operator on momira.travel."
     )
 
 
 def render_package_rollover_tool():
-    st.subheader("🔁 Package Rollover (prototype)")
-    st.info("🔁 Looks up a Holiday Package and proposes a replacement departure date "
-           "(under 14 days out → roll to ~4 months ahead, hotel rating 8+, price within +3.5%). "
-           "The TC API does not expose departure date or price as writable fields — "
-           "**apply the proposed change yourself in Travel Compositor's own edit screen**.")
-    st.info("📌 **Scope, confirmed 2026-08-21:** a Holiday Package ID that's ONLY a ClosedTour "
-           "(e.g. a fixed-schedule cruise) doesn't need this tool — its departures are managed "
-           "through the normal ClosedTour update flow instead. Use this tool for a package "
-           "that's fully dynamic (no ClosedTour component — any day works) or one built around "
-           "a ClosedTour PLUS dynamic flights and a pre/post program. **For now, testing is "
-           "focused on fully dynamic packages (no ClosedTour component)** — those are the ones "
-           "where the 'no calendar found' path below applies.")
+    st.subheader("🔁 Package Rollover")
+    st.caption(
+        "Looks up a Holiday Package, checks whether it needs rolling (departure < 14 days out), "
+        "proposes a new departure ~4 months ahead, and gives you a one-paste script to apply "
+        "it in Travel Compositor — you only need to review the summary and click Override."
+    )
 
     # Pre-fill support: the staleness list sets pkr_prefill_id when the human clicks
     # "Open in Package Rollover" from that screen, so the ID arrives ready to look up.

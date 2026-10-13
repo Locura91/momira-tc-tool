@@ -268,5 +268,5 @@ def render_package_staleness_tool():
             if open_rollover:
                 # Hand off to the Package Rollover tool with this ID pre-filled
                 st.session_state.pkr_prefill_id = row["pkg_id"]
-                st.session_state.active_tool = "🔁 Package Rollover (prototype)"
+                st.session_state.active_tool = "🔁 Package Rollover"
                 st.rerun()

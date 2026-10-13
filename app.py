@@ -1084,7 +1084,7 @@ TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # PROTOTYPE (2026-08-19): human enters a Holiday Package ID, tool proposes a replacement
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
-TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
+TOOL_PACKAGEROLLOVER = "🔁 Package Rollover"
 # 2026-10-13: list of ALL packages sorted by departure date (soonest/most-overdue first) so
 # the human knows which ones need updating. Mirrors the competitor's ideas_list view.
 TOOL_PACKAGESTALENESS = "📋 Packages Needing Update"
