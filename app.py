@@ -324,6 +324,9 @@ from trip_idea_tool import render_trip_idea_tool
 # PUT yet) - see package_rollover_tool.py's module docstring and the
 # "package-auto-rollover-rules" project note.
 from package_rollover_tool import render_package_rollover_tool
+# 2026-10-13: "Packages Needing Update" list — all packages sorted by departure date so the
+# human can see which ones need updating soonest. Mirrors the competitor's ideas_list view.
+from package_staleness_tool import render_package_staleness_tool
 # CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
 # too-small-image fallback (see builder.py's ensure_images_meet_minimum_size) and this app's own
 # "no real image picked" fallback can never drift apart into two different placeholder URLs.
@@ -1082,6 +1085,9 @@ TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
 TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
+# 2026-10-13: list of ALL packages sorted by departure date (soonest/most-overdue first) so
+# the human knows which ones need updating. Mirrors the competitor's ideas_list view.
+TOOL_PACKAGESTALENESS = "📋 Packages Needing Update"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
@@ -1257,6 +1263,12 @@ if st.session_state.active_tool is None:
         st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
                   "beach in Spain\") into structured destination/dates/party/theme fields. "
                   "Doesn't touch Travel Compositor — not a real search yet.")
+        if st.button(TOOL_PACKAGESTALENESS, key="tool_btn_packagestaleness", use_container_width=True):
+            st.session_state.active_tool = TOOL_PACKAGESTALENESS
+            st.rerun()
+        st.caption("All Holiday Packages sorted by departure date — soonest / most-overdue first, "
+                  "so you can see at a glance which ones need their departure updated. "
+                  "Read-only — real GET calls, never writes anything.")
         if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
             st.session_state.active_tool = TOOL_PACKAGEROLLOVER
             st.rerun()
@@ -1290,6 +1302,11 @@ if st.session_state.active_tool == TOOL_TRIPIDEA:
 # its own Packages-API client (see package_rollover_tool.py's module docstring) ----
 if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
     render_package_rollover_tool()
+    st.stop()
+
+# ---- Packages Needing Update: full list sorted by departure date (soonest first) ----
+if st.session_state.active_tool == TOOL_PACKAGESTALENESS:
+    render_package_staleness_tool()
     st.stop()
 
 # ---- Hotels awaiting automap: a follow-up checklist, not a product flow. Reads and writes only

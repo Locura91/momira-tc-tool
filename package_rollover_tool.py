@@ -126,6 +126,12 @@ def render_package_rollover_tool():
            "focused on fully dynamic packages (no ClosedTour component)** — those are the ones "
            "where the 'no calendar found' path below applies.")
 
+    # Pre-fill support: the staleness list sets pkr_prefill_id when the human clicks
+    # "Open in Package Rollover" from that screen, so the ID arrives ready to look up.
+    prefill = st.session_state.pop("pkr_prefill_id", None)
+    if prefill and not st.session_state.get("pkr_input"):
+        st.session_state["pkr_input"] = prefill
+
     package_id = st.text_input("Holiday Package ID", key="pkr_input",
                                placeholder="e.g. 59582825")
 
