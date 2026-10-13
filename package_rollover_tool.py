@@ -108,64 +108,6 @@ def _current_departure_from(info, day_to_day):
     return None, None
 
 
-def _do_apply_update(package_id, new_departure, new_price, current_departure, current_price):
-    """Calls PUT /package/{micrositeId}/{packageId} with the new departure date and price.
-    CONFIRMED FIELD NAMES (real test, package 56712448, 2026-10-13):
-      - departureDate  (from GET day-to-day response)
-      - pricePerPerson (from GET day-to-day response)
-    Both are sent back with their updated values in the PUT payload alongside the standard
-    WRITABLE_FIELDS (active/visible/title/etc) from sync_holiday_package.WRITABLE_FIELDS,
-    so TC doesn't reset those fields to defaults.
-    """
-    import json as _json
-    from sync_holiday_package import WRITABLE_FIELDS
-
-    api = _get_package_api_client()
-    pkg_id = str(package_id).strip()
-
-    # Fetch the current full record so we can pass all writable fields back untouched
-    with st.spinner("Fetching current package record before update…"):
-        current_record = api.get_holiday_package_day_to_day(api.microsite_id, pkg_id)
-
-    if isinstance(current_record, dict) and "error" in current_record:
-        st.error(f"Could not fetch current record: {current_record.get('error')} "
-                 f"— {current_record.get('message')}")
-        return
-
-    # Build payload: all confirmed-writable admin fields + the two date/price fields
-    payload: dict = {}
-    if isinstance(current_record, dict):
-        for key in WRITABLE_FIELDS:
-            if key in current_record:
-                payload[key] = current_record[key]
-
-    payload["departureDate"] = new_departure.isoformat()
-    payload["pricePerPerson"] = new_price
-
-    st.markdown("**PUT payload being sent:**")
-    st.code(_json.dumps(payload, indent=2, default=str), language="json")
-
-    with st.spinner(f"Applying update to package {pkg_id}…"):
-        result = api.update_holiday_package(api.microsite_id, pkg_id, payload)
-
-    if isinstance(result, dict) and "error" in result:
-        st.error(f"❌ Travel Compositor rejected the update: "
-                 f"{result.get('error')} — {result.get('message')}")
-        st.json(result)
-    else:
-        old_dep = current_departure.isoformat() if current_departure else "?"
-        old_price = current_price or "?"
-        st.success(
-            f"✅ Package **{pkg_id}** updated successfully.\n\n"
-            f"Departure: **{old_dep}** → **{new_departure.isoformat()}**  \n"
-            f"Price per person: **{old_price}** → **{new_price}**"
-        )
-        st.info("Refresh the package in Travel Compositor to confirm the change is live.")
-        # Clear cached state so a re-lookup shows the new values
-        for k in ["pkr_info", "pkr_day_to_day", "pkr_calendar"]:
-            st.session_state.pop(k, None)
-
-
 _COMPONENT_LABELS = {
     "flight":     "✈️ Flights",
     "hotel":      "🏨 Hotels",
@@ -236,11 +178,10 @@ def _render_service_comparison(cmp: dict):
 
 def render_package_rollover_tool():
     st.subheader("🔁 Package Rollover (prototype)")
-    st.info("🔁 Looks up a Holiday Package, proposes a replacement departure date "
-           "(under 14 days out → roll to ~4 months ahead), and lets you apply it directly. "
-           "**For dynamic packages:** you supply the new price from a live TC quote and click "
-           "Apply — the tool writes the departure date and price to Travel Compositor. "
-           "Always confirm the hotel rating (8+) and price cap (+3.5%) before applying.")
+    st.info("🔁 Looks up a Holiday Package and proposes a replacement departure date "
+           "(under 14 days out → roll to ~4 months ahead, hotel rating 8+, price within +3.5%). "
+           "The TC API does not expose departure date or price as writable fields — "
+           "**apply the proposed change yourself in Travel Compositor's own edit screen**.")
     st.info("📌 **Scope, confirmed 2026-08-21:** a Holiday Package ID that's ONLY a ClosedTour "
            "(e.g. a fixed-schedule cruise) doesn't need this tool — its departures are managed "
            "through the normal ClosedTour update flow instead. Use this tool for a package "
@@ -345,42 +286,12 @@ def render_package_rollover_tool():
                       "cruise or coach tour that only departs on specific weekdays, like a "
                       "Nile cruise), this proposed date is NOT checked against that schedule — "
                       "confirm it matches before applying it in Travel Compositor.")
-
-            st.divider()
-            st.markdown("##### ✏️ Apply this update")
-            st.caption(
-                "Enter the new price per person from a live Travel Compositor quote for "
-                f"**{dyn['proposed_date'].strftime('%d/%m/%Y')}**, confirm it is within "
-                f"+3.5% of the current price ({current_price}), then click Apply."
+            st.info(
+                f"👉 Open package **{st.session_state.get('pkr_package_id')}** in Travel "
+                f"Compositor's own edit screen, set the departure date to "
+                f"**{dyn['proposed_date'].strftime('%d/%m/%Y')}**, verify the new price "
+                f"is within +3.5% of {current_price}, and click Save."
             )
-            acol1, acol2 = st.columns(2)
-            with acol1:
-                new_price_input = st.number_input(
-                    "New price per person (from TC live quote)",
-                    min_value=0.0, step=1.0, format="%.2f",
-                    key="pkr_dyn_new_price",
-                    help="Get this number from Travel Compositor's own quote for the proposed date.",
-                )
-            with acol2:
-                st.write("")
-                st.write("")
-                if current_price and new_price_input:
-                    pct_change = (new_price_input - current_price) / current_price * 100
-                    if pct_change <= 3.5:
-                        st.success(f"✅ {pct_change:+.1f}% vs current — within the +3.5% cap")
-                    else:
-                        st.error(f"❌ {pct_change:+.1f}% vs current — exceeds the +3.5% cap")
-
-            apply_ready = new_price_input and new_price_input > 0
-            if st.button("🚀 Apply update to Travel Compositor", type="primary",
-                         disabled=not apply_ready, key="pkr_dyn_apply"):
-                _do_apply_update(
-                    package_id=st.session_state.get("pkr_package_id"),
-                    new_departure=dyn["proposed_date"],
-                    new_price=new_price_input,
-                    current_departure=current_departure,
-                    current_price=current_price,
-                )
         else:
             result = prr.propose_rollover(candidates, current_price, today=date.today())
             if result["status"] == "no_dated_candidates":
