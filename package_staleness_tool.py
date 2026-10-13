@@ -232,7 +232,7 @@ def render_package_staleness_tool():
         return
 
     # Render as a table-like list with per-row actions
-    for row in visible:
+    for idx, row in enumerate(visible):
         status = row["status"]
         bg = _STATUS_COLOUR[status]
         emoji = _STATUS_EMOJI[status]
@@ -263,7 +263,7 @@ def render_package_staleness_tool():
             )
             open_rollover = st.button(
                 "🔁 Open in Package Rollover",
-                key=f"pst_open_{row['pkg_id']}",
+                key=f"pst_open_{idx}_{row['pkg_id']}",
                 help=f"Prefill the Package Rollover tool with ID {row['pkg_id']}",
             )
             if open_rollover:
