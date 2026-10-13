@@ -37,6 +37,7 @@ import streamlit as st
 
 import ai_extractor
 import package_rollover_rules as prr
+import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
 MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
@@ -105,6 +106,74 @@ def _current_departure_from(info, day_to_day):
             if dep_date is not None:
                 return field, dep_date
     return None, None
+
+
+_COMPONENT_LABELS = {
+    "flight":     "✈️ Flights",
+    "hotel":      "🏨 Hotels",
+    "transfer":   "🚐 Transfers",
+    "ticket":     "🎟️ Tickets",
+    "transport":  "🚌 Transports",
+    "closedtour": "🛳️ Closed Tours",
+}
+
+
+def _render_service_comparison(cmp: dict):
+    """Renders the psc.compare_components() result as a clear match/mismatch table."""
+    all_match = cmp.get("all_match", False)
+    unknown   = cmp.get("unknown_fields", False)
+
+    if all_match and not unknown:
+        st.success("✅ All services match — flights (incl. luggage), hotels (incl. meal type), "
+                   "transfers, tickets, transports and closed tours are identical.")
+    elif all_match and unknown:
+        st.warning("⚠️ Services appear to match, but some component field names could not be "
+                   "read from the API response — see the detail below to confirm.")
+    else:
+        st.error("❌ One or more services differ — auto-update not safe. Review the detail below.")
+
+    if unknown:
+        st.caption(
+            "ℹ️ Some field names are not yet confirmed against a real API response. "
+            "The 'matched field' column shows exactly which key was used — check it "
+            "makes sense for this package, and report anything unexpected."
+        )
+
+    for ctype, label in _COMPONENT_LABELS.items():
+        comp = cmp["components"].get(ctype, {})
+        match  = comp.get("match", False)
+        reason = comp.get("reason", "")
+        cur    = comp.get("current", [])
+        prop   = comp.get("proposed", [])
+        icon = "✅" if match else "❌"
+
+        with st.expander(f"{icon} {label}  —  {reason}", expanded=not match):
+            if not cur and not prop:
+                st.caption("Not present in either current or proposed.")
+                continue
+
+            cols = st.columns(2)
+            for col, side_label, side_list in [
+                (cols[0], "Current package", cur),
+                (cols[1], "Proposed departure", prop),
+            ]:
+                with col:
+                    st.markdown(f"**{side_label}** ({len(side_list)} item(s))")
+                    for item in side_list:
+                        id_field = item.get("id_field") or "*(no id field found)*"
+                        id_val   = item.get("id_value") or "*(unknown)*"
+                        lines = [f"- **{id_val}** *(field: `{id_field}`)*"]
+                        if "meal_value" in item:
+                            mf = item.get("meal_field") or "*(no meal field found)*"
+                            mv = item.get("meal_value") or "*(unknown)*"
+                            lines.append(f"  Meal: **{mv}** *(field: `{mf}`)*")
+                        if "baggage_value" in item:
+                            bf = item.get("baggage_field") or "*(no baggage field found)*"
+                            bv = item.get("baggage_value") or "*(unknown)*"
+                            lines.append(f"  Baggage: **{bv}** *(field: `{bf}`)*")
+                        st.markdown("\n".join(lines))
+                    if not side_list:
+                        st.caption("None")
 
 
 def render_package_rollover_tool():
@@ -300,6 +369,17 @@ def render_package_rollover_tool():
                     st.warning("⚠️ Couldn't find a price field to compare — the +3.5% cap "
                               "could NOT be checked automatically. Check the price in Travel "
                               "Compositor yourself before applying this.")
+
+                # ---- Service comparison (flights, hotels+meal, transfers, tickets,
+                # transports, closed tours) — required before any auto-update ----
+                st.markdown("##### 🔍 Service comparison (current vs. proposed)")
+                st.caption(
+                    "All six component types must match exactly before an auto-update "
+                    "is safe. Flights must include the same luggage; hotels must have "
+                    "the same meal type."
+                )
+                cmp = psc.compare_components(day_to_day, best.get("raw", {}))
+                _render_service_comparison(cmp)
 
                 st.info("👉 **This app never applies this change.** Open this package in "
                        "Travel Compositor's own edit screen, enter this departure date and "
