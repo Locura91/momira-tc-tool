@@ -448,6 +448,57 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
     return out
 
 
+def adjust_price_list_occupancy(price_list, *, mode, sign, value, round_up=True):
+    """Bulk-adjust every occupancy price in a price_list in one step.
+
+    Called by ui_components.render_price_adjust_control when a human wants to re-price a whole
+    modality at once (e.g. "make all seasons 20% cheaper") rather than retype every occupancy cell.
+    Adjusts only the four occupancy money keys (singlePrice / doublePrice / triplePrice /
+    quadruplePrice); child-discount percentages are untouched (they follow the adult price
+    automatically at booking time); supplements are not in price_list and are also untouched.
+
+    mode:   "percent"  — multiply each amount by (1 + sign * value / 100)
+            "absolute" — add sign * value to each amount
+    sign:   -1 (cheaper) or +1 (more expensive)
+    value:  non-negative number (the percent or currency amount the human typed)
+    round_up: when True (always True from ui_components) the result passes through
+              round_up_currency so the "no decimal prices" house rule is enforced.
+
+    Returns a new list; the input list and its row dicts are not mutated.
+    """
+    out = []
+    for row in (price_list or []):
+        if not isinstance(row, dict):
+            out.append(row)
+            continue
+        row = dict(row)
+        price = dict(row.get("price") or {})
+        for key in _MONEY_KEYS:
+            money = price.get(key)
+            if not isinstance(money, dict):
+                continue
+            amount = money.get("amount")
+            if amount is None:
+                continue
+            try:
+                amount = float(amount)
+            except (TypeError, ValueError):
+                continue
+            if amount != amount:  # NaN guard
+                continue
+            if mode == "percent":
+                new_amount = amount * (1.0 + sign * value / 100.0)
+            else:
+                new_amount = amount + sign * value
+            new_amount = max(0.0, new_amount)
+            if round_up:
+                new_amount = round_up_currency(new_amount)
+            price[key] = dict(money, amount=new_amount)
+        row["price"] = price
+        out.append(row)
+    return out
+
+
 def _parse_price_list_date(row, key):
     """datetime.date, or None if the row is missing/unparseable at `key` ('startDate'/'endDate') -
     the shared guard fix_touching_season_boundaries and split_nested_price_list_seasons both use
