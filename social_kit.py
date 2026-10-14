@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 import io
 import os

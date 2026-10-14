@@ -2,7 +2,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validator, root_validator

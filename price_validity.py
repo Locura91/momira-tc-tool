@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 import os
 import re

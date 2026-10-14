@@ -69,7 +69,7 @@ from typing import Any, Callable, Dict, List, Optional
 import bulk_notes
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 SERVICE_TYPES = ["PRIVATE", "SHUTTLE", "SHARED"]
 SERVICE_TYPE_LABELS = {"PRIVATE": "Private", "SHUTTLE": "Shuttle", "SHARED": "Shared"}

@@ -32,7 +32,7 @@ are recognized as the same place) PLUS vehicleType, since a supplier commonly se
 one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cairo City) and
 those are genuinely separate products, not duplicates of each other.
 """
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 from typing import Any, Dict, List, Optional
 

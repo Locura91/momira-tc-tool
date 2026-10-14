@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 _PHASE_KEY = "pkr_phase"
 

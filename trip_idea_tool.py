@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-10-14-duplicate-name-sync"
 
 _PHASE_KEY = "ti_phase"
 
