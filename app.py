@@ -135,7 +135,6 @@ from app_helpers import (
     ACTION_FIELDS,
     _data_fingerprint,
     _fetch_url_text_safe,
-    gather_source_content,
     _clean_modality_code,
     _modality_code_suspicious,
     _reset_mct_state,
@@ -191,7 +190,6 @@ from app_helpers import (
     _diff_tour_price_list,
     _map_fetched_supplements,
     _map_fetched_tour_to_data,
-    _map_fetched_option_to_data,
     _map_fetched_ticket_to_data,
     _merge_extraction_over_baseline,
     merge_closedtour_supplements_over_baseline,
@@ -269,11 +267,11 @@ from ui_components import (
     editable_table, editable_field, merge_what_to_bring_into_voucher_remarks,
     render_stop_sales_editor, render_cancellation_policy_editor,
     render_ticket_modality_supplements_editor, render_ticket_pricing_editor,
-    render_seasonal_price_editor, render_price_adjustment_control, render_currency_check, render_readonly_source, render_optional_time_input,
+    render_seasonal_price_editor, render_currency_check, render_readonly_source, render_optional_time_input,
     render_closable_image_section, render_url_image_picker, render_doc_image_picker,
     render_auto_added_image_review,
     render_stock_photo_picker, render_closedtour_supplements, render_child_age_band, render_extra_child_notice,
-    render_child_discount_editor, render_duration_editor, is_active_supplier, momira_active_suppliers,
+    render_child_discount_editor, render_duration_editor, is_active_supplier,
     _clean_time_table_rows, _safe_cell_str, _safe_float, _safe_int,
     _add_page_images_to_doc_pool,
 )
@@ -324,9 +322,6 @@ from trip_idea_tool import render_trip_idea_tool
 # PUT yet) - see package_rollover_tool.py's module docstring and the
 # "package-auto-rollover-rules" project note.
 from package_rollover_tool import render_package_rollover_tool
-# 2026-10-13: "Packages Needing Update" list — all packages sorted by departure date so the
-# human can see which ones need updating soonest. Mirrors the competitor's ideas_list view.
-from package_staleness_tool import render_package_staleness_tool
 # CONFIRMED (2026-09-06): moved into image_dimensions.py as the single source of truth, so the
 # too-small-image fallback (see builder.py's ensure_images_meet_minimum_size) and this app's own
 # "no real image picked" fallback can never drift apart into two different placeholder URLs.
@@ -795,7 +790,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-13-package-staleness-list"
+BUILD_VERSION = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -867,11 +862,6 @@ if _module_import_failures:
         + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
           "trusting anything this module is used for.")
 
-# (The Elephant Hills stop-sale reader's health notice used to sit here, at the top of every
-# screen. CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): it does not need to be present on every
-# page - it belongs at the BOTTOM of the app, and only when something actually needs a human.
-# Moved to the end of this file; see eh_run_status.render_banner.)
-
 # A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
 # been handed a blank page. See document_reader.scanned_document_warning.
@@ -933,7 +923,10 @@ if price_validity.is_due():
                 st.session_state.suppliers_cache = client.get_all_suppliers()
             except Exception:
                 st.session_state.suppliers_cache = []
-        _pv_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
+        _pv_suppliers = [
+            s for s in (st.session_state.suppliers_cache or [])
+            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
+        ]
         _pv_flagged = price_validity.scan_expiring_services(client, _pv_suppliers)
         _pv_email_result = price_validity.send_alert_email(_pv_flagged)
         price_validity.mark_reviewed(flagged_count=len(_pv_flagged))
@@ -1077,17 +1070,14 @@ TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
 # product type, because the source of truth is an EMAIL, not a contract and not Travel
 # Compositor - and because it changes availability on products that are already live.
-TOOL_STOPSALES = "🚫 Stop Sales Reader"
+TOOL_STOPSALES = "📧 Stop Sales Email Reader"
 # PROTOTYPE (2026-08-19): free-text customer trip idea -> structured search criteria. Doesn't
 # touch Travel Compositor at all yet - see trip_idea_tool.py's module docstring for why.
 TOOL_TRIPIDEA = "💡 AI Trip Idea (prototype)"
 # PROTOTYPE (2026-08-19): human enters a Holiday Package ID, tool proposes a replacement
 # departure. Read-only (real GET calls, no PUT) - see package_rollover_tool.py's module
 # docstring and the "package-auto-rollover-rules" project note.
-TOOL_PACKAGEROLLOVER = "🔁 Package Rollover"
-# 2026-10-13: list of ALL packages sorted by departure date (soonest/most-overdue first) so
-# the human knows which ones need updating. Mirrors the competitor's ideas_list view.
-TOOL_PACKAGESTALENESS = "📋 Packages Needing Update"
+TOOL_PACKAGEROLLOVER = "🔁 Package Rollover (prototype)"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
@@ -1217,17 +1207,10 @@ if st.session_state.active_tool is None:
          "It never changes prices or product data.",
          "Holiday Packages · Tickets · Transfers · Transports · Hotels · Closed Tours"),
         (TOOL_STOPSALES, "tool_btn_stopsales",
-         "Block dates a supplier has closed — and see what was added recently.",
-         "Add a stop sale yourself from a supplier email (it reads the dates, finds the product, "
-         "and blocks them after you confirm), or see every stop sale the system added in the last "
-         "24 hours — automatic and manual. Existing blocks are always kept.",
+         "Block dates a supplier has closed, from their email.",
+         "Paste the stop-sale email; it reads the dates, finds the product, shows you what "
+         "would change, and blocks them only after you confirm. Existing blocks are kept.",
          "Closed Tours · Hotels"),
-        (TOOL_PACKAGESTALENESS, "tool_btn_packagestaleness",
-         "See which Holiday Packages need their departure date updated.",
-         "Lists all packages sorted by departure date — soonest and most overdue first — "
-         "so you always know what needs attention next. Opens directly into the Package "
-         "Rollover tool for any package on the list.",
-         "Holiday Packages"),
     ]
 
     for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
@@ -1304,11 +1287,6 @@ if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
     render_package_rollover_tool()
     st.stop()
 
-# ---- Packages Needing Update: full list sorted by departure date (soonest first) ----
-if st.session_state.active_tool == TOOL_PACKAGESTALENESS:
-    render_package_staleness_tool()
-    st.stop()
-
 # ---- Hotels awaiting automap: a follow-up checklist, not a product flow. Reads and writes only
 # this app's own durable store - never Travel Compositor (the automap it tracks cannot be set
 # through the API at all; see hotel_automap.py). ----
@@ -1330,7 +1308,7 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # inside each product type's own flow. Goal (verbatim): "make the tool less complex and more
 # intuitive for humans."
 # ======================================================================
-if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type is None:
+if st.session_state.product_type is None:
     st.header("Step 1 — Which product are you uploading or updating?")
     st.caption("Click a section below to open it, then pick where you want to go — like "
               "Travel Compositor's own \"Contracts\" menu.")
@@ -1499,7 +1477,10 @@ else:
         # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
         # the human to explicitly choose a real Momira supplier instead of
         # any other supplier that happens to exist in the account.
-        momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
+        momira_suppliers = [
+            s for s in st.session_state.suppliers_cache
+            if (s.get("commercialName") or s.get("legalName") or "").strip().lower().startswith("momira_") and is_active_supplier(s)
+        ]
         if not momira_suppliers:
             st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
                     "Check the supplier exists in Travel Compositor with the correct naming, or refresh below.")
@@ -1690,27 +1671,6 @@ else:
                         with st.spinner("Fetching option..."):
                             st.session_state.fetched_option = client.get_closed_tour_option(
                                 supplier_id, working_code, check_modality
-                            )
-                        # CONFIRMED PRODUCT-OWNER NEED (2026-10-07): pre-fill the editable Step 5
-                        # Pricing table from this modality's OWN current live prices, so re-pricing
-                        # an existing modality (e.g. "make all seasons 20% cheaper" via the bulk
-                        # adjust control above that table) never requires uploading a new price
-                        # document. Mirrors update_tour's own pre-fill from live tour data above;
-                        # set ONCE here inside the fetch-button handler (not on every rerun) so a
-                        # human's later edits/adjustments are never clobbered. A fresh document
-                        # extraction, if provided, still merges on top via _merge_extraction_over_baseline.
-                        _opt_fetched = st.session_state.fetched_option
-                        if isinstance(_opt_fetched, dict) and "error" not in _opt_fetched \
-                                and action in ("update_option", "update_tour"):
-                            _opt_baseline = dict(st.session_state.get("extracted") or {})
-                            _opt_baseline.update(_map_fetched_option_to_data(_opt_fetched))
-                            st.session_state.extracted = _opt_baseline
-                            st.session_state.payloads = None
-                            st.session_state.raw_preview = (
-                                f"(No new document/URL provided - this modality's prices, operational "
-                                f"days and stop sales were pre-filled from its CURRENT live data on "
-                                f"Travel Compositor (`{check_modality}`). Edit or bulk-adjust them "
-                                f"below, or provide a new source and click Extract to bring in updates.)"
                             )
                     if st.session_state.get("fetched_option"):
                         opt = st.session_state.fetched_option
@@ -1923,79 +1883,23 @@ is_option_only = action in ("add_option", "update_option") or ct_price_only_via_
 
 
 # ----------------------------------------------------------------------
-# STEP 4: how to update the prices (re-price the live prices, or bring in a new source)
+# STEP 4: Input source
 # ----------------------------------------------------------------------
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): when a human is UPDATING an existing modality,
-# make the choice explicit and up front instead of hiding the "adjust the live prices" path
-# behind a Step 3 button (which was not discoverable - the human reached Step 4 and was only
-# offered a document/URL). update_option - and update_tour "Price only", which is structurally
-# the same thing - now get one plain question: adjust the current prices, or replace them from a
-# new document/URL.
-ct_reprice_candidate = action == "update_option" or ct_price_only_via_update_tour
-ct_adjust_mode = False
-if ct_reprice_candidate:
-    st.header("Step 4 — How do you want to update the prices?")
-    _price_update_mode = st.radio(
-        "Update method", label_visibility="collapsed",
-        options=[
-            "✏️ Adjust the current prices — make every season cheaper or more expensive by a % or a fixed amount (no document needed)",
-            "📄 Replace the prices from a new document or URL",
-        ],
-        key="ct_price_update_mode",
-    )
-    ct_adjust_mode = _price_update_mode.startswith("✏️")
+st.header("Step 4 — Input Source")
+st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
+           "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
 
-if ct_adjust_mode:
-    # No document needed: load THIS modality's current live prices into the Step 5 pricing table
-    # ONCE (guarded by a per-modality flag so a human's later edits/adjustments are never clobbered
-    # on a rerun), so the "💶 Adjust all season prices at once" control above that table can re-price
-    # them. _map_fetched_option_to_data returns the option's price_list / operational_days /
-    # stop_sales already in the shape the table expects.
-    url = None
-    uploaded_files = None
-    extraction_hint = None
-    multi_modality_mode = False
-    _reprice_seed_key = f"_ct_reprice_seeded_{existing_tour_code}_{modality_code}"
-    if not st.session_state.get(_reprice_seed_key):
-        with st.spinner("Loading this modality's current live prices…"):
-            _reprice_opt = client.get_closed_tour_option(supplier_id, existing_tour_code, modality_code)
-        if isinstance(_reprice_opt, dict) and "error" not in _reprice_opt:
-            st.session_state.fetched_option = _reprice_opt
-            _reprice_base = dict(st.session_state.get("extracted") or {})
-            _reprice_base.update(_map_fetched_option_to_data(_reprice_opt))
-            st.session_state.extracted = _reprice_base
-            st.session_state.payloads = None
-            st.session_state.raw_preview = (
-                f"(Re-pricing the current live prices of `{modality_code}` - no document used.)"
-            )
-            st.session_state[_reprice_seed_key] = True
-        else:
-            _reprice_msg = _reprice_opt.get("message", _reprice_opt) if isinstance(_reprice_opt, dict) else _reprice_opt
-            st.error(f"❌ Couldn't load the current prices for this modality: {_reprice_msg}")
-            st.stop()
-    st.info("The current live prices are loaded in the **Pricing** table below. To make them all "
-            "cheaper or more expensive, open **💶 Adjust all season prices at once** just above that "
-            "table, set the % or the amount, click Apply — then review and publish. No document needed.")
-else:
-    if ct_reprice_candidate:
-        st.header("Step 4 — New price document or URL")
-        st.caption("The current prices will be replaced by whatever is extracted from this source.")
-    else:
-        st.header("Step 4 — Input Source")
-        st.caption("Provide a URL, a document, or both. If you give both, information from each will be "
-                   "combined into one extraction (e.g. itinerary from a web page + hotel detail from a document).")
-
-    url = st.text_input("Product page URL (optional)")
-    uploaded_files = st.file_uploader(
-        "Upload DMC document(s) (optional, multiple allowed)",
-        type=["pdf", "docx", "xlsx", "pptx", "csv"], accept_multiple_files=True
-    )
-    extraction_hint = st.text_input(
-        "Extraction hint (optional)",
-        placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
-        help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
-             "multiple room categories). Leave blank for normal extraction."
-    )
+url = st.text_input("Product page URL (optional)")
+uploaded_files = st.file_uploader(
+    "Upload DMC document(s) (optional, multiple allowed)",
+    type=["pdf", "docx", "xlsx", "pptx", "csv"], accept_multiple_files=True
+)
+extraction_hint = st.text_input(
+    "Extraction hint (optional)",
+    placeholder="e.g. 'Use the German-language pricing table' or 'Focus on the Superior room category'",
+    help="Short, specific guidance for the AI if the source is ambiguous (e.g. multiple languages, "
+         "multiple room categories). Leave blank for normal extraction."
+)
 
 multi_modality_mode = False
 if action == "add_option":
@@ -2026,7 +1930,7 @@ if action == "create":
                           extraction_hint=extraction_hint or None)
     st.stop()
 
-if not ct_adjust_mode and st.button("🔎 Extract", disabled=not (url or uploaded_files)):
+if st.button("🔎 Extract", disabled=not (url or uploaded_files)):
     spinner_msg = "Gathering pricing/schedule content..." if is_option_only else "Gathering content and checking for multiple tour variants..."
     with st.spinner(spinner_msg):
         try:
@@ -2560,7 +2464,6 @@ if st.session_state.extracted:
         )
 
     price_df = pd.DataFrame(price_df_rows)
-    render_price_adjustment_control(data, "pricing", currency)
     editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
     render_extra_child_notice(data, "ct_single")
     render_child_discount_editor(data, "ct_single", currency)
@@ -3326,24 +3229,3 @@ if st.session_state.get("just_published_tour_code"):
 # sits between the AI's answer and the buttons a person is trying to reach.
 # ============================================================================
 render_memory_panel_footer()
-
-# The Elephant Hills stop-sale reader runs as a scheduled task with no window, so the ways it can
-# fail are silent: the supplier's booking page changes shape, the Travel Compositor login expires,
-# or the task simply stops running - and the shop carries on selling dates the camp has closed.
-# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): while it is "automatically flowing" it must say
-# NOTHING at all, and when it does have something to say it belongs at the very bottom, not on top
-# of every screen. So this sits last, and render_banner is silent unless a human is actually
-# needed (a failed run, a held-back reading, or a scheduler that has gone quiet) - including
-# complete silence where no status file exists at all, e.g. the deployed app, since the reader
-# runs on the office machine and never reports there. The import is guarded so a machine without
-# the reader, or an unreadable status file, still loads the app normally - a broken warning system
-# must never become a worse outage than the thing it warns about.
-try:
-    import eh_run_status as _eh_run_status
-    _eh_run_status.render_banner(st)
-    # (The on-demand "today's status" view used to be a button here too. CONFIRMED PRODUCT-OWNER
-    # REQUEST (2026-10-08): it now lives inside the Stop Sales tool instead - "it's all stop
-    # sales, so it should all go to the stop sales" - see stop_sales_tool.render_stop_sales_tool.
-    # Only this silent failure alert remains on the main page, and only when something is wrong.)
-except Exception:
-    pass
