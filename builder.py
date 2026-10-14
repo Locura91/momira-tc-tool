@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-13-package-staleness-list"
+MODULE_BUILD = "2026-09-27-social-kit-momira-only-and-image-fallback"
 
 import copy
 import math
@@ -1347,61 +1347,6 @@ _CHILD_DISCOUNT_COLUMN_ALIASES = {
     "quadruplechildpercentagediscount": "quadrupleChildPercentageDiscount",
     "quadruplechilddiscount": "quadrupleChildPercentageDiscount",
 }
-
-
-OCCUPANCY_PRICE_KEYS = ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice")
-
-
-def adjust_price_list_occupancy(price_list, *, mode, sign, value, round_up=True):
-    """Apply one bulk human price adjustment to EVERY season's occupancy prices in a ClosedTour
-    option price_list, and return a NEW price_list (the input is never mutated).
-
-    CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07, verbatim intent): when updating an existing
-    ClosedTour the human needs to re-price a whole modality at once - "the prices need to be 20%
-    cheaper for all the seasons in the modality" - instead of editing every occupancy cell in
-    every season row by hand. Two ways to express the change, each either direction:
-      - mode="percent": `value` is a percentage (20 -> a fifth); sign -1 makes it cheaper, +1 dearer.
-      - mode="absolute": `value` is a flat money amount in the tour's currency, added (+1) to or
-        removed (-1) from each occupancy price.
-
-    SCOPE (confirmed): only the four occupancy prices - singlePrice / doublePrice / triplePrice /
-    quadruplePrice - are touched. Child prices are stored as a discount PERCENTAGE of those, so
-    they follow the new base automatically and must NOT be adjusted here; supplements are left
-    exactly as they are. A missing occupancy (amount None or "") stays missing - a blank price is
-    "this occupancy isn't offered", never 0. A result below zero is clamped to 0 (a discount can
-    never make the tour pay the customer). round_up applies the confirmed round-up house rule
-    (numeric_helpers.round_up_currency) so -20% of 199 becomes 160, not 159.20; pass round_up=
-    False to keep the exact fractional amount.
-
-    Dates, names, currencies and any non-occupancy fields on each entry are preserved exactly.
-    """
-    if mode not in ("percent", "absolute"):
-        raise ValueError(f"mode must be 'percent' or 'absolute', got {mode!r}")
-    if sign not in (1, -1):
-        raise ValueError(f"sign must be +1 or -1, got {sign!r}")
-    value = _safe_float(value)
-
-    new_list = []
-    for entry in (price_list or []):
-        entry = copy.deepcopy(entry)
-        price = entry.get("price")
-        if isinstance(price, dict):
-            for key in OCCUPANCY_PRICE_KEYS:
-                block = price.get(key)
-                if not isinstance(block, dict):
-                    continue
-                amt = block.get("amount")
-                if amt in (None, ""):
-                    continue  # a blank occupancy means "not offered" - never turn it into a price
-                amt = _safe_float(amt)
-                new_amt = amt * (1.0 + sign * value / 100.0) if mode == "percent" else amt + sign * value
-                if new_amt < 0:
-                    new_amt = 0.0
-                if round_up:
-                    new_amt = round_up_currency(new_amt)
-                block["amount"] = float(new_amt)
-        new_list.append(entry)
-    return new_list
 
 
 def coerce_price_list_shape(rows, currency="EUR"):
