@@ -105,11 +105,13 @@ def _render_missing_transports_body(client, supplier_id):
         if st.button("✅ Select all", key="mtp_select_all", use_container_width=True):
             for g in gaps:
                 g["accepted"] = True
+                st.session_state[f"mtp_ok_{g['index']}_{g['widget_token']}"] = True
             st.rerun()
     with acol2:
         if st.button("Clear all", key="mtp_clear_all"):
             for g in gaps:
                 g["accepted"] = False
+                st.session_state[f"mtp_ok_{g['index']}_{g['widget_token']}"] = False
             st.rerun()
 
     total_pages = max(1, (len(gaps) - 1) // _PAGE_SIZE + 1)
