@@ -135,7 +135,14 @@ def _render_restore_banner(draft_id: str, saved: Dict[str, Any]) -> None:
             st.session_state.pop(_PENDING_RESTORE_KEY, None)
             st.session_state.pop(_PENDING_RESTORE_ID_KEY, None)
             for key, value in (saved.get("data") or {}).items():
-                st.session_state[key] = value
+                # Streamlit raises StreamlitValueAssignmentNotAllowedError if you try to
+                # manually set a key that belongs to a registered widget (buttons, inputs, etc.).
+                # Widget state is always re-initialised by the widget itself on re-render, so
+                # skipping these during restore loses nothing meaningful.
+                try:
+                    st.session_state[key] = value
+                except Exception:
+                    pass
             st.rerun()
     with col2:
         if st.button("🗑️ Discard it, start fresh", key="_draft_discard_btn"):
