@@ -4219,10 +4219,7 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
     if en.get("name"):
         en["name"] = _swap_with_aliases(en["name"])
         swap_report["datasheet_name"] = True
-        # Sync TC internal name to the human-readable EN datasheet name so code-style
-        # internal names (e.g. "meet_Candidasa - meet_Munduk") become the readable form.
-        payload["name"] = en["name"]
-        swap_report["name"] = True
+        payload["name"] = en["name"]  # use human-readable EN name as the TC internal name
     if en.get("description"):
         en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
@@ -5468,10 +5465,7 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     if en.get("name"):
         en["name"] = _swap_with_aliases(en["name"])
         swap_report["datasheet_name"] = True
-        # Same sync as build_transfer_swap_payload: use the human-readable EN datasheet
-        # name as the TC internal name so code-style names become readable in the duplicate.
-        payload["name"] = en["name"]
-        swap_report["name"] = True
+        payload["name"] = en["name"]  # use human-readable EN name as the TC internal name
     if en.get("description"):
         en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
