@@ -33,7 +33,7 @@ from ui_components import (
     render_stop_sales_editor, _safe_cell_str,
 )
 
-from app import (
+from app_helpers import (
     ALL_WEEKDAYS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES, _clean_modality_code,
     _clear_batch_widget_state, _fetch_url_text_safe, gather_source_content, _modality_code_suspicious,
     apply_clarify_changes, clarify_supplier_id, fetched_tour_matches_code,

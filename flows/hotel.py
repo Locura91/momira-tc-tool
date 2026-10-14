@@ -39,7 +39,7 @@ from ui_components import (
     _safe_float, _safe_int, _add_page_images_to_doc_pool,
 )
 
-from app import (
+from app_helpers import (
     CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES,
     _clear_batch_widget_state, _extract_error_message_detail, _extract_rejected_image_url,
     _fetch_url_text_safe, gather_source_content, _hp_dist_to_str, _hp_first_window, _hp_names_to_str, _hp_nums_to_str,

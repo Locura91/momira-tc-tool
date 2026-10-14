@@ -48,7 +48,7 @@ from ui_components import (
     _add_page_images_to_doc_pool, _safe_cell_str,
 )
 
-from app import (
+from app_helpers import (
     ALL_WEEKDAYS, CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD,
     _apply_min_pax_guaranteed_departure_note, _clean_modality_code, _clear_batch_widget_state,
     _fetch_url_text_safe, gather_source_content, _modality_code_suspicious, _new_mct_tour, _reset_mct_state,

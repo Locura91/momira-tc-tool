@@ -14,7 +14,7 @@ import bulk_notes
 import supplier_migration
 import transfer_matcher
 
-from app import _ur_pick_momira_supplier
+from app_helpers import _ur_pick_momira_supplier
 
 
 def render_supplier_migration_flow(client):

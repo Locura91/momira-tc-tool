@@ -18,7 +18,7 @@ import service_notes
 import bulk_notes
 from ui_components import is_active_supplier, momira_active_suppliers
 
-from app import _dmy_date_field
+from app_helpers import _dmy_date_field
 
 
 def render_manual_information_flow(client):

@@ -44,7 +44,7 @@ from ui_components import (
     _add_page_images_to_doc_pool, _clean_time_table_rows, _safe_cell_str, _safe_float,
 )
 
-from app import (
+from app_helpers import (
     ALL_WEEKDAYS, CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD, SHARED_WIDGET_STATE_PREFIXES,
     _apply_min_pax_guaranteed_departure_note, _clean_modality_code, _clear_batch_widget_state,
     _dmy_date_field, _fetch_url_text_safe, _geo_search_default, _map_fetched_ticket_to_data,

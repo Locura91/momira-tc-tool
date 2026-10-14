@@ -21,7 +21,7 @@ from ai_extractor import friendly_error_message
 import price_refresh
 from ui_components import is_active_supplier, momira_active_suppliers
 
-from app import (
+from app_helpers import (
     _fetch_url_text_safe, _stamp_proposal_widget_tokens,
     render_transport_manual_adjustment_flow, render_transport_price_consistency_flow,
 )

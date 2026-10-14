@@ -39,7 +39,7 @@ from ui_components import (
     _clean_time_table_rows, _safe_cell_str, _safe_float, _add_page_images_to_doc_pool,
 )
 
-from app import (
+from app_helpers import (
     ALL_WEEKDAYS, CURRENCY_OPTIONS, HOUSE_RULE_CODEWORD, TICKET_ACTION_FIELDS,
     TICKET_ACTION_LABELS, TICKET_CREATE_ACTION_KEYS,
     _clean_modality_code, _data_fingerprint, _dmy_date_field, _fetch_url_text_safe,
@@ -50,12 +50,12 @@ from app import (
     floor_start_date_for_new_data, gather_source_content, mark_code_as_taken, remember_clarification,
     remember_memory_panel, render_candidate_filter, render_clarify_result,
     render_code_availability_check, render_house_rule_shortcut, render_modalities_review,
-    render_modality_code_availability_check, render_multi_ticket_flow,
-    render_multi_ticket_update_flow, render_publish_blockers, render_supplement_zero_price_notes,
+    render_modality_code_availability_check, render_publish_blockers, render_supplement_zero_price_notes,
     render_ticket_language_options, render_ticket_update_comparison,
     reset_stale_editable_field_widgets, show_publish_error, widget_generation,
     with_learned_guidance,
 )
+from flows.multi_ticket import render_multi_ticket_flow, render_multi_ticket_update_flow
 
 
 def render_ticket_flow(client):
