@@ -143,9 +143,13 @@ def _render_missing_transports_body(client, supplier_id):
         with cols[1]:
             type_bit = f" · {g['transport_type']}" if g.get("transport_type") else ""
             id_bit = f" ({source.get('id')})" if source.get("id") else ""
+            # Prefer the full readable reversed name ("...from South Bali hotels to Sebatu") when
+            # the source Name parsed cleanly; fall back to "City → City" only for names that don't
+            # follow the standard wording.
+            missing_label = g.get("missing_name") or f"{g['missing_from_name']} → {g['missing_to_name']}"
             st.markdown(
                 f"**{source.get('name') or '(unnamed)'}**{id_bit} "
-                f"— missing: **{g['missing_from_name']} → {g['missing_to_name']}**{type_bit}")
+                f"— missing: **{missing_label}**{type_bit}")
 
     st.markdown("---")
     accepted = [g for g in gaps if g["accepted"]]

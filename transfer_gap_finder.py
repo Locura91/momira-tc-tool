@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional
 from text_normalize import normalize_name
 from builder import (
     build_transfer_swap_payload, build_transport_swap_payload, build_transport_option_swap_payload,
+    _parse_route_cities_from_name, _swap_route_text,
 )
 from ai_extractor import rewrite_route_description_for_new_direction
 from ui_components import _html_to_plain_for_editing, _plain_to_html_for_saving
@@ -280,10 +281,22 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
         if reverse_signature not in signatures:
             codes = _transport_route_codes(t)
             dep_code, arr_code, _ = codes
+            # The route to be created is the reverse of this transport. The reliable, readable
+            # label is the source's own Name with its two cities swapped ("...from Sebatu hotels
+            # to South Bali" -> "...from South Bali hotels to Sebatu") - the pickup codes are not
+            # a reliable source of the city name (some are opaque like "meet_VAI-10"). Fall back
+            # to the resolved/humanised code names only when the Name isn't in the standard
+            # "from ... to ..." wording.
+            src_name = t.get("name") or ((t.get("datasheets") or {}).get("EN") or {}).get("name") or ""
+            _frm, _to = _parse_route_cities_from_name(src_name)
+            missing_name = None
+            if _frm and _to:
+                missing_name = _swap_route_text(src_name, _frm, _to, suffix_on_fallback=False)
             gaps.append({
                 "source": t,
-                "missing_from_name": _resolve_name(arr_code),
-                "missing_to_name": _resolve_name(dep_code),
+                "missing_name": missing_name,
+                "missing_from_name": _to or _resolve_name(arr_code),
+                "missing_to_name": _frm or _resolve_name(dep_code),
                 "transport_type": t.get("transportType") or "",
             })
     return gaps

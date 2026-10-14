@@ -5410,6 +5410,37 @@ def _humanize_transport_base_code(code: str) -> str:
     return core.title()
 
 
+# "... from <A> hotels to <B>" / "... from <A> to <B>" - the standard readable route wording used
+# in every Transport/Transfer Name this app writes. Non-greedy so the FIRST " to " wins, and a
+# trailing " hotels"/" hotel" on the from-place is dropped ("Candidasa hotels" -> "Candidasa").
+_ROUTE_NAME_RE = re.compile(r"\bfrom\s+(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
+_TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
+
+
+def _parse_route_cities_from_name(name: str):
+    """Pull the two readable city names out of a transport's own Name, e.g.
+    "One-way private transfer from Candidasa hotels to Kubu" -> ("Candidasa", "Kubu").
+
+    CONFIRMED REAL BUG (product owner, 2026-10-14, missing-transports scan): a transport's
+    Itinerary pickup codes are NOT a reliable source of the city name - some are the city
+    ("meet_candidasa") but others are opaque master-data codes ("meet_VAI-10" IS Kubu,
+    "meet_NBI-002" IS North Bali), and the SAME place can carry different codes on different
+    transports. The one place the readable route always lives is the Name/datasheet-name itself.
+    This extracts both cities from that wording so the name swap AND the scan's "missing: X -> Y"
+    label can show real city names instead of raw codes, for both the city-embedded and the
+    opaque-code transports. Returns (None, None) when the name doesn't follow the standard
+    "from ... to ..." wording (e.g. a hand-written custom name), so callers fall back to the
+    per-code resolution/humanisation."""
+    if not name:
+        return None, None
+    m = _ROUTE_NAME_RE.search(str(name).strip())
+    if not m:
+        return None, None
+    frm = _TRAILING_HOTELS_RE.sub("", m.group(1).strip()).strip()
+    to = _TRAILING_HOTELS_RE.sub("", m.group(2).strip()).strip()
+    return (frm or None), (to or None)
+
+
 def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api_client: TravelCompositorAPI):
     """Transport counterpart to build_transfer_swap_payload - given a full existing
     ContractTransportVO payload (exactly what GET /transport/{supplierId}/{transportId} returns),
@@ -5511,6 +5542,17 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
 
     old_departure_name = _resolve_name(old_departure_code)
     old_arrival_name = _resolve_name(old_arrival_code)
+    # The pickup CODES are an unreliable source of the city (some are opaque master-data codes
+    # like "meet_VAI-10" for Kubu, not "meet_kubu"). The transport's own Name always carries the
+    # readable route, so prefer the cities parsed from it - this is what makes the name swap work
+    # for the opaque-code transports, not just the "meet_<city>" ones. Falls back to the
+    # code-resolved/humanised name when the Name isn't in the standard "from ... to ..." wording.
+    _name_for_cities = (en_name_source := (payload.get("datasheets") or {}).get("EN") or {}).get("name") or payload.get("name") or ""
+    _parsed_from, _parsed_to = _parse_route_cities_from_name(_name_for_cities)
+    if _parsed_from:
+        old_departure_name = _parsed_from
+    if _parsed_to:
+        old_arrival_name = _parsed_to
     departure_aliases = _transport_location_name_aliases(old_departure_name)
     arrival_aliases = _transport_location_name_aliases(old_arrival_name)
 
