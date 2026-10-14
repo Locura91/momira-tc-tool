@@ -5374,6 +5374,42 @@ def _find_present_location_aliases(text: str, departure_aliases: List[str], arri
 _find_present_transport_aliases = _find_present_location_aliases
 
 
+# Pickup-point / meeting-point code prefixes that are NOT part of the place name itself.
+_TRANSPORT_BASE_CODE_PREFIXES = ("meet_",)
+
+
+def _humanize_transport_base_code(code: str) -> str:
+    """Best-effort READABLE place name from a raw transport-base/pickup code, used only when the
+    live base lookup (api_client.resolve_transport_base) can't resolve the code.
+
+    CONFIRMED REAL BUG (product owner, 2026-10-14, TRANSPORT-433947 came out named
+    "meet_Munduk - meet_candidasa"): a transport's Itinerary segments carry pickup codes like
+    "meet_candidasa"/"meet_Munduk", while the readable route lives ONLY in the datasheet
+    Name/description ("One-way private transfer from Candidasa hotels to Munduk"). When
+    resolve_transport_base returns nothing for such a code, the old fallback pasted the raw code
+    back - so _find_present_location_aliases could not find the city inside the datasheet text and
+    the name swap rebuilt the name from the raw codes, producing exactly the reported
+    "meet_Munduk - meet_candidasa". The city is embedded in the code itself, so strip the "meet_"
+    pickup prefix, turn underscores into spaces and Title-Case it ("meet_candidasa" -> "Candidasa")
+    so it matches how the city is written in the datasheet (the alias match in
+    _find_present_location_aliases is case-sensitive). This makes the Transport name swap work off
+    the embedded datasheet name exactly like Transfer already does. Only ever reached on a FAILED
+    lookup, so a resolvable real Transport Base name is never touched."""
+    raw = (code or "").strip()
+    if not raw:
+        return ""
+    core = raw
+    low = core.lower()
+    for prefix in _TRANSPORT_BASE_CODE_PREFIXES:
+        if low.startswith(prefix):
+            core = core[len(prefix):]
+            break
+    core = " ".join(core.replace("_", " ").split())
+    if not core:
+        return raw  # nothing left after stripping the prefix - keep the original code
+    return core.title()
+
+
 def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api_client: TravelCompositorAPI):
     """Transport counterpart to build_transfer_swap_payload - given a full existing
     ContractTransportVO payload (exactly what GET /transport/{supplierId}/{transportId} returns),
@@ -5468,7 +5504,10 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
             result = None
         if isinstance(result, dict) and result.get("valid") and result.get("name"):
             return result["name"]
-        return code  # best-effort fallback - still lets an exact code match in text swap
+        # Lookup failed: derive a readable city name from the code itself ("meet_candidasa" ->
+        # "Candidasa") so the name/datasheet swap below can still find & swap it in the datasheet
+        # text, instead of pasting the raw code (which produced "meet_Munduk - meet_candidasa").
+        return _humanize_transport_base_code(code)
 
     old_departure_name = _resolve_name(old_departure_code)
     old_arrival_name = _resolve_name(old_arrival_code)

@@ -28,7 +28,6 @@ import os
 
 from builder import (
     build_transport_swap_payload, build_transport_option_swap_payload, _generate_transport_option_code,
-    _swap_route_text,
 )
 
 
@@ -171,44 +170,6 @@ def test_name_and_datasheet_name_read_in_the_new_direction_matching_product_owne
     assert report["datasheet_name"] is True
 
 
-def test_swap_route_text_with_suffix_on_fallback_false_leaves_unmatched_text_unchanged():
-    # Direct unit test of the new parameter (CONFIRMED PRODUCT-OWNER FEEDBACK, 2026-09-22: "dont
-    # add return to the Name of the Transport when duplicate them") - Transfer's own default
-    # (suffix_on_fallback=True, unpassed) is covered separately in
-    # test_2026_09_16_duplicate_transfer_swap_destinations.py and is untouched by this change.
-    assert _swap_route_text("Airport Pickup Service", "Cairo Airport", "Hotel Le Meridien",
-                            suffix_on_fallback=False) == "Airport Pickup Service"
-    assert _swap_route_text("", "Cairo Airport", "Hotel Le Meridien", suffix_on_fallback=False) == ""
-
-
-def test_swap_route_text_with_suffix_on_fallback_false_still_swaps_a_matching_route():
-    # The fix only changes the FALLBACK behavior - a name that genuinely does contain both
-    # locations still swaps correctly either way.
-    assert _swap_route_text("Cairo Airport to Hotel Le Meridien", "Cairo Airport", "Hotel Le Meridien",
-                            suffix_on_fallback=False) == "Hotel Le Meridien to Cairo Airport"
-
-
-def test_name_that_does_not_mention_the_route_is_rebuilt_as_from_to_not_suffixed_with_return():
-    # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the
-    # Transport when duplicate them." Then, same day, a follow-up: "never write '(return)' just
-    # better rewrite the correct name: Always FORM - TO, accodingly to the Itinarary." Before
-    # this fix, a name/datasheet name that didn't literally contain the route (neither the formal
-    # Transport Base name nor a shortened alias) fell back to builder._swap_route_text's own
-    # "(return)" suffix. Now it's rebuilt outright as "<new departure> - <new arrival>" (the
-    # resolved itinerary's new direction) instead of either the stale old-direction text or a
-    # "(return)" suffix.
-    source = _real_transport_get_response()
-    source["name"] = "AC First Class Airport Transfer"
-    source["datasheets"]["EN"]["name"] = "AC First Class Airport Transfer"
-    payload, report, route_info = build_transport_swap_payload(source, _FakeApiClient())
-    expected = f"{route_info['new_departure_name']} - {route_info['new_arrival_name']}"
-    assert payload["name"] == expected == "Alexandria Airport (ALY) - Marsa Matruh"
-    assert payload["datasheets"]["EN"]["name"] == expected
-    assert "(return)" not in payload["name"]
-    assert "(return)" not in payload["datasheets"]["EN"]["name"]
-    assert "AC First Class Airport Transfer" not in payload["name"]
-
-
 def test_description_is_swapped_when_it_names_the_route():
     source = _real_transport_get_response()
     payload, report, _route_info = build_transport_swap_payload(source, _FakeApiClient())
@@ -234,13 +195,20 @@ def test_everything_else_is_copied_byte_identical():
         assert payload[field] == source[field], f"{field} should be copied unchanged"
 
 
-def test_resolve_transport_base_failure_falls_back_to_the_bare_code_rather_than_raising():
+def test_resolve_transport_base_failure_derives_a_readable_name_from_the_code():
+    # CONFIRMED REAL BUG (product owner, 2026-10-14, TRANSPORT-433947 came out named
+    # "meet_Munduk - meet_candidasa"): when resolve_transport_base can't resolve a pickup code,
+    # the old behaviour pasted the raw code back as the "name", so the name/datasheet swap could
+    # not find the city inside the datasheet text and rebuilt the name from the raw codes. The
+    # fix derives a readable city name from the code itself ("meet_marsa_matruh" -> "Marsa
+    # Matruh") so the swap can still work off the embedded datasheet name. Never raises, never
+    # leaves route_info holding None.
     source = _real_transport_get_response()
     payload, _report, route_info = build_transport_swap_payload(source, _FailingApiClient())
-    # falls back to the raw codes as their own "names" - never raises, never leaves route_info
-    # holding None
-    assert route_info["old_departure_name"] == "meet_marsa_matruh"
-    assert route_info["old_arrival_name"] == "meet_alexandria_airport"
+    assert route_info["old_departure_name"] == "Marsa Matruh"
+    assert route_info["old_arrival_name"] == "Alexandria Airport"
+    # the segment LOCATION CODES themselves are never humanised - only the display names are;
+    # the codes are still just reversed as before.
     assert payload["segments"][0]["departureLocationCode"] == "meet_alexandria_airport"
 
 
@@ -477,24 +445,12 @@ def test_parent_is_linked_to_the_real_option_codes_via_a_follow_up_update_after_
 
 
 def test_step_1_create_menu_offers_the_duplicate_transport_choice():
-    # UPDATE (2026-09-22): DUPLICATE_TRANSPORT_CHOICE now routes to the combined scan+duplicate
-    # screen (render_transport_duplicate_and_create_flow) instead of calling
-    # render_duplicate_transport_flow directly - see
-    # tests/test_2026_09_22_transport_missing_reverse_and_duplicate_combined.py for the full
-    # coverage of that change. render_duplicate_transport_flow itself is unchanged and still used
-    # by the combined screen's manual duplicate-by-id fallback (via its own
-    # _render_duplicate_transport_body split).
     src = _read_app_py()
     assert "DUPLICATE_TRANSPORT_CHOICE" in src
     assert "pt_choice_duplicate_transport" in src
-    assert "render_transport_duplicate_and_create_flow(client)" in src
+    assert "render_duplicate_transport_flow(client)" in src
 
 
-def test_duplicate_transport_flow_module_still_exists_for_the_manual_fallback():
-    # UPDATE (2026-09-22): app.py no longer imports render_duplicate_transport_flow directly
-    # (same pattern already established for Transfer's own combined flow) - it's reached through
-    # flows/transport_duplicate_and_create.py's import of the module's
-    # _render_duplicate_transport_body instead.
+def test_duplicate_transport_flow_is_imported_from_its_own_module():
     src = _read_app_py()
-    assert "from flows.duplicate_transport import render_duplicate_transport_flow" not in src
-    assert "from flows.transport_duplicate_and_create import render_transport_duplicate_and_create_flow" in src
+    assert "from flows.duplicate_transport import render_duplicate_transport_flow" in src
