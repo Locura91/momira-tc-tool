@@ -5413,7 +5413,12 @@ def _humanize_transport_base_code(code: str) -> str:
 # "... from <A> hotels to <B>" / "... from <A> to <B>" - the standard readable route wording used
 # in every Transport/Transfer Name this app writes. Non-greedy so the FIRST " to " wins, and a
 # trailing " hotels"/" hotel" on the from-place is dropped ("Candidasa hotels" -> "Candidasa").
+# Primary pattern: "from X to Y" (standard wording this app writes).
+# Fallback pattern: "One Way Transfer X to Y" / "One Way X to Y" — TC names that omit "from".
+# The fallback strips a leading "One Way [Transfer] " prefix then splits on the first " to ".
 _ROUTE_NAME_RE = re.compile(r"\bfrom\s+(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
+_ROUTE_NAME_NO_FROM_RE = re.compile(
+    r"^(?:one[- ]way\s+(?:transfer\s+)?|transfer\s+)(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
 _TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
 
 
@@ -5433,7 +5438,10 @@ def _parse_route_cities_from_name(name: str):
     per-code resolution/humanisation."""
     if not name:
         return None, None
-    m = _ROUTE_NAME_RE.search(str(name).strip())
+    s = str(name).strip()
+    m = _ROUTE_NAME_RE.search(s)
+    if not m:
+        m = _ROUTE_NAME_NO_FROM_RE.match(s)
     if not m:
         return None, None
     frm = _TRAILING_HOTELS_RE.sub("", m.group(1).strip()).strip()
