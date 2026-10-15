@@ -120,7 +120,16 @@ def build_updated_package_payload(original_entry: Dict[str, Any],
 
 def fetch_holiday_package_by_id(api, microsite_id: str, package_id: str,
                                 lang: str = "EN", page_size: int = 100):
-    """Fetch a specific holiday package by ID (paging through the list).
+    """Fetch a specific holiday package by ID.
+
+    Strategy: first try GET /package/{micrositeId}/info/{packageId} (direct single-package
+    endpoint) which works regardless of language and avoids pagination entirely. If that
+    returns a usable entry we return it immediately. This fixes the real case where a package
+    only exists in a non-EN language (e.g. PL) and therefore never appears in the EN-filtered
+    list search.
+
+    Falls back to paging through the full list only when the direct call fails or returns
+    nothing useful (e.g. the endpoint returns a different shape than the list endpoint).
 
     Returns (entry, error_detail): `entry` is the matched package dict, or None if it
     couldn't be found. `error_detail` is None on success, or a dict explaining WHY it
@@ -140,34 +149,53 @@ def fetch_holiday_package_by_id(api, microsite_id: str, package_id: str,
     situations above actually happened. sync_holiday_package merges this dict's content
     straight into its own returned result so the human sees it without any extra
     plumbing (the review screen already renders the raw result JSON)."""
-    first_result = 0
-    seen = 0
-    while True:
-        data = api.get_holiday_packages(microsite_id, lang=lang, firstResult=first_result, pageResults=page_size)
-        if isinstance(data, dict) and "error" in data:
-            return None, {"reason": "api_error", "detail": data}
-        packages = data.get("package", []) if isinstance(data, dict) else []
-        for p in packages:
-            if str(p.get("id")) == str(package_id):
-                return p, None
-        if not packages:
-            return None, {
-                "reason": "not_found", "packages_seen": seen,
-                "note": (f"Checked every Holiday Package in microsite {microsite_id!r} ({seen} "
-                         f"total) - none has id {package_id!r}. Double-check the package ID and "
-                         f"the microsite ID."),
-            }
-        pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
-        total = pagination.get("totalResults", len(packages))
-        seen += len(packages)
-        first_result += page_size
-        if seen >= total:
-            return None, {
-                "reason": "not_found", "packages_seen": seen,
-                "note": (f"Checked every Holiday Package in microsite {microsite_id!r} ({seen} "
-                         f"total) - none has id {package_id!r}. Double-check the package ID and "
-                         f"the microsite ID."),
-            }
+
+    # --- Direct fetch by ID (language-independent) ----------------------------
+    # GET /package/{micrositeId}/info/{packageId} returns the package regardless of
+    # which language(s) it was created in, so this works for PL-only, DE-only, etc.
+    try:
+        direct = api.get_holiday_package_info(microsite_id, package_id, lang=lang)
+        if isinstance(direct, dict) and "error" not in direct and direct.get("id"):
+            return direct, None
+    except Exception:
+        pass  # fall through to list-scan below
+
+    # --- Fallback: page through the full list ---------------------------------
+    # Kept as a fallback in case the /info endpoint returns a different shape or
+    # is unavailable. Also tried without a lang filter so language-filtered
+    # packages (the root cause of "packages_seen: 200, not_found") are covered.
+    for search_lang in (lang, None):
+        first_result = 0
+        seen = 0
+        extra = {} if search_lang is None else {}
+        while True:
+            kw = {"firstResult": first_result, "pageResults": page_size}
+            if search_lang is not None:
+                kw["lang"] = search_lang
+            data = api.get_holiday_packages(microsite_id, **kw) if search_lang is None else \
+                   api.get_holiday_packages(microsite_id, lang=search_lang, firstResult=first_result, pageResults=page_size)
+            if isinstance(data, dict) and "error" in data:
+                if search_lang == lang:
+                    return None, {"reason": "api_error", "detail": data}
+                break  # try next lang variant
+            packages = data.get("package", []) if isinstance(data, dict) else []
+            for p in packages:
+                if str(p.get("id")) == str(package_id):
+                    return p, None
+            if not packages:
+                break
+            pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+            total = pagination.get("totalResults", len(packages))
+            seen += len(packages)
+            first_result += page_size
+            if seen >= total:
+                break
+
+    return None, {
+        "reason": "not_found", "packages_seen": -1,
+        "note": (f"Package {package_id!r} not found in microsite {microsite_id!r} via direct "
+                 f"lookup or full list scan. Check that the ID and microsite ID are correct."),
+    }
 
 
 def fetch_all_holiday_packages(api, microsite_id: str, lang: str = "EN",
