@@ -79,10 +79,17 @@ def _json_safe_snapshot() -> Dict[str, Any]:
     """Every current session_state key/value that round-trips through JSON cleanly - see this
     module's own docstring for why that's the right boundary (structured review data yes,
     uploaded-file objects/raw image bytes no)."""
-    return {
-        key: value for key, value in st.session_state.items()
-        if not key.startswith(_NEVER_PERSIST_PREFIX) and _is_json_safe(value)
-    }
+    snapshot = {}
+    for key in list(st.session_state.keys()):
+        if key.startswith(_NEVER_PERSIST_PREFIX):
+            continue
+        try:
+            value = st.session_state[key]
+        except KeyError:
+            continue
+        if _is_json_safe(value):
+            snapshot[key] = value
+    return snapshot
 
 
 def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
