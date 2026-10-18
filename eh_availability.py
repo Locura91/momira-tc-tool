@@ -291,7 +291,7 @@ def _click_next_month(page) -> bool:
         return False
 
 
-def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 15000) -> List[_dt.date]:
+def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 45000) -> List[_dt.date]:
     """Every closed date the supplier's calendar shows for one tour URL, across its whole horizon.
 
     Opens the page, advances to the check-in step, opens the calendar, walks it, and returns the
@@ -331,6 +331,13 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
             "to reach the availability calendar from it - the URL may no longer be valid")
     try:
         button.first.click(timeout=timeout_ms)
+        # Wait for the React app to finish rendering the next step. networkidle is
+        # best-effort here — if the page keeps polling we still proceed, hence the
+        # broad except. The real guard is the wait_for on the check-in field below.
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
+        except Exception:
+            pass
         _checkin_field(page).wait_for(state="visible", timeout=timeout_ms)
     except Exception as exc:
         raise CalendarShapeChanged(
