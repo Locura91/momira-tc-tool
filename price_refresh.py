@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-18-eh-reader-error-detail"
+MODULE_BUILD = "2026-10-18-update-tool-restructure"
 
 import json
 from datetime import date

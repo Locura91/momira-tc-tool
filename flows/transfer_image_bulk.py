@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier, momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-eh-reader-error-detail"
+MODULE_BUILD = "2026-10-18-update-tool-restructure"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"
@@ -65,6 +65,7 @@ def render_transfer_image_bulk_flow(client):
     st.header("🖼️ Bulk-change Transfer images")
     if st.button("🔙 Back to Step 1", key="tib_back"):
         st.session_state.product_type = None
+        st.session_state.pop("image_bulk_product", None)
         st.rerun()
     st.caption(
         "Replace the image on many ALREADY-LIVE Transfers at once — pick a supplier, a "

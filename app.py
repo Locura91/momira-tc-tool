@@ -750,6 +750,7 @@ from flows.cancellation import render_transport_cancellation_bulk_flow, render_g
 
 from flows.transfer_image_bulk import render_transfer_image_bulk_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
+from flows.image_bulk import render_image_bulk_flow
 
 
 
@@ -796,7 +797,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-18-eh-reader-error-detail"
+BUILD_VERSION = "2026-10-18-update-tool-restructure"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1072,7 +1073,8 @@ with st.expander("💾 What the platform remembers", expanded=False):
 # inside Travel Compositor from products we upload), which is why that
 # entity appears on one side only.
 # ======================================================================
-TOOL_UPLOAD = "📤 Create & Update Products"
+TOOL_UPLOAD = "📤 Create new products"
+TOOL_UPDATE = "🔧 Update existing products"
 TOOL_TRANSLATE = "🌐 Translate Products"
 TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
@@ -1133,6 +1135,10 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # supplier_images.py's per-direction "applies to future builds" feature.
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
+# into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
+# selector inside the flow itself (flows/image_bulk.py).
+IMAGE_BULK_CHOICE = "Bulk-change images"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16, combined 2026-09-17): "when human create a new
 # transfer or transport, could the app simple copy the product and just swap the destinations?"
 # 2026-08-12's redesign removed AI-document creation for Transfer/Transport entirely ("Transfer
@@ -1211,7 +1217,12 @@ if st.session_state.active_tool is None:
         (TOOL_UPLOAD, "tool_btn_upload",
          "Turn a supplier contract into a live Travel Compositor product.",
          "You give it a document or a URL; it extracts the details, you review and correct "
-         "them, then it publishes — for a new product or to refresh one when new rates arrive.",
+         "them, then it publishes — for a brand-new product or its first Modality.",
+         "Closed Tours · Tickets · Hotels · Transfer (duplicate) · Transport (duplicate)"),
+        (TOOL_UPDATE, "tool_btn_update",
+         "Change something on products that are already live in Travel Compositor.",
+         "Price refresh · Migrate supplier · Bulk-update cancellation · Bulk-change images. "
+         "No document needed — works directly from what's already in Travel Compositor.",
          "Closed Tours · Tickets · Transfers · Transports · Hotels"),
         (TOOL_TRANSLATE, "tool_btn_translate",
          "Fill in other-language content for products already live in Travel Compositor.",
@@ -1319,7 +1330,58 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
     st.stop()
 
 # ======================================================================
-# UPLOAD & UPDATE - Step 1: which product type?
+# UPDATE EXISTING PRODUCTS - Step 1: which update action?
+# CONFIRMED PRODUCT-OWNER REDESIGN (2026-10-18): split "Create & Update Products" into two
+# separate top-level tools. This one covers every action on already-live products, removing
+# those choices from the Create tool's Step 1 so that tool is purely about creating new records.
+# The two separate image-bulk choices are merged into one "Bulk-change images" entry point
+# (flows/image_bulk.py) with Transfer/Transport selector inside.
+# ======================================================================
+if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product_type") is None:
+    st.header("Update existing products — what do you want to change?")
+    st.caption("All of these work directly on products already live in Travel Compositor — "
+               "no document needed.")
+
+    if st.button(UPDATE_REFRESH_CHOICE, key="upd_choice_refresh", use_container_width=True):
+        st.session_state.product_type = UPDATE_REFRESH_CHOICE
+        st.rerun()
+    st.caption("New prices, changed details, a new Modality added to something that already "
+               "exists — for any of the five product types.")
+
+    if st.button(CANCELLATION_BULK_CHOICE, key="upd_choice_ctbulk", use_container_width=True):
+        st.session_state.product_type = CANCELLATION_BULK_CHOICE
+        st.rerun()
+    st.caption("Apply one cancellation policy to every (or a chosen subset of) one supplier's "
+               "live services at once. ClosedTour · Ticket · Transfer · Transport · Hotel.")
+
+    if st.button(IMAGE_BULK_CHOICE, key="upd_choice_imagebulk", use_container_width=True):
+        st.session_state.product_type = IMAGE_BULK_CHOICE
+        st.rerun()
+    st.caption("Replace the photo on many already-live Transfers or Transports at once — "
+               "by supplier, by service type, or both. From your computer or a pasted URL.")
+
+    if st.button(MIGRATE_SUPPLIER_CHOICE, key="upd_choice_migrate", use_container_width=True):
+        st.session_state.product_type = MIGRATE_SUPPLIER_CHOICE
+        st.rerun()
+    st.caption("Recreate a supplier's services under a different supplier and retire the "
+               "originals — for when the supplier relationship itself changes. "
+               "ClosedTour · Ticket · Transfer · Transport · Hotel.")
+
+    if st.button(MANUAL_INFO_CHOICE, key="upd_choice_manual", use_container_width=True):
+        st.session_state.product_type = MANUAL_INFO_CHOICE
+        st.rerun()
+    st.caption("No document at all: record something you know about a supplier — a moved "
+               "pickup point, changed cancellation terms — attached automatically to every "
+               "future upload of that product type.")
+
+    st.stop()
+
+if st.session_state.active_tool == TOOL_UPDATE:
+    # product_type is set — dispatch to the chosen flow, same as TOOL_UPLOAD does below.
+    pass
+
+# ======================================================================
+# UPLOAD — Step 1: which product type?
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): "In step 1 we must ask only: Choose one:
 # ClosedTour; Ticket; Hotel; Adding manual Information to a service; Update Service/Information
 # of a service --> Transfer and Transport are not possible to automatically Import/upload."
@@ -1333,91 +1395,42 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # intuitive for humans."
 # ======================================================================
 if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type is None:
-    st.header("Step 1 — Which product are you uploading or updating?")
-    st.caption("Click a section below to open it, then pick where you want to go — like "
-              "Travel Compositor's own \"Contracts\" menu.")
+    st.header("Step 1 — What are you creating?")
+    st.caption("Each of these creates something new in Travel Compositor: either a brand-new "
+               "product with its first Modality, or a new Modality on one that already exists. "
+               "To change something on an already-live product, use **Update existing products** "
+               "from the home screen instead.")
 
-    # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-19): "can we make the menu in the App more
-    # like this example in the Travel Compositor site: When the human clicks on the according
-    # step 1: then the dropdown opens with all the options within the options in the step 1."
-    # Replaces the flat radio-button list with two independently expandable/collapsible
-    # sections (Streamlit's st.expander keeps each section's open/closed state on its own,
-    # so opening one doesn't close the other - confirmed as the wanted behaviour over an
-    # accordion). Clicking an option inside a section selects it immediately and moves on,
-    # the same one-click navigation as clicking a leaf item in Travel Compositor's sidebar -
-    # there's no separate "Continue" button to click afterwards anymore.
-    with st.expander("📦 Create a new product", expanded=False):
-        st.caption("Each of these CREATES something new: either a brand-new product with its "
-                  "first Modality, or a new Modality added to one that already exists.")
-        if st.button("ClosedTour", key="pt_choice_closedtour", use_container_width=True):
-            st.session_state.product_type = "ClosedTour"
-            st.rerun()
-        st.caption("Multi-day tour (itinerary, room-occupancy pricing).")
-        if st.button("Ticket", key="pt_choice_ticket", use_container_width=True):
-            st.session_state.product_type = "Ticket"
-            st.rerun()
-        st.caption("Single-destination excursion/activity, no overnight, passenger-type pricing.")
-        if st.button("Hotel", key="pt_choice_hotel", use_container_width=True):
-            st.session_state.product_type = "Hotel"
-            st.rerun()
-        st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
-                  "rate seasons.")
-        if st.button(TRANSFER_DUPLICATE_AND_CREATE_CHOICE, key="pt_choice_transfer_duplicate_and_create", use_container_width=True):
-            st.session_state.product_type = TRANSFER_DUPLICATE_AND_CREATE_CHOICE
-            st.rerun()
-        st.caption("For a brand-new Transfer that's really the SAME route in the other "
-                  "direction (e.g. Hotel → Airport once Airport → Hotel already exists). Pick a "
-                  "supplier: the app scans every live Transfer and lists every route with no "
-                  "reverse-direction pair yet, so you can Select all/Select none and create "
-                  "them as a batch - or duplicate one specific Transfer by id instead.")
-        if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
-            st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
-            st.rerun()
-        st.caption("Same idea, for Transport. Pick a supplier: the app scans every live "
-                  "Transport and lists every route with no reverse-direction pair yet, so you "
-                  "can Select all/Select none and create them as a batch (parent record AND "
-                  "every occupancy bracket, route swapped) - or duplicate one specific "
-                  "Transport by id instead.")
+    if st.button("ClosedTour", key="pt_choice_closedtour", use_container_width=True):
+        st.session_state.product_type = "ClosedTour"
+        st.rerun()
+    st.caption("Multi-day tour (itinerary, room-occupancy pricing).")
 
-    with st.expander("🔧 Manage an existing product", expanded=False):
-        if st.button(MANUAL_INFO_CHOICE, key="pt_choice_manual", use_container_width=True):
-            st.session_state.product_type = MANUAL_INFO_CHOICE
-            st.rerun()
-        st.caption("No document at all: write something you know about a supplier — a moved "
-                  "pickup point, changed cancellation terms — and it is attached automatically "
-                  "to every future upload of that product type.")
-        if st.button(UPDATE_REFRESH_CHOICE, key="pt_choice_updaterefresh", use_container_width=True):
-            st.session_state.product_type = UPDATE_REFRESH_CHOICE
-            st.rerun()
-        st.caption("The one place for every other kind of update - new prices, changed "
-                  "details, a new Modality on something that already exists - for ANY of the "
-                  "five product types, including Transfer and Transport (which can no longer "
-                  "be created fresh through this tool, only updated here).")
-        if st.button(MIGRATE_SUPPLIER_CHOICE, key="pt_choice_migratesupplier", use_container_width=True):
-            st.session_state.product_type = MIGRATE_SUPPLIER_CHOICE
-            st.rerun()
-        st.caption("Recreates a supplier's services under a different supplier and retires the "
-                  "originals - for when a supplier relationship itself changes, not a single "
-                  "product's details. ClosedTour · Ticket · Transfer · Transport · Hotel.")
-        if st.button(CANCELLATION_BULK_CHOICE, key="pt_choice_ctbulk", use_container_width=True):
-            st.session_state.product_type = CANCELLATION_BULK_CHOICE
-            st.rerun()
-        st.caption("Applies one cancellation policy to every (or a chosen subset of) one "
-                  "supplier's live services of one type at once - for when the supplier's "
-                  "terms themselves changed, not a single product's details. "
-                  "ClosedTour · Ticket · Transfer · Transport · Hotel.")
-        if st.button(TRANSFER_IMAGE_BULK_CHOICE, key="pt_choice_transferimagebulk", use_container_width=True):
-            st.session_state.product_type = TRANSFER_IMAGE_BULK_CHOICE
-            st.rerun()
-        st.caption("Replace the photo on many already-live Transfers at once - by supplier, by "
-                  "ServiceType (Private/Shuttle/Shared), or both together. The new image "
-                  "replaces whatever's currently there; from your computer or a pasted URL.")
-        if st.button(TRANSPORT_IMAGE_BULK_CHOICE, key="pt_choice_transportimagebulk", use_container_width=True):
-            st.session_state.product_type = TRANSPORT_IMAGE_BULK_CHOICE
-            st.rerun()
-        st.caption("Replace the photo on many already-live Transports at once - by supplier, by "
-                  "Transport Type (Car / Plane / Van / Combined), or both. From your computer "
-                  "or a pasted URL.")
+    if st.button("Ticket", key="pt_choice_ticket", use_container_width=True):
+        st.session_state.product_type = "Ticket"
+        st.rerun()
+    st.caption("Single-destination excursion/activity, no overnight, passenger-type pricing.")
+
+    if st.button("Hotel", key="pt_choice_hotel", use_container_width=True):
+        st.session_state.product_type = "Hotel"
+        st.rerun()
+    st.caption("A full accommodation contract: rooms, meal plans, offers, supplements and "
+               "rate seasons.")
+
+    if st.button(TRANSFER_DUPLICATE_AND_CREATE_CHOICE, key="pt_choice_transfer_duplicate_and_create", use_container_width=True):
+        st.session_state.product_type = TRANSFER_DUPLICATE_AND_CREATE_CHOICE
+        st.rerun()
+    st.caption("For a brand-new Transfer that's really the SAME route in the other direction "
+               "(e.g. Hotel → Airport once Airport → Hotel already exists). Pick a supplier: "
+               "the app lists every route with no reverse-direction pair yet, so you can "
+               "create them as a batch — or duplicate one specific Transfer by id instead.")
+
+    if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
+        st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
+        st.rerun()
+    st.caption("Same idea, for Transport. Scans every live Transport and lists every route "
+               "with no reverse-direction pair yet — create as a batch or by id.")
+
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
@@ -1434,6 +1447,10 @@ if st.session_state.product_type == TRANSFER_IMAGE_BULK_CHOICE:
 
 if st.session_state.product_type == TRANSPORT_IMAGE_BULK_CHOICE:
     render_transport_image_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == IMAGE_BULK_CHOICE:
+    render_image_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:

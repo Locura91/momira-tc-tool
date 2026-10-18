@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-18-eh-reader-error-detail"
+MODULE_BUILD = "2026-10-18-update-tool-restructure"
 
 import io
 import os
