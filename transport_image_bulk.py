@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-18-transport-image-airlinecode-fix"
+MODULE_BUILD = "2026-10-18-transport-image-verify-write"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {
@@ -143,7 +143,7 @@ def apply(client, planned: Dict[str, Any], selected_ids: Optional[set] = None,
     for n, item in enumerate(pending):
         if progress:
             progress(n + 1, len(pending), item.get("name", ""))
-        debug = {"request": item.get("record"), "response": None}
+        debug = {"request": item.get("record"), "response": None, "verify": None}
         try:
             res = client.update_transport(item["supplier_id"], item["record"])
             debug["response"] = res
@@ -153,8 +153,17 @@ def apply(client, planned: Dict[str, Any], selected_ids: Optional[set] = None,
                     "detail": str(res.get("message") or res.get("error")), "debug": debug,
                 })
             else:
+                # Verify the write actually landed: re-fetch and check `images`.
+                verify = client.get_transport(item["supplier_id"], item["id"])
+                debug["verify"] = verify
+                expected = item["new_images"]
+                actual = list(verify.get("images") or []) if isinstance(verify, dict) else None
+                write_verified = (actual == expected)
                 out["updated"].append({
-                    "name": item.get("name"), "id": item.get("id"), "debug": debug,
+                    "name": item.get("name"), "id": item.get("id"),
+                    "write_verified": write_verified,
+                    "actual_images": actual,
+                    "debug": debug,
                 })
         except Exception as e:
             out["failed"].append({

@@ -17,7 +17,7 @@ import streamlit as st
 
 from ui_components import momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-transport-image-airlinecode-fix"
+MODULE_BUILD = "2026-10-18-transport-image-verify-write"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any Transport Type —"
@@ -61,7 +61,14 @@ def render_transport_image_bulk_flow(client):
         st.caption(f"{len(results['updated'])} updated · {results['skipped']} skipped · "
                   f"{len(results['failed'])} failed.")
         for r in results["updated"]:
-            st.success(f"✅ **{r['name']}** updated.")
+            if r.get("write_verified") is False:
+                st.warning(
+                    f"⚠️ **{r['name']}** — PUT returned 200 but the image was NOT saved in TC "
+                    f"(re-fetch shows: `{r.get('actual_images')}`). "
+                    f"TC may not support setting images via this endpoint."
+                )
+            else:
+                st.success(f"✅ **{r['name']}** updated and verified.")
         for r in results["failed"]:
             st.error(f"🚫 **{r['name']}** — {r['detail']}")
         if st.button("↩️ Run again / start over", key="tpib_reset"):
