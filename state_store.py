@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-10-18-autosave-skip-widget-keys"
+MODULE_BUILD = "2026-10-18-transport-image-bulk"
 
 _NAMESPACE = "translation_state"
 

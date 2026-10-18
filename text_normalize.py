@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-10-18-autosave-skip-widget-keys"
+MODULE_BUILD = "2026-10-18-transport-image-bulk"
 
 
 def normalize_name(s: Optional[str]) -> str:

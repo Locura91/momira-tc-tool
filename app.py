@@ -749,6 +749,7 @@ from flows.supplier_migration import render_supplier_migration_flow
 from flows.cancellation import render_transport_cancellation_bulk_flow, render_generic_cancellation_bulk_flow
 
 from flows.transfer_image_bulk import render_transfer_image_bulk_flow
+from flows.transport_image_bulk import render_transport_image_bulk_flow
 
 
 
@@ -795,7 +796,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-18-autosave-skip-widget-keys"
+BUILD_VERSION = "2026-10-18-transport-image-bulk"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1131,6 +1132,7 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # currently reviewing. See transfer_image_bulk.py's own docstring for how this differs from
 # supplier_images.py's per-direction "applies to future builds" feature.
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
+TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16, combined 2026-09-17): "when human create a new
 # transfer or transport, could the app simple copy the product and just swap the destinations?"
 # 2026-08-12's redesign removed AI-document creation for Transfer/Transport entirely ("Transfer
@@ -1410,6 +1412,12 @@ if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type
         st.caption("Replace the photo on many already-live Transfers at once - by supplier, by "
                   "ServiceType (Private/Shuttle/Shared), or both together. The new image "
                   "replaces whatever's currently there; from your computer or a pasted URL.")
+        if st.button(TRANSPORT_IMAGE_BULK_CHOICE, key="pt_choice_transportimagebulk", use_container_width=True):
+            st.session_state.product_type = TRANSPORT_IMAGE_BULK_CHOICE
+            st.rerun()
+        st.caption("Replace the photo on many already-live Transports at once - by supplier, by "
+                  "Transport Type (Car / Plane / Van / Combined), or both. From your computer "
+                  "or a pasted URL.")
     st.stop()
 
 if st.session_state.product_type == UPDATE_REFRESH_CHOICE:
@@ -1422,6 +1430,10 @@ if st.session_state.product_type == CANCELLATION_BULK_CHOICE:
 
 if st.session_state.product_type == TRANSFER_IMAGE_BULK_CHOICE:
     render_transfer_image_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == TRANSPORT_IMAGE_BULK_CHOICE:
+    render_transport_image_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == MANUAL_INFO_CHOICE:

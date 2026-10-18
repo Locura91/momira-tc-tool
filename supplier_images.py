@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-18-autosave-skip-widget-keys"
+MODULE_BUILD = "2026-10-18-transport-image-bulk"
 
 _NAMESPACE = "supplier_images"
 
