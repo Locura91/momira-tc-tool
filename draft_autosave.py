@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
+MODULE_BUILD = "2026-10-18-autosave-skip-widget-keys"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"
@@ -65,6 +65,13 @@ _LAST_SAVED_HASH_KEY = "_draft_last_saved_hash"
 # through JSON fine) and never restored, so a restore can't accidentally clobber THIS rerun's own
 # in-progress restore-check state.
 _NEVER_PERSIST_PREFIX = "_draft_"
+
+# Streamlit raises StreamlitValueAssignmentNotAllowedError if a key that belongs to a registered
+# widget (button, checkbox, selectbox, …) is assigned via st.session_state[key] = value.  Buttons
+# store True/False when clicked - that state is momentary and meaningless after a reload anyway.
+# Skipping keys that end with these suffixes prevents the autosave from capturing widget state
+# that would cause a crash at the next widget render after a restore.
+_NEVER_PERSIST_SUFFIXES = ("_btn", "_button", "_checkbox", "_radio", "_selectbox", "_multiselect")
 
 
 def _is_json_safe(value: Any) -> bool:
@@ -82,6 +89,8 @@ def _json_safe_snapshot() -> Dict[str, Any]:
     snapshot = {}
     for key in list(st.session_state.keys()):
         if key.startswith(_NEVER_PERSIST_PREFIX):
+            continue
+        if any(key.endswith(suffix) for suffix in _NEVER_PERSIST_SUFFIXES):
             continue
         try:
             value = st.session_state[key]

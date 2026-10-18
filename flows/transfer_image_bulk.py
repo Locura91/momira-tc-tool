@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier, momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
+MODULE_BUILD = "2026-10-18-autosave-skip-widget-keys"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"
