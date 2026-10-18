@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-18-transport-image-bulk"
+MODULE_BUILD = "2026-10-18-transport-image-airlinecode-fix"
 
 import io
 import os

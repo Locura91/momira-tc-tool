@@ -74,7 +74,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-18-transport-image-bulk"
+MODULE_BUILD = "2026-10-18-transport-image-airlinecode-fix"
 
 import json
 from datetime import date
