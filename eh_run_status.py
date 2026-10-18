@@ -401,7 +401,10 @@ def today_lines(record: Optional[Dict[str, Any]],
         entry = tours[code] if isinstance(tours.get(code), dict) else {}
         status = entry.get("status")
         if status == "failed":
-            out.append({"level": "error", "text": f"**{code}**: could not be read this run."})
+            detail = entry.get("detail") or ""
+            detail_snippet = f" ({detail[:120]}{'…' if len(detail) > 120 else ''})" if detail else ""
+            out.append({"level": "error",
+                        "text": f"**{code}**: could not be read this run.{detail_snippet}"})
             continue
         if status == "suspicious":
             out.append({"level": "warning",

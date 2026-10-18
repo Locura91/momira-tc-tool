@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-18-transport-image-verify-write"
+MODULE_BUILD = "2026-10-18-eh-reader-error-detail"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

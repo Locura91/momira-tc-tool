@@ -52,7 +52,7 @@ from typing import Any, Dict, Optional, Tuple
 import platform_store
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-18-transport-image-verify-write"
+MODULE_BUILD = "2026-10-18-eh-reader-error-detail"
 
 _NAMESPACE = "supplier_images"
 
