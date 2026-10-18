@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-18-transport-image-bulk"
+MODULE_BUILD = "2026-10-18-transport-image-airlinecode-fix"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {
@@ -107,6 +107,12 @@ def plan(client, suppliers: List[Dict[str, str]], transport_type: Optional[str],
             changed = current_images != new_images
             updated = copy.deepcopy(record)
             updated["images"] = new_images
+            # TC rejects PUT with airlineCode=null even for non-flight transports (confirmed real
+            # validation rule: "must not be null"). Real GET responses often omit the field
+            # entirely, so deepcopy leaves it absent/None. Default to "" exactly as
+            # ContractTransportVO does - harmless for Car/Van/Combined, required for acceptance.
+            if not updated.get("airlineCode"):
+                updated["airlineCode"] = ""
             result["items"].append({
                 "id": t_id,
                 "supplier_id": supplier_id,
