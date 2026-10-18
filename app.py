@@ -797,7 +797,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-18-update-tool-restructure"
+BUILD_VERSION = "2026-10-18-home-grid-2x3"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1243,16 +1243,18 @@ if st.session_state.active_tool is None:
          "Holiday Packages"),
     ]
 
-    for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(len(_TOOL_CARDS)), _TOOL_CARDS):
-        with _col:
-            st.markdown(f"##### {_label}")
-            st.caption(f"**{_lead}**")
-            st.caption(_detail)
-            st.caption(f"*{_scope}*")
-            st.write("")
-            if st.button(_label, key=_key, type="primary", use_container_width=True):
-                st.session_state.active_tool = _label
-                st.rerun()
+    for _row_cards in [_TOOL_CARDS[:3], _TOOL_CARDS[3:]]:
+        for _col, (_label, _key, _lead, _detail, _scope) in zip(st.columns(3), _row_cards):
+            with _col:
+                st.markdown(f"##### {_label}")
+                st.caption(f"**{_lead}**")
+                st.caption(_detail)
+                st.caption(f"*{_scope}*")
+                st.write("")
+                if st.button(_label, key=_key, type="primary", use_container_width=True):
+                    st.session_state.active_tool = _label
+                    st.rerun()
+        st.write("")
 
     # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-19): "Make one botton for the 2 Prototyp
     # below the find contact; Upload/Update; Translate and Stop Sale reader. As long as
