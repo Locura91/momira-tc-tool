@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-14-duplicate-name-sync"
+MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
 
 import io
 import os

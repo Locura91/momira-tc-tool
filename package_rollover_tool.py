@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-14-duplicate-name-sync"
+MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
 
 _PHASE_KEY = "pkr_phase"
 

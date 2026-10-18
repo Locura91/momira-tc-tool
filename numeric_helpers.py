@@ -30,7 +30,7 @@ same ground without pandas, so this module has no pandas import of its own.
 """
 import math
 
-MODULE_BUILD = "2026-10-14-duplicate-name-sync"
+MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
 
 
 def _safe_float(value, fallback=0.0):
