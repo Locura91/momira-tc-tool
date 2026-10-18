@@ -8,7 +8,7 @@ Requires ANTHROPIC_API_KEY in .env (get one at console.anthropic.com).
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-18-home-card-layout"
+MODULE_BUILD = "2026-10-18-transport-desc-fix"
 
 import os
 import re
@@ -2557,32 +2557,48 @@ def rewrite_route_description_for_new_direction(
     to/from HTML exactly as it already does for the human-edited version), or the ORIGINAL text
     unchanged if the call fails for any reason (never worse than what the human already sees)."""
     plain_text = (plain_text or "").strip()
-    if not plain_text:
+    generating_from_scratch = not plain_text
+    if generating_from_scratch and not (new_departure_name and new_arrival_name):
         return plain_text
-    system_prompt = (
-        "You rewrite ONE short travel-transfer description so it describes the OPPOSITE "
-        "direction of the same route, for a human travel-product editor. You are given the "
-        "original text (which describes a transfer from an OLD departure point to an OLD "
-        "arrival point) and the NEW departure/arrival point names for the reversed direction. "
-        "Rewrite the text so it reads naturally and correctly for the NEW direction - actually "
-        "understand what each sentence is describing (a pickup point, a drop-off point, a "
-        "role like 'your booked accommodation') rather than only swapping place names that "
-        "happen to appear literally. Keep every other factual detail EXACTLY as stated (vehicle "
-        "type, service availability, included amenities, any codes or qualifiers like airport "
-        "codes) - do not invent, drop, or embellish anything. Keep the same tone, length, and "
-        "paragraph/list structure as the original (plain text: a blank line between paragraphs; "
-        "a bullet list is a blank line before and after it, with each item on its own line "
-        "starting with '- ' - keep that '- ' marker on every list item exactly as it appears in "
-        "the original, don't add or remove it; no HTML tags). Output ONLY the rewritten text, "
-        "nothing else - no preamble, no explanation, no quotation marks around it."
-    )
-    user_content = (
-        f"OLD departure point: {old_departure_name}\n"
-        f"OLD arrival point: {old_arrival_name}\n"
-        f"NEW departure point: {new_departure_name}\n"
-        f"NEW arrival point: {new_arrival_name}\n\n"
-        f"Original text (describes OLD departure -> OLD arrival):\n{plain_text}"
-    )
+    if generating_from_scratch:
+        system_prompt = (
+            "You write ONE short travel-transport description for a human travel-product editor. "
+            "You are given the departure and arrival point names for a one-way transport route. "
+            "Write 1-3 plain-text sentences describing the transfer: mention the departure point, "
+            "the arrival point, and that it is a one-way private transfer. Keep it factual and "
+            "neutral - do not invent vehicle types, timings, amenities, or anything that is not "
+            "given to you. Plain text only (no HTML tags, no bullet lists unless the route has "
+            "multiple legs). Output ONLY the description text, nothing else."
+        )
+        user_content = (
+            f"Departure point: {new_departure_name}\n"
+            f"Arrival point: {new_arrival_name}"
+        )
+    else:
+        system_prompt = (
+            "You rewrite ONE short travel-transfer description so it describes the OPPOSITE "
+            "direction of the same route, for a human travel-product editor. You are given the "
+            "original text (which describes a transfer from an OLD departure point to an OLD "
+            "arrival point) and the NEW departure/arrival point names for the reversed direction. "
+            "Rewrite the text so it reads naturally and correctly for the NEW direction - actually "
+            "understand what each sentence is describing (a pickup point, a drop-off point, a "
+            "role like 'your booked accommodation') rather than only swapping place names that "
+            "happen to appear literally. Keep every other factual detail EXACTLY as stated (vehicle "
+            "type, service availability, included amenities, any codes or qualifiers like airport "
+            "codes) - do not invent, drop, or embellish anything. Keep the same tone, length, and "
+            "paragraph/list structure as the original (plain text: a blank line between paragraphs; "
+            "a bullet list is a blank line before and after it, with each item on its own line "
+            "starting with '- ' - keep that '- ' marker on every list item exactly as it appears in "
+            "the original, don't add or remove it; no HTML tags). Output ONLY the rewritten text, "
+            "nothing else - no preamble, no explanation, no quotation marks around it."
+        )
+        user_content = (
+            f"OLD departure point: {old_departure_name}\n"
+            f"OLD arrival point: {old_arrival_name}\n"
+            f"NEW departure point: {new_departure_name}\n"
+            f"NEW arrival point: {new_arrival_name}\n\n"
+            f"Original text (describes OLD departure -> OLD arrival):\n{plain_text}"
+        )
     try:
         client = _get_anthropic_client()
         raw_response, _stop_reason = _stream_claude_message(client, model, 1024, system_prompt, user_content)

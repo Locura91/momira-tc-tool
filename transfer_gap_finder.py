@@ -32,7 +32,7 @@ are recognized as the same place) PLUS vehicleType, since a supplier commonly se
 one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cairo City) and
 those are genuinely separate products, not duplicates of each other.
 """
-MODULE_BUILD = "2026-10-18-home-card-layout"
+MODULE_BUILD = "2026-10-18-transport-desc-fix"
 
 from typing import Any, Dict, List, Optional
 
@@ -204,7 +204,10 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     en = dict(datasheets.get("EN") or {})
     plain = _html_to_plain_for_editing(en.get("description", ""))
     desc_status = swap_report.get("description")
-    if desc_status is False or (desc_status is True and _needs_ai_rewrite(plain)):
+    # Trigger AI when: literal swap couldn't find city names (False), description was absent
+    # entirely (None — generate from scratch), or literal swap succeeded but text still contains
+    # route-specific content that would be wrong for the new direction (True + _needs_ai_rewrite).
+    if desc_status is not True or _needs_ai_rewrite(plain):
         rewritten = rewrite_route_description_for_new_direction(
             plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
             route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))

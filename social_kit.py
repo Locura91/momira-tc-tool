@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-18-home-card-layout"
+MODULE_BUILD = "2026-10-18-transport-desc-fix"
 
 import io
 import os

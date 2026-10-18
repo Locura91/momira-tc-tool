@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-18-home-card-layout"
+MODULE_BUILD = "2026-10-18-transport-desc-fix"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {

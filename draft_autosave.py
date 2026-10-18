@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-18-home-card-layout"
+MODULE_BUILD = "2026-10-18-transport-desc-fix"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"
