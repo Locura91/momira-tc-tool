@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-18-home-grid-2x3"
+MODULE_BUILD = "2026-10-18-home-card-layout"
 
 import os
 import re

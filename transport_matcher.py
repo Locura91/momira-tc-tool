@@ -41,7 +41,7 @@ Compositor itself (confirmed via get_transport/get_transports).
 # carried a build stamp before (2026-09-13, while consolidating name-normalization into
 # text_normalize.py) - a partial deploy that updated every other file but this one would have
 # gone undetected by app.py's own stale-module check.
-MODULE_BUILD = "2026-10-18-home-grid-2x3"
+MODULE_BUILD = "2026-10-18-home-card-layout"
 
 import os
 import json
