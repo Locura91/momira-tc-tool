@@ -32,7 +32,7 @@ are recognized as the same place) PLUS vehicleType, since a supplier commonly se
 one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cairo City) and
 those are genuinely separate products, not duplicates of each other.
 """
-MODULE_BUILD = "2026-10-14-duplicate-name-sync"
+MODULE_BUILD = "2026-10-18-smart-ai-rewrite-trigger"
 
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +44,49 @@ from builder import (
 from ai_extractor import rewrite_route_description_for_new_direction
 from ui_components import _html_to_plain_for_editing, _plain_to_html_for_saving
 import transport_matcher
+
+
+# Keywords that flag a description as containing route-specific content beyond just the origin/
+# destination names — schedules, intermediate stops, vehicle/class specifics, timing.  When the
+# literal swap DID find and replace the city names (swap_report == True) but the text still
+# contains any of these, the swapped result can easily be meaningless for the new route (e.g. a
+# train schedule with stop names, a boat timetable with port sequences, departure times tied to
+# a specific line).  The AI rewrite is cheap (Haiku) and returns the text unchanged when no
+# rewrite is actually needed, so the cost of a false-positive trigger is minimal.
+import re as _re
+
+# Keywords matched as whole words (word boundary on both sides) to avoid false positives like
+# "arrivals hall" triggering on "arrival", or "transfer" triggering on "via".
+_ROUTE_SPECIFIC_KW_WHOLE = [
+    "schedule", "timetable", "via", "platform", "gate",
+    "layover", "overnight", "express", "direct",
+    "wagon", "carriage", "cabin", "deck", "ferry", "train",
+]
+# Substring keywords — intentionally broader, used for clearly route-tied phrases.
+_ROUTE_SPECIFIC_KW_SUBSTR = [
+    "departs at", "arrives at", "departure time", "arrival time",
+    "08:", "09:", "10:", "11:", "12:", "13:", "14:", "15:", "16:", "17:", "18:", "19:", "20:",
+    " station", " terminal", " port ", " harbor", " harbour",
+    "first class", "second class", "business class", "economy class",
+    "bus stop", "night bus", "night train", "night ferry",
+]
+_ROUTE_KW_PATTERN = _re.compile(
+    r"\b(" + "|".join(_re.escape(k) for k in _ROUTE_SPECIFIC_KW_WHOLE) + r")\b",
+    _re.IGNORECASE,
+)
+
+
+def _needs_ai_rewrite(plain_text: str) -> bool:
+    """Returns True when the (already literal-swapped) description still contains route-specific
+    content tied to the original route — schedules, stops, vehicle classes, times — that a simple
+    city-name swap would leave wrong or meaningless for the new route.  Uses whole-word matching
+    for ambiguous words (e.g. 'via', 'station') and substring matching for clearly specific
+    phrases (e.g. 'departs at', 'first class').  The AI returns the text unchanged when no real
+    rewrite is needed, so a false-positive trigger costs one small Haiku call at most."""
+    lower = plain_text.lower()
+    if any(kw in lower for kw in _ROUTE_SPECIFIC_KW_SUBSTR):
+        return True
+    return bool(_ROUTE_KW_PATTERN.search(plain_text))
 
 
 def _route_signature(transfer: Dict[str, Any]):
@@ -113,8 +156,12 @@ def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
     for field in ("description", "pickupDescription"):
-        if swap_report.get(field) is False:
-            plain = _html_to_plain_for_editing(en.get(field, ""))
+        plain = _html_to_plain_for_editing(en.get(field, ""))
+        field_status = swap_report.get(field)
+        # Run AI rewrite when: (a) literal swap couldn't find the city names at all (False), OR
+        # (b) literal swap succeeded (True) but the text contains route-specific content
+        # (schedules, stops, vehicle classes…) that would still be wrong after a plain name swap.
+        if field_status is False or (field_status is True and _needs_ai_rewrite(plain)):
             rewritten = rewrite_route_description_for_new_direction(
                 plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
                 route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
@@ -155,8 +202,9 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
-    if swap_report.get("description") is False:
-        plain = _html_to_plain_for_editing(en.get("description", ""))
+    plain = _html_to_plain_for_editing(en.get("description", ""))
+    desc_status = swap_report.get("description")
+    if desc_status is False or (desc_status is True and _needs_ai_rewrite(plain)):
         rewritten = rewrite_route_description_for_new_direction(
             plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
             route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
