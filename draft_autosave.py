@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-18-update-tool-restructure"
+MODULE_BUILD = "2026-10-18-home-grid-2x3"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

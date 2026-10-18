@@ -17,7 +17,7 @@ import streamlit as st
 
 from ui_components import momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-update-tool-restructure"
+MODULE_BUILD = "2026-10-18-home-grid-2x3"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any Transport Type —"

@@ -19,7 +19,7 @@ scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-18-update-tool-restructure"
+MODULE_BUILD = "2026-10-18-home-grid-2x3"
 
 import streamlit as st
 

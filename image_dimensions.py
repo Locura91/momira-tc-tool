@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-18-update-tool-restructure"
+MODULE_BUILD = "2026-10-18-home-grid-2x3"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

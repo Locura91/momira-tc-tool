@@ -27,7 +27,7 @@ import streamlit as st
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-18-update-tool-restructure"
+MODULE_BUILD = "2026-10-18-home-grid-2x3"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
