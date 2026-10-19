@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-19-transport-manual-type-filter"
+MODULE_BUILD = "2026-10-19-autosave-editor-key-fix"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"
@@ -71,7 +71,8 @@ _NEVER_PERSIST_PREFIX = "_draft_"
 # store True/False when clicked - that state is momentary and meaningless after a reload anyway.
 # Skipping keys that end with these suffixes prevents the autosave from capturing widget state
 # that would cause a crash at the next widget render after a restore.
-_NEVER_PERSIST_SUFFIXES = ("_btn", "_button", "_checkbox", "_radio", "_selectbox", "_multiselect")
+_NEVER_PERSIST_SUFFIXES = ("_btn", "_button", "_checkbox", "_radio", "_selectbox", "_multiselect",
+                           "_editor")
 
 
 def _is_json_safe(value: Any) -> bool:
