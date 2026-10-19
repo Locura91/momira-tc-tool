@@ -158,10 +158,13 @@ def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
     for field in ("description", "pickupDescription"):
         plain = _html_to_plain_for_editing(en.get(field, ""))
         field_status = swap_report.get(field)
-        # Run AI rewrite when: (a) literal swap couldn't find the city names at all (False), OR
-        # (b) literal swap succeeded (True) but the text contains route-specific content
-        # (schedules, stops, vehicle classes…) that would still be wrong after a plain name swap.
-        if field_status is False or (field_status is True and _needs_ai_rewrite(plain)):
+        # Always run the AI rewrite when there is text to rewrite (or to generate from scratch).
+        # The literal swap only exchanges place names verbatim — it cannot understand direction
+        # (e.g. "We pick you up from the airport and take you to your hotel" needs the pickup/
+        # drop-off roles reversed, not just city names swapped). The AI call is cheap (Haiku) and
+        # returns the text unchanged when no actual rewrite is needed, so always running it is
+        # correct; skipping it on a "clean" literal swap silently left directional meaning wrong.
+        if field_status is not None or plain:
             rewritten = rewrite_route_description_for_new_direction(
                 plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
                 route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
@@ -204,10 +207,11 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     en = dict(datasheets.get("EN") or {})
     plain = _html_to_plain_for_editing(en.get("description", ""))
     desc_status = swap_report.get("description")
-    # Trigger AI when: literal swap couldn't find city names (False), description was absent
-    # entirely (None — generate from scratch), or literal swap succeeded but text still contains
-    # route-specific content that would be wrong for the new direction (True + _needs_ai_rewrite).
-    if desc_status is not True or _needs_ai_rewrite(plain):
+    # Always run the AI rewrite — the literal swap only exchanges place names verbatim and cannot
+    # understand directional meaning (e.g. "We pick you up from the airport" needs its pickup/
+    # drop-off roles reversed, not just city names swapped). The AI call is cheap (Haiku) and
+    # returns the text unchanged when no actual rewrite is needed.
+    if True:
         rewritten = rewrite_route_description_for_new_direction(
             plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
             route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
