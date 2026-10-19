@@ -39,6 +39,7 @@ from ui_components import (editable_table, _safe_float, _safe_int,
                             _html_to_plain_for_editing, _plain_to_html_for_saving)
 
 from app_helpers import _ur_pick_momira_supplier, show_publish_error
+from flows.flow_ui_helpers import render_html_field_with_ai_swap_status
 
 
 def _resolve_route_location(client, supplier_id, place_name, is_zone_based):
@@ -223,35 +224,18 @@ def _render_review_and_publish(client, supplier_id):
         # this just informs the human rather than asking them to click a button. Only the rare
         # case where the AI rewrite ITSELF made no change (still False) shows the original
         # "couldn't auto-swap" warning, so nothing is silently lost.
-        if swap_report.get("description") == "ai":
-            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
-                    "reads correctly before publishing.")
-        elif swap_report.get("description") is False:
-            st.warning("⚠️ Couldn't auto-swap the description (even the AI rewrite made no "
-                      "change) - check it reads correctly for the new direction before "
-                      "publishing.")
-        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
-                  "line before and after it with each item on its own line starting with \"- \".")
-        new_plain_description = st.text_area(
-            "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtf_description")
-        en["description"] = _plain_to_html_for_saving(new_plain_description)
+        en["description"] = render_html_field_with_ai_swap_status(
+            "Description", "description", swap_report, en.get("description", ""),
+            _html_to_plain_for_editing, _plain_to_html_for_saving, "dtf_description"
+        )
 
     if en.get("pickupDescription") is not None or swap_report.get("pickupDescription") is not None:
-        if swap_report.get("pickupDescription") == "ai":
-            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
-                    "reads correctly before publishing.")
-        elif swap_report.get("pickupDescription") is False:
-            st.warning("⚠️ Couldn't auto-swap the pickup information (even the AI rewrite made "
-                      "no change) - check it reads correctly for the new direction before "
-                      "publishing.")
-        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
-                  "line before and after it with each item on its own line starting with \"- \".")
-        new_plain_pickup = st.text_area(
-            "Pickup information", value=_html_to_plain_for_editing(en.get("pickupDescription", "")),
-            key="dtf_pickup_description")
-        en["pickupDescription"] = _plain_to_html_for_saving(new_plain_pickup)
+        en["pickupDescription"] = render_html_field_with_ai_swap_status(
+            "Pickup information", "pickupDescription", swap_report,
+            en.get("pickupDescription", ""),
+            _html_to_plain_for_editing, _plain_to_html_for_saving, "dtf_pickup_description",
+            field_label_for_warning="pickup information",
+        )
 
     datasheets["EN"] = en
     payload["datasheets"] = datasheets

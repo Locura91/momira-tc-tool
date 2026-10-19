@@ -11,9 +11,9 @@ Requires FREEIMAGE_API_KEY in .env / Streamlit secrets - create a free
 account at https://freeimage.host/signup, then find your API key at
 https://freeimage.host/page/api while logged in.
 """
-import os
 import requests
 from dotenv import load_dotenv
+from env_helpers import require_env_key
 
 load_dotenv()
 
@@ -22,14 +22,11 @@ FREEIMAGE_UPLOAD_URL = "https://freeimage.host/api/1/upload"
 
 def upload_image(image_bytes: bytes, filename: str = "image.jpg") -> str:
     """Uploads raw image bytes to freeimage.host, returns the hosted display URL."""
-    api_key = os.getenv("FREEIMAGE_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "FREEIMAGE_API_KEY is not set. Create a free account at "
-            "https://freeimage.host/signup, then find your API key at "
-            "https://freeimage.host/page/api (while logged in) and add it "
-            "to your .env (locally) or Streamlit Secrets (when deployed)."
-        )
+    api_key = require_env_key(
+        "FREEIMAGE_API_KEY",
+        signup_url="https://freeimage.host/signup",
+        key_url="https://freeimage.host/page/api",
+    )
     files = {"source": (filename, image_bytes)}
     data = {"key": api_key, "action": "upload", "format": "json"}
     res = requests.post(FREEIMAGE_UPLOAD_URL, data=data, files=files, timeout=30)

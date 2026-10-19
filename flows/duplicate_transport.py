@@ -46,6 +46,7 @@ import transport_matcher
 from ui_components import editable_table, _safe_float, _safe_int, _html_to_plain_for_editing, _plain_to_html_for_saving
 
 from app_helpers import _ur_pick_momira_supplier, show_publish_error
+from flows.flow_ui_helpers import render_html_field_with_ai_swap_status
 
 
 def render_duplicate_transport_flow(client):
@@ -239,13 +240,6 @@ def _render_review_and_publish(client, supplier_id):
         # the human rather than asking them to click a button. Only the rare case where the AI
         # rewrite ITSELF made no change (still False) shows the original "couldn't auto-swap"
         # warning, so nothing is silently lost.
-        if swap_report.get("description") == "ai":
-            st.info("✨ Rewritten automatically by AI for the new direction - double-check it "
-                    "reads correctly before publishing.")
-        elif swap_report.get("description") is False:
-            st.warning("⚠️ Couldn't auto-swap the description (even the AI rewrite made no "
-                      "change) - check it reads correctly for the new direction before "
-                      "publishing.")
         # CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-16, screenshot): the stored description is
         # real HTML (<p>, <ul><li>, ...) - showing that raw markup in the box read as "coding
         # lines" a non-technical human wouldn't understand. Same fix already used everywhere else
@@ -253,12 +247,10 @@ def _render_review_and_publish(client, supplier_id):
         # own "html_text_area" widget and its docstring for the full history): show/edit plain,
         # human-friendly text, and convert it back to the same HTML shape automatically on save -
         # the human never sees or types a tag.
-        st.caption("Formatting (paragraphs, bullet points) is handled automatically - just write "
-                  "plain text, with a blank line between paragraphs, and a bullet list as a blank "
-                  "line before and after it with each item on its own line starting with \"- \".")
-        new_plain_description = st.text_area(
-            "Description", value=_html_to_plain_for_editing(en.get("description", "")), key="dtp_description")
-        en["description"] = _plain_to_html_for_saving(new_plain_description)
+        en["description"] = render_html_field_with_ai_swap_status(
+            "Description", "description", swap_report, en.get("description", ""),
+            _html_to_plain_for_editing, _plain_to_html_for_saving, "dtp_description"
+        )
 
     datasheets["EN"] = en
     payload["datasheets"] = datasheets

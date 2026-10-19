@@ -8,9 +8,9 @@ into Travel Compositor's 'images' field - no re-uploading needed.
 Pexels' license permits commercial use without requiring attribution,
 though crediting the photographer is good practice.
 """
-import os
 import requests
 from dotenv import load_dotenv
+from env_helpers import check_http_response, require_env_key
 
 load_dotenv()
 
@@ -22,19 +22,13 @@ def search_images(query: str, per_page: int = 6) -> list:
     Returns a list of dicts: {"url", "thumbnail", "photographer", "pexels_page"}
     Raises RuntimeError with a clear message if the API key is missing or the request fails.
     """
-    api_key = os.getenv("PEXELS_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "PEXELS_API_KEY is not set. Get a free key at pexels.com/api and add it "
-            "to your .env (locally) or Streamlit Secrets (when deployed)."
-        )
+    api_key = require_env_key("PEXELS_API_KEY", "pexels.com/api")
 
     headers = {"Authorization": api_key}
     params = {"query": query, "per_page": per_page}
 
     res = requests.get(f"{PEXELS_BASE_URL}/search", headers=headers, params=params, timeout=10)
-    if res.status_code != 200:
-        raise RuntimeError(f"Pexels search failed ({res.status_code}): {res.text[:200]}")
+    check_http_response(res, "Pexels search")
 
     data = res.json()
     results = []
