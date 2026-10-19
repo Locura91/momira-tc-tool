@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-19-rollover-start-update"
+MODULE_BUILD = "2026-10-19-rollover-fix-button"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -243,39 +243,33 @@ def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
     url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
     script = _make_rollover_script(chosen_str)
 
-    # Bookmarklet: javascript: URL with the script embedded — user can drag it to their
-    # bookmarks bar once and reuse it on any package page.
-    import urllib.parse as _up
-    bookmarklet_href = "javascript:" + _up.quote(script, safe="")
+    import json as _json
+    import streamlit.components.v1 as _components
 
-    # Single-click flow: open package page + auto-copy script to clipboard in one go.
-    # Because browsers block window.open() from anchor clicks without user gesture we use
-    # a small HTML snippet that does both on the button click.
-    open_and_copy_js = (
-        f"navigator.clipboard.writeText({script!r}).catch(()=>{{}});"
-        f"window.open({url!r},'_blank');"
-    )
-
-    st.markdown(
+    # components.v1.html() renders in a sandboxed iframe that includes allow-popups,
+    # so window.open() and navigator.clipboard both work from inside it.
+    _components.html(
         f"""
-<div style="margin-bottom:.5rem">
-  <button onclick="{open_and_copy_js.replace('"', '&quot;')}"
-          style="width:100%;padding:.65rem 1rem;background:#e53e3e;color:#fff;
-                 border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;">
-    🚀 Start update
-  </button>
-</div>
-<p style="font-size:.85rem;color:#374151;margin:.4rem 0 .2rem">
-  After the page opens: <strong>F12 → Console tab → Ctrl+V → Enter</strong>
+<style>
+  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+  .btn{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
+        border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
+        text-align:center;box-sizing:border-box;}}
+  .btn:hover{{background:#c53030}}
+  .hint{{font-size:.82rem;color:#374151;margin:.45rem 0 .2rem;line-height:1.5}}
+  .hint b{{color:#111}}
+</style>
+<button class="btn" onclick="
+  navigator.clipboard.writeText({_json.dumps(script)}).catch(function(){{}});
+  window.open({_json.dumps(url)},'_blank');
+">🚀 Start update</button>
+<p class="hint">
+  After the page opens:
+  <b>F12 → Console tab → Ctrl+V → Enter</b>
   — the script is already copied to your clipboard.
 </p>
-<p style="font-size:.8rem;color:#6b7280;margin:0">
-  💡 Or drag this to your bookmarks bar for future use (no console needed):
-  <a href="{bookmarklet_href}" style="color:#17a39b;font-weight:600"
-     onclick="return false;" title="Drag me to your bookmarks bar">📌 Rollover bookmarklet</a>
-</p>
 """,
-        unsafe_allow_html=True,
+        height=90,
     )
 
     st.caption(

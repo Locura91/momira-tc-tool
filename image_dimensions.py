@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-19-rollover-start-update"
+MODULE_BUILD = "2026-10-19-rollover-fix-button"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
