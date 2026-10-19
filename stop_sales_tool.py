@@ -406,6 +406,150 @@ def _render_recent_stop_sales() -> None:
                        unsafe_allow_html=True)
 
 
+def _render_eh_run_now(client) -> None:
+    """Run the Elephant Hills scraper in-process, show the plan, and offer an Apply button."""
+    import run_eh_stop_sales
+    import datetime as _dt
+
+    st.subheader("🔍 Read Elephant Hills Now")
+    st.caption(
+        "Scrapes ehtms.com right now, shows which dates would be blocked on each tour, "
+        "and writes nothing until you press **Apply**."
+    )
+
+    config_path = run_eh_stop_sales.DEFAULT_CONFIG_PATH
+    try:
+        cfg = run_eh_stop_sales.load_config(config_path)
+    except SystemExit as exc:
+        st.error(f"Config problem: {exc}")
+        return
+
+    supplier_id: str = cfg.get("supplier_id") or "MOMIRA_TH_EH"
+    tours = cfg["tours"]
+    today = _dt.date.today()
+
+    # Run the scrape only if we haven't cached a result for this session view
+    if "eh_run_result" not in st.session_state:
+        bar = st.progress(0, text="Starting browser…")
+        readings: list = []
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_page()
+                for i, tour_cfg in enumerate(tours):
+                    bar.progress(i / len(tours),
+                                 text=f"Reading {tour_cfg['tour_code']} ({i + 1}/{len(tours)})…")
+                    try:
+                        reading = run_eh_stop_sales.check_tour(page, tour_cfg, today)
+                    except Exception as exc:
+                        reading = {"tour_code": tour_cfg["tour_code"], "error": str(exc),
+                                   "new_ranges": [], "now_open_again": []}
+                    readings.append(reading)
+                browser.close()
+        except Exception as exc:
+            st.error(f"Browser error: {exc}")
+            return
+        bar.progress(1.0, text="Done reading — checking what would change…")
+
+        # Dry-run apply to get per-modality would-add counts
+        plans: list = []
+        for reading, tour_cfg in zip(readings, tours):
+            if reading.get("error"):
+                plans.append({"tour_code": reading["tour_code"], "error": reading["error"],
+                               "modality_results": []})
+                continue
+            new_ranges = reading.get("new_ranges") or []
+            if not new_ranges:
+                plans.append({"tour_code": reading["tour_code"], "new_ranges": [],
+                               "modality_results": []})
+                continue
+            mod_results = run_eh_stop_sales.apply_tour(
+                client, supplier_id, tour_cfg, new_ranges, dry_run=True
+            )
+            plans.append({"tour_code": reading["tour_code"], "new_ranges": new_ranges,
+                           "modality_results": mod_results, "reading": reading})
+
+        bar.empty()
+        st.session_state.eh_run_result = {"plans": plans, "supplier_id": supplier_id,
+                                          "tours": tours, "run_at": today.isoformat()}
+
+    result = st.session_state.eh_run_result
+    plans = result["plans"]
+
+    st.markdown(f"**Run date:** {result['run_at']}")
+
+    any_to_add = False
+    for plan in plans:
+        tour_code = plan["tour_code"]
+        if plan.get("error"):
+            st.error(f"**{tour_code}** — error: {plan['error']}")
+            continue
+        new_ranges = plan.get("new_ranges") or []
+        mod_results = plan.get("modality_results") or []
+        if not new_ranges:
+            st.success(f"**{tour_code}** — nothing new to block (all dates already covered or open)")
+            continue
+        ranges_str = ", ".join(
+            r["start"] if r["start"] == r["end"] else f"{r['start']}…{r['end']}"
+            for r in new_ranges
+        )
+        would_add = [r for r in mod_results if r.get("status") == "would-add"]
+        unchanged = [r for r in mod_results if r.get("status") == "unchanged"]
+        if would_add:
+            any_to_add = True
+            st.warning(
+                f"**{tour_code}** — **{len(new_ranges)} range(s)** to add: {ranges_str}  \n"
+                f"Would update {len(would_add)} modality(ies); "
+                f"{len(unchanged)} already had these dates."
+            )
+        else:
+            st.info(f"**{tour_code}** — {ranges_str} — already present on all modalities, "
+                    "nothing to add")
+
+    if any_to_add:
+        st.markdown("---")
+        if st.button("✅ Apply — write these closures to Travel Compositor", type="primary",
+                     key="eh_run_apply"):
+            bar2 = st.progress(0, text="Applying…")
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as pw:
+                    browser = pw.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    apply_readings = []
+                    for i, (plan, tour_cfg) in enumerate(zip(plans, result["tours"])):
+                        bar2.progress(i / len(plans),
+                                      text=f"Applying {plan['tour_code']}…")
+                        new_ranges = plan.get("new_ranges") or []
+                        if not new_ranges or plan.get("error"):
+                            continue
+                        apply_results = run_eh_stop_sales.apply_tour(
+                            client, result["supplier_id"], tour_cfg, new_ranges, dry_run=False
+                        )
+                        apply_readings.append((plan["tour_code"], apply_results))
+                    browser.close()
+                bar2.progress(1.0, text="Done")
+                bar2.empty()
+                st.session_state.pop("eh_run_result", None)
+                for tour_code, apply_results in apply_readings:
+                    added = [r for r in apply_results if r.get("status") == "added"]
+                    failed = [r for r in apply_results if r.get("status") == "failed"]
+                    if added:
+                        st.success(f"**{tour_code}** — written to {len(added)} modality(ies) ✅")
+                    if failed:
+                        st.error(f"**{tour_code}** — {len(failed)} modality(ies) failed")
+            except Exception as exc:
+                bar2.empty()
+                st.error(f"Apply failed: {exc}")
+    elif all(not p.get("error") for p in plans):
+        st.info("Nothing to apply — Travel Compositor is already up to date.")
+
+    if st.button("🔄 Re-read Elephant Hills", key="eh_run_reread"):
+        st.session_state.pop("eh_run_result", None)
+        st.rerun()
+
+
 def render_stop_sales_tool(client) -> None:
     st.header("🚫 Stop Sales Reader")
 
@@ -414,7 +558,7 @@ def render_stop_sales_tool(client) -> None:
     # the last 24 hours (the automatic Elephant Hills reader AND manual email entries). The chosen
     # view is remembered in ss_view so a rerun (e.g. after parsing an email) stays on the email side.
     ss_view = st.session_state.get("ss_view")
-    _bcol1, _bcol2 = st.columns(2)
+    _bcol1, _bcol2, _bcol3 = st.columns(3)
     with _bcol1:
         if st.button("➕ Add a new stop sale (from a supplier email)", use_container_width=True,
                      type="primary" if ss_view == "email" else "secondary", key="ss_btn_email"):
@@ -425,15 +569,25 @@ def render_stop_sales_tool(client) -> None:
                      type="primary" if ss_view == "recent" else "secondary", key="ss_btn_recent"):
             st.session_state.ss_view = "recent"
             st.rerun()
+    with _bcol3:
+        if st.button("🔍 Read Elephant Hills now", use_container_width=True,
+                     type="primary" if ss_view == "eh_run" else "secondary", key="ss_btn_eh_run"):
+            st.session_state.ss_view = "eh_run"
+            st.session_state.pop("eh_run_result", None)
+            st.rerun()
 
     if not ss_view:
-        st.caption("Pick one above: **add** a stop sale yourself from a supplier email, or **see** "
-                  "every stop sale the system added in the last 24 hours — both the automatic "
-                  "Elephant Hills reader and anything entered from an email.")
+        st.caption("Pick one above: **add** a stop sale yourself from a supplier email, **see** "
+                  "every stop sale the system added in the last 24 hours, or **read Elephant Hills "
+                  "now** to check availability and apply closures on demand.")
         st.stop()
 
     if ss_view == "recent":
         _render_recent_stop_sales()
+        st.stop()
+
+    if ss_view == "eh_run":
+        _render_eh_run_now(client)
         st.stop()
 
     # ss_view == "email" — the supervised email flow.
