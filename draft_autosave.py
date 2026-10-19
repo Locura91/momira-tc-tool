@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-19-home-nav-button"
+MODULE_BUILD = "2026-10-19-rollover-start-update"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

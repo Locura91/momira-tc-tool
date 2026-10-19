@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-19-home-nav-button"
+MODULE_BUILD = "2026-10-19-rollover-start-update"
 
 import io
 import os
