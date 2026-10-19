@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-19-rollover-fix-button"
+MODULE_BUILD = "2026-10-19-rollover-fix-button2"
 
 import os
 import re
