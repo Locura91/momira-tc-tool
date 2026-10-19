@@ -291,7 +291,7 @@ def _click_next_month(page) -> bool:
         return False
 
 
-def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 45000) -> List[_dt.date]:
+def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 90000) -> List[_dt.date]:
     """Every closed date the supplier's calendar shows for one tour URL, across its whole horizon.
 
     Opens the page, advances to the check-in step, opens the calendar, walks it, and returns the
@@ -320,8 +320,16 @@ CONTINUE_BUTTON_TEXT = "Continue"
 CHECKIN_FIELD_TEXT = "Select check in date"
 
 
+_ADVANCE_TO_CHECKIN_ATTEMPTS = 3
+
+
 def _advance_to_checkin(page, timeout_ms: int) -> None:
-    """If we landed on the package description step, click Continue to reach the calendar step."""
+    """If we landed on the package description step, click Continue to reach the calendar step.
+
+    The Continue button is a React-controlled element that can silently swallow a click if
+    the page re-renders around the moment it lands — the same problem _open_calendar already
+    solves with retries. This function now does the same: up to _ADVANCE_TO_CHECKIN_ATTEMPTS
+    clicks, returning as soon as the check-in field appears."""
     if _checkin_field(page).count():
         return
     button = page.get_by_role("button", name=CONTINUE_BUTTON_TEXT)
@@ -329,19 +337,31 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
         raise CalendarShapeChanged(
             "this page shows neither the check-in field nor a Continue button, so there is no way "
             "to reach the availability calendar from it - the URL may no longer be valid")
-    try:
-        button.first.click(timeout=timeout_ms)
-        # Wait for the React app to finish rendering the next step. networkidle is
-        # best-effort here — if the page keeps polling we still proceed, hence the
-        # broad except. The real guard is the wait_for on the check-in field below.
+    per_attempt_ms = max(5000, timeout_ms // _ADVANCE_TO_CHECKIN_ATTEMPTS)
+    last_error = None
+    for attempt in range(_ADVANCE_TO_CHECKIN_ATTEMPTS):
+        if _checkin_field(page).count():
+            return  # already there from a previous attempt's click
         try:
-            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
+            button.first.click(timeout=timeout_ms)
+        except Exception as exc:
+            last_error = exc
+            continue
+        # Wait for the React app to finish rendering the next step. networkidle is
+        # best-effort — React SPAs keep polling so this often times out; the real
+        # guard is the wait_for on the check-in field below.
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(per_attempt_ms, 8000))
         except Exception:
             pass
-        _checkin_field(page).wait_for(state="visible", timeout=timeout_ms)
-    except Exception as exc:
-        raise CalendarShapeChanged(
-            f"clicked Continue but never reached the check-in step: {exc}") from exc
+        try:
+            _checkin_field(page).wait_for(state="visible", timeout=per_attempt_ms)
+            return  # success
+        except Exception as exc:
+            last_error = exc
+    raise CalendarShapeChanged(
+        f"clicked Continue {_ADVANCE_TO_CHECKIN_ATTEMPTS} times but never reached the "
+        f"check-in step. Last error: {last_error}")
 
 
 def _checkin_field(page):
