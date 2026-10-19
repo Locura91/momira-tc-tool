@@ -13,6 +13,7 @@ import streamlit as st
 from date_format import to_iso_date as _iso, DISPLAY_HINT as _DATE_HINT
 from ai_extractor import friendly_error_message
 import price_validity
+from transport_image_bulk import TRANSPORT_TYPES, TRANSPORT_TYPE_LABELS
 import platform_store
 import service_notes
 import bulk_notes
@@ -63,6 +64,21 @@ def render_manual_information_flow(client):
     st.caption("A note is scoped to one supplier AND one product type, because a change to how "
               "transfers are picked up says nothing about that supplier's hotels. To cover more "
               "than one, do it once per type.")
+
+    _ANY_TRANSPORT_TYPE = "— All Transport Types —"
+    transport_type: str | None = None
+    if product_type == "Transport":
+        type_label_to_key = {TRANSPORT_TYPE_LABELS[t]: t for t in TRANSPORT_TYPES}
+        type_labels = [_ANY_TRANSPORT_TYPE] + list(type_label_to_key.keys())
+        type_choice = st.selectbox(
+            "Transport Type (optional — leave as 'All' to apply to every Transport)",
+            type_labels, key="mi_transport_type_filter",
+        )
+        if type_choice != _ANY_TRANSPORT_TYPE:
+            transport_type = type_label_to_key[type_choice]
+            st.caption(f"Only **{type_choice}** transports will be affected.")
+        else:
+            st.caption("All Transport Types will be affected.")
 
     if not supplier_id:
         st.info("Choose a supplier above to write a note.")
@@ -348,11 +364,11 @@ def render_manual_information_flow(client):
     # but the checkboxes work there too if a pasted code turns out not to need this after all.
     if add_structured:
         preview_disabled = not (item_data.get("name") or "").strip()
-        current_sig = (supplier_id, product_type, structured_kind,
+        current_sig = (supplier_id, product_type, transport_type, structured_kind,
                        tuple(sorted((item_data or {}).items())), tuple(codes or ()))
     else:
         preview_disabled = not (text or "").strip()
-        current_sig = (supplier_id, product_type, target, text, mode, tuple(codes or ()))
+        current_sig = (supplier_id, product_type, transport_type, target, text, mode, tuple(codes or ()))
 
     pcol1, pcol2 = st.columns([1, 3])
     with pcol1:
@@ -366,11 +382,11 @@ def render_manual_information_flow(client):
                 if add_structured:
                     st.session_state.mi_plan = bulk_notes.plan_structured(
                         client, supplier_id, product_type, structured_kind, item_data,
-                        codes=codes, progress=_tick)
+                        codes=codes, transport_type=transport_type, progress=_tick)
                 else:
                     st.session_state.mi_plan = bulk_notes.plan(
                         client, supplier_id, product_type, target, text, mode=mode,
-                        codes=codes, progress=_tick)
+                        codes=codes, transport_type=transport_type, progress=_tick)
                 # The signature includes `codes`: without it, previewing tours A+B and then
                 # editing the box to C left Send armed and would have written A+B.
                 st.session_state.mi_plan_sig = current_sig

@@ -49,7 +49,7 @@ from numeric_helpers import _safe_float
 # as a traceback whose line numbers pointed at unrelated code. bulk_notes.py never carried this
 # stamp before (2026-09-13, while consolidating _safe_float into numeric_helpers.py) - an oversight
 # that meant a partial deploy touching only this file was invisible to the app's own check.
-MODULE_BUILD = "2026-10-19-transport-img-debug"
+MODULE_BUILD = "2026-10-19-transport-manual-type-filter"
 
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}
@@ -389,6 +389,7 @@ _TRANSPORT_SUPPLEMENT_PRICE_FIELDS = (
 
 def _plan_transport_price_increase(client, supplier_id: str, amount: float, increase_base: bool,
                                    increase_supplement: bool, is_percent: bool = True,
+                                   transport_type: Optional[str] = None,
                                    progress: Optional[Callable[[int, int, str], None]] = None
                                    ) -> Dict[str, Any]:
     """CONFIRMED PRODUCT-OWNER REQUEST (2026-09-10): "Update existing price by percentage...
@@ -459,6 +460,8 @@ def _plan_transport_price_increase(client, supplier_id: str, amount: float, incr
             result["failed"] += 1
             result["items"].append({"id": f"{t_id}:base", "name": t_name, "status": "failed",
                                     "detail": f"couldn't fetch transport: {e}", "changes": {}})
+            continue
+        if transport_type and (t.get("transportType") or "").upper() != transport_type.upper():
             continue
 
         if increase_base:
@@ -672,6 +675,7 @@ def _carve_transport_option_price_window(entries: List[Dict[str, Any]], start_da
 
 def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: str, end_date: str,
                                is_percent: bool, amount: float,
+                               transport_type: Optional[str] = None,
                                progress: Optional[Callable[[int, int, str], None]] = None
                                ) -> Dict[str, Any]:
     """Transport's own plan(), kept separate from plan_structured's generic single-field-append
@@ -711,6 +715,8 @@ def _plan_transport_supplement(client, supplier_id: str, name: str, start_date: 
             result["failed"] += 1
             result["items"].append({"id": t_id, "name": t_name, "status": "failed",
                                     "detail": f"couldn't fetch transport: {e}", "changes": {}})
+            continue
+        if transport_type and (t.get("transportType") or "").upper() != transport_type.upper():
             continue
         # CONFIRMED REAL BUG (product owner, 2026-09-10, real TRANSPORT-415965 test: every row
         # in Travel Compositor's own Supplement column came back 0,00 EUR): a per-vehicle
@@ -821,6 +827,7 @@ def _apply_transport_supplement(client, supplier_id: str, planned: Dict[str, Any
 
 def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                     item_data: Dict[str, Any], codes: Optional[List[str]] = None,
+                    transport_type: Optional[str] = None,
                     progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Same job as plan(), for a structured Supplement/Additional Service instead of a text
     field: work out exactly what would change, WITHOUT writing anything. A service that
@@ -834,7 +841,7 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             client, supplier_id, (item_data or {}).get("name", ""),
             (item_data or {}).get("start_date", ""), (item_data or {}).get("end_date", ""),
             bool((item_data or {}).get("is_percent")), _safe_float((item_data or {}).get("amount")),
-            progress=progress)
+            transport_type=transport_type, progress=progress)
 
     if kind == "transport_price_increase":
         # A PERMANENT price change (base fields and/or the currently-active dated supplement
@@ -850,7 +857,7 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
             bool((item_data or {}).get("increase_base")),
             bool((item_data or {}).get("increase_supplement")),
             is_percent=bool((item_data or {}).get("is_percent", True)),
-            progress=progress)
+            transport_type=transport_type, progress=progress)
 
     result: Dict[str, Any] = {"items": [], "error": None, "will_change": 0, "unchanged": 0,
                               "failed": 0, "product_type": product_type, "target": kind,
@@ -891,6 +898,8 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                                         "detail": detail, "changes": {}})
                 result["failed"] += 1
                 continue
+        if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
+            continue
 
         existing_list = record.get(field) or []
         existing_names = {_norm(_structured_entry_name(e, kind))
@@ -1251,6 +1260,7 @@ def _items_from(data: Any, keys) -> List[Dict[str, Any]]:
 # ----------------------------------------------------------------------
 def plan(client, supplier_id: str, product_type: str, target: str, text: str,
          mode: str = MODE_APPEND, codes: Optional[List[str]] = None,
+         transport_type: Optional[str] = None,
          progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Work out exactly what would change, WITHOUT writing anything.
 
@@ -1299,6 +1309,8 @@ def plan(client, supplier_id: str, product_type: str, target: str, text: str,
                                         "detail": detail, "changes": {}})
                 result["failed"] += 1
                 continue
+        if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
+            continue
         updated, changes = write_field(record, product_type, target, text, mode)
         status = "will_change" if changes else "unchanged"
         result[status] += 1
