@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-18-transport-desc-fix"
+MODULE_BUILD = "2026-10-19-transport-img-debug"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {
@@ -77,6 +77,7 @@ def plan(client, suppliers: List[Dict[str, str]], transport_type: Optional[str],
 
     errors = []
     total_suppliers = len(suppliers)
+    result["_fetched"] = 0
     for si, sup in enumerate(suppliers):
         supplier_id = str(sup.get("id") or "")
         supplier_name = sup.get("name") or ""
@@ -87,6 +88,7 @@ def plan(client, suppliers: List[Dict[str, str]], transport_type: Optional[str],
         summaries, err = bulk_notes.list_services(client, supplier_id, "Transport")
         if err:
             errors.append(f"{supplier_name or supplier_id}: {err}")
+        result["_fetched"] += len(summaries)
         for summary in summaries:
             if not isinstance(summary, dict):
                 continue
@@ -101,6 +103,8 @@ def plan(client, suppliers: List[Dict[str, str]], transport_type: Optional[str],
                 continue
             record_type = (record.get("transportType") or "").upper()
             if transport_type and record_type != transport_type.upper():
+                result.setdefault("_type_skipped", 0)
+                result["_type_skipped"] += 1
                 continue
             current_images = list(record.get("images") or [])
             new_images = [new_image_url]
@@ -113,6 +117,11 @@ def plan(client, suppliers: List[Dict[str, str]], transport_type: Optional[str],
             # ContractTransportVO does - harmless for Car/Van/Combined, required for acceptance.
             if not updated.get("airlineCode"):
                 updated["airlineCode"] = ""
+            # TC also rejects PUT with companyName absent/null (confirmed real production error
+            # "null PK" on the create path — same underlying entity reference). Default to ""
+            # exactly as ContractTransportVO does and build_transport_swap_payload already does.
+            if "companyName" not in updated or updated.get("companyName") is None:
+                updated["companyName"] = ""
             result["items"].append({
                 "id": t_id,
                 "supplier_id": supplier_id,

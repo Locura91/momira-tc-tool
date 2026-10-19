@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-18-transport-desc-fix"
+MODULE_BUILD = "2026-10-19-transport-img-debug"
 
 _PHASE_KEY = "ti_phase"
 

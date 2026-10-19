@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier, momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-transport-desc-fix"
+MODULE_BUILD = "2026-10-19-transport-img-debug"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"

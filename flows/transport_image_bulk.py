@@ -17,7 +17,7 @@ import streamlit as st
 
 from ui_components import momira_active_suppliers
 
-MODULE_BUILD = "2026-10-18-transport-desc-fix"
+MODULE_BUILD = "2026-10-19-transport-img-debug"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any Transport Type —"
@@ -176,7 +176,17 @@ def render_transport_image_bulk_flow(client):
     will_change = [i for i in items if i["status"] == "will_change"]
     unchanged = [i for i in items if i["status"] == "unchanged"]
     if not items:
-        st.info("No matching Transports found for this scope.")
+        fetched = planned.get("_fetched", 0)
+        type_skipped = planned.get("_type_skipped", 0)
+        if fetched == 0:
+            st.info("No Transports found for this supplier — either the supplier has no live "
+                    "Transports, or the list could not be fetched (check for errors above).")
+        elif type_skipped > 0:
+            st.info(f"No matching Transports found — {fetched} transport(s) were fetched but "
+                    f"all {type_skipped} were a different Transport Type than selected. "
+                    f"Try selecting '— Any Transport Type —' to see all types.")
+        else:
+            st.info("No matching Transports found for this scope.")
         return
 
     st.subheader(f"4 — Review and choose which to update "
