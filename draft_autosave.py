@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-19-duplicate-transport-image-warning"
+MODULE_BUILD = "2026-10-19-home-nav-button"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

@@ -797,7 +797,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-19-duplicate-transport-image-warning"
+BUILD_VERSION = "2026-10-19-home-nav-button"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -846,6 +846,13 @@ def _module_build_mismatches():
     return stale, import_failures
 
 
+st.markdown(
+    '<a href="/" target="_self" style="display:inline-flex;align-items:center;gap:.35rem;'
+    'font-size:.85rem;font-weight:600;color:#17a39b;text-decoration:none;'
+    'background:#f0fdfc;border:1px solid #99e6e0;border-radius:6px;padding:.3rem .75rem;'
+    'margin-bottom:.5rem">← Home</a>',
+    unsafe_allow_html=True,
+)
 st.title("Momira Travel Platform")
 st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 

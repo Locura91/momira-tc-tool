@@ -27,7 +27,7 @@ import streamlit as st
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-19-duplicate-transport-image-warning"
+MODULE_BUILD = "2026-10-19-home-nav-button"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 

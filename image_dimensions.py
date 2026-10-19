@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-19-duplicate-transport-image-warning"
+MODULE_BUILD = "2026-10-19-home-nav-button"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
