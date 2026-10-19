@@ -11,9 +11,9 @@ to ~100/60sec), CC0-licensed content - no attribution legally required
 Pixabay photos are already hosted, so the returned URLs can go directly
 into Travel Compositor's 'images' field - no re-uploading needed.
 """
-import os
 import requests
 from dotenv import load_dotenv
+from env_helpers import check_http_response, require_env_key
 
 load_dotenv()
 
@@ -27,20 +27,17 @@ def search_images(query: str, per_page: int = 6) -> list:
     second source in the UI.
     Raises RuntimeError with a clear message if the API key is missing or the request fails.
     """
-    api_key = os.getenv("PIXABAY_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "PIXABAY_API_KEY is not set. Get a free key at https://pixabay.com/api/docs/ "
-            "(create a free account, key is shown on that page) and add it to your "
-            ".env (locally) or Streamlit Secrets (when deployed)."
-        )
+    api_key = require_env_key(
+        "PIXABAY_API_KEY",
+        "https://pixabay.com/api/docs/",
+        key_url="https://pixabay.com/api/docs/",
+    )
 
     # Pixabay requires per_page >= 3
     params = {"key": api_key, "q": query, "image_type": "photo", "per_page": max(per_page, 3)}
 
     res = requests.get(PIXABAY_BASE_URL, params=params, timeout=10)
-    if res.status_code != 200:
-        raise RuntimeError(f"Pixabay search failed ({res.status_code}): {res.text[:200]}")
+    check_http_response(res, "Pixabay search")
 
     data = res.json()
     results = []
