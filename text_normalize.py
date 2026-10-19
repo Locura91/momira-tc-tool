@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-10-19-home-nav-button"
+MODULE_BUILD = "2026-10-19-rollover-start-update"
 
 
 def normalize_name(s: Optional[str]) -> str:

@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 import platform_store
 
 # Stamped on every delivery — see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-19-home-nav-button"
+MODULE_BUILD = "2026-10-19-rollover-start-update"
 
 _NAMESPACE = "cancellation_links"
 
