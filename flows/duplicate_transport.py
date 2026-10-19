@@ -496,6 +496,19 @@ def _render_review_and_publish(client, supplier_id):
                 elif created_codes:
                     st.success(f"✅ Published successfully (id: {new_id}) with all {len(options)} "
                               f"occupancy bracket(s).")
+                # CONFIRMED TC LIMITATION (2026-10-19): Travel Compositor's Transport endpoint
+                # silently ignores the `images` field on both POST and PUT — the image is sent in
+                # the payload (copied via deepcopy from the original) but TC never persists it.
+                # The bulk image tool's own write_verified check confirmed this. So after a
+                # successful publish, always remind the human to add the image manually.
+                source_images = source.get("images") or []
+                if source_images:
+                    st.info(
+                        f"🖼️ **Image not copied** — Travel Compositor's Transport endpoint ignores "
+                        f"the `images` field on create/update (known TC limitation). "
+                        f"Add the image manually in TC admin for **{new_id}**.\n\n"
+                        f"Original image URL: `{source_images[0]}`"
+                    )
                 # CONFIRMED PRODUCT-OWNER REPORT (2026-09-22): the "found unfinished work"
                 # draft-restore banner kept coming back even after a successful publish - the
                 # parent transport record is created here regardless of which branch above ran,
