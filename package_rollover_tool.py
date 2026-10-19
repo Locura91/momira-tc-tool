@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-19-rollover-fix-button"
+MODULE_BUILD = "2026-10-19-rollover-fix-button2"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -248,6 +248,7 @@ def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
 
     # components.v1.html() renders in a sandboxed iframe that includes allow-popups,
     # so window.open() and navigator.clipboard both work from inside it.
+    # Script and URL are stored in JS variables (not inline) to avoid HTML-escaping issues.
     _components.html(
         f"""
 <style>
@@ -256,20 +257,24 @@ def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
         border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
         text-align:center;box-sizing:border-box;}}
   .btn:hover{{background:#c53030}}
-  .hint{{font-size:.82rem;color:#374151;margin:.45rem 0 .2rem;line-height:1.5}}
+  .hint{{font-size:.82rem;color:#374151;margin:.5rem 0 0;line-height:1.5}}
   .hint b{{color:#111}}
 </style>
-<button class="btn" onclick="
-  navigator.clipboard.writeText({_json.dumps(script)}).catch(function(){{}});
-  window.open({_json.dumps(url)},'_blank');
-">🚀 Start update</button>
+<script>
+var TC_SCRIPT = {_json.dumps(script)};
+var TC_URL    = {_json.dumps(url)};
+function startUpdate() {{
+  navigator.clipboard.writeText(TC_SCRIPT).catch(function(){{}});
+  window.open(TC_URL, '_blank');
+}}
+</script>
+<button class="btn" onclick="startUpdate()">🚀 Start update</button>
 <p class="hint">
-  After the page opens:
-  <b>F12 → Console tab → Ctrl+V → Enter</b>
-  — the script is already copied to your clipboard.
+  After the page opens: <b>F12 → Console tab → Ctrl+V → Enter</b>
+  — the script is already on your clipboard.
 </p>
 """,
-        height=90,
+        height=95,
     )
 
     st.caption(
