@@ -27,7 +27,7 @@ import streamlit as st
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-19-transport-img-debug"
+MODULE_BUILD = "2026-10-19-transport-manual-type-filter"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 

@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-19-transport-img-debug"
+MODULE_BUILD = "2026-10-19-transport-manual-type-filter"
 
 import io
 import os

@@ -14,7 +14,7 @@ load_dotenv()
 # carried this stamp before (2026-09-13, while porting api_client.py's hardened _request over) -
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
-MODULE_BUILD = "2026-10-19-transport-img-debug"
+MODULE_BUILD = "2026-10-19-transport-manual-type-filter"
 
 
 def _try_parse_json(text: str):
