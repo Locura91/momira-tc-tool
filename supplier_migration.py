@@ -74,8 +74,7 @@ NOT retired, so nothing is ever double-booked or silently lost even on a failure
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-tpdc-back"
 
 import json
 from datetime import date

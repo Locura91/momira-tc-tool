@@ -48,8 +48,7 @@ and a reminder that silently disappears on the next deploy is worse than no remi
 because by then the hotel is live and nobody is looking for it any more.
 """
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-tpdc-back"
 
 import time
 from typing import Any, Dict, List, Optional

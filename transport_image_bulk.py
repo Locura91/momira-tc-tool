@@ -26,8 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-tpdc-back"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {
