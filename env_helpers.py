@@ -6,7 +6,7 @@ repeating the same guard and error-formatting code in every API client.
 import os
 import requests
 
-MODULE_BUILD = "2026-10-20-fix-ticket-update"
+MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
 
 
 def require_env_key(var_name: str, signup_url: str, key_url: str | None = None) -> str:

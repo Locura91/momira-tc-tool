@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-20-fix-ticket-update"
+MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
 
 import json
 from datetime import date
@@ -1648,9 +1648,13 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
 
 
 def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
-                           progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
-    """Push the accepted Ticket price proposals. Each Modality is PUT back whole, with only its
-    occupancyPrices changed - same belt-and-braces shape as apply_proposals() above."""
+                           progress: Optional[Callable[[int, int, str], None]] = None,
+                           new_end_date: Optional[str] = None) -> Dict[str, Any]:
+    """Push the accepted Ticket price proposals. Each Modality is PUT back whole, with its
+    occupancyPrices updated and, when new_end_date is given, its endDate extended too.
+
+    CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): a new price always comes with a new season,
+    so the Modality's operational end date must move forward at the same time."""
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
     out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
     for n, proposal in enumerate(accepted):
@@ -1658,6 +1662,8 @@ def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, A
         if progress:
             progress(n + 1, len(accepted), route.get("name", ""))
         payload = rebuild_ticket_prices(route, proposal["changes"])
+        if new_end_date:
+            payload["endDate"] = new_end_date
         payload["code"] = route.get("modality_code")
         try:
             res = client.update_ticket_option(supplier_id, route.get("ticket_code"), payload)
@@ -1665,7 +1671,8 @@ def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, A
                 out["failed"].append({"name": route.get("name"),
                                       "detail": str(res.get("message") or res.get("error"))})
                 continue
-            out["updated"].append({"name": route.get("name"), "changes": proposal["changes"]})
+            out["updated"].append({"name": route.get("name"), "changes": proposal["changes"],
+                                   "new_end_date": new_end_date})
         except Exception as e:
             out["failed"].append({"name": route.get("name"),
                                   "detail": ai_extractor.friendly_error_message(e)})
