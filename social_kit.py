@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-distribution-ticket-prices"
+MODULE_BUILD = "2026-10-20-bulk-stop-sales"
 
 import io
 import os

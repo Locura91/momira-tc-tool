@@ -41,7 +41,7 @@ from urllib.parse import urlparse, unquote
 
 import requests
 
-MODULE_BUILD = "2026-10-20-distribution-ticket-prices"
+MODULE_BUILD = "2026-10-20-bulk-stop-sales"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
