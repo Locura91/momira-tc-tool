@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
+MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
 
 import io
 import os

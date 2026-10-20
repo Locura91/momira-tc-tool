@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
+MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
 
 import math
 from difflib import SequenceMatcher
