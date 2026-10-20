@@ -19,7 +19,7 @@ scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 import streamlit as st
 

@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 import io
 import os

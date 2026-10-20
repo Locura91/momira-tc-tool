@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

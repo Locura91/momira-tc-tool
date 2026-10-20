@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
