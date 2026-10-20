@@ -33,6 +33,7 @@ one vehicle class on the same route (e.g. Sedan AND Hiace, Cairo Airport -> Cair
 those are genuinely separate products, not duplicates of each other.
 """
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 from typing import Any, Dict, List, Optional
 

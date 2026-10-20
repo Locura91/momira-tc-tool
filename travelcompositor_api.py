@@ -15,6 +15,7 @@ load_dotenv()
 # an oversight that meant a partial deploy touching only this file was invisible to the app's own
 # check.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 
 def _try_parse_json(text: str):

@@ -21,6 +21,7 @@ actually sharing it. All five flows now call the same function.
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 import re
 import math

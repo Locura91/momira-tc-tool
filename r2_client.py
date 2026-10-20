@@ -18,7 +18,6 @@ own systems fetch it, that's an egress hit. S3 charges per GB after a limited fr
 allowance; R2 does not, which matters a lot for images that get fetched repeatedly and
 indefinitely.
 
-============================== ONE-TIME SETUP (do this yourself - I cannot create the account
 or bucket for you) ==============================
 1. Create a free Cloudflare account at https://dash.cloudflare.com/sign-up (no credit card
    required for R2's free tier: 10 GB storage, 1M Class A + 10M Class B operations/month free).
@@ -72,6 +71,7 @@ import mimetypes
 import requests
 from dotenv import load_dotenv
 
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 # CONFIRMED FIX (2026-08-22): this module reads its five R2_* values via os.getenv() below, but

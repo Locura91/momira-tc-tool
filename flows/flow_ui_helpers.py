@@ -6,6 +6,7 @@ stay in sync without copy-pasting.
 import streamlit as st
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 
 def render_html_field_with_ai_swap_status(

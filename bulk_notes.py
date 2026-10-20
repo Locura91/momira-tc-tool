@@ -50,6 +50,7 @@ from numeric_helpers import _safe_float
 # stamp before (2026-09-13, while consolidating _safe_float into numeric_helpers.py) - an oversight
 # that meant a partial deploy touching only this file was invisible to the app's own check.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 # How a product type's text is stored.
 #   "datasheets"       -> record["datasheets"] = {"EN": {...}, "DE": {...}}

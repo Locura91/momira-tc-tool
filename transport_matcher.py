@@ -42,6 +42,7 @@ Compositor itself (confirmed via get_transport/get_transports).
 # text_normalize.py) - a partial deploy that updated every other file but this one would have
 # gone undetected by app.py's own stale-module check.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 import os
 import json

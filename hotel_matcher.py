@@ -34,6 +34,7 @@ memory of past uploads.
 # updated every other file but this one would have gone undetected by app.py's own
 # _module_build_mismatches() check. Added here and to that check's module list together.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 from typing import List, Optional
 from text_normalize import normalize_name as _norm

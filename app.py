@@ -798,6 +798,7 @@ if st.session_state.client is None:
 client = st.session_state.client
 
 BUILD_VERSION = "2026-10-20-fix-memory-widget-key"
+BUILD_VERSION = "2026-10-19-dedup-helpers"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is

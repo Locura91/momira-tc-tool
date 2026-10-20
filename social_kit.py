@@ -30,6 +30,7 @@ Requires: requests, Pillow.
 from __future__ import annotations
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 import io
 import os

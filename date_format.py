@@ -25,6 +25,7 @@ becomes 4 March, moving a season boundary by a month with nothing on screen to s
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 import re
 from datetime import date, datetime

@@ -80,6 +80,7 @@ from api_client import TravelCompositorAPI
 # the repo with no MODULE_BUILD stamp - see api_client.py's matching note for why the detector
 # being blind to files like this one is worth closing.
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 # CONFIRMED, 2026-08-31 (project doc, the "four booking-shape fields" the conversational flow
 # collects once the customer approves the itinerary): "number of rooms (max 4), number of

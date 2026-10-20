@@ -26,6 +26,7 @@ import unicodedata
 from typing import Optional
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 
 def normalize_name(s: Optional[str]) -> str:

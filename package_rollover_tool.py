@@ -42,6 +42,7 @@ import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 _PHASE_KEY = "pkr_phase"
 

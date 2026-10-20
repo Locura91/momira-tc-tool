@@ -28,6 +28,7 @@ Travel Compositor's own data carries one.
 """
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 import math
 from difflib import SequenceMatcher

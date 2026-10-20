@@ -28,6 +28,7 @@ import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 

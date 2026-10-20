@@ -30,6 +30,7 @@ from typing import Optional, Dict, Any, List
 import platform_store
 
 MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 _NAMESPACE = "translation_state"
 
