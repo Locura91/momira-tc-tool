@@ -317,8 +317,17 @@ def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 90000) 
 # configured URL's path, this always looks at where it actually landed and clicks Continue if it
 # is still on step 1. Continue only moves between wizard steps; it submits no data.
 CONTINUE_BUTTON_TEXT = "Continue"
-CHECKIN_FIELD_TEXT = "Select check in date"
 
+# Ordered by likelihood — if the supplier renames the field, earlier variants still work.
+_CHECKIN_FIELD_TEXTS = [
+    "Select check in date",
+    "Select check-in date",
+    "Check in date",
+    "Check-in date",
+    "Check In Date",
+    "Arrival date",
+    "Select arrival date",
+]
 
 _ADVANCE_TO_CHECKIN_ATTEMPTS = 3
 
@@ -330,7 +339,7 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
     the page re-renders around the moment it lands — the same problem _open_calendar already
     solves with retries. This function now does the same: up to _ADVANCE_TO_CHECKIN_ATTEMPTS
     clicks, returning as soon as the check-in field appears."""
-    if _checkin_field(page).count():
+    if _checkin_field(page) is not None:
         return
     button = page.get_by_role("button", name=CONTINUE_BUTTON_TEXT)
     if not button.count():
@@ -340,7 +349,7 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
     per_attempt_ms = max(5000, timeout_ms // _ADVANCE_TO_CHECKIN_ATTEMPTS)
     last_error = None
     for attempt in range(_ADVANCE_TO_CHECKIN_ATTEMPTS):
-        if _checkin_field(page).count():
+        if _checkin_field(page) is not None:
             return  # already there from a previous attempt's click
         try:
             button.first.click(timeout=timeout_ms)
@@ -355,8 +364,10 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
         except Exception:
             pass
         try:
-            _checkin_field(page).wait_for(state="visible", timeout=per_attempt_ms)
-            return  # success
+            field = _checkin_field(page)
+            if field is not None:
+                field.wait_for(state="visible", timeout=per_attempt_ms)
+                return  # success
         except Exception as exc:
             last_error = exc
     raise CalendarShapeChanged(
@@ -365,17 +376,20 @@ def _advance_to_checkin(page, timeout_ms: int) -> None:
 
 
 def _checkin_field(page):
-    """The check-in control. It is a styled DIV, not an <input> - it has no placeholder attribute,
-    so it can only be found by its text.
+    """The check-in control — returns the best locator match or None if not found.
 
-    exact=True and .last together matter, and a loose match is a real bug, not a style point:
-    a substring match ALSO matches every ancestor that contains the field, up to <main>, and
-    Playwright clicks the centre of whatever it is given. Clicking the centre of <main> lands on
-    the field only when the page happens to be laid out so that it does - on 2026-10-07 that was
-    true for three of the four tours and false for CNX-3, whose page is short, so CNX-3 alone
-    failed with 'no month calendar appeared'. exact=True drops the ancestors (their text contains
-    much more than this string) and .last then takes the innermost of what remains."""
-    return page.get_by_text(CHECKIN_FIELD_TEXT, exact=True).last
+    Tries multiple known text labels because the supplier may have renamed the field. Within each
+    label, uses exact=True and .last: a substring match also matches every ancestor element up to
+    <main>, and Playwright clicks the centre of whatever it is given — exact=True drops the
+    ancestors (their text contains much more), and .last picks the innermost remaining match.
+
+    Returns None rather than a zero-count locator so callers can do `if _checkin_field(page):`
+    and still get a real locator to click."""
+    for text in _CHECKIN_FIELD_TEXTS:
+        loc = page.get_by_text(text, exact=True).last
+        if loc.count():
+            return loc
+    return None
 
 
 # The first click on the check-in field is sometimes swallowed - the page is a React app that
@@ -384,33 +398,75 @@ def _checkin_field(page):
 # CNX-3 failed every run with "no month calendar appeared" from a page that a screenshot showed
 # was sitting correctly on the Check In step with the field visible, while the other three tours
 # worked. Clicking again is the fix; a single attempt is simply unreliable on this page.
-_OPEN_CALENDAR_ATTEMPTS = 3
+_OPEN_CALENDAR_ATTEMPTS = 5
 
-_CALENDAR_IS_OPEN_JS = """() => [...document.querySelectorAll('*')].some(
-     e => e.children.length === 0 && /^[A-Z][a-z]{2} 20\\d\\d$/.test((e.textContent||'').trim()))"""
+# Matches both abbreviated ("Oct 2026") and full ("October 2026") month names, so a site
+# redesign that switches from one to the other does not silently fail.
+_CALENDAR_IS_OPEN_JS = r"""() => [...document.querySelectorAll('*')].some(
+     e => e.children.length === 0 &&
+          /^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+20\d\d$/.test((e.textContent||'').trim()))"""
+
+# Also detect a calendar-like dialog via common attributes — useful if the month label format
+# changed but the role/aria-label did not.
+_CALENDAR_DIALOG_JS = r"""() =>
+     !!document.querySelector('[role="dialog"]') ||
+     !!document.querySelector('[aria-label*="calendar" i]') ||
+     !!document.querySelector('[data-testid*="calendar" i]') ||
+     [...document.querySelectorAll('*')].some(
+         e => e.children.length === 0 &&
+              /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\S*\s+20\d\d$/.test((e.textContent||'').trim()))"""
 
 
 def _open_calendar(page, timeout_ms: int) -> None:
     """Click the check-in field until the date dialog actually opens.
 
     A programmatic element.click() does not reach this control's React handler, so Playwright's
-    real input events are used. If the dialog never appears after every attempt, that is raised
-    rather than silently producing an empty - and falsely reassuring - 'nothing is closed'
-    reading: an unopened calendar and a fully available year look identical from here, and only
-    one of them is safe to act on."""
-    per_attempt_ms = max(2000, timeout_ms // _OPEN_CALENDAR_ATTEMPTS)
+    real input events are used. Tries up to _OPEN_CALENDAR_ATTEMPTS times with a short wait
+    between each. A JS-based dispatchEvent click is tried as a fallback on the last attempt when
+    standard Playwright clicks have all failed. If the dialog never appears after every attempt,
+    that is raised rather than silently producing an empty - and falsely reassuring - 'nothing is
+    closed' reading: an unopened calendar and a fully available year look identical from here, and
+    only one of them is safe to act on."""
+    per_attempt_ms = max(3000, timeout_ms // _OPEN_CALENDAR_ATTEMPTS)
     last_error = None
     for attempt in range(_OPEN_CALENDAR_ATTEMPTS):
+        field = _checkin_field(page)
+        if field is None:
+            raise CalendarShapeChanged(
+                f"check-in field not found on attempt {attempt + 1} — tried text variants: "
+                + repr(_CHECKIN_FIELD_TEXTS))
         try:
-            _checkin_field(page).click(timeout=timeout_ms)
+            if attempt == _OPEN_CALENDAR_ATTEMPTS - 1:
+                # Last attempt: try a JS dispatchEvent click as a fallback to Playwright's
+                # real-events click, in case something about the element's interactivity changed.
+                try:
+                    field.dispatch_event("click")
+                except Exception:
+                    field.click(timeout=timeout_ms)
+            else:
+                field.click(timeout=timeout_ms)
         except Exception as exc:
             last_error = exc
+            # Short pause before retry — lets React settle between clicks.
+            try:
+                page.wait_for_timeout(800)
+            except Exception:
+                pass
             continue
+        # Check for calendar open — accept either the narrow month-label match or the broader
+        # dialog-presence match, so a format change in the month header alone is not fatal here
+        # (interpret_month will still raise CalendarShapeChanged if it can't parse the label).
+        for js in (_CALENDAR_IS_OPEN_JS, _CALENDAR_DIALOG_JS):
+            try:
+                page.wait_for_function(js, timeout=per_attempt_ms)
+                return
+            except Exception as exc:
+                last_error = exc
+        # Calendar did not open — short pause before next click attempt.
         try:
-            page.wait_for_function(_CALENDAR_IS_OPEN_JS, timeout=per_attempt_ms)
-            return
-        except Exception as exc:
-            last_error = exc
+            page.wait_for_timeout(1200)
+        except Exception:
+            pass
     raise CalendarShapeChanged(
         f"the check-in field was clicked {_OPEN_CALENDAR_ATTEMPTS} times but no month calendar "
         f"ever appeared - reading this as 'nothing is closed' would be wrong, so the run stops "
