@@ -41,7 +41,7 @@ caller - see rebuild_prices().
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-20-fix-transfer-return-label"
+MODULE_BUILD = "2026-10-20-distribution-ticket-prices"
 
 import json
 from datetime import date
@@ -511,16 +511,33 @@ def load_supplier_products(client, supplier_id: str, kind: str,
 # load an existing Ticket Modality's live occupancyPrices from Travel Compositor, match it to
 # the document by its own CODE, diff, let a human accept/reject/edit, and apply.
 TICKET_SUPPORTED_PRICE_TYPE = "OCCUPANCY"
+TICKET_DISTRIBUTION_PRICE_TYPE = "DISTRIBUTION"
+TICKET_SUPPORTED_PRICE_TYPES = {TICKET_SUPPORTED_PRICE_TYPE, TICKET_DISTRIBUTION_PRICE_TYPE}
 
 
 def _ticket_price_type_supported(price_type: Optional[str]) -> bool:
-    """OCCUPANCY is the only Modality pricing mode this phase understands - its per-headcount
-    occupancyPrices table maps directly onto the rate sheet's per-group-size brackets. A
-    DISTRIBUTION (flat per-adult/child regardless of group size) or SERVICE (one flat total)
-    Modality is NOT guessed at - it is listed and named as unsupported, consistent with this
-    codebase's established "block rather than guess" rule (see build_proposals' blocked_
-    unreadable handling above)."""
-    return (price_type or TICKET_SUPPORTED_PRICE_TYPE) == TICKET_SUPPORTED_PRICE_TYPE
+    """OCCUPANCY and DISTRIBUTION are supported. SERVICE (one flat total) is not.
+
+    DISTRIBUTION: flat per-adult/child rate stored in baseAdultPrice/baseChildrenPrice - no
+    pax brackets. The document supplies one adult price (and optionally a child price) which
+    maps directly onto those two fields. Added 2026-10-20."""
+    return (price_type or TICKET_SUPPORTED_PRICE_TYPE) in TICKET_SUPPORTED_PRICE_TYPES
+
+
+def _ticket_distribution_options(modality: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """DISTRIBUTION Modality: adult price = baseAdultPrice, child price = baseChildrenPrice.
+
+    Returned as a single synthetic option with min_pax=1/max_pax=999 so the same
+    bracket_price_for() lookup and proposal machinery works unchanged."""
+    adult_price = round(_num(modality.get("baseAdultPrice")), 2)
+    child_price = round(_num(modality.get("baseChildrenPrice")), 2)
+    adult = [{"code": "dist_adult", "min_pax": 1, "max_pax": 999,
+              "unit_price": adult_price, "name": "per person (adult)", "raw": {}}]
+    child = []
+    if child_price > 0:
+        child = [{"code": "dist_adult", "min_pax": 1, "max_pax": 999,
+                  "unit_price": child_price, "name": "per person (child)", "raw": {}}]
+    return adult, child
 
 
 def _ticket_occupancy_options(modality: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -604,7 +621,10 @@ def load_supplier_tickets(client, supplier_id: str,
                            "options": [], "child_options": [], "raw": None})
                 continue
             price_type = opt.get("priceType") or TICKET_SUPPORTED_PRICE_TYPE
-            adult_options, child_options = _ticket_occupancy_options(opt)
+            if price_type == TICKET_DISTRIBUTION_PRICE_TYPE:
+                adult_options, child_options = _ticket_distribution_options(opt)
+            else:
+                adult_options, child_options = _ticket_occupancy_options(opt)
             out.append({
                 "kind": KIND_TICKET,
                 "id": f"{ticket_code}/{modality_code}",
@@ -1616,9 +1636,28 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
 
     baseAdultPrice is deliberately left UNTOUCHED for an OCCUPANCY Modality: builder.py already
     treats it as a required-but-inert placeholder outside DISTRIBUTION mode (a harmless 1.0 when
-    creating one) - the real per-headcount prices live entirely in occupancyPrices, which is
-    what this function actually rewrites."""
+    creating one) - the real per-headcount prices live entirely in occupancyPrices.
+
+    For DISTRIBUTION Modalities the opposite is true: occupancyPrices is empty and the real
+    prices are baseAdultPrice / baseChildrenPrice, which this function updates directly."""
     payload = json.loads(json.dumps(route["raw"]))
+    price_type = route.get("price_type") or TICKET_SUPPORTED_PRICE_TYPE
+
+    if price_type == TICKET_DISTRIBUTION_PRICE_TYPE:
+        resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
+        resolved_child = {c["code"]: round(float(c["child_new"]), 2)
+                          for c in changes if c.get("child_new") is not None}
+        if "dist_adult" in resolved_adult:
+            payload["baseAdultPrice"] = resolved_adult["dist_adult"]
+        if "dist_adult" in resolved_child:
+            payload["baseChildrenPrice"] = resolved_child["dist_adult"]
+        elif "dist_adult" in resolved_adult:
+            old_adult = _num(route["options"][0]["unit_price"]) if route.get("options") else 0
+            if old_adult > 0:
+                ratio = resolved_adult["dist_adult"] / old_adult
+                payload["baseChildrenPrice"] = round(_num(payload.get("baseChildrenPrice")) * ratio, 2)
+        return payload
+
     resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
     resolved_child = {c["code"]: round(float(c["child_new"]), 2)
                       for c in changes if c.get("child_new") is not None}
@@ -1635,9 +1674,6 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
             if code in resolved_child:
                 row["amount"] = resolved_child[code]
             elif code in resolved_adult and adult_by_code.get(code, {}).get("unit_price", 0) > 0:
-                # No explicit child price in the document for this bracket - move the child
-                # price with the adult price, same ratio-scaling rule Transport already uses
-                # for baseChildrenPrice/baseInfantPrice, rather than leaving it stale.
                 ratio = resolved_adult[code] / adult_by_code[code]["unit_price"]
                 row["amount"] = round(_num(row.get("amount")) * ratio, 2)
         elif code in resolved_adult:

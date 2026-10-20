@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-transfer-return-label"
+MODULE_BUILD = "2026-10-20-distribution-ticket-prices"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

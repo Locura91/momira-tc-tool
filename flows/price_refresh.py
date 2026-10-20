@@ -839,7 +839,7 @@ def render_ticket_price_refresh_flow(client):
     st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
               f"document · {len(absent)} not found in it."
               + (f" · {len(blocked)} could not be read" if blocked else "")
-              + (f" · {len(unsupported)} not OCCUPANCY-priced (unsupported)" if unsupported else ""))
+              + (f" · {len(unsupported)} not supported yet (SERVICE pricing)" if unsupported else ""))
 
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): "when bulk updating price, it must also
     # check if operational days need to be made longer. Usually with a new price comes a new
@@ -879,11 +879,9 @@ def render_ticket_price_refresh_flow(client):
 
     if unsupported:
         with st.expander(f"⚠️ {len(unsupported)} Modality(ies) not supported yet "
-                         f"(DISTRIBUTION/SERVICE pricing)"):
-            st.caption("This screen only refreshes OCCUPANCY-priced Modalities (a per-headcount "
-                      "table) so far. A DISTRIBUTION (flat per-adult/child) or SERVICE (one flat "
-                      "total) Modality is listed here rather than guessed at — update it by hand "
-                      "for now.")
+                         f"(SERVICE pricing)"):
+            st.caption("SERVICE-priced Modalities (one flat total per booking) are not yet "
+                      "supported — update those by hand for now.")
             for p in unsupported:
                 route = p["route"]
                 st.markdown(f"- **{route.get('name') or '(unnamed)'}** — priceType "
@@ -911,27 +909,29 @@ def render_ticket_price_refresh_flow(client):
                                         key=f"tpr_ok_{p['index']}_{p.get('widget_token', 'g0')}")
         with cols[1]:
             st.markdown(head)
+            _is_dist = route.get("price_type") == "DISTRIBUTION"
             for c in p["changes"]:
                 pcol1, pcol2 = st.columns([3, 2])
+                _pax_label = "per person" if _is_dist else f"{c['min_pax']} pax"
                 with pcol2:
                     c["new"] = st.number_input(
-                        f"New adult price ({c['min_pax']} pax)", min_value=0.0, step=1.0,
+                        f"New adult price ({_pax_label})", min_value=0.0, step=1.0,
                         value=float(c["new"]),
                         key=f"tpr_price_{p['index']}_{c['code']}_{p.get('widget_token', 'g0')}",
                         label_visibility="collapsed")
                 with pcol1:
                     _ccy = route.get('currency') or ''
                     if abs(c["new"] - c["old"]) < 0.005:
-                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :green[**{c['new']}**] {_ccy}  ·  "
+                        st.markdown(f"{_pax_label}: {c['old']} → :green[**{c['new']}**] {_ccy}  ·  "
                                    f"*matches the live price*")
                     else:
-                        st.markdown(f"{c['min_pax']} pax: {c['old']} → :red[**{c['new']}**] {_ccy}")
+                        st.markdown(f"{_pax_label}: {c['old']} → :red[**{c['new']}**] {_ccy}")
                     if c.get("child_new") is not None:
-                        st.caption(f"child at {c['min_pax']} pax: "
+                        st.caption(f"child ({_pax_label}): "
                                   f"{c.get('child_old') if c.get('child_old') is not None else '?'} → "
                                   f"{c['child_new']} {_ccy} (from the document)")
                     elif c.get("child_old") is not None:
-                        st.caption(f"child at {c['min_pax']} pax moves with the adult price "
+                        st.caption(f"child ({_pax_label}) moves with the adult price "
                                   f"(document gave no separate child price)")
             bits = []
             if finding.get("matched_row"):
