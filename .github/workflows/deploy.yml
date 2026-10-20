@@ -12,9 +12,9 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          host: 188.245.10.216
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /opt/momira-tc-tool
             git pull
