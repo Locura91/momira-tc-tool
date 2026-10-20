@@ -43,7 +43,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
+MODULE_BUILD = "2026-10-20-fix-transfer-return-label"
 
 import os
 import re
