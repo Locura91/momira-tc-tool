@@ -52,7 +52,8 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-19-dedup-helpers"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

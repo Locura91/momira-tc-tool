@@ -797,6 +797,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
+BUILD_VERSION = "2026-10-20-fix-memory-widget-key"
 BUILD_VERSION = "2026-10-19-dedup-helpers"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
@@ -1047,8 +1048,9 @@ with st.expander("💾 What the platform remembers", expanded=False):
                 if _row.get("fields"):
                     st.caption("changed: " + ", ".join(f"`{f}`" for f in _row["fields"]))
             with _c2:
-                if st.button("🗑️", key=f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_row['key']}",
-                             help="Forget this"):
+                import hashlib as _hl
+                _wkey = f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_hl.md5(_row['key'].encode()).hexdigest()[:10]}"
+                if st.button("🗑️", key=_wkey, help="Forget this"):
                     extraction_memory.forget_instruction(_row["supplier_id"], _row["product_type"],
                                                          _row["key"])
                     st.rerun()

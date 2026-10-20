@@ -25,7 +25,8 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-19-dedup-helpers"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400
