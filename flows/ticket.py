@@ -1113,63 +1113,6 @@ def render_ticket_flow(client):
                     if payloads['geolocation_source'] not in ("manual override", "not_found", None):
                         st.caption("Geocoding data © OpenStreetMap contributors")
 
-                    with st.expander("🔍 This looks wrong or too imprecise? Search for a better match"):
-                        st.caption("Broad place names (e.g. 'Bali') often resolve to the centroid of a whole "
-                                  "region, which can be far from the actual location. Try something more "
-                                  "specific - a landmark, neighborhood, or meeting point name - and pick the "
-                                  "correct result below.")
-                        tk_geo_search_query = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key=flow_widget_key("tk", "geo_search_query"))
-                        if st.button("🔎 Search", key="tk_geo_search_btn"):
-                            with st.spinner("Searching..."):
-                                st.session_state.tk_geo_search_results = geocode_search(tk_geo_search_query, limit=5)
-                        if st.session_state.get("tk_geo_search_results"):
-                            for gi, candidate in enumerate(st.session_state.tk_geo_search_results):
-                                gcol_info, gcol_btn = st.columns([4, 1])
-                                with gcol_info:
-                                    st.write(f"**{candidate['display_name']}**")
-                                    st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
-                                with gcol_btn:
-                                    if st.button("Use this", key=f"tk_geo_pick_{gi}"):
-                                        data["manual_latitude"] = candidate["latitude"]
-                                        data["manual_longitude"] = candidate["longitude"]
-                                        pre_config = TicketHumanPreConfig(
-                                            supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                                            currency=currency, modality_code=modality_code, on_request=on_request,
-                                            days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                                        )
-                                        st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                                        st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                                        _tk_clear_geo_confirmation()
-                                        st.session_state.tk_geo_search_results = None
-                                        st.rerun()
-
-                        st.markdown("**Or paste a Google Maps link:**")
-                        st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), "
-                                  "and paste it here - the coordinates are read out of the link automatically.")
-                        tk_maps_url = st.text_input("Google Maps link", key="tk_geo_maps_url", placeholder="https://maps.google.com/...")
-                        if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn", disabled=not tk_maps_url.strip()):
-                            with st.spinner("Reading coordinates from the link..."):
-                                tk_url_geo = parse_google_maps_url(tk_maps_url)
-                            if tk_url_geo["valid"]:
-                                data["manual_latitude"] = tk_url_geo["latitude"]
-                                data["manual_longitude"] = tk_url_geo["longitude"]
-                                pre_config = TicketHumanPreConfig(
-                                    supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                                    currency=currency, modality_code=modality_code, on_request=on_request,
-                                    days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                                )
-                                st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                                st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                                _tk_clear_geo_confirmation()
-                                st.session_state.tk_geo_link_note = (
-                                    f"ℹ️ That link had no coordinates of its own - geocoded its place "
-                                    f"name instead ({tk_url_geo.get('name') or 'match found'}). "
-                                    f"Double-check it above before confirming."
-                                ) if tk_url_geo.get("source") == "geocoded from link" else None
-                                st.rerun()
-                            else:
-                                st.error(tk_url_geo["error"])
-
                     if payloads.get("is_indonesia"):
                         st.info(f"🇮🇩 Indonesia detected — Vesak Day and Nyepi are automatically blocked as "
                                 f"stop-sale dates, no excursion may start on either day. "
@@ -1214,61 +1157,8 @@ def render_ticket_flow(client):
                         "destination.</div>",
                         unsafe_allow_html=True
                     )
-                    st.caption("Search for the correct location below, or paste a Google Maps link - "
-                              "manual coordinate entry isn't needed any more, the link (or its place "
-                              "name, if the link itself has none) covers that.")
-
-                    tk_geo_search_query2 = st.text_input("Search for a location", value=_geo_search_default(client, data.get("city", "")), key="tk_geo_search_query2")
-                    if st.button("🔎 Search", key="tk_geo_search_btn2"):
-                        with st.spinner("Searching..."):
-                            st.session_state.tk_geo_search_results2 = geocode_search(tk_geo_search_query2, limit=5)
-                    if st.session_state.get("tk_geo_search_results2"):
-                        for gi, candidate in enumerate(st.session_state.tk_geo_search_results2):
-                            gcol_info, gcol_btn = st.columns([4, 1])
-                            with gcol_info:
-                                st.write(f"**{candidate['display_name']}**")
-                                st.caption(f"{candidate['latitude']:.6f}, {candidate['longitude']:.6f} ({candidate.get('type', '')})")
-                            with gcol_btn:
-                                if st.button("Use this", key=f"tk_geo_pick2_{gi}"):
-                                    data["manual_latitude"] = candidate["latitude"]
-                                    data["manual_longitude"] = candidate["longitude"]
-                                    pre_config = TicketHumanPreConfig(
-                                        supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                                        currency=currency, modality_code=modality_code, on_request=on_request,
-                                        days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                                    )
-                                    st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                                    st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                                    _tk_clear_geo_confirmation()
-                                    st.session_state.tk_geo_search_results2 = None
-                                    st.rerun()
-
-                    st.markdown("**Or paste a Google Maps link:**")
-                    st.caption("Find the place in Google Maps, hit Share (or copy the address-bar URL), and "
-                              "paste it here - the coordinates are read out of the link automatically.")
-                    tk_maps_url2 = st.text_input("Google Maps link", key="tk_geo_maps_url2", placeholder="https://maps.google.com/...")
-                    if st.button("🔗 Use this link's coordinates", key="tk_geo_maps_url_btn2", disabled=not tk_maps_url2.strip()):
-                        with st.spinner("Reading coordinates from the link..."):
-                            tk_url_geo2 = parse_google_maps_url(tk_maps_url2)
-                        if tk_url_geo2["valid"]:
-                            data["manual_latitude"] = tk_url_geo2["latitude"]
-                            data["manual_longitude"] = tk_url_geo2["longitude"]
-                            pre_config = TicketHumanPreConfig(
-                                supplier_id=supplier_id, ticket_code=ticket_code or existing_ticket_code or "XXX",
-                                currency=currency, modality_code=modality_code, on_request=on_request,
-                                days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
-                            )
-                            st.session_state.tk_payloads = build_ticket_payloads(pre_config, data, client)
-                            st.session_state.tk_payloads_data_fingerprint = _data_fingerprint(data)
-                            _tk_clear_geo_confirmation()
-                            st.session_state.tk_geo_link_note = (
-                                f"ℹ️ That link had no coordinates of its own - geocoded its place "
-                                f"name instead ({tk_url_geo2.get('name') or 'match found'}). "
-                                f"Double-check it above before confirming."
-                            ) if tk_url_geo2.get("source") == "geocoded from link" else None
-                            st.rerun()
-                        else:
-                            st.error(tk_url_geo2["error"])
+                    st.caption("The geolocation is set automatically from the City field - update the "
+                              "City name in Step 5 and rebuild the payload to try again.")
 
             else:
                 st.info("ℹ️ This action only affects a ticket Option/Modality, which has no geolocation "

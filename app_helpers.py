@@ -210,17 +210,7 @@ CURRENCY_OPTIONS = [
 TICKET_ACTION_LABELS = {
     "create": "1: Create new Ticket + 1 Modality",
     "add_option": "2: Add new Modality to existing Ticket",
-    "update_ticket": "3: Update an existing Ticket",
-    "update_option": "4: Update existing Ticket Modality",
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "yes please fix it first, that's the reason
-    # i reached out to you first." The single-ticket "3: Update an existing Ticket" flow only
-    # ever updates ONE ticket at a time - there was no equivalent of the batch-CREATE flow
-    # (render_multi_ticket_flow) for updating MANY EXISTING tickets from one supplier document
-    # (e.g. a whole new price-list covering 20+ existing excursions). Routes to
-    # render_multi_ticket_update_flow, the same phase/state-machine pattern as
-    # render_multi_ticket_flow, but matching each detected excursion to an EXISTING ticket code
-    # instead of creating a new one.
-    "update_tickets_batch": "5: Update multiple existing Tickets from one document",
+    "update_tickets_batch": "3: Update multiple existing Tickets from one document",
 }
 
 
@@ -235,29 +225,12 @@ TICKET_ACTION_FIELDS = {
     # for the identical ClosedTour case.
     "create": ["ticket_code", "min_passengers", "max_passengers", "currency", "on_request", "release_days"],
     "add_option": ["existing_ticket_code", "modality_code", "on_request"],
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28): "3" used to always run the full,
-    # expensive extraction (name/description/cancellation AND pricing/schedule) even
-    # though it only ever published the non-pricing half - the pricing it extracted was
-    # silently discarded. Now asks up front (see the "Price only"/"Whole ticket" radio in
-    # Step 3) which half to actually do: "Price only" reuses "update_option"'s existing
-    # cheap, pricing-only path outright (same extractor, same publish call); "Whole
-    # ticket" keeps today's full extraction but NOW ACTUALLY PUBLISHES the pricing it
-    # extracts instead of throwing it away. Either way requires knowing which Modality/
-    # Option the pricing half applies to, so modality_code is asked unconditionally.
-    "update_ticket": ["existing_ticket_code", "modality_code", "release_days"],
-    "update_option": ["existing_ticket_code", "modality_code", "on_request"],
-    # NOTE: deliberately does NOT include "existing_ticket_code" or "modality_code" - the new
+    # NOTE: deliberately does NOT include "existing_ticket_code" or "modality_code" - the
     # batch-update flow (render_multi_ticket_update_flow) collects a target existing Ticket Code
     # (and which of ITS live Modality Codes to update) per detected excursion, right in its own
-    # matching step - see that function's PHASE "match". Also does NOT include "currency" or
-    # min/max passengers - each matched ticket's OWN live currency/passenger limits win (same
-    # "an UPDATE never asks for things the live record already has" rule as every other update
-    # action here), fetched fresh per item rather than asked once for the whole batch.
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08 follow-up): "we do not need to ask the human
-    # again for release date, this is already set and wont change" - also does NOT include
-    # "release_days" for this same reason: render_multi_ticket_update_flow now reads each
-    # matched ticket's OWN live daysAvailableBeforeRelease instead of asking once for the whole
-    # batch (same "an UPDATE never asks for things the live record already has" rule as above).
+    # matching step. Also does NOT include "currency", min/max passengers or "release_days" -
+    # each matched ticket's OWN live values win (an UPDATE never asks for things the live record
+    # already has), fetched fresh per item rather than asked once for the whole batch.
     "update_tickets_batch": [],
 }
 
@@ -3707,7 +3680,7 @@ def render_update_refresh_flow(client):
     st.caption("**Transfer / Transport**: matches a new rate sheet's rows against your EXISTING "
               "Travel Compositor products and updates them - nothing is ever created here. "
               "**Ticket**: either a bulk price refresh across every Ticket for a supplier (same "
-              "idea as Transfer/Transport), or pick one exact Ticket to update by hand. "
+              "idea as Transfer/Transport), or bulk-update multiple Tickets' content from one document. "
               "**ClosedTour / Hotel**: pick the exact existing one from the list below, then "
               "what kind of update this is - nothing is created here either.")
 
@@ -3737,34 +3710,25 @@ def render_update_refresh_flow(client):
         ticket_mode = st.radio(
             "What kind of Ticket update is this?",
             ["Bulk price refresh from a rate sheet",
-             "Bulk update multiple Tickets' content from one document (titles/included/excluded/prices)",
-             "Update one Ticket by hand"],
+             "Bulk update multiple Tickets' content from one document (titles/included/excluded/prices)"],
             horizontal=True, key="ur_ticket_mode")
         if ticket_mode == "Bulk price refresh from a rate sheet":
             render_ticket_price_refresh_flow(client)
             return
-        if ticket_mode.startswith("Bulk update multiple Tickets"):
-            st.caption("Detects which excursions this document describes, matches each to an "
-                      "EXISTING live Ticket code, and lets you review before publishing - "
-                      "nothing is created, only existing Tickets are updated.")
-            supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
-            if not supplier_id:
-                return
-            if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
-                # Hands off into render_ticket_flow's own already-proven Step 3/4 for this
-                # action - TICKET_ACTION_FIELDS["update_tickets_batch"] == [] so Step 3 asks
-                # nothing extra, and Step 4 routes straight into render_multi_ticket_update_flow
-                # (see its own "if action == 'update_tickets_batch':" branch). Same mechanism
-                # _render_update_refresh_coded_service already uses for update_ticket/
-                # update_option, just without a per-code pick this action doesn't need.
-                st.session_state.tk_cfg_action = "update_tickets_batch"
-                st.session_state.tk_cfg_supplier_id = supplier_id
-                st.session_state.tk_step1_confirmed = True
-                st.session_state.tk_step2_confirmed = False
-                st.session_state.product_type = "Ticket"
-                st.rerun()
+        # Bulk update multiple Tickets' content from one document
+        st.caption("Detects which excursions this document describes, matches each to an "
+                  "EXISTING live Ticket code, and lets you review before publishing - "
+                  "nothing is created, only existing Tickets are updated.")
+        supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
+        if not supplier_id:
             return
-        _render_update_refresh_coded_service(client, service)
+        if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
+            st.session_state.tk_cfg_action = "update_tickets_batch"
+            st.session_state.tk_cfg_supplier_id = supplier_id
+            st.session_state.tk_step1_confirmed = True
+            st.session_state.tk_step2_confirmed = False
+            st.session_state.product_type = "Ticket"
+            st.rerun()
         return
 
     if service in ("ClosedTour", "Hotel"):
@@ -3922,17 +3886,7 @@ def _render_update_refresh_coded_service(client, service):
         st.session_state.pop("ur_coded_suggested_code", None)
         st.session_state.pop("ur_coded_pick", None)
 
-    if service == "Ticket":
-        existing_items, list_error = get_existing_ticket_codes(client, supplier_id)
-        # "update_tickets_batch" excluded too - this screen is for picking ONE already-chosen
-        # existing Ticket and updating it; the batch flow does its own excursion detection and
-        # existing-ticket matching across possibly many tickets, which doesn't fit "you already
-        # picked ticket X" here. It's its own THIRD mode one level up instead - see
-        # render_update_refresh_flow's Ticket branch (product owner, 2026-09-10: it used to be
-        # reachable only via the Ticket wizard's own Create-only Step 2, which is exactly the
-        # create/update mix-up that redesign removed).
-        kind_key, action_labels = "ticket", {k: v for k, v in TICKET_ACTION_LABELS.items() if k not in ("create", "update_tickets_batch")}
-    elif service == "ClosedTour":
+    if service == "ClosedTour":
         existing_items, list_error = get_existing_tour_names(client, supplier_id)
         kind_key, action_labels = "tour", {k: v for k, v in ACTION_LABELS.items() if k != "create"}
     else:  # Hotel
