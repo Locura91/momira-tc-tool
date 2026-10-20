@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ai_extractor as ax
 
-MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
+MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
 
 RAW_SUPPLIER_TEXT = (
     "More than 24 hours before the excursion: no cancellation fee. Less than 24 hours before the "

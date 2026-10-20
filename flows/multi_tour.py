@@ -1147,11 +1147,20 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         payloads = build_closed_tour_payloads(pre_config, combined_data, client)
                         if payloads.get("main_tour_error"):
                             show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["main_tour_error"])
+                            if st.button("✏️ Back to review & fix", key="mct_back_main_err"):
+                                st.session_state.mct_phase = "final_review"
+                                st.rerun()
                         elif payloads["tour_option_error"]:
                             show_publish_error(f"prepare **{tour['tour_code']}**'s payload", payloads["tour_option_error"])
+                            if st.button("✏️ Back to review & fix", key="mct_back_opt_err"):
+                                st.session_state.mct_phase = "final_review"
+                                st.rerun()
                         elif payloads["unresolved_destinations"]:
                             st.error(f"❌ Couldn't resolve destination(s) {payloads['unresolved_destinations']} - "
                                     f"fix the itinerary destinations and try again.")
+                            if st.button("✏️ Back to review & fix", key="mct_back_dest_err"):
+                                st.session_state.mct_phase = "final_review"
+                                st.rerun()
                         else:
                             # CONFIRMED ROOT CAUSE (3 real production failures, KNO-1 - traced against the
                             # real Swagger, which shows modalityCodes/supplements[].modalityCodes as plain

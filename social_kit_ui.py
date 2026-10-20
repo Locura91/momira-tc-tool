@@ -19,7 +19,7 @@ scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
+MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
 
 import streamlit as st
 

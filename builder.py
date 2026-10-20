@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
+MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
 
 import copy
 import math
@@ -2845,7 +2845,10 @@ def build_closed_tour_payloads(
     # the validation error and surface it as data instead; the actual
     # publish step (in web_extractor.py) still refuses to upload if this
     # error is present.
-    combined_stop_sales = extracted_dmc_data.get("stop_sales", []) or []
+    combined_stop_sales = [
+        s for s in (extracted_dmc_data.get("stop_sales", []) or [])
+        if isinstance(s, dict) and s.get("start") and s.get("end")
+    ]
     if is_indonesia:
         combined_stop_sales = _merge_stop_sales(combined_stop_sales, indonesia_holiday_stop_sales())
     if is_china:
@@ -3431,7 +3434,10 @@ def build_ticket_payloads(
         if selected_price_type != "OCCUPANCY":
             occupancy_prices = []
 
-        combined_ticket_stop_sales = extracted_ticket_data.get("stop_sales", []) or []
+        combined_ticket_stop_sales = [
+            s for s in (extracted_ticket_data.get("stop_sales", []) or [])
+            if isinstance(s, dict) and s.get("start") and s.get("end")
+        ]
         if is_indonesia:
             combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, indonesia_holiday_stop_sales())
         if is_china:

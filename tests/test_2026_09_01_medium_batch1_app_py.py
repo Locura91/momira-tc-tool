@@ -75,7 +75,7 @@ def _app_build_version() -> str:
     a tautology. Deriving it keeps the real invariant under test: api_client.py and
     trip_quote_client.py carry a stamp that MATCHES THE APP, whatever that stamp currently is."""
     with open(_APP_PY, "r", encoding="utf-8") as f:
-        match = re.search(r'^BUILD_VERSION = "2026-10-20-transport-dash-name-fix"]+)"', f.read(), flags=re.M)
+        match = re.search(r'^BUILD_VERSION = "2026-10-20-fix-blank-stop-sale-publish"]+)"', f.read(), flags=re.M)
     assert match, "app.py no longer declares a BUILD_VERSION - the stale-module check depends on it"
     return match.group(1)
 
