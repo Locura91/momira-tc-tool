@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
+MODULE_BUILD = "2026-10-20-fix-ticket-supplement-editor-in-recovery"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"
@@ -74,12 +74,32 @@ _NEVER_PERSIST_PREFIX = "_draft_"
 _NEVER_PERSIST_SUFFIXES = ("_btn", "_button", "_checkbox", "_radio", "_selectbox", "_multiselect",
                            "_editor", "_back", "_refresh", "_refresh_suppliers")
 # Key PREFIXES that are always widget keys (not data) and must never be persisted.
-# em_fi_ = "extraction memory forget instruction" delete buttons (app.py's memory panel)
-# upd_choice_ / pt_choice_ = Step-1 choice buttons
-# tpdc_ / mct_ / mtt_ / mth_ / mtc_ = per-flow action buttons
+# Streamlit raises StreamlitValueAssignmentNotAllowedError when a key it owns (button, text_input,
+# date_input, etc.) is assigned via st.session_state[key] = value on restore - even for False
+# (the button's non-clicked state).  Every per-flow widget key prefix belongs here so the
+# snapshot never captures them.  The important DATA is stored in dicts (extracted_dmc_data,
+# mt_queue, …) under non-prefixed or data-named keys, which ARE captured.
 _NEVER_PERSIST_KEY_PREFIXES = (
-    "em_fi_", "upd_choice_", "pt_choice_", "tpdc_", "mct_back", "mtt_back", "mth_back",
-    "mtc_back", "mct_cancel", "mtt_cancel", "mth_cancel", "mtc_cancel",
+    # Memory panel delete buttons
+    "em_fi_",
+    # Step-1 flow/action choice buttons
+    "upd_choice_", "pt_choice_",
+    # Single-ticket create flow (ticket.py)
+    "tk_",
+    # Single-hotel create flow (hotel.py)
+    "hp_",
+    # Multi-ticket create flow (multi_ticket.py)
+    "mct_", "mtt_", "mth_", "mtc_", "mtp_", "mtu_", "mtf_",
+    # Transport/transfer duplicate-and-create flow
+    "tpdc_", "tdc_",
+    # Bulk stop sales, cancellation bulk, image bulk flows
+    "bss_", "cb_", "ctb_", "ibulk_", "tib_", "tpib_",
+    # Date-fix, price-refresh, supplier-migration, weekly-review flows
+    "dtf_", "dtp_", "ftsm_", "pr_", "sm_", "tpr_",
+    # Tool launcher buttons and misc flow buttons
+    "tool_btn_", "mi_", "xtf_", "xtp_", "wr_",
+    # Standalone buttons without a shared prefix
+    "storage_health_btn", "recheck_dup_tour_name",
 )
 
 
