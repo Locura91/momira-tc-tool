@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai_extractor
 import ui_components
 
-MODULE_BUILD = "2026-10-20-bulk-stop-sales"
+MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

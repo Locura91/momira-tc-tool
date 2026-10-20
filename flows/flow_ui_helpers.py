@@ -5,7 +5,7 @@ stay in sync without copy-pasting.
 """
 import streamlit as st
 
-MODULE_BUILD = "2026-10-20-bulk-stop-sales"
+MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
 
 
 def render_html_field_with_ai_swap_status(

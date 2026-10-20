@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-20-bulk-stop-sales"
+MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
 
 _PHASE_KEY = "ti_phase"
 

@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-20-bulk-stop-sales"
+MODULE_BUILD = "2026-10-20-transport-dash-name-fix"
 
 import copy
 import math
@@ -5413,10 +5413,13 @@ def _humanize_transport_base_code(code: str) -> str:
 # trailing " hotels"/" hotel" on the from-place is dropped ("Candidasa hotels" -> "Candidasa").
 # Primary pattern: "from X to Y" (standard wording this app writes).
 # Fallback pattern: "One Way Transfer X to Y" / "One Way X to Y" — TC names that omit "from".
-# The fallback strips a leading "One Way [Transfer] " prefix then splits on the first " to ".
+# Second fallback: TC names using an en/em dash separator, e.g. "One-way transfer Siem Reap – Battambang".
 _ROUTE_NAME_RE = re.compile(r"\bfrom\s+(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
 _ROUTE_NAME_NO_FROM_RE = re.compile(
     r"^(?:one[- ]way\s+(?:transfer\s+)?|transfer\s+)(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
+_ROUTE_NAME_DASH_RE = re.compile(
+    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)\s*[–—]\s*(.+?)\s*$",
+    re.IGNORECASE)
 _TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
 
 
@@ -5440,6 +5443,8 @@ def _parse_route_cities_from_name(name: str):
     m = _ROUTE_NAME_RE.search(s)
     if not m:
         m = _ROUTE_NAME_NO_FROM_RE.match(s)
+    if not m:
+        m = _ROUTE_NAME_DASH_RE.match(s)
     if not m:
         return None, None
     frm = _TRAILING_HOTELS_RE.sub("", m.group(1).strip()).strip()
