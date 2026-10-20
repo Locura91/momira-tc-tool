@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-20-fix-ticket-update"
+MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
 
 _PHASE_KEY = "pkr_phase"
 

@@ -835,11 +835,40 @@ def render_ticket_price_refresh_flow(client):
     blocked = [p for p in proposals if p["status"] == "blocked_unreadable"]
     unsupported = [p for p in proposals if p["status"] == "unsupported_price_type"]
 
-    st.subheader("2 — Check the new prices")
+    st.subheader("2 — Check the new prices & operational end date")
     st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
               f"document · {len(absent)} not found in it."
               + (f" · {len(blocked)} could not be read" if blocked else "")
               + (f" · {len(unsupported)} not OCCUPANCY-priced (unsupported)" if unsupported else ""))
+
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): "when bulk updating price, it must also
+    # check if operational days need to be made longer. Usually with a new price comes a new
+    # season, and each modality must have a longer from/to time. The to operational dates must
+    # always get longer at the same time as the price."
+    from datetime import date as _date, timedelta as _timedelta
+    _default_end = _date.today().replace(year=_date.today().year + 1)
+    # Show the current endDate of the first changed modality as a reference
+    _cur_end_str = None
+    for _p in changed:
+        _raw = (_p.get("route") or {}).get("raw") or {}
+        _cur_end_str = _raw.get("endDate")
+        if _cur_end_str:
+            break
+    if _cur_end_str:
+        st.info(f"ℹ️ Current operational end date on the first changed Modality: **{_cur_end_str}**")
+    tpr_new_end = st.date_input(
+        "New operational end date for ALL updated Modalities",
+        value=_default_end,
+        min_value=_date.today(),
+        format="DD.MM.YYYY",
+        key="tpr_new_end_date",
+        help="Sets the endDate on every Modality you accept below. Clear if you do NOT want to "
+             "change dates — leave it as-is and only prices will move.",
+    )
+    tpr_update_dates = st.checkbox(
+        "Also extend the operational end date (recommended when updating for a new season)",
+        value=True, key="tpr_update_dates_cb"
+    )
 
     if blocked:
         st.error(f"🚫 **{len(blocked)} Modality(ies) could not be fully read from Travel "
@@ -1004,8 +1033,10 @@ def render_ticket_price_refresh_flow(client):
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    st.warning(f"This changes prices on **{len(accepted)} live Ticket Modality(ies)** for "
-               f"supplier {supplier_id}. Nothing else is touched.")
+    _date_note = (f" + extend end date to **{tpr_new_end.strftime('%d.%m.%Y')}**"
+                  if tpr_update_dates else "")
+    st.warning(f"This changes prices{_date_note} on **{len(accepted)} live Ticket Modality(ies)** "
+               f"for supplier {supplier_id}.")
     if st.button(f"🚀 Update {len(accepted)} Modality(ies)", type="primary",
                  disabled=not accepted, key="tpr_apply"):
         bar = st.progress(0.0, text="Updating…")
@@ -1013,8 +1044,9 @@ def render_ticket_price_refresh_flow(client):
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
 
+        _new_end_iso = tpr_new_end.isoformat() if tpr_update_dates else None
         st.session_state.tpr_result = price_refresh.apply_ticket_proposals(
-            client, supplier_id, proposals, progress=_tick2)
+            client, supplier_id, proposals, progress=_tick2, new_end_date=_new_end_iso)
         bar.empty()
         st.rerun()
 

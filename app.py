@@ -797,7 +797,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-20-fix-ticket-update"
+BUILD_VERSION = "2026-10-20-fix-ticket-opdates"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -1118,7 +1118,7 @@ MANUAL_INFO_CHOICE = "Adding manual information to Product"
 PRICE_REFRESH_CHOICE = "Refresh prices (update only)"
 # CONFIRMED PRODUCT-OWNER REDESIGN (2026-08-12): the ONE place every kind of update/refresh
 # happens now, for all five product types - see render_update_refresh_flow's docstring.
-UPDATE_REFRESH_CHOICE = "Price update to existing Products"
+UPDATE_REFRESH_CHOICE = "Price & operational dates update to existing Products"
 # CONFIRMED REAL NEED (product owner, 2026-08-24, Transfer only; extended to all 5 product
 # types 2026-09-10): "mass change the supplier - all Transfers from supplier A must now be
 # changed to supplier B." ... "this is not only for the transfer section, it must work for all

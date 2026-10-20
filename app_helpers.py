@@ -3707,7 +3707,7 @@ def render_update_refresh_flow(client):
     # by which point both app.py and every flows/*.py module are fully loaded - is zero
     # behaviour change, same pattern as the dispatcher-stays-in-app.py fix from module 10.
     from flows.price_refresh import render_price_refresh_flow, render_ticket_price_refresh_flow
-    st.header("🔄 Price update to existing Products")
+    st.header("🔄 Price & operational dates update to existing Products")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()
@@ -3716,8 +3716,8 @@ def render_update_refresh_flow(client):
                        horizontal=True, key="ur_service_choice")
     st.caption("**Transfer / Transport**: matches a new rate sheet's rows against your EXISTING "
               "Travel Compositor products and updates them - nothing is ever created here. "
-              "**Ticket**: either a bulk price refresh across every Ticket for a supplier (same "
-              "idea as Transfer/Transport), or pick one exact Ticket to update by hand. "
+              "**Ticket**: bulk price + operational-date refresh from a rate sheet, or bulk "
+              "content update from one document. "
               "**ClosedTour / Hotel**: pick the exact existing one from the list below, then "
               "what kind of update this is - nothing is created here either.")
 
