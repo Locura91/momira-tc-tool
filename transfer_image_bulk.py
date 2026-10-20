@@ -69,8 +69,7 @@ from typing import Any, Callable, Dict, List, Optional
 import bulk_notes
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
-MODULE_BUILD = "2026-10-20-fix-memory-widget-key"
+MODULE_BUILD = "2026-10-20-fix-tpdc-back"
 
 SERVICE_TYPES = ["PRIVATE", "SHUTTLE", "SHARED"]
 SERVICE_TYPE_LABELS = {"PRIVATE": "Private", "SHUTTLE": "Shuttle", "SHARED": "Shared"}
