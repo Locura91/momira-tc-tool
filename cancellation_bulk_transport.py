@@ -63,7 +63,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple

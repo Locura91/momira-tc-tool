@@ -19,7 +19,7 @@ load_dotenv()
 # consequential file to have out of sync (every publish call goes through it). Stamped now, and
 # the detector's module list is auto-discovered (see app.py) so any future module that adds a
 # MODULE_BUILD is picked up automatically instead of needing a second hand-maintained list entry.
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 
 def _destination_country_matches(dest: dict, country_query_lower: str) -> bool:

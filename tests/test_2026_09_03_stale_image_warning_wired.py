@@ -37,7 +37,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

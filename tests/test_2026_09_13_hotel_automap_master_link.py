@@ -328,5 +328,5 @@ def test_the_home_screen_banner_and_button_have_been_removed():
 
 def test_module_carries_a_build_stamp_matching_the_app():
     src = _app_source()
-    app_version = re.search(r'^BUILD_VERSION = "2026-10-20-fix-blank-stop-sale-publish"]+)"', src, flags=re.M).group(1)
+    app_version = re.search(r'^BUILD_VERSION = "2026-10-20-fix-draft-restore-widget-crash"]+)"', src, flags=re.M).group(1)
     assert hotel_automap.MODULE_BUILD == app_version

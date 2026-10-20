@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {

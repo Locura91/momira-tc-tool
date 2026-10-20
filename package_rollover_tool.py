@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 _PHASE_KEY = "pkr_phase"
 

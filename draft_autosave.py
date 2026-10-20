@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"
@@ -73,6 +73,14 @@ _NEVER_PERSIST_PREFIX = "_draft_"
 # that would cause a crash at the next widget render after a restore.
 _NEVER_PERSIST_SUFFIXES = ("_btn", "_button", "_checkbox", "_radio", "_selectbox", "_multiselect",
                            "_editor", "_back", "_refresh", "_refresh_suppliers")
+# Key PREFIXES that are always widget keys (not data) and must never be persisted.
+# em_fi_ = "extraction memory forget instruction" delete buttons (app.py's memory panel)
+# upd_choice_ / pt_choice_ = Step-1 choice buttons
+# tpdc_ / mct_ / mtt_ / mth_ / mtc_ = per-flow action buttons
+_NEVER_PERSIST_KEY_PREFIXES = (
+    "em_fi_", "upd_choice_", "pt_choice_", "tpdc_", "mct_back", "mtt_back", "mth_back",
+    "mtc_back", "mct_cancel", "mtt_cancel", "mth_cancel", "mtc_cancel",
+)
 
 
 def _is_json_safe(value: Any) -> bool:
@@ -93,9 +101,16 @@ def _json_safe_snapshot() -> Dict[str, Any]:
             continue
         if any(key.endswith(suffix) for suffix in _NEVER_PERSIST_SUFFIXES):
             continue
+        if any(key.startswith(pfx) for pfx in _NEVER_PERSIST_KEY_PREFIXES):
+            continue
         try:
             value = st.session_state[key]
         except KeyError:
+            continue
+        # A bare True boolean is a button's click state - momentary, meaningless after reload,
+        # and restoring it causes StreamlitValueAssignmentNotAllowedError when the button
+        # re-renders on the same run. False booleans (e.g. checkboxes) are kept.
+        if value is True:
             continue
         if _is_json_safe(value):
             snapshot[key] = value

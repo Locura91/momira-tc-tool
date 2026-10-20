@@ -38,7 +38,7 @@ from pptx.util import Emu
 
 import document_reader
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REQUIREMENTS_TXT = os.path.join(

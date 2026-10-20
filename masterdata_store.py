@@ -35,7 +35,7 @@ key/value write has to carry the entire ~30-50MB payload at once.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 import time
 from typing import Any, Callable, Dict, List, Optional

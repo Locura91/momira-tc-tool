@@ -17,7 +17,7 @@ import streamlit as st
 
 from ui_components import momira_active_suppliers
 
-MODULE_BUILD = "2026-10-20-fix-blank-stop-sale-publish"
+MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any Transport Type —"
