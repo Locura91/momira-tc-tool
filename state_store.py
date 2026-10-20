@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 _NAMESPACE = "translation_state"
 

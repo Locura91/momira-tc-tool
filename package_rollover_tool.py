@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-20-fix-tpdc-back"
+MODULE_BUILD = "2026-10-20-fix-rollover-script"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -198,30 +198,69 @@ def _render_service_comparison(cmp: dict):
 
 
 def _make_rollover_script(date_str: str) -> str:
-    """Generates a browser-console JavaScript snippet that automates the TC booking flow."""
+    """Generates a browser-console JavaScript snippet that automates the TC booking flow.
+
+    Uses React's internal value setter (Object.getOwnPropertyDescriptor trick) so that
+    React's synthetic event system picks up the value change — plain .value= assignment is
+    silently ignored by React-controlled inputs.  Also tries multiple selectors in case the
+    input's name attribute differs across momira.travel deployments.
+    """
     return (
         f"(function(){{\n"
-        f"  var d='{date_str}';\n"
-        f"  var btn=[].slice.call(document.querySelectorAll('button')).find(function(b){{\n"
-        f"    return b.textContent.indexOf('Book directly without changes')>-1;\n"
-        f"  }});\n"
-        f"  function go(){{\n"
-        f"    var inp=document.querySelector('input[name*=\"departureDateMultidestination\"]');\n"
+        f"  var DATE='{date_str}';\n"
+        # React-safe value setter
+        f"  function reactSet(el,val){{\n"
+        f"    var s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;\n"
+        f"    s.call(el,val);\n"
+        f"    el.dispatchEvent(new Event('input',{{bubbles:true}}));\n"
+        f"    el.dispatchEvent(new Event('change',{{bubbles:true}}));\n"
+        f"  }}\n"
+        # Find the start-date input inside the booking modal (several selector attempts)
+        f"  function findDateInput(){{\n"
+        f"    return document.querySelector('input[name*=\"departureDateMultidestination\"]')\n"
+        f"      || document.querySelector('input[name*=\"startDate\"]')\n"
+        f"      || document.querySelector('input[name*=\"departureDate\"]')\n"
+        f"      || document.querySelector('input[placeholder*=\"Start date\" i]')\n"
+        f"      || document.querySelector('input[placeholder*=\"Check-in\" i]')\n"
+        f"      || (function(){{\n"
+        f"           var all=document.querySelectorAll('input[type=\"text\"]');\n"
+        f"           for(var i=0;i<all.length;i++){{\n"
+        f"             var p=(all[i].parentElement||{{}}).textContent||'';\n"
+        f"             if(/start.?date|departure.?date/i.test(p))return all[i];\n"
+        f"           }}\n"
+        f"         }})();\n"
+        f"  }}\n"
+        # Fill date then click Search (with retries while Search is disabled)
+        f"  function fillAndSearch(){{\n"
+        f"    var inp=findDateInput();\n"
         f"    if(!inp)return false;\n"
-        f"    inp.value=d;\n"
-        f"    inp.dispatchEvent(new Event('input',{{bubbles:true}}));\n"
-        f"    inp.dispatchEvent(new Event('change',{{bubbles:true}}));\n"
-        f"    setTimeout(function(){{\n"
+        f"    reactSet(inp,DATE);\n"
+        f"    var t=0;\n"
+        f"    var i=setInterval(function(){{\n"
         f"      var s=[].slice.call(document.querySelectorAll('button')).find(\n"
-        f"        function(b){{return b.textContent.trim()==='Search';}});\n"
-        f"      if(s)s.click();\n"
-        f"    }},900);\n"
+        f"        function(b){{return /^Search$/i.test(b.textContent.trim());}});\n"
+        f"      if(s&&!s.disabled){{s.click();clearInterval(i);}}\n"
+        f"      else if(++t>30){{clearInterval(i);}}\n"
+        f"    }},200);\n"
         f"    return true;\n"
         f"  }}\n"
-        f"  if(btn){{btn.click();var t=0;var i=setInterval(function(){{\n"
-        f"    if(go()||++t>30)clearInterval(i);\n"
-        f"  }},100);}}\n"
-        f"  else if(!go()){{alert('Open the Momira.travel package page first.');}}\n"
+        # If the modal is already open, go straight to fill; otherwise click the button first
+        f"  if(findDateInput()){{\n"
+        f"    fillAndSearch();\n"
+        f"  }} else {{\n"
+        f"    var btn=[].slice.call(document.querySelectorAll('button')).find(function(b){{\n"
+        f"      return b.textContent.indexOf('Book directly without changes')>-1;\n"
+        f"    }});\n"
+        f"    if(btn){{\n"
+        f"      btn.click();\n"
+        f"      var t=0;\n"
+        f"      var i=setInterval(function(){{\n"
+        f"        if(fillAndSearch()||++t>40)clearInterval(i);\n"
+        f"      }},100);\n"
+        f"    }} else {{\n"
+        f"      alert('Open the momira.travel package page first, then run this script.');\n"
+        f"    }}\n"
+        f"  }}\n"
         f"}})();"
     )
 
@@ -246,9 +285,10 @@ def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
     import json as _json
     import streamlit.components.v1 as _components
 
-    # components.v1.html() renders in a sandboxed iframe that includes allow-popups,
-    # so window.open() and navigator.clipboard both work from inside it.
-    # Script and URL are stored in JS variables (not inline) to avoid HTML-escaping issues.
+    # navigator.clipboard is blocked inside Streamlit's sandboxed iframe.
+    # document.execCommand('copy') works from a user-gesture handler even without the
+    # clipboard-write permission, so we use it as the primary copy method with
+    # navigator.clipboard as a secondary attempt for browsers that have deprecated execCommand.
     _components.html(
         f"""
 <style>
@@ -259,22 +299,45 @@ def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
   .btn:hover{{background:#c53030}}
   .hint{{font-size:.82rem;color:#374151;margin:.5rem 0 0;line-height:1.5}}
   .hint b{{color:#111}}
+  #copied{{display:none;color:#276749;font-weight:700;font-size:.82rem;margin:.3rem 0 0}}
 </style>
 <script>
 var TC_SCRIPT = {_json.dumps(script)};
 var TC_URL    = {_json.dumps(url)};
+function copyScript() {{
+  // Primary: execCommand works in sandboxed iframes triggered by user gesture
+  var ta = document.createElement('textarea');
+  ta.value = TC_SCRIPT;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  var ok = false;
+  try {{ ok = document.execCommand('copy'); }} catch(e) {{}}
+  document.body.removeChild(ta);
+  // Secondary: async clipboard API (may be blocked but worth trying)
+  if (!ok && navigator.clipboard) {{
+    navigator.clipboard.writeText(TC_SCRIPT).catch(function(){{}});
+  }}
+  return ok;
+}}
 function startUpdate() {{
-  navigator.clipboard.writeText(TC_SCRIPT).catch(function(){{}});
+  var copied = copyScript();
   window.open(TC_URL, '_blank');
+  if (copied) {{
+    document.getElementById('copied').style.display = 'block';
+  }}
 }}
 </script>
 <button class="btn" onclick="startUpdate()">🚀 Start update</button>
+<div id="copied">✅ Script copied to clipboard!</div>
 <p class="hint">
   After the page opens: <b>F12 → Console tab → Ctrl+V → Enter</b>
   — the script is already on your clipboard.
 </p>
 """,
-        height=95,
+        height=110,
     )
 
     st.caption(
