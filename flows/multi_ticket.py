@@ -1214,6 +1214,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     with pf_dcol2:
                         pfdata["end_date"] = _dmy_date_field("Valid Until (DD/MM/YYYY)", f"mtp_end_{pf_idx}", value_iso=pfdata.get("end_date", ""))
 
+                    render_ticket_modality_supplements_editor(pfdata, f"mtp_{pf_idx}")
+
                     if st.button(f"🔄 Retry creating `{pf['ticket_code']}`", key=f"mtp_retry_{pf_idx}", type="primary"):
                         with st.spinner(f"Retrying '{pf['ticket_code']}'..."):
                             try:
