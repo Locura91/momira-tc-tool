@@ -62,8 +62,8 @@ ENVELOPE = """\
           </mbm:communication>
         </mbm:customer>
 
-        <!-- Buchung: supplier muss als Stammdaten in Midoco existieren -->
-        <mbm:booking supplier="TESTHOTEL01" position="1" bookingId="TC-TEST-001">
+        <!-- Buchung: supplier = LT-Code aus Midoco Stammdaten -->
+        <mbm:booking supplier="MOMIRA_SP_TEST" position="1" bookingId="TC-TEST-001">
 
           <!-- Reisende (name ist Pflicht, forename optional) -->
           <mbm:person position="1">
@@ -80,7 +80,7 @@ ENVELOPE = """\
           </mbm:person>
 
           <!-- Hotel-Leistung (accomodationService) -->
-          <mbm:accomodationService position="1" supplierId="TESTHOTEL01"
+          <mbm:accomodationService position="1" supplierId="MOMIRA_SP_TEST"
               bookingId="TC-TEST-001">
             <!-- Pflichtfelder ohne minOccurs="0" -->
             <mbm:serviceCode>H</mbm:serviceCode>
@@ -109,7 +109,7 @@ ENVELOPE = """\
         <!-- Preissektion: Pflicht, referenziert Buchung über position -->
         <mbm:prices>
           <mbm:bookingPrice position="1">
-            <mbm:supplier>TESTHOTEL01</mbm:supplier>
+            <mbm:supplier>MOMIRA_SP_TEST</mbm:supplier>
             <mbm:bookingId>TC-TEST-001</mbm:bookingId>
             <mbm:totalPrice>1499.00</mbm:totalPrice>
             <mbm:currency>EUR</mbm:currency>
@@ -146,7 +146,7 @@ def main():
     print("Sende Hotel-Testbuchung an Midoco ...")
     print(f"Org-Einheit : {cfg['org_unit']}")
     print(f"BookingId   : TC-TEST-001")
-    print(f"Supplier    : TESTHOTEL01  ← muss als Stammdaten in Midoco existieren!")
+    print(f"Supplier    : MOMIRA_SP_TEST (Spanien Test DMC)")
     print()
 
     response = requests.post(URL, data=body.encode("utf-8"), headers=headers, timeout=30)
