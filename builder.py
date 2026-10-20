@@ -1,7 +1,7 @@
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
+MODULE_BUILD = "2026-10-20-fix-transfer-return-label"
 
 import copy
 import math
@@ -4085,11 +4085,9 @@ def _swap_route_text(text, old_departure_name, old_arrival_name, suffix_on_fallb
     appending "(return)" to a paragraph would look broken rather than helpful.
 
     CONFIRMED PRODUCT-OWNER FEEDBACK (2026-09-22): "dont add return to the Name of the Transport
-    when duplicate them." - build_transport_swap_payload now passes suffix_on_fallback=False for
-    Transport's name/datasheet-name swap, so an unmatched Transport name is left exactly as
-    copied from the source (still needs a human's edit either way, same as any other unmatched
-    field) rather than getting "(return)" tacked onto the end. Transfer's own name swap is
-    unaffected - still appends "(return)" as before.
+    when duplicate them." - build_transport_swap_payload passes suffix_on_fallback=False.
+    Extended to Transfer as well (2026-10-20): same rule, no "(return)" appended when the location
+    names aren't found in the transfer name - the name is left as-is for the human to edit.
 
     Same swap-with-placeholder approach as app_helpers._swapped_label (candidate-list "Add the
     return direction" button) - duplicated here in builder.py rather than imported, since
@@ -4250,7 +4248,7 @@ def build_transfer_swap_payload(existing_transfer_payload: Dict[str, Any]):
             arr_chunk = _expand_alias_to_chunk(text, pair[1])
         else:
             dep_chunk, arr_chunk = old_departure_name, old_arrival_name
-        return _swap_route_text(text, dep_chunk, arr_chunk)
+        return _swap_route_text(text, dep_chunk, arr_chunk, suffix_on_fallback=False)
 
     def _swap_with_aliases_if_found(text: str):
         pair = _find_present_location_aliases(text, departure_aliases, arrival_aliases)

@@ -25,7 +25,7 @@ import re
 import unicodedata
 from typing import Optional
 
-MODULE_BUILD = "2026-10-20-fix-ticket-opdates"
+MODULE_BUILD = "2026-10-20-fix-transfer-return-label"
 
 
 def normalize_name(s: Optional[str]) -> str:
