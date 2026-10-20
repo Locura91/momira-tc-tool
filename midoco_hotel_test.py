@@ -2,7 +2,10 @@
 Midoco Hotel-Test (Schritt 4)
 
 Schickt eine Hotel-Testbuchung mit Fantasie-Daten an Midoco (Org-Einheit: Momira Travel Test).
-Ziel: herausfinden welche Pflichtfelder fehlen, bis ein Auftrag angelegt wird.
+XML-Struktur basiert auf midoco_booking_message_norm.xsd (Version 20.4).
+
+Wichtig: Der supplier-Code ("TESTHOTEL01") muss als Stammdaten in Midoco existieren,
+sonst schlägt der Import fehl. Ggf. zuerst einen Test-Lieferanten anlegen.
 
 Zugangsdaten: midoco_config.json (nicht in GitHub).
 """
@@ -14,12 +17,18 @@ import requests
 
 URL = "https://midoffice.midoco.net/ws/services/BookingService"
 
+# Namespace-Präfixe:
+#   soapenv  = SOAP Envelope
+#   sys      = Midoco System (Credentials)
+#   bk       = Midoco Booking (Request-Wrapper)
+#   mbm      = booking_message_norm (Buchungsinhalt)
 ENVELOPE = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope
     xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
     xmlns:sys="http://www.midoco.de/system"
-    xmlns:bk="http://www.midoco.de/booking">
+    xmlns:bk="http://www.midoco.de/booking"
+    xmlns:mbm="http://www.midoco.de/booking_message_norm">
   <soapenv:Header>
     <sys:MidocoCredentials>
       <sys:Login>{login}</sys:Login>
@@ -29,71 +38,85 @@ ENVELOPE = """\
   </soapenv:Header>
   <soapenv:Body>
     <bk:AnnounceBookingMessageNormRequest>
-      <bk:MidocoBookingMessageNorm>
+      <mbm:midoco_booking_message_norm>
 
-        <!-- ===== Auftragskopf ===== -->
-        <bk:booking
-            bookingId="TC-TEST-001"
-            externalSystemId="TravelCompositor"
-            bookingDate="2026-10-20"
-            travelStartDate="2026-12-15"
-            travelEndDate="2026-12-22"
-            noOfTravellers="2"
-            totalPrice="1499.00"
-            currency="EUR"
-            salesOrganisationUnit="{org_unit}"
-            packageId="TC-TEST-001">
+        <!-- agencyIdentity: Pflichtblock, alle Felder optional -->
+        <mbm:agencyIdentity/>
 
-          <!-- ===== Reisende ===== -->
-          <bk:traveller
-              travellerNo="1"
-              salutation="MR"
-              firstName="Max"
-              lastName="Mustermann"
-              dateOfBirth="1985-03-15"
-              nationality="DE"/>
-          <bk:traveller
-              travellerNo="2"
-              salutation="MRS"
-              firstName="Erika"
-              lastName="Mustermann"
-              dateOfBirth="1988-07-22"
-              nationality="DE"/>
+        <!-- Kunde / Bucher -->
+        <mbm:customer type="INVOICE">
+          <mbm:privateData>
+            <mbm:salutation>Herr</mbm:salutation>
+            <mbm:forename>Max</mbm:forename>
+            <mbm:name>Mustermann</mbm:name>
+          </mbm:privateData>
+          <mbm:street>Musterstraße 1</mbm:street>
+          <mbm:postalCode>10115</mbm:postalCode>
+          <mbm:city>Berlin</mbm:city>
+          <mbm:country>DE</mbm:country>
+          <mbm:communication type="EMAIL">
+            <mbm:communicationData>max.mustermann@example.com</mbm:communicationData>
+          </mbm:communication>
+          <mbm:communication type="PHONE">
+            <mbm:communicationData>+49301234567</mbm:communicationData>
+          </mbm:communication>
+        </mbm:customer>
 
-          <!-- ===== Kunde / Bucher ===== -->
-          <bk:customer
-              salutation="MR"
-              firstName="Max"
-              lastName="Mustermann"
-              street="Musterstraße 1"
-              zip="10115"
-              city="Berlin"
-              country="DE"
-              email="max.mustermann@example.com"
-              phone="+49301234567"/>
+        <!-- Buchung: supplier muss als Stammdaten in Midoco existieren -->
+        <mbm:booking supplier="TESTHOTEL01" position="1" bookingId="TC-TEST-001">
 
-          <!-- ===== Hotel-Leistung ===== -->
-          <bk:service
-              serviceNo="1"
-              serviceType="H"
-              startDate="2026-12-15"
-              endDate="2026-12-22"
-              description="Hotel Muster Mallorca - DZ"
-              providerCode="TESTHOTEL01"
-              providerName="Test Hotel Mallorca"
-              destinationCode="PMI"
-              destinationName="Mallorca"
-              noOfNights="7"
-              roomType="DBL"
-              boardType="BB"
-              noOfPersons="2"
-              serviceStatus="OK"
-              singlePrice="749.50"
-              totalPrice="1499.00"
-              currency="EUR"/>
+          <!-- Reisende (name ist Pflicht, forename optional) -->
+          <mbm:person position="1">
+            <mbm:salutation>Herr</mbm:salutation>
+            <mbm:forename>Max</mbm:forename>
+            <mbm:name>Mustermann</mbm:name>
+            <mbm:birthday>1985-03-15</mbm:birthday>
+          </mbm:person>
+          <mbm:person position="2">
+            <mbm:salutation>Frau</mbm:salutation>
+            <mbm:forename>Erika</mbm:forename>
+            <mbm:name>Mustermann</mbm:name>
+            <mbm:birthday>1988-07-22</mbm:birthday>
+          </mbm:person>
 
-        </bk:booking>
-      </bk:MidocoBookingMessageNorm>
+          <!-- Hotel-Leistung (accomodationService) -->
+          <mbm:accomodationService position="1" supplierId="TESTHOTEL01"
+              bookingId="TC-TEST-001">
+            <!-- Pflichtfelder ohne minOccurs="0" -->
+            <mbm:serviceCode>H</mbm:serviceCode>
+            <mbm:serviceName>Hotel Muster Mallorca</mbm:serviceName>
+            <mbm:accomodation>DBL</mbm:accomodation>
+            <mbm:accomodationDescription>Doppelzimmer Standard</mbm:accomodationDescription>
+            <mbm:catering>BB</mbm:catering>
+            <mbm:cateringDescription>Übernachtung mit Frühstück</mbm:cateringDescription>
+            <mbm:locationDescription>Mallorca, Spanien</mbm:locationDescription>
+            <!-- allocation: Anzahl Personen pro Einheit (muss Integer-String sein) -->
+            <mbm:allocation>2</mbm:allocation>
+            <!-- noOfServices: Anzahl Einheiten (hier 1x Doppelzimmer) -->
+            <mbm:noOfServices>1</mbm:noOfServices>
+            <mbm:noOfNights>7</mbm:noOfNights>
+            <mbm:startDate>2026-12-15</mbm:startDate>
+            <mbm:endDate>2026-12-22</mbm:endDate>
+            <mbm:serviceStatus>OK</mbm:serviceStatus>
+            <!-- personAssignment: Verweis auf person.position (1-2 = Personen 1 und 2) -->
+            <mbm:personAssignment>1-2</mbm:personAssignment>
+            <mbm:totalPrice>1499.00</mbm:totalPrice>
+            <mbm:currency>EUR</mbm:currency>
+          </mbm:accomodationService>
+
+        </mbm:booking>
+
+        <!-- Preissektion: Pflicht, referenziert Buchung über position -->
+        <mbm:prices>
+          <mbm:bookingPrice position="1">
+            <mbm:supplier>TESTHOTEL01</mbm:supplier>
+            <mbm:bookingId>TC-TEST-001</mbm:bookingId>
+            <mbm:totalPrice>1499.00</mbm:totalPrice>
+            <mbm:currency>EUR</mbm:currency>
+          </mbm:bookingPrice>
+        </mbm:prices>
+
+      </mbm:midoco_booking_message_norm>
     </bk:AnnounceBookingMessageNormRequest>
   </soapenv:Body>
 </soapenv:Envelope>
@@ -121,13 +144,14 @@ def main():
     }
 
     print("Sende Hotel-Testbuchung an Midoco ...")
-    print(f"Org-Einheit: {cfg['org_unit']}")
-    print(f"BookingId:   TC-TEST-001")
+    print(f"Org-Einheit : {cfg['org_unit']}")
+    print(f"BookingId   : TC-TEST-001")
+    print(f"Supplier    : TESTHOTEL01  ← muss als Stammdaten in Midoco existieren!")
     print()
 
     response = requests.post(URL, data=body.encode("utf-8"), headers=headers, timeout=30)
 
-    print(f"HTTP-Status: {response.status_code}")
+    print(f"HTTP-Status : {response.status_code}")
     print()
     print("Antwort:")
     print(response.text)
