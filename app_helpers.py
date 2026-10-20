@@ -1952,7 +1952,7 @@ def _map_fetched_ticket_to_data(fetched):
         return {}
     datasheet = (fetched.get("datasheets") or {}).get("EN", {}) or {}
     geoloc = fetched.get("geolocation") or {}
-    return {
+    result = {
         "ticket_name": datasheet.get("name", "") or fetched.get("name", ""),
         "description": datasheet.get("description", ""),
         "city": fetched.get("city", "") or geoloc.get("name", ""),
@@ -1966,6 +1966,16 @@ def _map_fetched_ticket_to_data(fetched):
         "is_private": False,
         "image_urls": fetched.get("imageUrls") or [FALLBACK_IMAGE],
     }
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): "The geolocation will always be the same.
+    # It cannot be changed." — preserve the live ticket's coordinates exactly so the update
+    # flow never re-geocodes and never blocks publish with "geolocation not resolved."
+    live_lat = geoloc.get("latitude")
+    live_lng = geoloc.get("longitude")
+    if live_lat is not None and live_lng is not None:
+        result["manual_latitude"] = live_lat
+        result["manual_longitude"] = live_lng
+        result["manual_coords_for_city"] = result["city"]
+    return result
 
 
 def _merge_extraction_over_baseline(baseline, fresh):
@@ -3734,37 +3744,36 @@ def render_update_refresh_flow(client):
         # alongside the other two, since (like bulk price refresh) it operates across many Tickets
         # at once and doesn't fit "you already picked ticket X" the way
         # _render_update_refresh_coded_service's per-code flow does.
+        # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): "Update one ticket by hand" removed.
+        # If a single ticket needs a manual edit, the human does it directly in Travel Compositor.
         ticket_mode = st.radio(
             "What kind of Ticket update is this?",
             ["Bulk price refresh from a rate sheet",
-             "Bulk update multiple Tickets' content from one document (titles/included/excluded/prices)",
-             "Update one Ticket by hand"],
+             "Bulk update multiple Tickets' content from one document (titles/included/excluded/prices)"],
             horizontal=True, key="ur_ticket_mode")
         if ticket_mode == "Bulk price refresh from a rate sheet":
             render_ticket_price_refresh_flow(client)
             return
-        if ticket_mode.startswith("Bulk update multiple Tickets"):
-            st.caption("Detects which excursions this document describes, matches each to an "
-                      "EXISTING live Ticket code, and lets you review before publishing - "
-                      "nothing is created, only existing Tickets are updated.")
-            supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
-            if not supplier_id:
-                return
-            if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
-                # Hands off into render_ticket_flow's own already-proven Step 3/4 for this
-                # action - TICKET_ACTION_FIELDS["update_tickets_batch"] == [] so Step 3 asks
-                # nothing extra, and Step 4 routes straight into render_multi_ticket_update_flow
-                # (see its own "if action == 'update_tickets_batch':" branch). Same mechanism
-                # _render_update_refresh_coded_service already uses for update_ticket/
-                # update_option, just without a per-code pick this action doesn't need.
-                st.session_state.tk_cfg_action = "update_tickets_batch"
-                st.session_state.tk_cfg_supplier_id = supplier_id
-                st.session_state.tk_step1_confirmed = True
-                st.session_state.tk_step2_confirmed = False
-                st.session_state.product_type = "Ticket"
-                st.rerun()
+        # Bulk content update
+        st.caption("Detects which excursions this document describes, matches each to an "
+                  "EXISTING live Ticket code, and lets you review before publishing - "
+                  "nothing is created, only existing Tickets are updated.")
+        supplier_id = _ur_pick_momira_supplier(client, "ur_ticket_batch")
+        if not supplier_id:
             return
-        _render_update_refresh_coded_service(client, service)
+        if st.button("➡️ Continue", type="primary", key="ur_ticket_batch_continue"):
+            # Hands off into render_ticket_flow's own already-proven Step 3/4 for this
+            # action - TICKET_ACTION_FIELDS["update_tickets_batch"] == [] so Step 3 asks
+            # nothing extra, and Step 4 routes straight into render_multi_ticket_update_flow
+            # (see its own "if action == 'update_tickets_batch':" branch). Same mechanism
+            # _render_update_refresh_coded_service already uses for update_ticket/
+            # update_option, just without a per-code pick this action doesn't need.
+            st.session_state.tk_cfg_action = "update_tickets_batch"
+            st.session_state.tk_cfg_supplier_id = supplier_id
+            st.session_state.tk_step1_confirmed = True
+            st.session_state.tk_step2_confirmed = False
+            st.session_state.product_type = "Ticket"
+            st.rerun()
         return
 
     if service in ("ClosedTour", "Hotel"):
