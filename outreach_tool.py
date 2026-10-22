@@ -51,7 +51,7 @@ script still wants it.
 # Stamped on every delivery. app.py compares this against its own build string and says
 # so on screen when they differ - a partial push (one file committed, another not) used to
 # surface only as a traceback whose line numbers pointed at unrelated code.
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-test-email-button"
 
 import csv
 import io
@@ -1233,6 +1233,37 @@ def _render_review_and_send():
     if not sendable:
         st.info("No selected supplier has an email address yet — tick a row and add one above.")
         return
+
+    # ── Test email ────────────────────────────────────────────────────────────
+    with st.expander("🧪 Send a test email to yourself first", expanded=False):
+        st.caption("Uses the real email provider and the current template — just sends to your "
+                   "address instead of a supplier. Use this to confirm delivery works before "
+                   "sending to real companies.")
+        test_addr = st.text_input("Your email address", key="or_test_email_addr",
+                                  placeholder="you@example.com")
+        if st.button("📨 Send test email", key="or_send_test",
+                     disabled=not (test_addr and "@" in test_addr)):
+            fake_supplier = {
+                "id": "test",
+                "name": "Test Recipient",
+                "email": test_addr.strip(),
+                "social": None, "socialPlatform": None,
+                "website": None, "listingUrl": None, "listingSource": None,
+                "selectionReason": "Test send — verifying email delivery.",
+                "reviewSummary": None, "rating": None, "reviewCount": None,
+                "sources": [], "selected": True, "isMock": False,
+            }
+            try:
+                result = oe.send_supplier_email(fake_supplier, session, template)
+                if result.get("demo"):
+                    st.warning("📭 Demo mode — no email was delivered. "
+                               "Set RESEND_API_KEY or SMTP_* in Streamlit secrets to send for real.")
+                else:
+                    st.success(f"✅ Test email sent to **{test_addr}** via "
+                               f"{result.get('provider','?').upper()}. "
+                               f"Check your inbox (and spam folder).")
+            except Exception as _e:
+                st.error(f"❌ Send failed: {_e}")
 
     if provider != "demo" and status["ok"]:
         st.caption(f"This sends real email from {oe.get_from_address()} to {len(sendable)} external "
