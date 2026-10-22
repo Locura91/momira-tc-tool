@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 import io
 import os

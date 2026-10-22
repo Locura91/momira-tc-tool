@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

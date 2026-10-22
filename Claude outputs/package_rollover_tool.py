@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 _PHASE_KEY = "pkr_phase"
 

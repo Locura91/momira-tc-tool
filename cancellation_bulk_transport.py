@@ -63,7 +63,7 @@ here is cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
