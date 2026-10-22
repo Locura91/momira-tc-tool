@@ -798,7 +798,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-20-fix-draft-restore-all-widget-key-prefixes"
+BUILD_VERSION = "2026-10-22-sync-build-stamps"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -859,14 +859,14 @@ st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new co
 
 _stale_modules, _module_import_failures = _module_build_mismatches()
 if _stale_modules:
-    st.error(
-        "🚨 **Partial deploy — some files on the server are older than this one.** Errors from "
-        "these will point at the wrong lines, because the traceback is drawn against whatever is "
-        "on disk now:\n\n"
-        + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
-                    for name, found in _stale_modules)
-        + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
-          "then push and let the app redeploy.")
+    with st.expander(f"⚠️ Partial deploy — {len(_stale_modules)} file(s) on the server are from an older build", expanded=False):
+        st.warning(
+            "Errors from these files will point at the wrong lines, because the traceback is "
+            "drawn against whatever is on disk now.\n\n"
+            + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
+                        for name, found in _stale_modules)
+            + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
+              "then push and let the app redeploy.")
 if _module_import_failures:
     # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see _module_build_mismatches'
     # docstring - a module that fails to import can't be build-checked at all, which used to be

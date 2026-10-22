@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
+MODULE_BUILD = "2026-10-22-sync-build-stamps"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

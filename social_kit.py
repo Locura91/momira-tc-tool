@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
+MODULE_BUILD = "2026-10-22-sync-build-stamps"
 
 import io
 import os
