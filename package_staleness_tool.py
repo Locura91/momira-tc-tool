@@ -69,7 +69,7 @@ _STATUS_COLOUR = {
 
 
 @st.dialog("🔁 Package Rollover")
-def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, idea_url: str = ""):
     from rollover_executor import execute_rollover
 
     st.markdown(f"**{title}**")
@@ -93,10 +93,9 @@ def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | N
 
     st.write("")
     if st.button("🚀 Start now", type="primary", use_container_width=True, key="pst_start_now"):
-        idea_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
         chosen_str = chosen.strftime("%d.%m.%Y")
         with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(pkg_id, chosen_str, idea_url=idea_url)
+            result = execute_rollover(pkg_id, chosen_str, idea_url=idea_url or "")
         if result["success"]:
             st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
             _components.html(
@@ -320,9 +319,12 @@ def render_package_staleness_tool():
                     day_to_day = api.get_holiday_package_day_to_day(api.microsite_id, row["pkg_id"])
                 _, current_price = _current_price_from(info, day_to_day)
                 pax = _extract_pax(info)
+                # Use ideaUrl from API response — canonical URL with correct slug
+                idea_url = (info.get("ideaUrl") or "") if isinstance(info, dict) else ""
                 _inline_rollover_dialog(
                     pkg_id=row["pkg_id"],
                     title=row["title"],
                     current_price=current_price,
                     pax=pax,
+                    idea_url=idea_url,
                 )

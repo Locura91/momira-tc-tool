@@ -47,16 +47,16 @@ def execute_rollover(
     session = requests.Session()
     session.headers.update(_HEADERS)
 
-    # Always use the bare ID URL — momira.travel redirects to the canonical
-    # slugged URL automatically, which is then used for the POST.
-    page_url = f"{_BASE}/en/idea/{idea_id}/"
+    # Prefer the canonical ideaUrl from the TC API response (already has correct slug).
+    # Fall back to bare ID URL if not available — momira.travel may redirect to slug.
+    page_url = idea_url.rstrip("/") + "/" if idea_url else f"{_BASE}/en/idea/{idea_id}/"
 
     # ── Step 1: GET the idea page ─────────────────────────────────────────────
     try:
         resp = session.get(page_url, timeout=_TIMEOUT_GET, allow_redirects=True)
         resp.raise_for_status()
     except Exception as e:
-        return {"success": False, "error": f"Could not load idea page: {e}"}
+        return {"success": False, "error": f"Could not load idea page: {e}", "tried_url": page_url}
 
     # Use the final URL after any redirects for the POST
     page_url = resp.url
