@@ -47,8 +47,9 @@ def execute_rollover(
     session = requests.Session()
     session.headers.update(_HEADERS)
 
-    # Resolve the page URL
-    page_url = idea_url.rstrip("/") + "/" if idea_url else f"{_BASE}/en/idea/{idea_id}/"
+    # Always use the bare ID URL — momira.travel redirects to the canonical
+    # slugged URL automatically, which is then used for the POST.
+    page_url = f"{_BASE}/en/idea/{idea_id}/"
 
     # ── Step 1: GET the idea page ─────────────────────────────────────────────
     try:
@@ -57,7 +58,7 @@ def execute_rollover(
     except Exception as e:
         return {"success": False, "error": f"Could not load idea page: {e}"}
 
-    # If redirected to a slugged URL, use that for the POST
+    # Use the final URL after any redirects for the POST
     page_url = resp.url
 
     soup = BeautifulSoup(resp.text, "html.parser")
