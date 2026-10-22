@@ -6,7 +6,7 @@ repeating the same guard and error-formatting code in every API client.
 import os
 import requests
 
-MODULE_BUILD = "2026-10-22-rollover-popup"
+MODULE_BUILD = "2026-10-22-rollover-popup-v2"
 
 
 def require_env_key(var_name: str, signup_url: str, key_url: str | None = None) -> str:
