@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-rollover-one-click"
+MODULE_BUILD = "2026-10-22-server-side-rollover"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -278,17 +278,23 @@ def _five_months_ahead() -> date:
 
 
 def _extract_pax(info: dict) -> str | None:
-    """Best-effort: return a human-readable pax string from the package info response."""
-    for key in ("minAdults", "adults", "numTravelers", "numberOfAdults", "pax", "numPax"):
+    """Return a human-readable pax string from the package info response.
+    Uses counters.adults + counters.children (confirmed TC API field names)."""
+    counters = info.get("counters") or {}
+    if isinstance(counters, dict):
+        adults   = counters.get("adults")
+        children = counters.get("children")
+        if adults is not None:
+            total = int(adults) + int(children or 0)
+            parts = [f"{adults} adult{'s' if int(adults) != 1 else ''}"]
+            if children:
+                parts.append(f"{children} child{'ren' if int(children) != 1 else ''}")
+            return ", ".join(parts)
+    # Fallback for older/different response shapes
+    for key in ("minAdults", "adults", "numTravelers", "numberOfAdults", "pax"):
         v = info.get(key)
         if v is not None:
             return str(v)
-    pricing = info.get("pricing") or info.get("price") or {}
-    if isinstance(pricing, dict):
-        for key in ("adults", "pax", "numAdults"):
-            v = pricing.get(key)
-            if v is not None:
-                return str(v)
     return None
 
 
@@ -296,6 +302,7 @@ def _extract_pax(info: dict) -> str | None:
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     import json as _json
     import streamlit.components.v1 as _components
+    from rollover_executor import execute_rollover
 
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
@@ -316,30 +323,22 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
         key="pkr_dialog_date",
     )
 
-    chosen_str = chosen.strftime("%d.%m.%Y")
-    url        = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
-    script     = _make_rollover_script(chosen_str)
-    bookmarklet = "javascript:" + script.replace("\n", " ")
-
     st.write("")
-    _components.html(
-        f"""
-<style>
-  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-  .go{{display:block;width:100%;padding:.75rem 1rem;background:#e53e3e;color:#fff;
-       border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
-       text-align:center;box-sizing:border-box;text-decoration:none}}
-  .go:hover{{background:#c53030}}
-</style>
-<script>
-var URL={_json.dumps(url)};
-var BM={_json.dumps(bookmarklet)};
-function go(e){{e.preventDefault();window.open(URL,'_blank');setTimeout(function(){{eval(BM.replace(/^javascript:/,''));}},800);}}
-</script>
-<a class="go" href="#" onclick="go(event)">🚀 Start now</a>
-""",
-        height=60,
-    )
+    if st.button("🚀 Start now", type="primary", use_container_width=True, key="pkr_start_now"):
+        idea_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+        chosen_str = chosen.strftime("%d.%m.%Y")
+        with st.spinner("Starting rollover in Travel Compositor…"):
+            result = execute_rollover(pkg_id, chosen_str, idea_url=idea_url)
+        if result["success"]:
+            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+            _components.html(
+                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
+                height=0,
+            )
+        else:
+            st.error(f"❌ {result['error']}")
+            if result.get("final_url"):
+                st.caption(f"Final URL: {result['final_url']}")
 
 
 def render_package_rollover_tool():

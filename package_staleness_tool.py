@@ -29,14 +29,13 @@ import streamlit.components.v1 as _components
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 from package_rollover_tool import (
-    _make_rollover_script,
     _momira_url,
     _five_months_ahead,
     _current_price_from,
     _extract_pax,
 )
 
-MODULE_BUILD = "2026-10-22-rollover-one-click"
+MODULE_BUILD = "2026-10-22-server-side-rollover"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
@@ -71,6 +70,8 @@ _STATUS_COLOUR = {
 
 @st.dialog("🔁 Package Rollover")
 def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+    from rollover_executor import execute_rollover
+
     st.markdown(f"**{title}**")
     st.caption(f"ID: {pkg_id}")
 
@@ -90,30 +91,22 @@ def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | N
         key="pst_dialog_date",
     )
 
-    chosen_str = chosen.strftime("%d.%m.%Y")
-    url         = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
-    script      = _make_rollover_script(chosen_str)
-    bookmarklet = "javascript:" + script.replace("\n", " ")
-
     st.write("")
-    _components.html(
-        f"""
-<style>
-  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-  .go{{display:block;width:100%;padding:.75rem 1rem;background:#e53e3e;color:#fff;
-       border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
-       text-align:center;box-sizing:border-box;text-decoration:none}}
-  .go:hover{{background:#c53030}}
-</style>
-<script>
-var URL={_json.dumps(url)};
-var BM={_json.dumps(bookmarklet)};
-function go(e){{e.preventDefault();window.open(URL,'_blank');setTimeout(function(){{eval(BM.replace(/^javascript:/,''));}},800);}}
-</script>
-<a class="go" href="#" onclick="go(event)">🚀 Start now</a>
-""",
-        height=60,
-    )
+    if st.button("🚀 Start now", type="primary", use_container_width=True, key="pst_start_now"):
+        idea_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+        chosen_str = chosen.strftime("%d.%m.%Y")
+        with st.spinner("Starting rollover in Travel Compositor…"):
+            result = execute_rollover(pkg_id, chosen_str, idea_url=idea_url)
+        if result["success"]:
+            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+            _components.html(
+                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
+                height=0,
+            )
+        else:
+            st.error(f"❌ {result['error']}")
+            if result.get("final_url"):
+                st.caption(f"Final URL: {result['final_url']}")
 
 
 @st.cache_resource
