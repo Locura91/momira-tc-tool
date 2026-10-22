@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import bulk_notes
 
-MODULE_BUILD = "2026-10-22-sync-build-stamps"
+MODULE_BUILD = "2026-10-22-rollover-popup"
 
 TRANSPORT_TYPES = ["CAR", "PLANE", "VAN", "COMBINED"]
 TRANSPORT_TYPE_LABELS = {

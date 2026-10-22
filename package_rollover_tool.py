@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-sync-build-stamps"
+MODULE_BUILD = "2026-10-22-rollover-popup"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -265,86 +265,86 @@ def _make_rollover_script(date_str: str) -> str:
     )
 
 
-def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date):
-    """Editable date + single-click start-update flow."""
-    st.divider()
-    st.markdown("##### 🚀 Apply the rollover in Travel Compositor")
+def _five_months_ahead() -> date:
+    """Returns today + 5 calendar months, clamped to the last day of that month."""
+    today = date.today()
+    month = today.month + 5
+    year  = today.year + (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    import calendar as _cal
+    last_day = _cal.monthrange(year, month)[1]
+    day = min(today.day, last_day)
+    return date(year, month, day)
 
+
+@st.dialog("🔁 Package Rollover — set new departure date")
+def _rollover_dialog(pkg_id: str, title: str, current_price, proposed_date: date):
+    """In-app popup: shows the current price and lets the user pick the new departure date."""
+    if current_price is not None:
+        st.metric("Current price per person", f"€ {current_price:,.2f}"
+                  if isinstance(current_price, (int, float)) else str(current_price))
+    else:
+        st.info("Current price not available from the API response.")
+
+    default_date = _five_months_ahead()
     chosen = st.date_input(
-        "New departure date (adjust if needed)",
-        value=proposed_date,
-        key="pkr_chosen_date",
-        format="DD.MM.YYYY",
+        "New departure date",
+        value=default_date,
         min_value=date.today(),
+        format="DD.MM.YYYY",
+        key="pkr_dialog_date",
     )
-    chosen_str = chosen.strftime("%d.%m.%Y")
 
-    url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    st.caption(f"Suggested: **{default_date.strftime('%d.%m.%Y')}** (5 months from today). "
+               "Adjust if needed.")
+
+    st.divider()
+
+    chosen_str = chosen.strftime("%d.%m.%Y")
+    url    = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
     script = _make_rollover_script(chosen_str)
 
     import json as _json
     import streamlit.components.v1 as _components
 
-    # navigator.clipboard is blocked inside Streamlit's sandboxed iframe.
-    # document.execCommand('copy') works from a user-gesture handler even without the
-    # clipboard-write permission, so we use it as the primary copy method with
-    # navigator.clipboard as a secondary attempt for browsers that have deprecated execCommand.
     _components.html(
         f"""
 <style>
   body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-  .btn{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
-        border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
+  .btn{{display:block;width:100%;padding:.65rem 1rem;background:#e53e3e;color:#fff;
+        border:none;border-radius:8px;font-size:.95rem;font-weight:700;cursor:pointer;
         text-align:center;box-sizing:border-box;}}
   .btn:hover{{background:#c53030}}
-  .hint{{font-size:.82rem;color:#374151;margin:.5rem 0 0;line-height:1.5}}
-  .hint b{{color:#111}}
-  #copied{{display:none;color:#276749;font-weight:700;font-size:.82rem;margin:.3rem 0 0}}
+  #copied{{display:none;color:#276749;font-weight:600;font-size:.82rem;margin:.4rem 0 0}}
+  .hint{{font-size:.8rem;color:#4b5563;margin:.4rem 0 0;line-height:1.5}}
 </style>
 <script>
-var TC_SCRIPT = {_json.dumps(script)};
-var TC_URL    = {_json.dumps(url)};
-function copyScript() {{
-  // Primary: execCommand works in sandboxed iframes triggered by user gesture
-  var ta = document.createElement('textarea');
-  ta.value = TC_SCRIPT;
-  ta.style.position = 'fixed';
-  ta.style.opacity = '0';
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  var ok = false;
-  try {{ ok = document.execCommand('copy'); }} catch(e) {{}}
+var SCRIPT = {_json.dumps(script)};
+var URL    = {_json.dumps(url)};
+function go(){{
+  var ta=document.createElement('textarea');
+  ta.value=SCRIPT; ta.style.cssText='position:fixed;opacity:0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  var ok=false; try{{ok=document.execCommand('copy');}}catch(e){{}}
   document.body.removeChild(ta);
-  // Secondary: async clipboard API (may be blocked but worth trying)
-  if (!ok && navigator.clipboard) {{
-    navigator.clipboard.writeText(TC_SCRIPT).catch(function(){{}});
-  }}
-  return ok;
-}}
-function startUpdate() {{
-  var copied = copyScript();
-  window.open(TC_URL, '_blank');
-  if (copied) {{
-    document.getElementById('copied').style.display = 'block';
-  }}
+  if(!ok&&navigator.clipboard) navigator.clipboard.writeText(SCRIPT).catch(function(){{}});
+  window.open(URL,'_blank');
+  document.getElementById('copied').style.display='block';
 }}
 </script>
-<button class="btn" onclick="startUpdate()">🚀 Start update</button>
-<div id="copied">✅ Script copied to clipboard!</div>
-<p class="hint">
-  After the page opens: <b>F12 → Console tab → Ctrl+V → Enter</b>
-  — the script is already on your clipboard.
-</p>
+<button class="btn" onclick="go()">🚀 Open in momira.travel &amp; copy script</button>
+<div id="copied">✅ Script copied — paste it in the browser console (F12 → Console → Ctrl+V → Enter).</div>
+<p class="hint">Opens the package page, then paste the script in the console to fill in the date and click Search.</p>
 """,
-        height=110,
+        height=105,
     )
 
-    st.caption(
-        "The script clicks **Book directly without changes**, fills in the date, clicks Search — "
-        "you land on the summary page. Review the services, then click **Override existing trip**. "
-        "⚠️ You must be logged in as operator on momira.travel."
-    )
+
+def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date, current_price=None):
+    """Button that opens the in-app rollover date dialog."""
+    st.divider()
+    if st.button("🚀 Start update", type="primary", key="pkr_open_dialog"):
+        _rollover_dialog(pkg_id, title, current_price, proposed_date)
 
 
 def render_package_rollover_tool():
@@ -465,6 +465,7 @@ def render_package_rollover_tool():
                 pkg_id=st.session_state.get("pkr_package_id", ""),
                 title=_extract_title(info),
                 proposed_date=dyn["proposed_date"],
+                current_price=current_price,
             )
         else:
             result = prr.propose_rollover(candidates, current_price, today=date.today())
@@ -552,6 +553,7 @@ def render_package_rollover_tool():
                     pkg_id=st.session_state.get("pkr_package_id", ""),
                     title=_extract_title(info),
                     proposed_date=best["date"],
+                    current_price=current_price,
                 )
 
     with st.expander("🔎 Raw API responses"):

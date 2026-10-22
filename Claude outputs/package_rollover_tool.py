@@ -39,7 +39,7 @@ import ai_extractor
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-09-11-modality-scope-and-price-basis"
+MODULE_BUILD = "2026-10-22-rollover-popup"
 
 _PHASE_KEY = "pkr_phase"
 
