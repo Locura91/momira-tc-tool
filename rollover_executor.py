@@ -25,8 +25,15 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
 
 
@@ -56,7 +63,7 @@ def execute_rollover(
         resp = session.get(page_url, timeout=_TIMEOUT_GET, allow_redirects=True)
         resp.raise_for_status()
     except Exception as e:
-        return {"success": False, "error": f"Could not load idea page: {e}", "tried_url": page_url}
+        return {"success": False, "error": f"Could not load idea page ({page_url}): {e}"}
 
     # Use the final URL after any redirects for the POST
     page_url = resp.url
