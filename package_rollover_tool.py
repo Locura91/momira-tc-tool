@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-rollover-popup-v2"
+MODULE_BUILD = "2026-10-22-rollover-minimal"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -277,19 +277,36 @@ def _five_months_ahead() -> date:
     return date(year, month, day)
 
 
+def _extract_pax(info: dict) -> str | None:
+    """Best-effort: return a human-readable pax string from the package info response."""
+    for key in ("minAdults", "adults", "numTravelers", "numberOfAdults", "pax", "numPax"):
+        v = info.get(key)
+        if v is not None:
+            return str(v)
+    pricing = info.get("pricing") or info.get("price") or {}
+    if isinstance(pricing, dict):
+        for key in ("adults", "pax", "numAdults"):
+            v = pricing.get(key)
+            if v is not None:
+                return str(v)
+    return None
+
+
 @st.dialog("🔁 Package Rollover")
-def _rollover_dialog(pkg_id: str, title: str, current_price, proposed_date: date):
+def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     import json as _json
     import streamlit.components.v1 as _components
 
-    display_title = title or pkg_id
-    st.markdown(f"**{display_title}**")
+    st.markdown(f"**{title or pkg_id}**")
+    st.caption(f"Package ID: {pkg_id}")
 
-    price_str = (f"€ {current_price:,.2f}" if isinstance(current_price, (int, float))
-                 else str(current_price)) if current_price is not None else "—"
-    st.markdown(f"Current price: **{price_str}**")
-
-    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        price_str = (f"€ {current_price:,.2f}" if isinstance(current_price, (int, float))
+                     else str(current_price)) if current_price is not None else "—"
+        st.metric("Current price / person", price_str)
+    with col2:
+        st.metric("Nr. PAX", pax or "—")
 
     chosen = st.date_input(
         "New start date",
@@ -300,265 +317,82 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, proposed_date: date
     )
 
     chosen_str = chosen.strftime("%d.%m.%Y")
-    url    = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
-    script = _make_rollover_script(chosen_str)
+    url        = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    script     = _make_rollover_script(chosen_str)
     bookmarklet = "javascript:" + script.replace("\n", " ")
 
+    st.write("")
     _components.html(
         f"""
 <style>
-  body{{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
   .go{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
        border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
-       text-align:center;box-sizing:border-box;margin-bottom:.5rem}}
+       text-align:center;box-sizing:border-box;margin-bottom:.45rem}}
   .go:hover{{background:#c53030}}
   .bm{{display:block;width:100%;padding:.5rem 1rem;background:#1a56db;color:#fff;
        border-radius:8px;font-size:.85rem;font-weight:600;cursor:grab;
        text-align:center;box-sizing:border-box;text-decoration:none}}
   .bm:hover{{background:#1e429f}}
-  .hint{{font-size:.75rem;color:#6b7280;margin:.4rem 0 0;text-align:center}}
-  #go-done{{display:none;color:#276749;font-size:.82rem;font-weight:600;
-            text-align:center;margin:.3rem 0}}
+  .hint{{font-size:.72rem;color:#6b7280;margin:.35rem 0 0;text-align:center}}
+  #done{{display:none;color:#276749;font-size:.82rem;font-weight:600;text-align:center;margin:.25rem 0}}
 </style>
 <script>
 var URL={_json.dumps(url)};
-function go(){{
-  window.open(URL,'_blank');
-  document.getElementById('go-done').style.display='block';
-}}
+function go(){{window.open(URL,'_blank');document.getElementById('done').style.display='block';}}
 </script>
 <button class="go" onclick="go()">🚀 Open package page</button>
-<div id="go-done">✅ Page opened — now click the bookmarklet below on that tab:</div>
-<a class="bm" href={_json.dumps(bookmarklet)}
-   title="Drag this to your bookmarks bar, then click it on the momira.travel tab">
-  🔖 Click here on the momira.travel tab (or drag to bookmarks bar)
-</a>
-<p class="hint">Drag the blue button to your bookmarks bar once — then click it on any momira.travel package page to fill the date and start Search automatically.</p>
+<div id="done">✅ Page opened — click the button below on that tab to fill the date &amp; search:</div>
+<a class="bm" href={_json.dumps(bookmarklet)}>🔖 Fill date &amp; start Search on momira.travel</a>
+<p class="hint">Drag the blue button to your bookmarks bar once — then one click on any package page fills the date and clicks Search automatically.</p>
 """,
-        height=155,
+        height=150,
     )
-
-
-def _render_open_in_tc(pkg_id: str, title: str, proposed_date: date, current_price=None):
-    """Button that opens the in-app rollover date dialog."""
-    st.divider()
-    if st.button("🚀 Start update", type="primary", key="pkr_open_dialog"):
-        _rollover_dialog(pkg_id, title, current_price, proposed_date)
 
 
 def render_package_rollover_tool():
     st.subheader("🔁 Package Rollover")
-    st.caption(
-        "Looks up a Holiday Package, checks whether it needs rolling (departure < 14 days out), "
-        "proposes a new departure ~4 months ahead, and gives you a one-paste script to apply "
-        "it in Travel Compositor — you only need to review the summary and click Override."
-    )
 
-    # Pre-fill support: the staleness list sets pkr_prefill_id when the human clicks
-    # "Open in Package Rollover" from that screen, so the ID arrives ready to look up.
     prefill = st.session_state.pop("pkr_prefill_id", None)
-    auto_lookup = False
     if prefill:
-        # Clear any previous lookup result so we fetch fresh data for this package
         for k in ("pkr_info", "pkr_day_to_day", "pkr_calendar", "pkr_package_id"):
             st.session_state.pop(k, None)
         st.session_state["pkr_input"] = prefill
-        auto_lookup = True
 
     package_id = st.text_input("Holiday Package ID", key="pkr_input",
                                placeholder="e.g. 59582825")
 
-    if auto_lookup and package_id.strip():
+    if st.button("🚀 Start update", type="primary", disabled=not package_id.strip(),
+                 key="pkr_start_btn"):
+        pid = package_id.strip()
         try:
-            _do_lookup(package_id.strip())
-        except Exception as e:
-            st.error(ai_extractor.friendly_error_message(e))
-    elif st.button("🔍 Look up package", type="primary", disabled=not package_id.strip()):
-        try:
-            _do_lookup(package_id.strip())
-        except Exception as e:
-            st.error(ai_extractor.friendly_error_message(e))
-        st.rerun()
-
-    info = st.session_state.get("pkr_info")
-    if info is None:
-        return
-
-    st.divider()
-    st.caption(f"Package ID: **{st.session_state.get('pkr_package_id')}**")
-
-    for label, payload in (("Package info", info),
-                           ("Day-to-day detail", st.session_state.get("pkr_day_to_day")),
-                           ("Calendar", st.session_state.get("pkr_calendar"))):
-        if isinstance(payload, dict) and "error" in payload:
-            st.error(f"{label}: Travel Compositor returned an error — "
-                    f"{payload.get('error')}: {payload.get('message')}")
-
-    day_to_day = st.session_state.get("pkr_day_to_day")
-    calendar = st.session_state.get("pkr_calendar")
-
-    current_departure_field, current_departure = _current_departure_from(info, day_to_day)
-    current_price_field, current_price = _current_price_from(info, day_to_day)
-    st.markdown("##### Current state (as published in Travel Compositor today)")
-    ccol1, ccol2 = st.columns(2)
-    with ccol1:
-        _render_field_note("Current departure", current_departure.isoformat() if current_departure else None,
-                           current_departure_field)
-    with ccol2:
-        _render_field_note("Current price", current_price, current_price_field)
-
-    # CONFIRMED RULE (product owner, 2026-08-19): a departure only needs rolling once it's
-    # under 14 days out. Real test (package 59011047, 2026-08-21) surfaced that this screen
-    # was proposing a replacement unconditionally, even for a departure 8+ months away - which
-    # produced a nonsensical "proposed" date EARLIER than the real current departure. This
-    # check doesn't block the proposal below (still useful to preview while testing), but makes
-    # it unmistakable whether the confirmed trigger has actually fired yet.
-    today = date.today()
-    if current_departure is not None:
-        days_out = (current_departure - today).days
-        if prr.is_departure_closed(current_departure, today):
-            st.error(f"🔴 This departure is {days_out} day(s) away — under the confirmed "
-                    f"14-day trigger, this package NEEDS rolling.")
-        else:
-            st.success(f"✅ This departure is {days_out} day(s) away — still well outside the "
-                      f"confirmed 14-day trigger, so it does NOT need rolling yet. The "
-                      f"proposal below is shown for testing/preview only.")
-    else:
-        st.warning("⚠️ Couldn't determine the current departure date, so it's unknown whether "
-                  "this package actually needs rolling yet.")
-
-    if isinstance(calendar, dict) and "error" in calendar:
-        st.info("Can't propose a replacement departure — the calendar call failed (see error "
-               "above).")
-    else:
-        candidates = prr.find_candidates(calendar)
-        st.markdown("##### Proposed replacement departure")
-        if not candidates:
-            # CONFIRMED (product owner, 2026-08-21): an empty/unusable calendar is the NORMAL
-            # case for a dynamic package (any day can be a departure), not a data gap - see
-            # package_rollover_rules.py's "DYNAMIC PACKAGES" note. Propose today + ~4 months
-            # directly, avoiding the confirmed Christmas/New Year and Easter blackout windows.
-            dyn = prr.propose_dynamic_rollover(today=date.today())
-            st.markdown("###### Old → New (what you'd change in Travel Compositor)")
-            dcol1, dcol2 = st.columns(2)
-            with dcol1:
-                st.markdown("**Departure date**")
-                old_dep = current_departure.isoformat() if current_departure else "*(unknown)*"
-                st.markdown(f"{old_dep} → **{dyn['proposed_date'].isoformat()}**")
-            with dcol2:
-                st.markdown("**Price**")
-                st.markdown(f"{current_price if current_price is not None else '*(unknown)*'} → "
-                           f"*(check the live quote for this date in Travel Compositor)*")
-            st.info("No calendar of fixed departure dates was found for this package, which is "
-                   "the normal case for a dynamic package — any day can work, so this proposes "
-                   "today + ~4 months directly rather than matching against a calendar entry.")
-            if dyn["shifted_for_blackout"]:
-                st.warning(f"⚠️ The plain ~4-months-out date ({dyn['target_date'].isoformat()}) "
-                          f"fell inside a no-departure window ({dyn['blackout_reason']}), so "
-                          f"the proposal was pushed forward to the next clear date.")
-            st.warning("⚠️ **If this package includes a fixed-departure component** (e.g. a "
-                      "cruise or coach tour that only departs on specific weekdays, like a "
-                      "Nile cruise), this proposed date is NOT checked against that schedule — "
-                      "confirm it matches before applying it in Travel Compositor.")
-            _render_open_in_tc(
-                pkg_id=st.session_state.get("pkr_package_id", ""),
+            _do_lookup(pid)
+            info      = st.session_state.get("pkr_info", {})
+            day_to_day = st.session_state.get("pkr_day_to_day", {})
+            _, current_price = _current_price_from(info, day_to_day)
+            pax = _extract_pax(info)
+            _rollover_dialog(
+                pkg_id=pid,
                 title=_extract_title(info),
-                proposed_date=dyn["proposed_date"],
                 current_price=current_price,
+                pax=pax,
             )
-        else:
-            result = prr.propose_rollover(candidates, current_price, today=date.today())
-            if result["status"] == "no_dated_candidates":
-                st.info(f"Found {result['candidates_seen']} calendar entr(y/ies) but couldn't "
-                       f"parse a future date from any of them — see raw data below.")
-            elif result["status"] == "no_qualifying_candidates":
-                if result.get("below_minimum_test_coverage"):
-                    st.warning(f"⚠️ Only {result['candidates_tested']} future departure day(s) "
-                              f"were available to test — fewer than the minimum "
-                              f"{prr.MIN_CANDIDATES_TO_TEST} this process is meant to check.")
-                st.warning(f"Found {result['candidates_seen']} future departure(s), but none "
-                          f"passed the rating/price rules. See the rejected list below.")
-                with st.expander(f"Rejected candidates ({len(result['rejected'])})"):
-                    st.json(result["rejected"])
-            else:
-                best = result["proposed"]
+        except Exception as e:
+            st.error(ai_extractor.friendly_error_message(e))
 
-                if result.get("below_minimum_test_coverage"):
-                    st.warning(f"⚠️ Only {result['candidates_tested']} future departure day(s) "
-                              f"were available to test — fewer than the minimum "
-                              f"{prr.MIN_CANDIDATES_TO_TEST} this process is meant to check. "
-                              f"Review this recommendation with extra caution.")
-
-                st.markdown("###### Old → New (what you'd change in Travel Compositor)")
-                ocol1, ocol2 = st.columns(2)
-                with ocol1:
-                    st.markdown("**Departure date**")
-                    old_dep = current_departure.isoformat() if current_departure else "*(unknown)*"
-                    st.markdown(f"{old_dep} → **{best['date'].isoformat()}**")
-                with ocol2:
-                    st.markdown("**Price**")
-                    old_price = current_price if current_price is not None else "*(unknown)*"
-                    new_price = best["price"] if best["price"] is not None else "*(unknown)*"
-                    st.markdown(f"{old_price} → **{new_price}**")
-                if result.get("picked_by") == "cheapest_price":
-                    st.caption(f"✅ Picked as the **cheapest** of {result['candidates_tested']} "
-                              f"day(s) tested that passed the rating/price rules "
-                              f"({result['alternatives_considered']} other qualifying "
-                              f"candidate(s) were more expensive). Hotel rating: "
-                              f"{best['rating'] if best['rating'] is not None else '(unknown)'}.")
-                else:
-                    st.caption(f"Hotel rating on the new departure: "
-                              f"{best['rating'] if best['rating'] is not None else '(unknown)'}. "
-                              f"No qualifying candidate had a known price to compare, so the "
-                              f"closest to the ~4-month target ({result['target_date'].isoformat()}) "
-                              f"was used instead. "
-                              f"{result['alternatives_considered']} other qualifying candidate(s) "
-                              f"considered.")
-
-                with st.expander(f"📋 All {result['candidates_tested']} departure day(s) tested"):
-                    rows = []
-                    for c in result.get("qualifying") or []:
-                        rows.append({"date": c["date"].isoformat() if c["date"] else None,
-                                    "price": c["price"], "rating": c["rating"],
-                                    "status": "👉 recommended" if c is best else "qualifying"})
-                    for c in result.get("rejected") or []:
-                        rows.append({"date": c["date"].isoformat() if c["date"] else None,
-                                    "price": c["price"], "rating": c["rating"],
-                                    "status": "rejected: " + "; ".join(c["rejected_because"])})
-                    st.dataframe(rows, use_container_width=True, hide_index=True)
-
-                if result["rating_unverifiable"]:
-                    st.warning("⚠️ Couldn't find a rating field on this candidate — the 8+ "
-                              "rule could NOT be checked automatically. Check the hotel's "
-                              "review score in Travel Compositor yourself before applying "
-                              "this.")
-                if result["price_unverifiable"] or current_price is None:
-                    st.warning("⚠️ Couldn't find a price field to compare — the +3.5% cap "
-                              "could NOT be checked automatically. Check the price in Travel "
-                              "Compositor yourself before applying this.")
-
-                # ---- Service comparison (flights, hotels+meal, transfers, tickets,
-                # transports, closed tours) — required before any auto-update ----
-                st.markdown("##### 🔍 Service comparison (current vs. proposed)")
-                st.caption(
-                    "All six component types must match exactly before an auto-update "
-                    "is safe. Flights must include the same luggage; hotels must have "
-                    "the same meal type."
-                )
-                cmp = psc.compare_components(day_to_day, best.get("raw", {}))
-                _render_service_comparison(cmp)
-
-                _render_open_in_tc(
-                    pkg_id=st.session_state.get("pkr_package_id", ""),
-                    title=_extract_title(info),
-                    proposed_date=best["date"],
-                    current_price=current_price,
-                )
-
-    with st.expander("🔎 Raw API responses"):
-        st.markdown("**Package info** (`GET /package/{micrositeId}/info/{id}`)")
-        st.json(info)
-        st.markdown("**Day-to-day** (`GET /package/{micrositeId}/{id}`)")
-        st.json(day_to_day)
-        st.markdown("**Calendar** (`GET /package/calendar/{micrositeId}/{id}`)")
-        st.json(calendar)
+    if prefill and package_id.strip():
+        pid = package_id.strip()
+        try:
+            _do_lookup(pid)
+            info       = st.session_state.get("pkr_info", {})
+            day_to_day = st.session_state.get("pkr_day_to_day", {})
+            _, current_price = _current_price_from(info, day_to_day)
+            pax = _extract_pax(info)
+            _rollover_dialog(
+                pkg_id=pid,
+                title=_extract_title(info),
+                current_price=current_price,
+                pax=pax,
+            )
+        except Exception as e:
+            st.error(ai_extractor.friendly_error_message(e))

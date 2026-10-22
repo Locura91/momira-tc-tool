@@ -38,7 +38,7 @@ second one.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-22-rollover-popup-v2"
+MODULE_BUILD = "2026-10-22-rollover-minimal"
 
 import os
 import re

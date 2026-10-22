@@ -23,7 +23,7 @@ name/label field. The "name" field shown in the UI is a local convenience label 
 human's own reference; it is not sent to TC and not stored.
 """
 
-MODULE_BUILD = "2026-10-22-rollover-popup-v2"
+MODULE_BUILD = "2026-10-22-rollover-minimal"
 
 import json
 from datetime import date, timedelta
