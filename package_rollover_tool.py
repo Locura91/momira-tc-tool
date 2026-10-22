@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-rollover-popup"
+MODULE_BUILD = "2026-10-22-rollover-popup-v2"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -277,66 +277,65 @@ def _five_months_ahead() -> date:
     return date(year, month, day)
 
 
-@st.dialog("🔁 Package Rollover — set new departure date")
+@st.dialog("🔁 Package Rollover")
 def _rollover_dialog(pkg_id: str, title: str, current_price, proposed_date: date):
-    """In-app popup: shows the current price and lets the user pick the new departure date."""
-    if current_price is not None:
-        st.metric("Current price per person", f"€ {current_price:,.2f}"
-                  if isinstance(current_price, (int, float)) else str(current_price))
-    else:
-        st.info("Current price not available from the API response.")
+    import json as _json
+    import streamlit.components.v1 as _components
 
-    default_date = _five_months_ahead()
+    display_title = title or pkg_id
+    st.markdown(f"**{display_title}**")
+
+    price_str = (f"€ {current_price:,.2f}" if isinstance(current_price, (int, float))
+                 else str(current_price)) if current_price is not None else "—"
+    st.markdown(f"Current price: **{price_str}**")
+
+    st.divider()
+
     chosen = st.date_input(
-        "New departure date",
-        value=default_date,
+        "New start date",
+        value=_five_months_ahead(),
         min_value=date.today(),
         format="DD.MM.YYYY",
         key="pkr_dialog_date",
     )
 
-    st.caption(f"Suggested: **{default_date.strftime('%d.%m.%Y')}** (5 months from today). "
-               "Adjust if needed.")
-
-    st.divider()
-
     chosen_str = chosen.strftime("%d.%m.%Y")
     url    = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
     script = _make_rollover_script(chosen_str)
-
-    import json as _json
-    import streamlit.components.v1 as _components
+    bookmarklet = "javascript:" + script.replace("\n", " ")
 
     _components.html(
         f"""
 <style>
-  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-  .btn{{display:block;width:100%;padding:.65rem 1rem;background:#e53e3e;color:#fff;
-        border:none;border-radius:8px;font-size:.95rem;font-weight:700;cursor:pointer;
-        text-align:center;box-sizing:border-box;}}
-  .btn:hover{{background:#c53030}}
-  #copied{{display:none;color:#276749;font-weight:600;font-size:.82rem;margin:.4rem 0 0}}
-  .hint{{font-size:.8rem;color:#4b5563;margin:.4rem 0 0;line-height:1.5}}
+  body{{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+  .go{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
+       border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
+       text-align:center;box-sizing:border-box;margin-bottom:.5rem}}
+  .go:hover{{background:#c53030}}
+  .bm{{display:block;width:100%;padding:.5rem 1rem;background:#1a56db;color:#fff;
+       border-radius:8px;font-size:.85rem;font-weight:600;cursor:grab;
+       text-align:center;box-sizing:border-box;text-decoration:none}}
+  .bm:hover{{background:#1e429f}}
+  .hint{{font-size:.75rem;color:#6b7280;margin:.4rem 0 0;text-align:center}}
+  #go-done{{display:none;color:#276749;font-size:.82rem;font-weight:600;
+            text-align:center;margin:.3rem 0}}
 </style>
 <script>
-var SCRIPT = {_json.dumps(script)};
-var URL    = {_json.dumps(url)};
+var URL={_json.dumps(url)};
 function go(){{
-  var ta=document.createElement('textarea');
-  ta.value=SCRIPT; ta.style.cssText='position:fixed;opacity:0';
-  document.body.appendChild(ta); ta.focus(); ta.select();
-  var ok=false; try{{ok=document.execCommand('copy');}}catch(e){{}}
-  document.body.removeChild(ta);
-  if(!ok&&navigator.clipboard) navigator.clipboard.writeText(SCRIPT).catch(function(){{}});
   window.open(URL,'_blank');
-  document.getElementById('copied').style.display='block';
+  document.getElementById('go-done').style.display='block';
 }}
 </script>
-<button class="btn" onclick="go()">🚀 Open in momira.travel &amp; copy script</button>
-<div id="copied">✅ Script copied — paste it in the browser console (F12 → Console → Ctrl+V → Enter).</div>
-<p class="hint">Opens the package page, then paste the script in the console to fill in the date and click Search.</p>
+<button class="go" onclick="go()">🚀 Open package page</button>
+<div id="go-done">✅ Page opened — now click the bookmarklet below on that tab:</div>
+<a class="bm" href={_json.dumps(bookmarklet)}
+   title="Drag this to your bookmarks bar, then click it on the momira.travel tab">
+  🔖 Click here on the momira.travel tab (or drag to bookmarks bar)
+</a>
+<p class="hint">Drag the blue button to your bookmarks bar once — then click it on any momira.travel package page to fill the date and start Search automatically.</p>
 """,
-        height=105,
+        height=155,
     )
 
 
