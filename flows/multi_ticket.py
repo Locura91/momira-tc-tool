@@ -94,53 +94,81 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
-                    detected = detect_ticket_variants(raw_text)
 
-                    candidates = []
-                    for e in detected:
-                        # CONFIRMED (product owner, 2026-08-22): code and client-facing name are
-                        # two different things. The base name below ("Standard"/"Standard
-                        # Private") is what the CLIENT sees and never changes just because the
-                        # supplier happens to print their own reference code on this row (e.g. a
-                        # "Tour Code" column reading "WT1", "WT2", ...). That supplier code
-                        # exists for the SUPPLIER's benefit only, so it's appended to the CODE,
-                        # never substituted into the name.
-                        # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): when the document gives NO
-                        # such supplier code, the Modality Code now defaults to the excursion's
-                        # own name instead of the generic "Standard" - "Standard" is meaningless
-                        # once a batch has several excursions (every row would start out
-                        # identical), while the excursion name is already unique and immediately
-                        # recognizable. modality_name (what the CLIENT sees) is unaffected by
-                        # this - it stays the plain "Standard"/"Standard Private" convention.
-                        _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
-                        _supplier_code = str(e.get("supplier_code") or "").strip()
-                        _excursion_label = str(e.get("label") or "").strip()
-                        # CONFIRMED BUG FIX (product owner, 2026-09-03), real API error: "Modality
-                        # Code cannot contain '/' or '\' - it becomes part of a URL and breaks
-                        # lookups" for e.g. "Turtles/Tortoises: Three Island Cruise (Praslin)" - the
-                        # 2026-09-03 "default Modality Code to the excursion name" rule (see
-                        # comment above) started feeding raw excursion names straight into
-                        # modality_code without running them through the SAME sanitizer every
-                        # other AI-suggested-code call site already uses (_clean_modality_code,
-                        # defined above - strips / \ + - . that Travel Compositor's API rejects).
-                        _modality_code = (
-                            f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}" if _supplier_code
-                            else (_clean_modality_code(_excursion_label) or _base_modality_name)
-                        )
-                        candidates.append({
-                            "label": e.get("label", ""), "ticket_code": "",
-                            "modality_code": _modality_code,
-                            "modality_name": _base_modality_name,
-                            "selected": True,
-                            # Real AI-detected excursion - safe to later restrict extraction
-                            # to just this one (see is_genuine_variant usage in PHASE 3 below).
-                            "is_genuine_variant": True,
-                            # Only when a real supplier code was actually used does modality_code
-                            # deliberately differ from the excursion name - mark it "touched" so
-                            # PHASE 2's auto-sync (below) never overwrites a genuine supplier code
-                            # with the plain excursion name.
-                            "_modcode_touched": bool(_supplier_code),
-                        })
+                    # When multiple separate files are uploaded (no URL), treat each file
+                    # as its own ticket — one file = one candidate. This avoids merging
+                    # all 12 PDFs and letting detect_ticket_variants find only 1 excursion
+                    # from the combined blob. Each candidate stores _file_idx so Phase 3
+                    # extracts from that file's text only, not the combined raw_text.
+                    multiple_separate_files = bool(tk_files and len(tk_files) > 1 and not tk_url)
+                    if multiple_separate_files:
+                        per_file_texts = [
+                            combined_parts[i] if i < len(combined_parts) else ""
+                            for i in range(len(tk_files))
+                        ]
+                        st.session_state.mt_files_texts = per_file_texts
+                        candidates = []
+                        for i, uploaded in enumerate(tk_files):
+                            label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
+                            _modality_code = _clean_modality_code(label) or "Standard"
+                            candidates.append({
+                                "label": label,
+                                "ticket_code": "",
+                                "modality_code": _modality_code,
+                                "modality_name": "Standard",
+                                "selected": True,
+                                "is_genuine_variant": False,
+                                "_modcode_touched": False,
+                                "_file_idx": i,
+                            })
+                    else:
+                        st.session_state.pop("mt_files_texts", None)
+                        detected = detect_ticket_variants(raw_text)
+                        candidates = []
+                        for e in detected:
+                            # CONFIRMED (product owner, 2026-08-22): code and client-facing name are
+                            # two different things. The base name below ("Standard"/"Standard
+                            # Private") is what the CLIENT sees and never changes just because the
+                            # supplier happens to print their own reference code on this row (e.g. a
+                            # "Tour Code" column reading "WT1", "WT2", ...). That supplier code
+                            # exists for the SUPPLIER's benefit only, so it's appended to the CODE,
+                            # never substituted into the name.
+                            # CONFIRMED PRODUCT-OWNER RULE (2026-09-03): when the document gives NO
+                            # such supplier code, the Modality Code now defaults to the excursion's
+                            # own name instead of the generic "Standard" - "Standard" is meaningless
+                            # once a batch has several excursions (every row would start out
+                            # identical), while the excursion name is already unique and immediately
+                            # recognizable. modality_name (what the CLIENT sees) is unaffected by
+                            # this - it stays the plain "Standard"/"Standard Private" convention.
+                            _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
+                            _supplier_code = str(e.get("supplier_code") or "").strip()
+                            _excursion_label = str(e.get("label") or "").strip()
+                            # CONFIRMED BUG FIX (product owner, 2026-09-03), real API error: "Modality
+                            # Code cannot contain '/' or '\' - it becomes part of a URL and breaks
+                            # lookups" for e.g. "Turtles/Tortoises: Three Island Cruise (Praslin)" - the
+                            # 2026-09-03 "default Modality Code to the excursion name" rule (see
+                            # comment above) started feeding raw excursion names straight into
+                            # modality_code without running them through the SAME sanitizer every
+                            # other AI-suggested-code call site already uses (_clean_modality_code,
+                            # defined above - strips / \ + - . that Travel Compositor's API rejects).
+                            _modality_code = (
+                                f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}" if _supplier_code
+                                else (_clean_modality_code(_excursion_label) or _base_modality_name)
+                            )
+                            candidates.append({
+                                "label": e.get("label", ""), "ticket_code": "",
+                                "modality_code": _modality_code,
+                                "modality_name": _base_modality_name,
+                                "selected": True,
+                                # Real AI-detected excursion - safe to later restrict extraction
+                                # to just this one (see is_genuine_variant usage in PHASE 3 below).
+                                "is_genuine_variant": True,
+                                # Only when a real supplier code was actually used does modality_code
+                                # deliberately differ from the excursion name - mark it "touched" so
+                                # PHASE 2's auto-sync (below) never overwrites a genuine supplier code
+                                # with the plain excursion name.
+                                "_modcode_touched": bool(_supplier_code),
+                            })
                     if not candidates:
                         # No usable excursion name/title could be found at all (rare - see
                         # detect_ticket_variants' own docstring) - the "Ticket Name" typed in
@@ -366,7 +394,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         with st.expander("Not what you wanted?"):
             if st.button("🔙 Cancel this batch - return to single-Ticket flow", key=f"mt_cancel_{idx}"):
                 for key in ["mt_phase", "mt_raw_text", "mt_candidates", "mt_queue", "mt_queue_index",
-                           "mt_doc_raw_images", "mt_hosted_image_candidates"]:
+                           "mt_doc_raw_images", "mt_hosted_image_candidates", "mt_files_texts"]:
                     st.session_state.pop(key, None)
                 # CONFIRMED BUG FIX (product owner, 2026-09-03): "if I start a new batch, this
                 # cant be seen: I have not included images to the new service" - this used to
@@ -406,6 +434,16 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # same excursion in a multi-excursion document.
         variant_hint = current["label"] if current.get("is_genuine_variant") else None
 
+        # Use per-file text when this candidate came from a specific uploaded file
+        # (multi-file batch); fall back to the combined raw_text otherwise.
+        _file_idx = current.get("_file_idx")
+        _files_texts = st.session_state.get("mt_files_texts") or []
+        _extraction_text = (
+            _files_texts[_file_idx]
+            if _file_idx is not None and 0 <= _file_idx < len(_files_texts)
+            else st.session_state.mt_raw_text
+        )
+
         if current["data"] is None:
             with st.spinner(f"Extracting main ticket info{f' focused on ' + repr(current['label']) if variant_hint else ''}..."):
                 # Same crash-prevention as the ClosedTour batch flow - never leave a
@@ -419,7 +457,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     # gap in audit-2026-08-24-followup.md's D-6 note ("the path used for volume
                     # work is the one that ignores everything the platform has learned").
                     current["data"] = extract_ticket_main_info(
-                        st.session_state.mt_raw_text, variant_hint=variant_hint,
+                        _extraction_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
                     # automatically use the images... but i cannot automatically use them for my
@@ -689,7 +727,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 with st.spinner(f"Extracting pricing/Modality{f' focused on ' + repr(current['label']) if variant_hint else ''} - this is a separate AI call from the main info above..."):
                     try:
                         modality_data = extract_ticket_modality_data(
-                            st.session_state.mt_raw_text, variant_hint=variant_hint,
+                            _extraction_text, variant_hint=variant_hint,
                             human_hint=with_learned_guidance(supplier_id, "Ticket", ""))
                     except Exception as e:
                         st.error(f"⚠️ Couldn't extract pricing/Modality for this excursion: {friendly_error_message(e)}")
@@ -727,7 +765,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 # Ticket is published).
                 if not current.get("modalities_auto_detected"):
                     try:
-                        detected_mods = detect_ticket_modalities(st.session_state.mt_raw_text, variant_hint=variant_hint)
+                        detected_mods = detect_ticket_modalities(_extraction_text, variant_hint=variant_hint)
                     except Exception:
                         detected_mods = []  # best-effort - informational only
                     current["other_modalities_detected"] = [
@@ -838,7 +876,7 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if not mt_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
                 "Send", disabled=not mt_clarify_q.strip(), key=f"mt_clarify_send_{idx}"):
             with st.spinner("Thinking..."):
-                result = apply_clarification(st.session_state.mt_raw_text, data, mt_clarify_q)
+                result = apply_clarification(_extraction_text, data, mt_clarify_q)
                 st.session_state[f"mt_clarify_result_{idx}"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "Ticket", mt_clarify_q, result)
                 if result.get("changes"):
