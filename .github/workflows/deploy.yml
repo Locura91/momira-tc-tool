@@ -20,7 +20,3 @@ jobs:
             cd /opt/momira-tc-tool
             git pull
             systemctl restart momira-tc.service
-sed -i 's/      - main
-      - claude/great-mendel-ypbtm9/      - main\n      - claude\/great-mendel-ypbtm9/' /opt/momira-tc-tool/.github/workflows/deploy.yml
-sed -i 's/      - main
-      - claude/great-mendel-ypbtm9/      - main\n      - claude\/great-mendel-ypbtm9/' /opt/momira-tc-tool/.github/workflows/deploy.yml
