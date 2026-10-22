@@ -47,10 +47,10 @@ _PHASE_KEY = "pkr_phase"
 
 
 def _make_slug(title: str) -> str:
-    """Converts a package title to a URL slug matching momira.travel's format."""
+    """Converts a package title to a URL slug matching momira.travel's format.
+    & is removed (not replaced with 'and') — confirmed from TC ideaUrl title param."""
     s = title.lower()
-    s = re.sub(r'[&]', 'and', s)
-    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'[^a-z0-9\s-]', '', s)   # remove &, :, punctuation (& → space, not "and")
     s = re.sub(r'\s+', '-', s.strip())
     return re.sub(r'-+', '-', s)
 
