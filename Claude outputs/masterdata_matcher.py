@@ -27,7 +27,7 @@ local partners never carry a GIATA id, so it's not a usable signal on our input 
 Travel Compositor's own data carries one.
 """
 
-MODULE_BUILD = "2026-10-22-rollover-one-click"
+MODULE_BUILD = "2026-10-22-server-side-rollover"
 
 import math
 import re
