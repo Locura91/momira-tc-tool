@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-22-rollover-minimal"
+MODULE_BUILD = "2026-10-22-rollover-inline-popup"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

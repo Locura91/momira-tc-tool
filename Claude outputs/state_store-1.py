@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any, List
 
 import platform_store
 
-MODULE_BUILD = "2026-10-22-rollover-minimal"
+MODULE_BUILD = "2026-10-22-rollover-inline-popup"
 
 _NAMESPACE = "translation_state"
 
