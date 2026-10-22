@@ -315,7 +315,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             seen_modality_codes.setdefault(mod_code.lower(), []).append(cand["label"] or "(unnamed excursion)")
             new_queue.append({"label": cand["label"], "ticket_code": code, "modality_code": mod_code,
                              "modality_name": (cand.get("modality_name") or mod_code).strip(), "data": None,
-                             "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False)})
+                             "confirmed": False, "is_genuine_variant": cand.get("is_genuine_variant", False),
+                             "_file_idx": cand.get("_file_idx")})
 
         duplicate_codes = {code: labels for code, labels in seen_ticket_codes.items() if len(labels) > 1}
         # CONFIRMED REAL REQUEST (product owner, 2026-08-24): two rows in the SAME batch sharing a
