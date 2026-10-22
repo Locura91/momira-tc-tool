@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -266,9 +266,9 @@ def _make_rollover_script(date_str: str) -> str:
 
 
 def _five_months_ahead() -> date:
-    """Returns today + 5 calendar months, clamped to the last day of that month."""
+    """Returns today + 4 calendar months, clamped to the last day of that month."""
     today = date.today()
-    month = today.month + 5
+    month = today.month + 4
     year  = today.year + (month - 1) // 12
     month = (month - 1) % 12 + 1
     import calendar as _cal
@@ -326,27 +326,19 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
         f"""
 <style>
   body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-  .go{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
-       border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
-       text-align:center;box-sizing:border-box;margin-bottom:.45rem}}
-  .go:hover{{background:#c53030}}
-  .bm{{display:block;width:100%;padding:.5rem 1rem;background:#1a56db;color:#fff;
-       border-radius:8px;font-size:.85rem;font-weight:600;cursor:grab;
+  .go{{display:block;width:100%;padding:.75rem 1rem;background:#e53e3e;color:#fff;
+       border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
        text-align:center;box-sizing:border-box;text-decoration:none}}
-  .bm:hover{{background:#1e429f}}
-  .hint{{font-size:.72rem;color:#6b7280;margin:.35rem 0 0;text-align:center}}
-  #done{{display:none;color:#276749;font-size:.82rem;font-weight:600;text-align:center;margin:.25rem 0}}
+  .go:hover{{background:#c53030}}
 </style>
 <script>
 var URL={_json.dumps(url)};
-function go(){{window.open(URL,'_blank');document.getElementById('done').style.display='block';}}
+var BM={_json.dumps(bookmarklet)};
+function go(e){{e.preventDefault();window.open(URL,'_blank');setTimeout(function(){{eval(BM.replace(/^javascript:/,''));}},800);}}
 </script>
-<button class="go" onclick="go()">🚀 Open package page</button>
-<div id="done">✅ Page opened — click the button below on that tab to fill the date &amp; search:</div>
-<a class="bm" href={_json.dumps(bookmarklet)}>🔖 Fill date &amp; start Search on momira.travel</a>
-<p class="hint">Drag the blue button to your bookmarks bar once — then one click on any package page fills the date and clicks Search automatically.</p>
+<a class="go" href="#" onclick="go(event)">🚀 Start now</a>
 """,
-        height=150,
+        height=60,
     )
 
 

@@ -30,7 +30,7 @@ import image_dimensions as imgdim
 from schemas import HumanPreConfig
 from builder import build_hotel_contract_payload, build_ticket_payloads, build_closed_tour_payloads
 
-MODULE_BUILD = "2026-10-22-rollover-inline-popup"
+MODULE_BUILD = "2026-10-22-rollover-one-click"
 
 
 def setup_function(_):
