@@ -22,12 +22,21 @@ in one place and stays in sync with the rollover tool.
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
+import json as _json
 import streamlit as st
+import streamlit.components.v1 as _components
 
 import package_rollover_rules as prr
 from travelcompositor_api import TravelCompositorAPI
+from package_rollover_tool import (
+    _make_rollover_script,
+    _momira_url,
+    _five_months_ahead,
+    _current_price_from,
+    _extract_pax,
+)
 
-MODULE_BUILD = "2026-10-22-rollover-minimal"
+MODULE_BUILD = "2026-10-22-rollover-inline-popup"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
@@ -58,6 +67,61 @@ _STATUS_COLOUR = {
     _STATUS_DUE_SOON: "#fffacc",
     _STATUS_OK: "#d6f5d6",
 }
+
+
+@st.dialog("🔁 Package Rollover")
+def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+    st.markdown(f"**{title}**")
+    st.caption(f"ID: {pkg_id}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        price_str = (f"€ {current_price:,.2f}" if isinstance(current_price, (int, float))
+                     else str(current_price)) if current_price is not None else "—"
+        st.metric("Current price / person", price_str)
+    with col2:
+        st.metric("Nr. PAX", pax or "—")
+
+    chosen = st.date_input(
+        "New start date",
+        value=_five_months_ahead(),
+        min_value=date.today(),
+        format="DD.MM.YYYY",
+        key="pst_dialog_date",
+    )
+
+    chosen_str = chosen.strftime("%d.%m.%Y")
+    url         = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    script      = _make_rollover_script(chosen_str)
+    bookmarklet = "javascript:" + script.replace("\n", " ")
+
+    st.write("")
+    _components.html(
+        f"""
+<style>
+  body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+  .go{{display:block;width:100%;padding:.7rem 1rem;background:#e53e3e;color:#fff;
+       border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;
+       text-align:center;box-sizing:border-box;margin-bottom:.4rem}}
+  .go:hover{{background:#c53030}}
+  .bm{{display:block;width:100%;padding:.5rem 1rem;background:#1a56db;color:#fff;
+       border-radius:8px;font-size:.85rem;font-weight:600;cursor:grab;
+       text-align:center;box-sizing:border-box;text-decoration:none}}
+  .bm:hover{{background:#1e429f}}
+  .hint{{font-size:.72rem;color:#6b7280;margin:.3rem 0 0;text-align:center}}
+  #done{{display:none;color:#276749;font-size:.8rem;font-weight:600;text-align:center;margin:.2rem 0}}
+</style>
+<script>
+var URL={_json.dumps(url)};
+function go(){{window.open(URL,'_blank');document.getElementById('done').style.display='block';}}
+</script>
+<button class="go" onclick="go()">🚀 Open package page</button>
+<div id="done">✅ Opened — click the blue button on that tab to fill the date &amp; search:</div>
+<a class="bm" href={_json.dumps(bookmarklet)}>🔖 Fill date &amp; start Search on momira.travel</a>
+<p class="hint">Drag the blue button to your bookmarks bar once — then one click fills the date and starts Search.</p>
+""",
+        height=150,
+    )
 
 
 @st.cache_resource
@@ -260,13 +324,20 @@ def render_package_staleness_tool():
                 f"</div>",
                 unsafe_allow_html=True,
             )
-            open_rollover = st.button(
-                "🔁 Open in Package Rollover",
+            if st.button(
+                "🔁 Start rollover",
                 key=f"pst_open_{idx}_{row['pkg_id']}",
-                help=f"Prefill the Package Rollover tool with ID {row['pkg_id']}",
-            )
-            if open_rollover:
-                # Hand off to the Package Rollover tool with this ID pre-filled
-                st.session_state.pkr_prefill_id = row["pkg_id"]
-                st.session_state.active_tool = "🔁 Package Rollover"
-                st.rerun()
+                help=f"Roll over package {row['pkg_id']}",
+            ):
+                api = _get_api_client()
+                with st.spinner("Loading package…"):
+                    info       = api.get_holiday_package_info(api.microsite_id, row["pkg_id"])
+                    day_to_day = api.get_holiday_package_day_to_day(api.microsite_id, row["pkg_id"])
+                _, current_price = _current_price_from(info, day_to_day)
+                pax = _extract_pax(info)
+                _inline_rollover_dialog(
+                    pkg_id=row["pkg_id"],
+                    title=row["title"],
+                    current_price=current_price,
+                    pax=pax,
+                )
