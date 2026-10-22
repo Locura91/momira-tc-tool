@@ -29,7 +29,7 @@ suite's established pattern for testing app.py-only functions.
 """
 import os
 
-MODULE_BUILD = "2026-10-22-rollover-popup-v2"
+MODULE_BUILD = "2026-10-22-rollover-minimal"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 

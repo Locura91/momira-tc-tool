@@ -36,7 +36,7 @@ import streamlit as st
 
 from ui_components import is_active_supplier, momira_active_suppliers
 
-MODULE_BUILD = "2026-10-22-rollover-popup-v2"
+MODULE_BUILD = "2026-10-22-rollover-minimal"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any ServiceType —"
