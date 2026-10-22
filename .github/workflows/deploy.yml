@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - claude/great-mendel-ypbtm9
 
 jobs:
   deploy:
