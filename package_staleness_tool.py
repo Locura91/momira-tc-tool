@@ -33,9 +33,10 @@ from package_rollover_tool import (
     _five_months_ahead,
     _current_price_from,
     _extract_pax,
+    _extract_idea_url,
 )
 
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-use-api-idea-url"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
@@ -69,7 +70,7 @@ _STATUS_COLOUR = {
 
 
 @st.dialog("🔁 Package Rollover")
-def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, idea_url: str = ""):
     from rollover_executor import execute_rollover
 
     st.markdown(f"**{title}**")
@@ -94,8 +95,9 @@ def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | N
     st.write("")
     if st.button("🚀 Start now", type="primary", use_container_width=True, key="pst_start_now"):
         chosen_str = chosen.strftime("%d.%m.%Y")
+        resolved_url = idea_url or (_momira_url(pkg_id, title) if title else "")
         with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(pkg_id, chosen_str, idea_url=_momira_url(pkg_id, title) if title else "")
+            result = execute_rollover(pkg_id, chosen_str, idea_url=resolved_url)
         if result["success"]:
             st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
             _components.html(
@@ -324,4 +326,5 @@ def render_package_staleness_tool():
                     title=row["title"],
                     current_price=current_price,
                     pax=pax,
+                    idea_url=_extract_idea_url(info),
                 )

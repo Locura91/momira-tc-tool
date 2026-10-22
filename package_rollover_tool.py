@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-use-api-idea-url"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -278,6 +278,16 @@ def _five_months_ahead() -> date:
     return date(year, month, day)
 
 
+def _extract_idea_url(info: dict) -> str:
+    """Return the ideaUrl from the TC API response (online.travelcompositor.com URL with
+    correct slug). Falls back to empty string — execute_rollover will use bare-ID URL."""
+    for key in ("ideaUrl", "idea_url", "url", "link", "publicUrl", "pageUrl"):
+        v = info.get(key)
+        if v and isinstance(v, str) and v.startswith("http"):
+            return v
+    return ""
+
+
 def _extract_pax(info: dict) -> str | None:
     """Return a human-readable pax string from the package info response.
     Uses counters.adults + counters.children (confirmed TC API field names)."""
@@ -300,7 +310,7 @@ def _extract_pax(info: dict) -> str | None:
 
 
 @st.dialog("🔁 Package Rollover")
-def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, idea_url: str = ""):
     import json as _json
     import streamlit.components.v1 as _components
     from rollover_executor import execute_rollover
@@ -326,10 +336,11 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
 
     st.write("")
     if st.button("🚀 Start now", type="primary", use_container_width=True, key="pkr_start_now"):
-        idea_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+        # Use ideaUrl from TC API (correct slug, TC backend) — fall back to constructed URL
+        resolved_url = idea_url or (_momira_url(pkg_id, title) if title else "")
         chosen_str = chosen.strftime("%d.%m.%Y")
         with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(pkg_id, chosen_str, idea_url=idea_url)
+            result = execute_rollover(pkg_id, chosen_str, idea_url=resolved_url)
         if result["success"]:
             st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
             _components.html(
@@ -368,6 +379,7 @@ def render_package_rollover_tool():
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                idea_url=_extract_idea_url(info),
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
@@ -385,6 +397,7 @@ def render_package_rollover_tool():
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                idea_url=_extract_idea_url(info),
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
