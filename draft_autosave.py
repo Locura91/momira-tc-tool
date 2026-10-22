@@ -52,7 +52,7 @@ import streamlit as st
 
 import platform_store
 
-MODULE_BUILD = "2026-10-20-fix-ticket-supplement-editor-in-recovery"
+MODULE_BUILD = "2026-10-22-sync-build-stamps"
 
 _NAMESPACE = "wizard_drafts"
 _QUERY_PARAM = "draft"

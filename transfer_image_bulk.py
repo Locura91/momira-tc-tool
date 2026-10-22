@@ -69,7 +69,7 @@ from typing import Any, Callable, Dict, List, Optional
 import bulk_notes
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-20-fix-draft-restore-widget-crash"
+MODULE_BUILD = "2026-10-22-sync-build-stamps"
 
 SERVICE_TYPES = ["PRIVATE", "SHUTTLE", "SHARED"]
 SERVICE_TYPE_LABELS = {"PRIVATE": "Private", "SHUTTLE": "Shuttle", "SHARED": "Shared"}
