@@ -19,7 +19,7 @@ scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
 
 import streamlit as st
 

@@ -38,7 +38,7 @@ from pptx.util import Emu
 
 import document_reader
 
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
 
 _APP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 _REQUIREMENTS_TXT = os.path.join(

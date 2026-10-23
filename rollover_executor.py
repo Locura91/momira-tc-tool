@@ -13,7 +13,7 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-MODULE_BUILD = "2026-10-22-use-api-idea-url"
+MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
 
 _BASE = "https://momira.travel"
 _TIMEOUT_GET  = 15

@@ -36,7 +36,7 @@ from package_rollover_tool import (
     _extract_idea_url,
 )
 
-MODULE_BUILD = "2026-10-22-use-api-idea-url"
+MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 

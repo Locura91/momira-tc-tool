@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-22-server-side-rollover"
+MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
 
 import io
 import os
