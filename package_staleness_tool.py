@@ -70,9 +70,6 @@ _STATUS_COLOUR = {
 
 @st.dialog("🔁 Package Rollover")
 def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
-    import json as _json
-    import streamlit.components.v1 as _components
-
     st.markdown(f"**{title}**")
     st.caption(f"ID: {pkg_id}")
 
@@ -97,12 +94,7 @@ def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | N
     st.caption("Make sure you are logged into Travel Compositor. The package page will open in a new tab — click **'Reserva directamente sin cambios'** to complete the rollover.")
 
     st.write("")
-    if st.button("🚀 Open & start rollover", type="primary", use_container_width=True, key="pst_start_now"):
-        _components.html(
-            f"<script>window.open({_json.dumps(package_url)}, '_blank');</script>",
-            height=0,
-        )
-        st.success("✅ Package page opened in a new tab. Click **'Reserva directamente sin cambios'** to complete the rollover.")
+    st.link_button("🚀 Open & start rollover", package_url, type="primary", use_container_width=True)
 
 
 @st.cache_resource

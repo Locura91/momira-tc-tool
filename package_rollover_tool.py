@@ -310,9 +310,6 @@ def _extract_pax(info: dict) -> str | None:
 
 @st.dialog("🔁 Package Rollover")
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
-    import json as _json
-    import streamlit.components.v1 as _components
-
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
@@ -337,12 +334,7 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     st.caption("Make sure you are logged into Travel Compositor. The package page will open in a new tab — click **'Reserva directamente sin cambios'** to complete the rollover.")
 
     st.write("")
-    if st.button("🚀 Open & start rollover", type="primary", use_container_width=True, key="pkr_start_now"):
-        _components.html(
-            f"<script>window.open({_json.dumps(package_url)}, '_blank');</script>",
-            height=0,
-        )
-        st.success("✅ Package page opened in a new tab. Click **'Reserva directamente sin cambios'** to complete the rollover.")
+    st.link_button("🚀 Open & start rollover", package_url, type="primary", use_container_width=True)
 
 
 def render_package_rollover_tool():
