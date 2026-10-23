@@ -41,17 +41,16 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
+MODULE_BUILD = "2026-10-23-rollover-url-fix"
 
 _PHASE_KEY = "pkr_phase"
 
 
 def _make_slug(title: str) -> str:
     """Converts a package title to a URL slug matching momira.travel's format.
-    & → 'and', colons/punctuation removed."""
+    Special chars (& : , etc.) are dropped; spaces become hyphens."""
     s = title.lower()
-    s = re.sub(r'&', 'and', s)
-    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'[^a-z0-9\s-]', '', s)   # drop & : , etc. — TC never substitutes 'and'
     s = re.sub(r'\s+', '-', s.strip())
     return re.sub(r'-+', '-', s)
 
@@ -310,13 +309,17 @@ def _extract_pax(info: dict) -> str | None:
 
 
 @st.dialog("🔁 Package Rollover")
-def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, idea_url: str = ""):
+def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     import json as _json
     import streamlit.components.v1 as _components
     from rollover_executor import execute_rollover
 
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
+
+    # Always use the slug-based momira.travel URL (constructed from title).
+    # Never use the TC backend URL — it rate-limits our server with 429.
+    direct_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
 
     col1, col2 = st.columns(2)
     with col1:
@@ -334,13 +337,13 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, id
         key="pkr_dialog_date",
     )
 
+    st.link_button("🌐 Open package page directly", direct_url, help="Opens the package on momira.travel in a new tab — use this if the automatic rollover fails")
+
     st.write("")
     if st.button("🚀 Start now", type="primary", use_container_width=True, key="pkr_start_now"):
-        # Use ideaUrl from TC API (correct slug, TC backend) — fall back to constructed URL
-        resolved_url = idea_url or (_momira_url(pkg_id, title) if title else "")
         chosen_str = chosen.strftime("%d.%m.%Y")
         with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(pkg_id, chosen_str, idea_url=resolved_url)
+            result = execute_rollover(pkg_id, chosen_str, idea_url=direct_url)
         if result["success"]:
             st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
             _components.html(
@@ -349,6 +352,8 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None, id
             )
         else:
             st.error(f"❌ {result['error']}")
+            st.info(f"You can open the package page directly and do the rollover manually:")
+            st.link_button("🌐 Open on momira.travel", direct_url)
             if result.get("final_url"):
                 st.caption(f"Final URL: {result['final_url']}")
 
@@ -379,7 +384,6 @@ def render_package_rollover_tool():
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
-                idea_url=_extract_idea_url(info),
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
@@ -397,7 +401,6 @@ def render_package_rollover_tool():
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
-                idea_url=_extract_idea_url(info),
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))

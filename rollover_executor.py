@@ -10,10 +10,11 @@ Flow:
 No browser automation, no bookmarklet. Pure requests + BeautifulSoup.
 """
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
 
-MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
+MODULE_BUILD = "2026-10-23-rollover-url-fix"
 
 _BASE = "https://momira.travel"
 _TIMEOUT_GET  = 15
@@ -58,12 +59,26 @@ def execute_rollover(
     # Fall back to bare ID URL if not available — momira.travel may redirect to slug.
     page_url = idea_url.rstrip("/") + "/" if idea_url else f"{_BASE}/en/idea/{idea_id}/"
 
-    # ── Step 1: GET the idea page ─────────────────────────────────────────────
-    try:
-        resp = session.get(page_url, timeout=_TIMEOUT_GET, allow_redirects=True)
-        resp.raise_for_status()
-    except Exception as e:
-        return {"success": False, "error": f"Could not load idea page ({page_url}): {e}"}
+    # ── Step 1: GET the idea page (retry on 429 / transient errors) ──────────
+    last_exc = None
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = session.get(page_url, timeout=_TIMEOUT_GET, allow_redirects=True)
+            if resp.status_code == 429:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                time.sleep(wait)
+                last_exc = f"429 Too Many Requests (attempt {attempt + 1})"
+                resp = None
+                continue
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            last_exc = str(e)
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    if resp is None:
+        return {"success": False, "error": f"Could not load idea page ({page_url}): {last_exc}"}
 
     # Use the final URL after any redirects for the POST
     page_url = resp.url
