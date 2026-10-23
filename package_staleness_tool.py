@@ -35,7 +35,7 @@ from package_rollover_tool import (
     _extract_pax,
 )
 
-MODULE_BUILD = "2026-10-23-two-step-ajax"
+MODULE_BUILD = "2026-10-23-web-auth"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
