@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-23-rollover-url-fix"
+MODULE_BUILD = "2026-10-23-rollover-open-in-browser"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -312,14 +312,11 @@ def _extract_pax(info: dict) -> str | None:
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     import json as _json
     import streamlit.components.v1 as _components
-    from rollover_executor import execute_rollover
 
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
-    # Always use the slug-based momira.travel URL (constructed from title).
-    # Never use the TC backend URL — it rate-limits our server with 429.
-    direct_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    package_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
 
     col1, col2 = st.columns(2)
     with col1:
@@ -337,25 +334,15 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
         key="pkr_dialog_date",
     )
 
-    st.link_button("🌐 Open package page directly", direct_url, help="Opens the package on momira.travel in a new tab — use this if the automatic rollover fails")
+    st.caption("Make sure you are logged into Travel Compositor. The package page will open in a new tab — click **'Reserva directamente sin cambios'** to complete the rollover.")
 
     st.write("")
-    if st.button("🚀 Start now", type="primary", use_container_width=True, key="pkr_start_now"):
-        chosen_str = chosen.strftime("%d.%m.%Y")
-        with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(pkg_id, chosen_str, idea_url=direct_url)
-        if result["success"]:
-            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
-            _components.html(
-                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
-                height=0,
-            )
-        else:
-            st.error(f"❌ {result['error']}")
-            st.info(f"You can open the package page directly and do the rollover manually:")
-            st.link_button("🌐 Open on momira.travel", direct_url)
-            if result.get("final_url"):
-                st.caption(f"Final URL: {result['final_url']}")
+    if st.button("🚀 Open & start rollover", type="primary", use_container_width=True, key="pkr_start_now"):
+        _components.html(
+            f"<script>window.open({_json.dumps(package_url)}, '_blank');</script>",
+            height=0,
+        )
+        st.success("✅ Package page opened in a new tab. Click **'Reserva directamente sin cambios'** to complete the rollover.")
 
 
 def render_package_rollover_tool():
