@@ -35,7 +35,7 @@ from package_rollover_tool import (
     _extract_pax,
 )
 
-MODULE_BUILD = "2026-10-23-rollover-open-in-browser"
+MODULE_BUILD = "2026-10-23-two-step-ajax"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
@@ -70,6 +70,10 @@ _STATUS_COLOUR = {
 
 @st.dialog("🔁 Package Rollover")
 def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+    import json as _json
+    import streamlit.components.v1 as _components
+    from rollover_executor import execute_rollover
+
     st.markdown(f"**{title}**")
     st.caption(f"ID: {pkg_id}")
 
@@ -91,10 +95,25 @@ def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | N
         key="pst_dialog_date",
     )
 
-    st.caption("Make sure you are logged into Travel Compositor. The package page will open in a new tab — click **'Reserva directamente sin cambios'** to complete the rollover.")
-
     st.write("")
-    st.link_button("🚀 Open & start rollover", package_url, type="primary", use_container_width=True)
+    if st.button("🚀 Start rollover", type="primary", use_container_width=True, key="pst_start_now"):
+        chosen_str = chosen.strftime("%d.%m.%Y")
+        with st.spinner("Starting rollover in Travel Compositor…"):
+            result = execute_rollover(package_url, chosen_str)
+        if result["success"]:
+            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+            _components.html(
+                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
+                height=0,
+            )
+            st.link_button("🔗 Open trip summary", result["url"])
+        else:
+            st.error(f"❌ {result['error']}")
+            if result.get("detail"):
+                with st.expander("Technical detail"):
+                    st.code(result["detail"])
+            st.info("Open the package page manually and click 'Reserva directamente sin cambios':")
+            st.link_button("🌐 Open on momira.travel", package_url)
 
 
 @st.cache_resource

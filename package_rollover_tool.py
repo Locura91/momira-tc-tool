@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-23-rollover-open-in-browser"
+MODULE_BUILD = "2026-10-23-two-step-ajax"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -310,6 +310,10 @@ def _extract_pax(info: dict) -> str | None:
 
 @st.dialog("🔁 Package Rollover")
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+    import json as _json
+    import streamlit.components.v1 as _components
+    from rollover_executor import execute_rollover
+
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
@@ -331,10 +335,25 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
         key="pkr_dialog_date",
     )
 
-    st.caption("Make sure you are logged into Travel Compositor. The package page will open in a new tab — click **'Reserva directamente sin cambios'** to complete the rollover.")
-
     st.write("")
-    st.link_button("🚀 Open & start rollover", package_url, type="primary", use_container_width=True)
+    if st.button("🚀 Start rollover", type="primary", use_container_width=True, key="pkr_start_now"):
+        chosen_str = chosen.strftime("%d.%m.%Y")
+        with st.spinner("Starting rollover in Travel Compositor…"):
+            result = execute_rollover(package_url, chosen_str)
+        if result["success"]:
+            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+            _components.html(
+                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
+                height=0,
+            )
+            st.link_button("🔗 Open trip summary", result["url"])
+        else:
+            st.error(f"❌ {result['error']}")
+            if result.get("detail"):
+                with st.expander("Technical detail"):
+                    st.code(result["detail"])
+            st.info("Open the package page manually and click 'Reserva directamente sin cambios':")
+            st.link_button("🌐 Open on momira.travel", package_url)
 
 
 def render_package_rollover_tool():
