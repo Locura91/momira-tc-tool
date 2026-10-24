@@ -5589,9 +5589,24 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     # swallow trailing words unless the clean code resolution is preferred where available.
     _name_for_cities = (en_name_source := (payload.get("datasheets") or {}).get("EN") or {}).get("name") or payload.get("name") or ""
     _parsed_from, _parsed_to = _parse_route_cities_from_name(_name_for_cities)
-    if _parsed_from and not _dep_resolved_cleanly:
+    # CONFIRMED REAL BUG (product owner, 2026-10-24, "Momira Travel Standard Supplier" Malaysia
+    # bulk duplicate): transport names like "meet_KualaLumpur - meet_MKZ2" are composed of raw
+    # pickup codes, not human-readable city names. _parse_route_cities_from_name extracts those raw
+    # codes as "city names". When the code also didn't resolve cleanly (e.g. "meet_MKZ2"), we were
+    # overriding old_arrival_name with the raw code "meet_MKZ2", and then _swap_route_text found
+    # "meet_MKZ2" literally in the name text and swapped it positionally, producing the reversed-
+    # code name "meet_MKZ2 - meet_KualaLumpur" rather than a human-readable result.
+    # Fix: only use the parsed value when it isn't itself a raw transport code (i.e. doesn't start
+    # with one of the known pickup-point code prefixes like "meet_"). When the parsed value IS a
+    # raw code, the humanised fallback from _resolve_name (e.g. "Mkz2") is not found in the text
+    # either, so _swap_with_aliases falls through to its rebuild branch which correctly uses the
+    # TC-resolved formal names ("Kuala Lumpur City Center") rather than the opaque codes.
+    def _is_raw_transport_code(s: str) -> bool:
+        low = (s or "").lower().strip()
+        return any(low.startswith(p) for p in _TRANSPORT_BASE_CODE_PREFIXES)
+    if _parsed_from and not _dep_resolved_cleanly and not _is_raw_transport_code(_parsed_from):
         old_departure_name = _parsed_from
-    if _parsed_to and not _arr_resolved_cleanly:
+    if _parsed_to and not _arr_resolved_cleanly and not _is_raw_transport_code(_parsed_to):
         old_arrival_name = _parsed_to
     departure_aliases = _transport_location_name_aliases(old_departure_name)
     arrival_aliases = _transport_location_name_aliases(old_arrival_name)
@@ -5638,6 +5653,16 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
         en["name"] = _swap_with_aliases(en["name"])
         swap_report["datasheet_name"] = True
         payload["name"] = en["name"]  # use human-readable EN name as the TC internal name
+    else:
+        # CONFIRMED ROOT CAUSE (product owner, 2026-10-24, "Momira Travel Standard Supplier"
+        # Malaysia bulk duplicate): TC's admin "Name" column is driven by datasheets.EN.name, not
+        # the top-level name field. When the source transport has no EN name (or the EN.name is
+        # itself an opaque code that was handled above), we must explicitly copy the already-rebuilt
+        # top-level name into datasheets.EN so TC stores and displays the human-readable reversed
+        # route name rather than auto-generating "meet_MKZ2 - meet_KualaLumpur" from the segments.
+        if payload.get("name"):
+            en["name"] = payload["name"]
+            swap_report["datasheet_name"] = True
     if en.get("description"):
         en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
