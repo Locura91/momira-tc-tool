@@ -388,6 +388,16 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
     (the brackets themselves are NOT lost - the caller's message should point the human at the new
     id to fix in Travel Compositor directly, same as the single-transport flow's own equivalent
     warning)."""
+    # Fetch the full transport record (the list endpoint omits datasheets and may have an
+    # empty/opaque name field; the swap builder needs datasheets.EN.name to produce a correct
+    # human-readable name for the new transport).  Mirror what flows/duplicate_transport.py's
+    # _fetch_source_and_options does before calling build_and_rewrite_transport_swap_payload.
+    transport_id = source.get("id")
+    if transport_id:
+        full = client.get_transport(supplier_id, transport_id)
+        if isinstance(full, dict) and "error" not in full:
+            source = full
+
     source_options = []
     for opt_code in (source.get("optionCodes") or []):
         opt = client.get_transport_option(supplier_id, source.get("id"), opt_code)
