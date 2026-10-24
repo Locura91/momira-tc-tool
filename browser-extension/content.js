@@ -11,7 +11,7 @@
   var isIdea     = /\/idea\//.test(location.pathname);
   var isMap      = location.pathname.indexOf("travel-map") > -1;
 
-  // ── On the idea page: read hash and save date ────────────────────────────
+  // ── On the idea page: read hash and save date ────────────────────────────────────────
   var DATE = null;
   if (isIdea) {
     var m = (location.hash || "").match(/tcrollover=([0-9]{2}\.[0-9]{2}\.[0-9]{4})/);
@@ -20,7 +20,7 @@
     try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch(e) {}
   }
 
-  // ── On travel-map: restore saved date ───────────────────────────────────
+  // ── On travel-map: restore saved date ───────────────────────────────────────
   if (isMap) {
     try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch(e) {}
     if (!DATE) return;
@@ -81,7 +81,7 @@
   // GO: only non-generic terms — no "search" to avoid page-level search buttons
   var GO   = ["start trip", "iniciar viaje", "empezar viaje", "empezar"];
 
-  // ── travel-map flow: date picker is on this page ─────────────────────────
+  // ── travel-map flow: date picker is on this page ─────────────────────────────────
   if (isMap) {
     say("On travel map. Looking for the departure date field…");
     var mapTries = 0;
@@ -93,19 +93,6 @@
         setValue(inp, DATE);
         say("Date set to <b>" + DATE + "</b> ✅<br>Review the trip, then confirm when ready.");
         try { sessionStorage.removeItem(STORAGE_KEY); } catch(e) {}
-        // Look for a Save / Confirm / Search button on the map page
-        var saveNames = ["save", "guardar", "confirm", "confirmar", "update", "actualizar",
-                         "start trip", "iniciar"];
-        var saveTries = 0;
-        var saveIv = setInterval(function () {
-          var btn = buttonByText(saveNames);
-          if (btn && !btn.disabled) {
-            clearInterval(saveIv);
-            say("Date set ✅ — click <b>Save / Confirm</b> yourself to finalise, or it may auto-save.");
-          } else if (++saveTries > 30) {
-            clearInterval(saveIv);
-          }
-        }, 300);
       } else if (++mapTries > 60) {
         clearInterval(mapIv);
         say("Couldn't find the date field on this page.<br>Please enter <b>" + DATE + "</b> manually.");
@@ -114,7 +101,7 @@
     return;
   }
 
-  // ── idea page flow ────────────────────────────────────────────────────────
+  // ── idea page flow ──────────────────────────────────────────────────────────────────────
   // Click BOOK first; TC may open a modal with a date picker OR redirect to travel-map.
   var tries = 0;
   var iv0 = setInterval(function () {
@@ -151,7 +138,6 @@
           }, 250);
         } else if (++t2 > 30) {
           // No modal appeared in 6 s — TC likely redirected to travel-map already.
-          // The travel-map handler will take over. Just stop this interval.
           clearInterval(iv1);
           say("Waiting for Travel Compositor to load the date page…");
         }
