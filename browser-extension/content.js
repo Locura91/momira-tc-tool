@@ -67,55 +67,72 @@
     });
   }
 
-  var BOOK = ["book directly without changes", "reserva directamente sin cambios",
-              "book directly", "reservar directamente"];
-  var GO   = ["start trip", "iniciar viaje", "search", "buscar", "empezar"];
+  // BOOK button: opens the date modal
+  var BOOK = [“book directly without changes”, “reserva directamente sin cambios”,
+              “book directly”, “reservar directamente”];
+  // GO button: only inside the modal — must NOT match generic page-level “Search”
+  var GO   = [“start trip”, “iniciar viaje”, “empezar viaje”, “empezar”];
 
-  function fillAndGo() {
-    var inp = dateInput();
+  function fillAndGo(modal) {
+    // Look for date input only inside the modal container (if found), else globally
+    var inp = (modal && modal.querySelector('input[name*=”departureDateMultidestination”]')) ||
+              (modal && modal.querySelector('input[name*=”startDate”]')) ||
+              (modal && modal.querySelector('input[name*=”departureDate”]')) ||
+              dateInput();
     if (!inp) return false;
     attach();
     setValue(inp, DATE);
-    say("Date set to <b>" + DATE + "</b>. Looking for the Start/Search button…");
+    say(“Date set to <b>” + DATE + “</b>. Looking for Start Trip button…”);
     var tries = 0;
     var iv = setInterval(function () {
-      var go = buttonByText(GO);
+      // Only search for GO button inside the modal to avoid clicking page-level Search
+      var go = (modal && [].slice.call(modal.querySelectorAll('button,a,input[type=”submit”],span[role=”button”]'))
+                         .find(function(b){
+                           var t=(b.textContent||b.value||””).trim().toLowerCase();
+                           return GO.some(function(n){return t.indexOf(n)>-1;});
+                         })) ||
+               buttonByText(GO);
       if (go && !go.disabled) {
         clearInterval(iv);
-        say("Starting the trip… you'll land on the summary to review. ✅");
+        say(“Starting the trip… you'll land on the summary to review. ✅”);
         go.click();
         setTimeout(function () { if (box.isConnected) box.remove(); }, 7000);
       } else if (++tries > 40) {
         clearInterval(iv);
-        say("Date is filled, but I couldn't find an enabled <b>Start/Search</b> button.<br>" +
-            "Please click it yourself to continue.");
+        say(“Date is filled ✅<br>Please click the <b>Start Trip</b> button yourself to continue.”);
       }
     }, 250);
     return true;
   }
 
-  // If the date modal is already open, fill it. Otherwise click "Book directly
-  // without changes" first, then wait for the date field to appear.
-  if (dateInput()) {
-    fillAndGo();
-  } else {
-    var tries = 0;
-    var iv0 = setInterval(function () {
-      attach();
-      var book = buttonByText(BOOK);
-      if (book) {
-        clearInterval(iv0);
-        say("Opening “Book directly without changes”…");
-        book.click();
-        var t2 = 0;
-        var iv1 = setInterval(function () {
-          if (fillAndGo() || ++t2 > 60) clearInterval(iv1);
-        }, 200);
-      } else if (++tries > 60) {
-        clearInterval(iv0);
-        say("Couldn't find “Book directly without changes” on this page.<br>" +
-            "Make sure this is the package's idea page, then reload.");
-      }
-    }, 200);
+  function findModal() {
+    // mySeparateForm is the PrimeFaces modal that appears after clicking BOOK
+    return document.querySelector('form[id*=”mySeparateForm”]') ||
+           document.querySelector('div[id*=”mySeparateForm”]') ||
+           document.querySelector('.ui-dialog:not([style*=”display: none”])') ||
+           null;
   }
+
+  // Always click BOOK first — never shortcut via a date field that's already on the page,
+  // because those belong to other forms (search, etc.) and clicking GO there sends tripId=0.
+  var tries = 0;
+  var iv0 = setInterval(function () {
+    attach();
+    var book = buttonByText(BOOK);
+    if (book) {
+      clearInterval(iv0);
+      say(“Clicking “Book directly without changes”…”);
+      book.click();
+      // Wait for the modal / date field to appear, then fill and go
+      var t2 = 0;
+      var iv1 = setInterval(function () {
+        var modal = findModal();
+        if (fillAndGo(modal) || ++t2 > 80) clearInterval(iv1);
+      }, 200);
+    } else if (++tries > 60) {
+      clearInterval(iv0);
+      say(“Couldn't find “Book directly without changes” on this page.<br>” +
+          “Make sure you're on the package idea page, then reload.”);
+    }
+  }, 200);
 })();
