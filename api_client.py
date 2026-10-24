@@ -959,7 +959,7 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
                     geo = data.get("geolocation") or {}
                     print(f"✅ RESOLVED (by code): '{clean_query}' -> {data['code']} ({data.get('name')})")
                     return {
-                        "code": data["code"], "name": data.get("name", data["code"]), "type": data.get("type"),
+                        "code": data["code"], "name": data.get("name") or "", "type": data.get("type"),
                         "latitude": geo.get("latitude"), "longitude": geo.get("longitude"),
                         "valid": True, "match_type": "code",
                     }

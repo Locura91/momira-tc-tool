@@ -5559,7 +5559,8 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
 
     def _resolve_name(code: str):
         """Returns (name, resolved_cleanly). resolved_cleanly is True only when the code mapped to
-        a real master-data base; False when the code is opaque and we had to humanise it."""
+        a real master-data base WITH a usable human-readable name; False when the code is opaque,
+        unresolved, or TC returned the raw code itself as the name (no actual human name stored)."""
         if not code:
             return "", False
         try:
@@ -5567,10 +5568,23 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
         except Exception:
             result = None
         if isinstance(result, dict) and result.get("valid") and result.get("name"):
-            return result["name"], True
-        # Lookup failed: derive a readable city name from the code itself ("meet_candidasa" ->
-        # "Candidasa") so the name/datasheet swap below can still find & swap it in the datasheet
-        # text, instead of pasting the raw code (which produced "meet_Munduk - meet_candidasa").
+            resolved_name = result["name"]
+            # CONFIRMED ROOT CAUSE (product owner, 2026-10-24, TRANSPORT-437829 Kuala Lumpur →
+            # Lumut bulk duplicate): api_client.resolve_transport_base falls back to data["code"]
+            # when TC's /transportbases/{code} returns a 200 with no human-readable name set
+            # (data.get("name", data["code"])). The builder then receives valid=True with
+            # name="meet_LUMUT-6" (the raw code), treats it as cleanly resolved, skips the
+            # reconciliation override, and uses the raw code as the city name — which propagates
+            # all the way through to "meet_LUMUT-6 - meet_KualaLumpur" in TC admin.
+            # Fix: if TC's "resolved" name is itself a raw pickup-point code (starts with "meet_"
+            # etc.), it is not a useful human-readable resolution — fall through to humanise/
+            # extract from the transport's own name text exactly as for a failed lookup.
+            low_name = resolved_name.lower()
+            if not any(low_name.startswith(p) for p in _TRANSPORT_BASE_CODE_PREFIXES):
+                return resolved_name, True
+        # Lookup failed or TC returned no useful human name: derive a readable city name from the
+        # code itself ("meet_candidasa" -> "Candidasa") so the name/datasheet swap below can
+        # still find & swap it in the datasheet text, instead of pasting the raw code.
         return _humanize_transport_base_code(code), False
 
     old_departure_name, _dep_resolved_cleanly = _resolve_name(old_departure_code)
