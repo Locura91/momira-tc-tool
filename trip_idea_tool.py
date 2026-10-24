@@ -30,7 +30,7 @@ import trip_quote_client as tqc
 import trip_search_rules as tsr
 from api_client import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _PHASE_KEY = "ti_phase"
 

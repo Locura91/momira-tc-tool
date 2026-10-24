@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-23-two-step-ajax"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -309,11 +309,23 @@ def _extract_pax(info: dict) -> str | None:
 
 
 @st.dialog("🔁 Package Rollover")
-def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
-    import json as _json
-    import streamlit.components.v1 as _components
-    from rollover_executor import execute_rollover
+def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None,
+                     current_departure=None):
+    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pkr",
+                          current_departure=current_departure)
 
+
+def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
+                          current_departure=None):
+    """Reliable rollover UI, shared by the dedicated tool and the staleness list.
+
+    The booking itself has to happen in the operator's OWN browser: momira.travel
+    sits behind Cloudflare (which blocks our server) and its login cookie is
+    HttpOnly (so cross-origin JS in this tool can't reuse it either). So the
+    reliable flow is: open the correct package page in a new tab — where the
+    operator is already logged in and already past Cloudflare — and let them
+    confirm the booking with one click there. The chosen date is shown big so
+    it's easy to copy into TC's date picker."""
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
@@ -327,33 +339,79 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
     with col2:
         st.metric("Nr. PAX", pax or "—")
 
+    if current_departure is not None:
+        old_str = current_departure.strftime("%d.%m.%Y")
+        overdue = (current_departure - date.today()).days
+        overdue_note = f" — {abs(overdue)} days ago" if overdue < 0 else f" — in {overdue} days"
+        st.caption(f"📅 Current departure in TC: **{old_str}**{overdue_note}")
+
     chosen = st.date_input(
         "New start date",
         value=_five_months_ahead(),
         min_value=date.today(),
         format="DD.MM.YYYY",
-        key="pkr_dialog_date",
+        key=f"{key_prefix}_dialog_date",
     )
+    chosen_str = chosen.strftime("%d.%m.%Y")
+
+    # The date rides along in the URL hash. With the "Momira TC Rollover"
+    # browser extension installed, opening this URL auto-fills the date and
+    # clicks through "Book directly without changes" → Start trip, in the
+    # operator's own logged-in browser (past Cloudflare, real session).
+    open_url = f"{package_url}#tcrollover={chosen_str}"
 
     st.write("")
-    if st.button("🚀 Start rollover", type="primary", use_container_width=True, key="pkr_start_now"):
-        chosen_str = chosen.strftime("%d.%m.%Y")
-        with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(package_url, chosen_str)
-        if result["success"]:
-            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
-            _components.html(
-                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
-                height=0,
-            )
-            st.link_button("🔗 Open trip summary", result["url"])
-        else:
-            st.error(f"❌ {result['error']}")
-            if result.get("detail"):
-                with st.expander("Technical detail"):
-                    st.code(result["detail"])
-            st.info("Open the package page manually and click 'Reserva directamente sin cambios':")
-            st.link_button("🌐 Open on momira.travel", package_url)
+    st.link_button(
+        "🚀  Start rollover in Travel Compositor  →",
+        open_url,
+        type="primary",
+        use_container_width=True,
+    )
+    st.caption(
+        f"With the rollover extension installed, this auto-sets **{chosen_str}** and "
+        f"starts the trip. Without it, do steps 1–3 below manually."
+    )
+    st.markdown(
+        f"On the TC page:\n\n"
+        f"1. Click **“Reserva directamente sin cambios”** (Book directly without changes)\n"
+        f"2. Set the start date to **`{chosen_str}`**\n"
+        f"3. Click **Start trip** — you'll land on the trip summary to review"
+    )
+
+    with st.expander("🧩 One-time setup: install the rollover extension"):
+        st.markdown(
+            "The extension runs the booking clicks in **your own browser**, where "
+            "you're already logged in and past Cloudflare — so the server never "
+            "needs to touch Travel Compositor.\n\n"
+            "**Install once (Chrome or Edge):**\n"
+            "1. Download the `browser-extension` folder from the repo to your computer\n"
+            "2. Open `chrome://extensions` (or `edge://extensions`)\n"
+            "3. Turn on **Developer mode** (top-right)\n"
+            "4. Click **Load unpacked** and select the `browser-extension` folder\n\n"
+            "That's it. From now on, clicking **Start rollover** above fills the date "
+            "and starts the trip automatically. It stops at the trip **summary** page "
+            "so you always review before anything is confirmed — nothing is booked on "
+            "its own."
+        )
+
+    with st.expander("⚙️ Experimental: try fully-automatic booking from the server"):
+        st.caption(
+            "This attempts the booking headlessly via the server. It usually fails "
+            "because Cloudflare blocks the server from loading the TC page — use the "
+            "button above if it doesn't return a trip link."
+        )
+        if st.button("🚀 Attempt auto-booking", key=f"{key_prefix}_start_now"):
+            from rollover_executor import execute_rollover
+            with st.spinner("Attempting rollover via server…"):
+                result = execute_rollover(package_url, chosen_str)
+            if result.get("success"):
+                st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+                st.link_button("🔗 Open trip summary", result["url"])
+            else:
+                st.error(f"❌ {result.get('error', 'Unknown error')}")
+                if result.get("detail"):
+                    with st.expander("Technical detail"):
+                        st.code(result["detail"])
 
 
 def render_package_rollover_tool():
@@ -377,11 +435,13 @@ def render_package_rollover_tool():
             day_to_day = st.session_state.get("pkr_day_to_day", {})
             _, current_price = _current_price_from(info, day_to_day)
             pax = _extract_pax(info)
+            _, current_departure = prr.find_departure_date(info)
             _rollover_dialog(
                 pkg_id=pid,
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                current_departure=current_departure,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
@@ -394,11 +454,13 @@ def render_package_rollover_tool():
             day_to_day = st.session_state.get("pkr_day_to_day", {})
             _, current_price = _current_price_from(info, day_to_day)
             pax = _extract_pax(info)
+            _, current_departure = prr.find_departure_date(info)
             _rollover_dialog(
                 pkg_id=pid,
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                current_departure=current_departure,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))

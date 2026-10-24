@@ -34,7 +34,7 @@ always Travel Compositor itself (confirmed via get_transfer/get_transfers).
 # carried a build stamp before (2026-09-13, while consolidating name-normalization into
 # text_normalize.py) - a partial deploy that updated every other file but this one would have
 # gone undetected by app.py's own stale-module check.
-MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 import os
 import json

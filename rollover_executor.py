@@ -2,22 +2,20 @@
 rollover_executor.py — Package rollover via two-step PrimeFaces AJAX.
 
 Flow confirmed live by browser inspection (2026-10-23):
-  1. GET idea page → extract initial ViewState
-  2. POST AJAX: trigger "Book directly without changes" button
+  1. Log into momira.travel as the TC operator → get JSESSIONID
+  2. GET idea page (authenticated) → extract initial ViewState
+  3. POST AJAX: trigger "Book directly without changes" button
      → server refreshes mySeparateForm + returns new ViewState
-  3. POST AJAX: submit mySeparateForm (startTrip) with departure date
+  4. POST AJAX: submit mySeparateForm (startTrip) with departure date
      → server redirects to summary.xhtml?tripId=N
-
-The package pages are publicly accessible (no login required to load them).
-Whether completing the booking requires a TC session depends on the server;
-if it does, the response will redirect to login instead of summary.xhtml.
 """
 import re
 import time
 import requests
 from bs4 import BeautifulSoup
+from tc_web_session import create_web_session
 
-MODULE_BUILD = "2026-10-23-two-step-ajax"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _BASE = "https://momira.travel"
 _TIMEOUT_GET  = 15
@@ -78,8 +76,13 @@ def execute_rollover(
         {"success": True,  "url": "https://momira.travel/summary.xhtml?tripId=N", "trip_id": "N"}
         {"success": False, "error": "...", "detail": "..."}
     """
-    session = requests.Session()
-    session.headers.update(_HEADERS)
+    # ── Step 0: Authenticate — get a TC web session (JSESSIONID) ────────────
+    try:
+        session = create_web_session()
+        # Override default headers with our AJAX-compatible ones
+        session.headers.update(_HEADERS)
+    except Exception as e:
+        return {"success": False, "error": f"TC login failed: {e}"}
 
     # ── Step 1: GET the idea page ─────────────────────────────────────────────
     for attempt in range(3):

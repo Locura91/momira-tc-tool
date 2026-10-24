@@ -23,7 +23,7 @@ import re
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _APP_PY = os.path.join(_REPO_DIR, "app.py")
 
-_STAMP_RE = re.compile(r'^MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"]+)"', flags=re.M)
+_STAMP_RE = re.compile(r'^MODULE_BUILD = "2026-10-23-web-auth"]+)"', flags=re.M)
 _APP_VERSION_RE = re.compile(r'^BUILD_VERSION = "2026-10-20-fix-draft-restore-widget-crash"]+)"', flags=re.M)
 
 
