@@ -5423,15 +5423,17 @@ def _humanize_transport_base_code(code: str) -> str:
 _ROUTE_NAME_RE = re.compile(r"\bfrom\s+(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
 _ROUTE_NAME_NO_FROM_RE = re.compile(
     r"^(?:one[- ]way\s+(?:transfer\s+)?|transfer\s+)(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
-# Separator between the two cities: a plain hyphen "-" is accepted ONLY when it has
-# whitespace on both sides (so the hyphen inside "One-way" can never be mistaken for the
-# route separator), while an en-dash "–"/em-dash "—" keeps the original optional-whitespace
-# behaviour. CONFIRMED REAL BUG (product owner, 2026-10-24, Malaysia bulk duplicate): most
-# supplier names use a plain hyphen ("Kuala Lumpur City - Lumut"), only some an en-dash, so
-# the en-dash-only pattern silently failed on the majority and the scan fell back to the
+# Separator between the two cities: a plain hyphen "-" is accepted when it has whitespace on
+# AT LEAST ONE side ("City - Lumut", "Negara- Cameron", "Negara -Cameron"), so the hyphen
+# inside "One-way" (no whitespace on either side) can never be mistaken for the route
+# separator; an en-dash "–"/em-dash "—" keeps the original optional-whitespace behaviour.
+# CONFIRMED REAL BUG (product owner, 2026-10-24, Malaysia bulk duplicate): most supplier names
+# use a plain hyphen ("Kuala Lumpur City - Lumut"), only some an en-dash, and some omit the
+# space on one side ("Taman Negara- Cameron Highlands"), so the en-dash-only (and then the
+# space-both-sides-only) pattern silently failed on the rest and the scan fell back to the
 # opaque "meet_LUMUT-6 → meet_KualaLumpur" itinerary codes instead of the real city names.
 _ROUTE_NAME_DASH_RE = re.compile(
-    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)(?:\s+-\s+|\s*[–—]\s*)(.+?)\s*$",
+    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)(?:\s+-\s*|\s*-\s+|\s*[–—]\s*)(.+?)\s*$",
     re.IGNORECASE)
 _TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
 
@@ -5452,7 +5454,12 @@ def _parse_route_cities_from_name(name: str):
     per-code resolution/humanisation."""
     if not name:
         return None, None
-    s = str(name).strip()
+    # Strip stray emphasis markers / surrounding punctuation ("**One-way transfer Malacca -
+    # Mersing **") before matching, so the leading "**" can't stop the "One-way transfer" prefix
+    # from matching and leave the whole prefix stuck inside the first city. The two cities come
+    # out clean ("Malacca", "Mersing"); the caller still swaps them in the ORIGINAL text, so the
+    # surrounding "**" stay exactly where they were.
+    s = str(name).strip().strip("*").strip()
     m = _ROUTE_NAME_RE.search(s)
     if not m:
         m = _ROUTE_NAME_NO_FROM_RE.match(s)
@@ -5460,8 +5467,8 @@ def _parse_route_cities_from_name(name: str):
         m = _ROUTE_NAME_DASH_RE.match(s)
     if not m:
         return None, None
-    frm = _TRAILING_HOTELS_RE.sub("", m.group(1).strip()).strip()
-    to = _TRAILING_HOTELS_RE.sub("", m.group(2).strip()).strip()
+    frm = _TRAILING_HOTELS_RE.sub("", m.group(1).strip()).strip().strip("*").strip()
+    to = _TRAILING_HOTELS_RE.sub("", m.group(2).strip()).strip().strip("*").strip()
     return (frm or None), (to or None)
 
 
