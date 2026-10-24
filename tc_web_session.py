@@ -19,7 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import Optional
 
-MODULE_BUILD = "2026-10-24-live-dates"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _BASE = "https://momira.travel"
 _LOGIN_URL = f"{_BASE}/login.xhtml"

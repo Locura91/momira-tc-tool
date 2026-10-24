@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Momira TC Rollover",
+  "version": "1.0.0",
+  "description": "Automates package rollover on momira.travel: opens 'Book directly without changes', fills the new departure date, and starts the trip — all in your own logged-in browser.",
+  "content_scripts": [
+    {
+      "matches": ["https://momira.travel/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

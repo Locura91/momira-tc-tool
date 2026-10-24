@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-24-live-dates"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -354,19 +354,45 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     )
     chosen_str = chosen.strftime("%d.%m.%Y")
 
+    # The date rides along in the URL hash. With the "Momira TC Rollover"
+    # browser extension installed, opening this URL auto-fills the date and
+    # clicks through "Book directly without changes" → Start trip, in the
+    # operator's own logged-in browser (past Cloudflare, real session).
+    open_url = f"{package_url}#tcrollover={chosen_str}"
+
     st.write("")
     st.link_button(
-        "🌐  Open package in Travel Compositor  →",
-        package_url,
+        "🚀  Start rollover in Travel Compositor  →",
+        open_url,
         type="primary",
         use_container_width=True,
     )
+    st.caption(
+        f"With the rollover extension installed, this auto-sets **{chosen_str}** and "
+        f"starts the trip. Without it, do steps 1–3 below manually."
+    )
     st.markdown(
-        f"Then on the TC page:\n\n"
+        f"On the TC page:\n\n"
         f"1. Click **“Reserva directamente sin cambios”** (Book directly without changes)\n"
         f"2. Set the start date to **`{chosen_str}`**\n"
-        f"3. Click **Start trip** — you'll land on the trip summary"
+        f"3. Click **Start trip** — you'll land on the trip summary to review"
     )
+
+    with st.expander("🧩 One-time setup: install the rollover extension"):
+        st.markdown(
+            "The extension runs the booking clicks in **your own browser**, where "
+            "you're already logged in and past Cloudflare — so the server never "
+            "needs to touch Travel Compositor.\n\n"
+            "**Install once (Chrome or Edge):**\n"
+            "1. Download the `browser-extension` folder from the repo to your computer\n"
+            "2. Open `chrome://extensions` (or `edge://extensions`)\n"
+            "3. Turn on **Developer mode** (top-right)\n"
+            "4. Click **Load unpacked** and select the `browser-extension` folder\n\n"
+            "That's it. From now on, clicking **Start rollover** above fills the date "
+            "and starts the trip automatically. It stops at the trip **summary** page "
+            "so you always review before anything is confirmed — nothing is booked on "
+            "its own."
+        )
 
     with st.expander("⚙️ Experimental: try fully-automatic booking from the server"):
         st.caption(

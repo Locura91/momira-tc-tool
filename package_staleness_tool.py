@@ -35,7 +35,7 @@ from package_rollover_tool import (
     _extract_pax,
 )
 
-MODULE_BUILD = "2026-10-24-live-dates"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
