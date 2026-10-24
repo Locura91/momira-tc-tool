@@ -298,28 +298,33 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
     supplier size."""
     live = [t for t in (transports or []) if t.get("active") is not False]
 
-    name_cache: Dict[str, str] = {}
+    name_cache: Dict[str, tuple] = {}
 
-    def _resolve_name(code: str) -> str:
+    def _resolve_name(code: str):
+        """Returns (name, resolved_cleanly). resolved_cleanly is True only when the code mapped to
+        a real master-data base; when it didn't, name falls back to the raw code."""
         if not code:
-            return code
+            return code, False
         if code in name_cache:
             return name_cache[code]
         try:
             result = api_client.resolve_transport_base(code)
         except Exception:
             result = None
-        name = result["name"] if isinstance(result, dict) and result.get("valid") and result.get("name") else code
-        name_cache[code] = name
-        return name
+        if isinstance(result, dict) and result.get("valid") and result.get("name"):
+            entry = (result["name"], True)
+        else:
+            entry = (code, False)
+        name_cache[code] = entry
+        return entry
 
     def _name_signature(t):
         codes = _transport_route_codes(t)
         if not codes:
             return None
         dep_code, arr_code, transport_type = codes
-        dep_name = normalize_name(_resolve_name(dep_code))
-        arr_name = normalize_name(_resolve_name(arr_code))
+        dep_name = normalize_name(_resolve_name(dep_code)[0])
+        arr_name = normalize_name(_resolve_name(arr_code)[0])
         if not dep_name or not arr_name:
             return None
         return dep_name, arr_name, transport_type
@@ -347,11 +352,18 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
             missing_name = None
             if _frm and _to:
                 missing_name = _swap_route_text(src_name, _frm, _to, suffix_on_fallback=False)
+            # Prefer the code-resolved base name when the code resolved cleanly (authoritative for
+            # the city's identity); fall back to the city parsed from the Name only for opaque
+            # codes that don't resolve ("meet_LUMUT-6"). Same reconciliation as
+            # builder.build_transport_swap_payload, so the scan preview and the created transport's
+            # name agree.
+            arr_name, arr_clean = _resolve_name(arr_code)
+            dep_name, dep_clean = _resolve_name(dep_code)
             gaps.append({
                 "source": t,
                 "missing_name": missing_name,
-                "missing_from_name": _to or _resolve_name(arr_code),
-                "missing_to_name": _frm or _resolve_name(dep_code),
+                "missing_from_name": arr_name if arr_clean else (_to or arr_name),
+                "missing_to_name": dep_name if dep_clean else (_frm or dep_name),
                 "transport_type": t.get("transportType") or "",
             })
     return gaps
