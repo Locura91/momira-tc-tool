@@ -19,7 +19,7 @@ scheduled job, per README_SOCIAL_KIT.md) - only this app screen is Momira-only.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-24-reliable-open"
+MODULE_BUILD = "2026-10-24-live-dates"
 
 import streamlit as st
 

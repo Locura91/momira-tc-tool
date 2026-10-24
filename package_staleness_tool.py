@@ -35,7 +35,7 @@ from package_rollover_tool import (
     _extract_pax,
 )
 
-MODULE_BUILD = "2026-10-24-reliable-open"
+MODULE_BUILD = "2026-10-24-live-dates"
 
 _DUE_SOON_DAYS = 60   # yellow zone: not yet urgent but worth keeping an eye on
 
@@ -69,9 +69,11 @@ _STATUS_COLOUR = {
 
 
 @st.dialog("🔁 Package Rollover")
-def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
+def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None,
+                            current_departure=None):
     from package_rollover_tool import _render_rollover_body
-    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pst")
+    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pst",
+                          current_departure=current_departure)
 
 
 @st.cache_resource
@@ -290,4 +292,5 @@ def render_package_staleness_tool():
                     title=row["title"],
                     current_price=current_price,
                     pax=pax,
+                    current_departure=row["dep_date"],
                 )

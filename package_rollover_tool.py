@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-24-reliable-open"
+MODULE_BUILD = "2026-10-24-live-dates"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -309,11 +309,14 @@ def _extract_pax(info: dict) -> str | None:
 
 
 @st.dialog("🔁 Package Rollover")
-def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
-    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pkr")
+def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None,
+                     current_departure=None):
+    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pkr",
+                          current_departure=current_departure)
 
 
-def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix):
+def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
+                          current_departure=None):
     """Reliable rollover UI, shared by the dedicated tool and the staleness list.
 
     The booking itself has to happen in the operator's OWN browser: momira.travel
@@ -335,6 +338,12 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix):
         st.metric("Current price / person", price_str)
     with col2:
         st.metric("Nr. PAX", pax or "—")
+
+    if current_departure is not None:
+        old_str = current_departure.strftime("%d.%m.%Y")
+        overdue = (current_departure - date.today()).days
+        overdue_note = f" — {abs(overdue)} days ago" if overdue < 0 else f" — in {overdue} days"
+        st.caption(f"📅 Current departure in TC: **{old_str}**{overdue_note}")
 
     chosen = st.date_input(
         "New start date",
@@ -400,11 +409,13 @@ def render_package_rollover_tool():
             day_to_day = st.session_state.get("pkr_day_to_day", {})
             _, current_price = _current_price_from(info, day_to_day)
             pax = _extract_pax(info)
+            _, current_departure = prr.find_departure_date(info)
             _rollover_dialog(
                 pkg_id=pid,
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                current_departure=current_departure,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
@@ -417,11 +428,13 @@ def render_package_rollover_tool():
             day_to_day = st.session_state.get("pkr_day_to_day", {})
             _, current_price = _current_price_from(info, day_to_day)
             pax = _extract_pax(info)
+            _, current_departure = prr.find_departure_date(info)
             _rollover_dialog(
                 pkg_id=pid,
                 title=_extract_title(info),
                 current_price=current_price,
                 pax=pax,
+                current_departure=current_departure,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
