@@ -5423,8 +5423,15 @@ def _humanize_transport_base_code(code: str) -> str:
 _ROUTE_NAME_RE = re.compile(r"\bfrom\s+(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
 _ROUTE_NAME_NO_FROM_RE = re.compile(
     r"^(?:one[- ]way\s+(?:transfer\s+)?|transfer\s+)(.+?)\s+to\s+(.+?)\s*$", re.IGNORECASE)
+# Separator between the two cities: a plain hyphen "-" is accepted ONLY when it has
+# whitespace on both sides (so the hyphen inside "One-way" can never be mistaken for the
+# route separator), while an en-dash "–"/em-dash "—" keeps the original optional-whitespace
+# behaviour. CONFIRMED REAL BUG (product owner, 2026-10-24, Malaysia bulk duplicate): most
+# supplier names use a plain hyphen ("Kuala Lumpur City - Lumut"), only some an en-dash, so
+# the en-dash-only pattern silently failed on the majority and the scan fell back to the
+# opaque "meet_LUMUT-6 → meet_KualaLumpur" itinerary codes instead of the real city names.
 _ROUTE_NAME_DASH_RE = re.compile(
-    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)\s*[–—]\s*(.+?)\s*$",
+    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)(?:\s+-\s+|\s*[–—]\s*)(.+?)\s*$",
     re.IGNORECASE)
 _TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
 
@@ -5543,32 +5550,41 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
         new_segments.append(seg)
     payload["segments"] = new_segments
 
-    def _resolve_name(code: str) -> str:
+    def _resolve_name(code: str):
+        """Returns (name, resolved_cleanly). resolved_cleanly is True only when the code mapped to
+        a real master-data base; False when the code is opaque and we had to humanise it."""
         if not code:
-            return ""
+            return "", False
         try:
             result = api_client.resolve_transport_base(code)
         except Exception:
             result = None
         if isinstance(result, dict) and result.get("valid") and result.get("name"):
-            return result["name"]
+            return result["name"], True
         # Lookup failed: derive a readable city name from the code itself ("meet_candidasa" ->
         # "Candidasa") so the name/datasheet swap below can still find & swap it in the datasheet
         # text, instead of pasting the raw code (which produced "meet_Munduk - meet_candidasa").
-        return _humanize_transport_base_code(code)
+        return _humanize_transport_base_code(code), False
 
-    old_departure_name = _resolve_name(old_departure_code)
-    old_arrival_name = _resolve_name(old_arrival_code)
-    # The pickup CODES are an unreliable source of the city (some are opaque master-data codes
-    # like "meet_VAI-10" for Kubu, not "meet_kubu"). The transport's own Name always carries the
-    # readable route, so prefer the cities parsed from it - this is what makes the name swap work
-    # for the opaque-code transports, not just the "meet_<city>" ones. Falls back to the
-    # code-resolved/humanised name when the Name isn't in the standard "from ... to ..." wording.
+    old_departure_name, _dep_resolved_cleanly = _resolve_name(old_departure_code)
+    old_arrival_name, _arr_resolved_cleanly = _resolve_name(old_arrival_code)
+    # Reconcile the two possible sources of each city name:
+    #  - the itinerary CODE resolved to a real master-data base (authoritative for the city's
+    #    identity when it resolves cleanly), and
+    #  - the two cities parsed out of the transport's own Name.
+    # Some codes are opaque master-data codes ("meet_VAI-10" IS Kubu, not "meet_kubu") that don't
+    # resolve at all - there the Name is the only readable source, so we take the parsed city.
+    # But when the code DID resolve cleanly, that resolved base name wins, because the Name parse
+    # can over-capture a trailing descriptor ("Aswan - Alexandria Train Ticket" must not treat
+    # "Alexandria Train Ticket" as the city when the code cleanly resolves to "Alexandria Train
+    # Station"). CONFIRMED REAL BUG (product owner, 2026-10-24, Malaysia bulk duplicate): the
+    # plain-hyphen names now parse (see _ROUTE_NAME_DASH_RE), but the parsed second city would
+    # swallow trailing words unless the clean code resolution is preferred where available.
     _name_for_cities = (en_name_source := (payload.get("datasheets") or {}).get("EN") or {}).get("name") or payload.get("name") or ""
     _parsed_from, _parsed_to = _parse_route_cities_from_name(_name_for_cities)
-    if _parsed_from:
+    if _parsed_from and not _dep_resolved_cleanly:
         old_departure_name = _parsed_from
-    if _parsed_to:
+    if _parsed_to and not _arr_resolved_cleanly:
         old_arrival_name = _parsed_to
     departure_aliases = _transport_location_name_aliases(old_departure_name)
     arrival_aliases = _transport_location_name_aliases(old_arrival_name)
