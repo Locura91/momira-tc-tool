@@ -93,7 +93,7 @@ cached between runs; every screen load re-fetches the live data fresh.
 """
 
 # Stamped on every delivery - see platform_store.py's own header for why.
-MODULE_BUILD = "2026-10-22-multi-file-tickets-fix"
+MODULE_BUILD = "2026-10-23-web-auth"
 
 import copy
 from typing import Any, Dict, List, Optional, Tuple
