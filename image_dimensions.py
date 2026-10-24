@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 import requests
 from PIL import Image, UnidentifiedImageError
 
-MODULE_BUILD = "2026-10-23-web-auth"
+MODULE_BUILD = "2026-10-24-reliable-open"
 
 MIN_WIDTH = 500
 MIN_HEIGHT = 400

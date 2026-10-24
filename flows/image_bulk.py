@@ -7,7 +7,7 @@ then the rest of the flow is handed off to the existing per-product flow module.
 """
 import streamlit as st
 
-MODULE_BUILD = "2026-10-23-web-auth"
+MODULE_BUILD = "2026-10-24-reliable-open"
 
 
 def render_image_bulk_flow(client):

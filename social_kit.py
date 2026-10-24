@@ -29,7 +29,7 @@ Requires: requests, Pillow.
 
 from __future__ import annotations
 
-MODULE_BUILD = "2026-10-23-web-auth"
+MODULE_BUILD = "2026-10-24-reliable-open"
 
 import io
 import os

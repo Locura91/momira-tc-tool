@@ -41,7 +41,7 @@ import package_rollover_rules as prr
 import package_service_compare as psc
 from travelcompositor_api import TravelCompositorAPI
 
-MODULE_BUILD = "2026-10-23-web-auth"
+MODULE_BUILD = "2026-10-24-reliable-open"
 
 _PHASE_KEY = "pkr_phase"
 
@@ -310,10 +310,19 @@ def _extract_pax(info: dict) -> str | None:
 
 @st.dialog("🔁 Package Rollover")
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
-    import json as _json
-    import streamlit.components.v1 as _components
-    from rollover_executor import execute_rollover
+    _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pkr")
 
+
+def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix):
+    """Reliable rollover UI, shared by the dedicated tool and the staleness list.
+
+    The booking itself has to happen in the operator's OWN browser: momira.travel
+    sits behind Cloudflare (which blocks our server) and its login cookie is
+    HttpOnly (so cross-origin JS in this tool can't reuse it either). So the
+    reliable flow is: open the correct package page in a new tab — where the
+    operator is already logged in and already past Cloudflare — and let them
+    confirm the booking with one click there. The chosen date is shown big so
+    it's easy to copy into TC's date picker."""
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
@@ -332,28 +341,42 @@ def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None):
         value=_five_months_ahead(),
         min_value=date.today(),
         format="DD.MM.YYYY",
-        key="pkr_dialog_date",
+        key=f"{key_prefix}_dialog_date",
     )
+    chosen_str = chosen.strftime("%d.%m.%Y")
 
     st.write("")
-    if st.button("🚀 Start rollover", type="primary", use_container_width=True, key="pkr_start_now"):
-        chosen_str = chosen.strftime("%d.%m.%Y")
-        with st.spinner("Starting rollover in Travel Compositor…"):
-            result = execute_rollover(package_url, chosen_str)
-        if result["success"]:
-            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
-            _components.html(
-                f"<script>window.open({_json.dumps(result['url'])}, '_blank');</script>",
-                height=0,
-            )
-            st.link_button("🔗 Open trip summary", result["url"])
-        else:
-            st.error(f"❌ {result['error']}")
-            if result.get("detail"):
-                with st.expander("Technical detail"):
-                    st.code(result["detail"])
-            st.info("Open the package page manually and click 'Reserva directamente sin cambios':")
-            st.link_button("🌐 Open on momira.travel", package_url)
+    st.link_button(
+        "🌐  Open package in Travel Compositor  →",
+        package_url,
+        type="primary",
+        use_container_width=True,
+    )
+    st.markdown(
+        f"Then on the TC page:\n\n"
+        f"1. Click **“Reserva directamente sin cambios”** (Book directly without changes)\n"
+        f"2. Set the start date to **`{chosen_str}`**\n"
+        f"3. Click **Start trip** — you'll land on the trip summary"
+    )
+
+    with st.expander("⚙️ Experimental: try fully-automatic booking from the server"):
+        st.caption(
+            "This attempts the booking headlessly via the server. It usually fails "
+            "because Cloudflare blocks the server from loading the TC page — use the "
+            "button above if it doesn't return a trip link."
+        )
+        if st.button("🚀 Attempt auto-booking", key=f"{key_prefix}_start_now"):
+            from rollover_executor import execute_rollover
+            with st.spinner("Attempting rollover via server…"):
+                result = execute_rollover(package_url, chosen_str)
+            if result.get("success"):
+                st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
+                st.link_button("🔗 Open trip summary", result["url"])
+            else:
+                st.error(f"❌ {result.get('error', 'Unknown error')}")
+                if result.get("detail"):
+                    with st.expander("Technical detail"):
+                        st.code(result["detail"])
 
 
 def render_package_rollover_tool():

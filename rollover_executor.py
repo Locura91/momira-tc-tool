@@ -15,7 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 from tc_web_session import create_web_session
 
-MODULE_BUILD = "2026-10-23-web-auth"
+MODULE_BUILD = "2026-10-24-reliable-open"
 
 _BASE = "https://momira.travel"
 _TIMEOUT_GET  = 15
