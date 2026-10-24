@@ -1,34 +1,40 @@
 // Momira TC Rollover — content script.
-//
-// Runs on every momira.travel page but only ACTS when the URL carries a
-// rollover instruction in its hash, e.g.
-//     https://momira.travel/en/idea/56712448/some-slug#tcrollover=24.02.2027
-// The Momira TC Tool appends that hash when you click "Start rollover", so
-// the date travels with the page and this script can pick it up.
-//
-// Because this runs INSIDE the momira.travel page, in your own browser, it is
-// already past Cloudflare and already logged in — the two walls that make
-// server-side automation impossible. It drives exactly the clicks you would:
-//   1. "Book directly without changes" / "Reserva directamente sin cambios"
-//   2. fill the departure date
-//   3. "Start trip"  → lands on the trip summary to REVIEW.
-//
-// It deliberately STOPS at the summary/review page. It never clicks a final
-// confirm/pay button — nothing is booked without you reviewing it first.
+// Runs on every momira.travel page.
+// On the idea page: reads #tcrollover=DD.MM.YYYY, saves date to sessionStorage,
+//   clicks "Book directly without changes", waits for the date modal OR the
+//   redirect to travel-map.xhtml, then fills the date.
+// On travel-map.xhtml: reads the saved date from sessionStorage and fills it in.
 (function () {
   "use strict";
 
-  var m = (location.hash || "").match(/tcrollover=([0-9]{2}\.[0-9]{2}\.[0-9]{4})/);
-  if (!m) return;                       // not a rollover navigation — do nothing
-  var DATE = m[1];
+  var STORAGE_KEY = "tcrollover_pending_date";
+  var isIdea     = /\/idea\//.test(location.pathname);
+  var isMap      = location.pathname.indexOf("travel-map") > -1;
 
-  // ---- visible status overlay so you can see what it's doing ----------------
+  // ── On the idea page: read hash and save date ────────────────────────────────────────
+  var DATE = null;
+  if (isIdea) {
+    var m = (location.hash || "").match(/tcrollover=([0-9]{2}\.[0-9]{2}\.[0-9]{4})/);
+    if (!m) return;
+    DATE = m[1];
+    try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch(e) {}
+  }
+
+  // ── On travel-map: restore saved date ───────────────────────────────────────
+  if (isMap) {
+    try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch(e) {}
+    if (!DATE) return;
+  }
+
+  if (!DATE) return;
+
+  // ---- visible status overlay ---------------------------------------------
   var box = document.createElement("div");
   box.style.cssText =
     "position:fixed;top:12px;right:12px;z-index:2147483647;" +
     "background:#111;color:#fff;font:13px/1.45 system-ui,Segoe UI,sans-serif;" +
     "padding:11px 14px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.35);" +
-    "max-width:320px;";
+    "max-width:340px;";
   function say(html) { box.innerHTML = "🔁 <b>TC Rollover</b><br>" + html; }
   function attach() {
     if (document.body && !box.isConnected) document.body.appendChild(box);
@@ -36,8 +42,7 @@
   say("Target date: <b>" + DATE + "</b><br>Starting…");
   attach();
 
-  // Native value setter — works for plain, PrimeFaces and React-controlled
-  // inputs (React ignores a plain .value= assignment; this bypasses that).
+  // Native value setter — works for PrimeFaces/React-controlled inputs
   function setValue(el, val) {
     try {
       var proto = Object.getPrototypeOf(el);
@@ -50,16 +55,20 @@
     });
   }
 
-  function dateInput() {
-    return document.querySelector('input[name*="departureDateMultidestination"]') ||
-           document.querySelector('input[name*="startDate"]') ||
-           document.querySelector('input[name*="departureDate"]') ||
-           document.querySelector('input[placeholder*="date" i]');
+  function findDateInput(root) {
+    root = root || document;
+    return root.querySelector('input[name*="departureDateMultidestination"]') ||
+           root.querySelector('input[name*="startDate"]') ||
+           root.querySelector('input[name*="departureDate"]') ||
+           root.querySelector('input[id*="departureDate"]') ||
+           root.querySelector('input[id*="startDate"]') ||
+           root.querySelector('input[placeholder*="date" i]');
   }
 
-  function buttonByText(needles) {
+  function buttonByText(needles, root) {
+    root = root || document;
     var els = [].slice.call(
-      document.querySelectorAll('button, a, input[type="submit"], span[role="button"]')
+      root.querySelectorAll('button, a, input[type="submit"], span[role="button"]')
     );
     return els.find(function (b) {
       var t = (b.textContent || b.value || "").trim().toLowerCase();
@@ -67,54 +76,33 @@
     });
   }
 
-  // BOOK button: opens the date modal
   var BOOK = ["book directly without changes", "reserva directamente sin cambios",
               "book directly", "reservar directamente"];
-  // GO button: only inside the modal — must NOT match generic page-level "Search"
+  // GO: only non-generic terms — no "search" to avoid page-level search buttons
   var GO   = ["start trip", "iniciar viaje", "empezar viaje", "empezar"];
 
-  function fillAndGo(modal) {
-    // Look for date input only inside the modal container (if found), else globally
-    var inp = (modal && modal.querySelector('input[name*="departureDateMultidestination"]')) ||
-              (modal && modal.querySelector('input[name*="startDate"]')) ||
-              (modal && modal.querySelector('input[name*="departureDate"]')) ||
-              dateInput();
-    if (!inp) return false;
-    attach();
-    setValue(inp, DATE);
-    say("Date set to <b>" + DATE + "</b>. Looking for Start Trip button…");
-    var tries = 0;
-    var iv = setInterval(function () {
-      // Only search for GO button inside the modal to avoid clicking page-level Search
-      var go = (modal && [].slice.call(modal.querySelectorAll('button,a,input[type="submit"],span[role="button"]'))
-                         .find(function(b){
-                           var t=(b.textContent||b.value||"").trim().toLowerCase();
-                           return GO.some(function(n){return t.indexOf(n)>-1;});
-                         })) ||
-               buttonByText(GO);
-      if (go && !go.disabled) {
-        clearInterval(iv);
-        say("Starting the trip… you'll land on the summary to review. ✅");
-        go.click();
-        setTimeout(function () { if (box.isConnected) box.remove(); }, 7000);
-      } else if (++tries > 40) {
-        clearInterval(iv);
-        say("Date is filled ✅<br>Please click the <b>Start Trip</b> button yourself to continue.");
+  // ── travel-map flow: date picker is on this page ─────────────────────────────────
+  if (isMap) {
+    say("On travel map. Looking for the departure date field…");
+    var mapTries = 0;
+    var mapIv = setInterval(function () {
+      attach();
+      var inp = findDateInput();
+      if (inp) {
+        clearInterval(mapIv);
+        setValue(inp, DATE);
+        say("Date set to <b>" + DATE + "</b> ✅<br>Review the trip, then confirm when ready.");
+        try { sessionStorage.removeItem(STORAGE_KEY); } catch(e) {}
+      } else if (++mapTries > 60) {
+        clearInterval(mapIv);
+        say("Couldn't find the date field on this page.<br>Please enter <b>" + DATE + "</b> manually.");
       }
     }, 250);
-    return true;
+    return;
   }
 
-  function findModal() {
-    // mySeparateForm is the PrimeFaces modal that appears after clicking BOOK
-    return document.querySelector('form[id*="mySeparateForm"]') ||
-           document.querySelector('div[id*="mySeparateForm"]') ||
-           document.querySelector('.ui-dialog:not([style*="display: none"])') ||
-           null;
-  }
-
-  // Always click BOOK first — never shortcut via a date field that's already on the page,
-  // because those belong to other forms (search, etc.) and clicking GO there sends tripId=0.
+  // ── idea page flow ──────────────────────────────────────────────────────────────────────
+  // Click BOOK first; TC may open a modal with a date picker OR redirect to travel-map.
   var tries = 0;
   var iv0 = setInterval(function () {
     attach();
@@ -123,11 +111,36 @@
       clearInterval(iv0);
       say("Clicking “Book directly without changes”…");
       book.click();
-      // Wait for the modal / date field to appear, then fill and go
+      // Wait briefly for a modal date field — if TC redirects instead, the
+      // travel-map handler above will take over on the new page.
       var t2 = 0;
       var iv1 = setInterval(function () {
-        var modal = findModal();
-        if (fillAndGo(modal) || ++t2 > 80) clearInterval(iv1);
+        var modal = document.querySelector('form[id*="mySeparateForm"]') ||
+                    document.querySelector('div[id*="mySeparateForm"]') ||
+                    document.querySelector('.ui-dialog:not([style*="display:none"]):not([style*="display: none"])');
+        var inp = findDateInput(modal || undefined);
+        if (inp) {
+          clearInterval(iv1);
+          setValue(inp, DATE);
+          say("Date set to <b>" + DATE + "</b>. Looking for Start Trip…");
+          var goTries = 0;
+          var iv2 = setInterval(function () {
+            var go = buttonByText(GO, modal || undefined) || buttonByText(GO);
+            if (go && !go.disabled) {
+              clearInterval(iv2);
+              say("Starting the trip… you'll land on the summary to review. ✅");
+              go.click();
+              setTimeout(function () { if (box.isConnected) box.remove(); }, 7000);
+            } else if (++goTries > 40) {
+              clearInterval(iv2);
+              say("Date filled ✅<br>Please click <b>Start Trip</b> yourself to continue.");
+            }
+          }, 250);
+        } else if (++t2 > 30) {
+          // No modal appeared in 6 s — TC likely redirected to travel-map already.
+          clearInterval(iv1);
+          say("Waiting for Travel Compositor to load the date page…");
+        }
       }, 200);
     } else if (++tries > 60) {
       clearInterval(iv0);
