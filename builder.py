@@ -5380,6 +5380,10 @@ _find_present_transport_aliases = _find_present_location_aliases
 
 # Pickup-point / meeting-point code prefixes that are NOT part of the place name itself.
 _TRANSPORT_BASE_CODE_PREFIXES = ("meet_",)
+# Bare pickup codes with no embedded location suffix (e.g. "meet" alone, without the underscore
+# and city that follow in "meet_TamanNegara").  These are raw codes just like the prefixed ones
+# and must never be treated as readable city names.
+_TRANSPORT_BASE_CODE_BARE = frozenset({"meet"})
 
 
 def _humanize_transport_base_code(code: str) -> str:
@@ -5410,7 +5414,10 @@ def _humanize_transport_base_code(code: str) -> str:
             break
     core = " ".join(core.replace("_", " ").split())
     if not core:
-        return raw  # nothing left after stripping the prefix - keep the original code
+        # Bare prefix code with no location embedded (e.g. "meet" alone) - no readable city
+        # name can be extracted; returning "" signals callers to skip this as a city name
+        # rather than using the unhelpful capitalised code like "Meet".
+        return ""
     return core.title()
 
 
@@ -5617,6 +5624,11 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     # TC-resolved formal names ("Kuala Lumpur City Center") rather than the opaque codes.
     def _is_raw_transport_code(s: str) -> bool:
         low = (s or "").lower().strip()
+        # Also catch bare prefix codes like "meet" (without an underscore+location suffix).
+        # "meet" appears as the arrival code in names like "meet_TamanNegara - meet" and must
+        # not be treated as a readable city name any more than "meet_TamanNegara" would be.
+        if low in _TRANSPORT_BASE_CODE_BARE:
+            return True
         return any(low.startswith(p) for p in _TRANSPORT_BASE_CODE_PREFIXES)
     if _parsed_from and not _dep_resolved_cleanly and not _is_raw_transport_code(_parsed_from):
         old_departure_name = _parsed_from
@@ -5647,7 +5659,14 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
         if swapped == text and text:
             # Route wording wasn't found anywhere in the text - rebuild it outright instead of
             # leaving the old direction's wording sitting there unchanged.
-            return f"{old_arrival_name} - {old_departure_name}".strip(" -")
+            # Guard: if either resolved name is empty (bare pickup code with no embedded city,
+            # e.g. "meet" → ""), only use the non-empty side rather than producing " - City".
+            new_dep = old_arrival_name or ""
+            new_arr = old_departure_name or ""
+            rebuilt = f"{new_dep} - {new_arr}".strip(" -")
+            # If the rebuild would itself be empty or suspiciously short, keep original text so
+            # TC admin at least shows the opaque code rather than a blank/dash-only name.
+            return rebuilt if rebuilt else text
         return swapped
 
     def _swap_with_aliases_if_found(text: str):
