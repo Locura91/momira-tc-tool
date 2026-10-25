@@ -721,7 +721,10 @@ def _apply_review_table_edits(suppliers, diff):
     _finalize_queue_result above) so this can be unit tested without a running Streamlit
     script - see test_outreach_tool_queue.py's own docstring for that convention."""
     deleted = set(diff.get("deleted_rows") or [])
-    edits = diff.get("edited_rows") or {}
+    # Streamlit stores int keys in edited_rows, but JSON round-trips (e.g. via platform_store)
+    # convert them to strings - normalise so edits.get(i) always finds the right row.
+    _raw_edits = diff.get("edited_rows") or {}
+    edits = {int(k): v for k, v in _raw_edits.items()}
     added = diff.get("added_rows") or []
 
     rebuilt = []
@@ -923,10 +926,10 @@ def _render_review_and_send():
     # expander above. Now every column is editable, and num_rows="dynamic" lets a row be added
     # (or removed) directly in the table too - the expander stays as the guided, one-field-at-
     # a-time alternative for anyone who prefers it; both paths end up in the same list.
-    st.caption("Untick anyone you don't want to contact. Every field here is editable — corrections "
-               "are saved back to the supplier list. Add a new partner directly by filling in the "
-               "blank row at the bottom, or remove one by selecting its row and pressing the trash "
-               "icon.")
+    st.caption("Untick anyone you don't want to contact. Every field here is editable — click a "
+               "cell, type your change, then press **Enter** or **Tab** to save it. "
+               "Add a new partner directly by filling in the blank row at the bottom, or remove "
+               "one by selecting its row and pressing the trash icon.")
     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): the "already contacted" check
     # (_mark_already_contacted) fails open on a store outage - it looks identical to "nobody's
     # been emailed yet." Every row below could really be a repeat send with no way to tell from
@@ -1224,6 +1227,19 @@ def _render_review_and_send():
 
     st.caption(f"**{len(selected)}** selected · **{len(sendable)}** with an email address · "
                f"**{len(selected) - len(sendable)}** would be skipped")
+
+    skipped_no_email = [s for s in selected if not s.get("email")]
+    if skipped_no_email:
+        names = ", ".join(s["name"] for s in skipped_no_email[:3])
+        if len(skipped_no_email) > 3:
+            names += f" and {len(skipped_no_email) - 3} more"
+        st.warning(
+            f"⚠️ **{len(skipped_no_email)} selected supplier(s) have no email address and will be "
+            f"skipped:** {names}. "
+            f"To add an email: click the **Email** cell in the table above, type the address, "
+            f"then press **Enter** or **Tab** to save it. "
+            f"Or use the **➕ Add a supplier by hand** form if you want to add a new entry."
+        )
 
     if sendable:
         with st.expander(f"📋 The {len(sendable)} address(es) that would receive this"):
