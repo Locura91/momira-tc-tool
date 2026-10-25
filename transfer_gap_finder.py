@@ -497,4 +497,4 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
                 "detail": f"{len(failed_options)} of {len(duplicated_options)} occupancy "
                           f"bracket(s) failed to publish: " +
                           ", ".join(code or "?" for code, _err in failed_options)}
-    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": _diag}
+    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": f"[v2] {_diag}"}
