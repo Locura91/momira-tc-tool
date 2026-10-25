@@ -127,10 +127,15 @@ def _json_safe_snapshot() -> Dict[str, Any]:
             value = st.session_state[key]
         except KeyError:
             continue
-        # A bare True boolean is a button's click state - momentary, meaningless after reload,
-        # and restoring it causes StreamlitValueAssignmentNotAllowedError when the button
-        # re-renders on the same run. False booleans (e.g. checkboxes) are kept.
-        if value is True:
+        # Bare boolean values are ALWAYS widget state (a button's clicked/unclicked toggle or a
+        # checkbox's checked/unchecked toggle).  True is the clicked/checked state - momentary,
+        # meaningless after reload.  False is the default state of every button and checkbox, so
+        # NOT restoring False loses nothing (the widget initialises to False on its own) - but
+        # restoring it causes StreamlitValueAssignmentNotAllowedError when the widget re-renders
+        # on the same rerun, because Streamlit refuses to bind a widget key that was manually set
+        # via st.session_state[key] = value.  Boolean data-flags (e.g. or_queue_stopped) that
+        # are False also default to falsy when absent, so skipping them is safe too.
+        if isinstance(value, bool):
             continue
         if _is_json_safe(value):
             snapshot[key] = value
