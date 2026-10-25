@@ -5685,26 +5685,21 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
         return _swap_route_text_if_found(text, pair[0], pair[1])
 
     swap_report = {"name": None, "datasheet_name": None, "description": None}
-    if payload.get("name"):
-        payload["name"] = _swap_with_aliases(payload["name"])
+
+    # The name field stores raw pickup codes ("meet_TamanNegara - meet_KualaLumpur"), not
+    # human-readable city names. Trying to find the resolved city names inside that raw-code
+    # string always fails. Build the new name directly from the resolved city names instead of
+    # attempting a text swap. For the reversed route: new departure = old arrival, vice-versa.
+    new_name = f"{old_arrival_name} - {old_departure_name}".strip(" -") if (old_arrival_name or old_departure_name) else ""
+    if new_name:
+        payload["name"] = new_name
         swap_report["name"] = True
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
-    if en.get("name"):
-        en["name"] = _swap_with_aliases(en["name"])
+    if new_name:
+        en["name"] = new_name
         swap_report["datasheet_name"] = True
-        payload["name"] = en["name"]  # use human-readable EN name as the TC internal name
-    else:
-        # CONFIRMED ROOT CAUSE (product owner, 2026-10-24, "Momira Travel Standard Supplier"
-        # Malaysia bulk duplicate): TC's admin "Name" column is driven by datasheets.EN.name, not
-        # the top-level name field. When the source transport has no EN name (or the EN.name is
-        # itself an opaque code that was handled above), we must explicitly copy the already-rebuilt
-        # top-level name into datasheets.EN so TC stores and displays the human-readable reversed
-        # route name rather than auto-generating "meet_MKZ2 - meet_KualaLumpur" from the segments.
-        if payload.get("name"):
-            en["name"] = payload["name"]
-            swap_report["datasheet_name"] = True
     if en.get("description"):
         en["description"], swapped = _swap_with_aliases_if_found(en["description"])
         swap_report["description"] = swapped
