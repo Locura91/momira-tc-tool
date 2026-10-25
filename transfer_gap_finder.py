@@ -229,19 +229,36 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
+
+    # Rewrite the name using the same AI approach as the description. The low-level builder
+    # can only produce "CityA - CityB" from resolved code names, which loses the original
+    # format ("One-way transfer Kuala Lumpur City - Taman Negara ..."). The AI rewriter
+    # understands the directional meaning and preserves the original phrasing style.
+    original_name = (source.get("name") or "").strip()
+    if original_name:
+        rewritten_name = rewrite_route_description_for_new_direction(
+            original_name,
+            route_info.get("old_departure_name", ""),
+            route_info.get("old_arrival_name", ""),
+            route_info.get("new_departure_name", ""),
+            route_info.get("new_arrival_name", ""),
+        )
+        if rewritten_name.strip():
+            payload["name"] = rewritten_name.strip()
+            en["name"] = rewritten_name.strip()
+            swap_report["name"] = "ai"
+
+    # Always run the AI rewrite for the description too — a literal swap cannot understand
+    # directional meaning (e.g. "We pick you up from the airport" needs pickup/drop-off roles
+    # reversed, not just city names swapped). Haiku is cheap and returns text unchanged when
+    # no actual rewrite is needed.
     plain = _html_to_plain_for_editing(en.get("description", ""))
-    desc_status = swap_report.get("description")
-    # Always run the AI rewrite — the literal swap only exchanges place names verbatim and cannot
-    # understand directional meaning (e.g. "We pick you up from the airport" needs its pickup/
-    # drop-off roles reversed, not just city names swapped). The AI call is cheap (Haiku) and
-    # returns the text unchanged when no actual rewrite is needed.
-    if True:
-        rewritten = rewrite_route_description_for_new_direction(
-            plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
-            route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
-        if rewritten.strip() and rewritten.strip() != plain.strip():
-            en["description"] = _plain_to_html_for_saving(rewritten)
-            swap_report["description"] = "ai"
+    rewritten = rewrite_route_description_for_new_direction(
+        plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+    if rewritten.strip() and rewritten.strip() != plain.strip():
+        en["description"] = _plain_to_html_for_saving(rewritten)
+        swap_report["description"] = "ai"
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
