@@ -5729,6 +5729,12 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     route_info = {
         "old_departure_name": old_departure_name, "old_arrival_name": old_arrival_name,
         "new_departure_name": old_arrival_name, "new_arrival_name": old_departure_name,
+        # Diagnostic — remove once name swap is confirmed correct
+        "_diag_name_source": _name_for_cities,
+        "_diag_parsed_from": _parsed_from,
+        "_diag_parsed_to": _parsed_to,
+        "_diag_final_name": payload.get("name"),
+        "_diag_final_en_name": (payload.get("datasheets") or {}).get("EN", {}).get("name"),
     }
     return payload, swap_report, route_info
 

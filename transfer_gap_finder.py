@@ -436,6 +436,13 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
     new_arr_name = route_info.get("new_arrival_name", "")
     label = source.get("name") or f"{new_dep_name} → {new_arr_name}"
     route_label = f"{new_dep_name} → {new_arr_name}"
+    # Diagnostic suffix — shows what the swap actually computed; remove once confirmed correct
+    _diag = (
+        f" | src_name={route_info.get('_diag_name_source','?')!r}"
+        f" parsed=({route_info.get('_diag_parsed_from','?')!r},{route_info.get('_diag_parsed_to','?')!r})"
+        f" → TC_name={route_info.get('_diag_final_name','?')!r}"
+        f" TC_en_name={route_info.get('_diag_final_en_name','?')!r}"
+    )
 
     duplicated_options = [
         build_transport_option_swap_payload(opt, new_dep_name, new_arr_name) for opt in source_options
@@ -490,4 +497,4 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
                 "detail": f"{len(failed_options)} of {len(duplicated_options)} occupancy "
                           f"bracket(s) failed to publish: " +
                           ", ".join(code or "?" for code, _err in failed_options)}
-    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": None}
+    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": _diag}
