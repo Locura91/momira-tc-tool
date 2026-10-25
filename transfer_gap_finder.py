@@ -201,6 +201,30 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     Returns (payload, swap_report, route_info) - same shape as build_transport_swap_payload
     itself, with swap_report['description'] becoming "ai" (like the Transfer version) only when
     the rewrite genuinely changed the text."""
+    # ── DIAGNOSTIC DUMP ────────────────────────────────────────────────────────
+    # Captures the raw TC field values BEFORE any swap so we can identify which
+    # field reliably carries the human-readable route name.  Remove once confirmed.
+    try:
+        import streamlit as _st
+        _ds = (source.get("datasheets") or {})
+        _en_src = _ds.get("EN") or {}
+        _segs = ((source.get("itinerary") or [{}])[0].get("segments") or [{}])
+        _seg0, _seglast = _segs[0], _segs[-1]
+        _st.info(
+            f"🔍 **TRANSPORT_SWAP_FIELDS** `id={source.get('id')}`\n\n"
+            f"- `name` (top-level): `{source.get('name')!r}`\n"
+            f"- `datasheets.EN.name`: `{_en_src.get('name')!r}`\n"
+            f"- `datasheets.EN.description` (first 120 chars): "
+            f"`{(_en_src.get('description') or '')[:120]!r}`\n"
+            f"- `seg[0].departureLocationCode`: `{_seg0.get('departureLocationCode')!r}`\n"
+            f"- `seg[0].departureName`: `{_seg0.get('departureName')!r}`\n"
+            f"- `seg[-1].arrivalLocationCode`: `{_seglast.get('arrivalLocationCode')!r}`\n"
+            f"- `seg[-1].arrivalName`: `{_seglast.get('arrivalName')!r}`"
+        )
+    except Exception:
+        pass
+    # ── END DIAGNOSTIC DUMP ────────────────────────────────────────────────────
+
     payload, swap_report, route_info = build_transport_swap_payload(source, api_client)
 
     datasheets = dict(payload.get("datasheets") or {})
