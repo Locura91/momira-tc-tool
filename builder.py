@@ -5608,7 +5608,31 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     # Station"). CONFIRMED REAL BUG (product owner, 2026-10-24, Malaysia bulk duplicate): the
     # plain-hyphen names now parse (see _ROUTE_NAME_DASH_RE), but the parsed second city would
     # swallow trailing words unless the clean code resolution is preferred where available.
-    _name_for_cities = (en_name_source := (payload.get("datasheets") or {}).get("EN") or {}).get("name") or payload.get("name") or ""
+    # CONFIRMED REAL BUG (product owner, 2026-10-25, Malaysia bulk duplicate): TC stores the
+    # datasheets.EN.name as the raw segment code string "meet_TamanNegara - meet_KualaLumpur" even
+    # when the top-level name is properly human-readable ("One-way transfer Kuala Lumpur City -
+    # Taman Negara ...").  Preferring datasheets.EN.name first means _parse_route_cities_from_name
+    # extracts the raw codes ("meet_TamanNegara", "meet_KualaLumpur"), the raw-code guard blocks
+    # the override, and the humanised fallbacks ("Kuala Lumpur", "Taman Negara") end up as partial
+    # substrings that mangle the name swap ("Kuala Lumpur" is a substring of "Kuala Lumpur City"
+    # so only "Kuala Lumpur" gets swapped, leaving " City" stranded in the wrong place).
+    # Fix: try BOTH candidates; prefer the one whose parse produces two non-raw-code city names.
+    # Fall back to whichever candidate is available when both parse equally (raw or both human).
+    en_name_source = (payload.get("datasheets") or {}).get("EN") or {}
+    _en_name_candidate = en_name_source.get("name") or ""
+    _toplevel_name_candidate = payload.get("name") or ""
+    def _candidate_is_human_readable(name: str) -> bool:
+        f, t = _parse_route_cities_from_name(name)
+        def _looks_raw(s: str) -> bool:
+            low = (s or "").lower().strip()
+            return low in _TRANSPORT_BASE_CODE_BARE or any(low.startswith(p) for p in _TRANSPORT_BASE_CODE_PREFIXES)
+        return bool(f and t and not _looks_raw(f) and not _looks_raw(t))
+    if _candidate_is_human_readable(_toplevel_name_candidate) and not _candidate_is_human_readable(_en_name_candidate):
+        # Top-level name parses to readable cities; EN.name does not — use the top-level name.
+        _name_for_cities = _toplevel_name_candidate
+    else:
+        # EN.name is human-readable (or both are equally unusable) — keep the original priority.
+        _name_for_cities = _en_name_candidate or _toplevel_name_candidate
     _parsed_from, _parsed_to = _parse_route_cities_from_name(_name_for_cities)
     # CONFIRMED REAL BUG (product owner, 2026-10-24, "Momira Travel Standard Supplier" Malaysia
     # bulk duplicate): transport names like "meet_KualaLumpur - meet_MKZ2" are composed of raw
