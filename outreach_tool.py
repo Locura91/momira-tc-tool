@@ -1228,18 +1228,33 @@ def _render_review_and_send():
     st.caption(f"**{len(selected)}** selected · **{len(sendable)}** with an email address · "
                f"**{len(selected) - len(sendable)}** would be skipped")
 
+    # Suppliers that are ticked but still have no email — let the operator add them right here
+    # without having to go back to the table and commit with Enter/Tab (a source of confusion
+    # because a checkbox click triggers a rerun that discards any uncommitted cell edit).
     skipped_no_email = [s for s in selected if not s.get("email")]
     if skipped_no_email:
-        names = ", ".join(s["name"] for s in skipped_no_email[:3])
-        if len(skipped_no_email) > 3:
-            names += f" and {len(skipped_no_email) - 3} more"
         st.warning(
-            f"⚠️ **{len(skipped_no_email)} selected supplier(s) have no email address and will be "
-            f"skipped:** {names}. "
-            f"To add an email: click the **Email** cell in the table above, type the address, "
-            f"then press **Enter** or **Tab** to save it. "
-            f"Or use the **➕ Add a supplier by hand** form if you want to add a new entry."
+            f"⚠️ **{len(skipped_no_email)} selected supplier(s) have no email address** — "
+            f"add them below to include in the send:"
         )
+        _email_changed = False
+        for s in skipped_no_email:
+            # Use a stable key derived from the supplier name so the input survives reruns.
+            _key = f"or_inline_email_{s['name'].lower().replace(' ', '_')[:40]}"
+            _typed = st.text_input(
+                s["name"],
+                key=_key,
+                placeholder="name@example.com",
+                label_visibility="visible",
+            )
+            if _typed and _typed.strip():
+                s["email"] = _typed.strip()
+                _email_changed = True
+        if _email_changed:
+            result["suppliers"] = suppliers
+            st.session_state.or_result = result
+            # Recalculate sendable with the newly entered emails
+            sendable = [s for s in selected if s.get("email")]
 
     if sendable:
         with st.expander(f"📋 The {len(sendable)} address(es) that would receive this"):
