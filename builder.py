@@ -5686,11 +5686,19 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
 
     swap_report = {"name": None, "datasheet_name": None, "description": None}
 
-    # The name field stores raw pickup codes ("meet_TamanNegara - meet_KualaLumpur"), not
-    # human-readable city names. Trying to find the resolved city names inside that raw-code
-    # string always fails. Build the new name directly from the resolved city names instead of
-    # attempting a text swap. For the reversed route: new departure = old arrival, vice-versa.
-    new_name = f"{old_arrival_name} - {old_departure_name}".strip(" -") if (old_arrival_name or old_departure_name) else ""
+    # The source name is human-readable (e.g. "One-way transfer Taman Negara- Cameron Highlands").
+    # Swap the two city names inside that string so the prefix and format are preserved exactly.
+    # Use the cities parsed from the text itself — not API-resolved names that may differ in
+    # spelling — so the swap is guaranteed to find both words and produce the correct result
+    # (e.g. "One-way transfer Cameron Highlands- Taman Negara").
+    source_name = existing_transport_payload.get("name") or ""
+    if (source_name and _parsed_from and _parsed_to
+            and not _is_raw_transport_code(_parsed_from)
+            and not _is_raw_transport_code(_parsed_to)):
+        new_name = _swap_route_text(source_name, _parsed_from, _parsed_to, suffix_on_fallback=False)
+    else:
+        # Parsing failed or name contains raw codes — fall back to building from resolved names.
+        new_name = f"{old_arrival_name} - {old_departure_name}".strip(" -") if (old_arrival_name or old_departure_name) else ""
     if new_name:
         payload["name"] = new_name
         swap_report["name"] = True

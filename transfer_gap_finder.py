@@ -213,23 +213,10 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
 
-    # Rewrite the name using the same AI approach as the description. The low-level builder
-    # can only produce "CityA - CityB" from resolved code names, which loses the original
-    # format ("One-way transfer Kuala Lumpur City - Taman Negara ..."). The AI rewriter
-    # understands the directional meaning and preserves the original phrasing style.
-    original_name = (source.get("name") or "").strip()
-    if original_name:
-        rewritten_name = rewrite_route_description_for_new_direction(
-            original_name,
-            route_info.get("old_departure_name", ""),
-            route_info.get("old_arrival_name", ""),
-            route_info.get("new_departure_name", ""),
-            route_info.get("new_arrival_name", ""),
-        )
-        if rewritten_name.strip():
-            payload["name"] = rewritten_name.strip()
-            en["name"] = rewritten_name.strip()
-            swap_report["name"] = "ai"
+    # The name swap is handled by builder.build_transport_swap_payload directly:
+    # it performs a text swap on the source name string (e.g. "One-way transfer Taman Negara-
+    # Cameron Highlands" → "One-way transfer Cameron Highlands- Taman Negara"), preserving the
+    # original prefix and format exactly. No AI step needed for the name field.
 
     # Always run the AI rewrite for the description too — a literal swap cannot understand
     # directional meaning (e.g. "We pick you up from the airport" needs pickup/drop-off roles
