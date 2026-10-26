@@ -47,6 +47,9 @@ def render_price_refresh_flow(client, preselected_kind=None):
     twice in a row. Only asked fresh when this is None (no caller currently does that, but kept
     as the honest fallback rather than assuming there's always a preselection)."""
     st.header("💶 Refresh prices from a rate sheet")
+    if st.button("🔙 Back", key="pr_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption("For a rate sheet covering products that already exist. The list of routes comes "
               "from Travel Compositor, not from the document — the document is only asked what "
               "each one now costs. Nothing is created, and **nothing but prices changes** — "

@@ -64,6 +64,9 @@ def render_missing_transfers_flow(client):
     _render_missing_transfers_body(client, supplier_id) directly, so the human never sees two
     separate supplier pickers on what is now one screen."""
     st.subheader("🔍 Missing Transfers")
+    if st.button("🔙 Back", key="mtr_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption(
         "Scans one supplier's whole live Transfer list and flags every route with no exact "
         "reverse-direction pair yet (e.g. Hotel → Airport exists but Airport → Hotel doesn't). "

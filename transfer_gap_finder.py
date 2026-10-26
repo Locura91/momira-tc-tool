@@ -201,13 +201,6 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     Returns (payload, swap_report, route_info) - same shape as build_transport_swap_payload
     itself, with swap_report['description'] becoming "ai" (like the Transfer version) only when
     the rewrite genuinely changed the text."""
-    _ds = (source.get("datasheets") or {})
-    _en_src = _ds.get("EN") or {}
-    _src_diag = (
-        f"src_name={source.get('name')!r}"
-        f" en_name={_en_src.get('name')!r}"
-    )
-
     payload, swap_report, route_info = build_transport_swap_payload(source, api_client)
 
     datasheets = dict(payload.get("datasheets") or {})
@@ -418,24 +411,11 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
         # flows/duplicate_transport.py's own _fetch_source_and_options, which only warns and
         # carries on rather than aborting the whole duplicate.
 
-    _ds_src = (source.get("datasheets") or {})
-    _en_src = _ds_src.get("EN") or {}
-    _src_diag = (
-        f"src_name={source.get('name')!r}"
-        f" en_name={_en_src.get('name')!r}"
-    )
     payload, _swap_report, route_info = build_and_rewrite_transport_swap_payload(source, client)
     new_dep_name = route_info.get("new_departure_name", "")
     new_arr_name = route_info.get("new_arrival_name", "")
     label = source.get("name") or f"{new_dep_name} → {new_arr_name}"
     route_label = f"{new_dep_name} → {new_arr_name}"
-    # Diagnostic suffix — shows what the swap actually computed; remove once confirmed correct
-    _diag = (
-        f" | {_src_diag}"
-        f" dep={route_info.get('old_departure_name','?')!r}"
-        f" arr={route_info.get('old_arrival_name','?')!r}"
-        f" → TC_name={route_info.get('_diag_final_name','?')!r}"
-    )
 
     duplicated_options = [
         build_transport_option_swap_payload(opt, new_dep_name, new_arr_name) for opt in source_options
@@ -490,4 +470,4 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
                 "detail": f"{len(failed_options)} of {len(duplicated_options)} occupancy "
                           f"bracket(s) failed to publish: " +
                           ", ".join(code or "?" for code, _err in failed_options)}
-    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": f"[v2] {_diag}"}
+    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": ""}

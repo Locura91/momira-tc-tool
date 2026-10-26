@@ -7,3 +7,5 @@ eh_stop_sales_status.json
 eh_debug_*.png
 eh_stop_sales_config.json
 platform_state.db
+Claude outputs/
+*.ps1
