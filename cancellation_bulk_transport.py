@@ -400,7 +400,8 @@ def apply_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]]) -
         else:
             try:
                 StateStore().clear_state("transport", supplier_id, p["id"])
-            except Exception:
-                pass  # best-effort - a failed cache-invalidation must never undo a real, already-applied publish
+            except Exception as _cache_err:
+                print(f"[warn] transport cache-invalidation failed after publish: {_cache_err}")
+                # best-effort - a failed cache-invalidation must never undo a real, already-applied publish
             results.append({"id": p["id"], "name": p["name"], "ok": True, "detail": ""})
     return results

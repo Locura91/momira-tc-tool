@@ -15,27 +15,12 @@ one GET per supplier for Transfer). Progress is shown to the human during the sc
 """
 import streamlit as st
 
-from ui_components import momira_active_suppliers
+from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 
 MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _ANY_SUPPLIER = "— Any supplier —"
 _ANY_TYPE = "— Any Transport Type —"
-
-
-def _load_momira_suppliers(client):
-    if st.session_state.get("suppliers_cache") is None:
-        with st.spinner("Loading supplier list from Travel Compositor..."):
-            try:
-                st.session_state.suppliers_cache = client.get_all_suppliers()
-            except Exception as e:
-                st.error(f"❌ Couldn't load the supplier list: {type(e).__name__}: {e}")
-                st.session_state.suppliers_cache = []
-    out = [
-        {"id": str(s.get("id")), "name": (s.get("commercialName") or s.get("legalName") or "").strip()}
-        for s in momira_active_suppliers(st.session_state.suppliers_cache)
-    ]
-    return sorted(out, key=lambda s: s["name"])
 
 
 def render_transport_image_bulk_flow(client):
