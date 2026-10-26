@@ -47,6 +47,9 @@ def render_supplier_migration_flow(client):
     copied id that could be silently wrong.
     """
     st.header("Move a Supplier's Services to another Supplier")
+    if st.button("🔙 Back", key="sm_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption("Recreates every selected service under a different supplier, then retires the "
               "original there - what 'retires' means depends on the product type you pick "
               "below (Hotel in particular works differently - see the warning once you get to "

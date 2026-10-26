@@ -234,6 +234,9 @@ def _apply_hotel(client, supplier_id: str, product: Dict, new_ranges: List[Dict]
 
 def render_bulk_stop_sales_flow(client):
     st.header("🚫 Bulk Stop Sales")
+    if st.button("🔙 Back", key="bss_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption("Block a date or date range across many products at once. "
                "Existing stop sales on each product are kept — these are merged in.")
 

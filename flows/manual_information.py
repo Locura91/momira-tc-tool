@@ -24,6 +24,9 @@ from app_helpers import _dmy_date_field
 
 def render_manual_information_flow(client):
     st.header("Adding manual information to Product")
+    if st.button("🔙 Back", key="mi_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption("Information a person knows that the supplier's documents don't say — a moved "
               "pickup point, revised cancellation terms, a temporary closure. Saved against a "
               "supplier and a product type, and **added automatically to the Voucher Remarks of "

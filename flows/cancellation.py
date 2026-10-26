@@ -36,6 +36,9 @@ def render_transport_cancellation_bulk_flow(client):
     rewritten to match, not just the structured field.
     """
     st.header("Bulk-update Cancellation Policy (Transport)")
+    if st.button("🔙 Back", key="ctb_back"):
+        st.session_state.product_type = None
+        st.rerun()
     st.caption("Applies one cancellation policy to every live Transport of one supplier at "
               "once - both the structured field Travel Compositor enforces AND the matching "
               "sentence in each one's customer-facing description.")

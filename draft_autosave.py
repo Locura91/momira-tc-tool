@@ -92,8 +92,8 @@ _NEVER_PERSIST_KEY_PREFIXES = (
     "mct_", "mtt_", "mth_", "mtc_", "mtp_", "mtu_", "mtf_",
     # Transport/transfer duplicate-and-create flow
     "tpdc_", "tdc_",
-    # Bulk stop sales, cancellation bulk, image bulk flows
-    "bss_", "cb_", "ctb_", "ibulk_", "tib_", "tpib_",
+    # Bulk stop sales, cancellation bulk, image bulk, transport inventory audit flows
+    "bss_", "cb_", "ctb_", "ibulk_", "tib_", "tpib_", "tia_",
     # Date-fix, price-refresh, supplier-migration, weekly-review flows
     "dtf_", "dtp_", "ftsm_", "pr_", "sm_", "tpr_",
     # Tool launcher buttons and misc flow buttons

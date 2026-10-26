@@ -20,6 +20,9 @@ def render_image_bulk_flow(client):
         st.session_state.image_bulk_product = None
 
     if st.session_state.image_bulk_product is None:
+        if st.button("🔙 Back", key="ibulk_back"):
+            st.session_state.product_type = None
+            st.rerun()
         st.caption("Replace the photo on many already-live products at once. "
                    "Pick which product type to update:")
         col1, col2 = st.columns(2)
