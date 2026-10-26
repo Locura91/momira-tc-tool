@@ -313,7 +313,8 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
             return name_cache[code]
         try:
             result = api_client.resolve_transport_base(code)
-        except Exception:
+        except Exception as _resolve_err:
+            print(f"[warn] resolve_transport_base({code!r}) failed: {_resolve_err}")
             result = None
         if isinstance(result, dict) and result.get("valid") and result.get("name"):
             entry = (result["name"], True)

@@ -12,27 +12,11 @@ This tool detects deviations so a human can fix them manually.
 """
 import streamlit as st
 
-from ui_components import momira_active_suppliers
+from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 
 MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _EXPECTED_END = "2049-12-31"
-
-
-def _load_momira_suppliers(client):
-    if st.session_state.get("suppliers_cache") is None:
-        with st.spinner("Loading supplier list…"):
-            try:
-                st.session_state.suppliers_cache = client.get_all_suppliers()
-            except Exception as e:
-                st.error(f"❌ Couldn't load the supplier list: {type(e).__name__}: {e}")
-                st.session_state.suppliers_cache = []
-    raw = st.session_state.suppliers_cache
-    out = [
-        {"id": str(s.get("id")), "name": (s.get("commercialName") or s.get("legalName") or "").strip()}
-        for s in momira_active_suppliers(raw)
-    ]
-    return sorted(out, key=lambda s: s["name"])
 
 
 
