@@ -751,6 +751,7 @@ from flows.cancellation import render_transport_cancellation_bulk_flow, render_g
 
 from flows.transfer_image_bulk import render_transfer_image_bulk_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
+from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
 
 
@@ -1145,6 +1146,7 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # supplier_images.py's per-direction "applies to future builds" feature.
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
+TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality consistency)"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
 # selector inside the flow itself (flows/image_bulk.py).
@@ -1393,6 +1395,12 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     st.caption("Block a date or date range across many products at once — "
                "Transfer, Ticket, ClosedTour, Hotel.")
 
+    if st.button(TRANSPORT_INVENTORY_AUDIT_CHOICE, key="upd_choice_tia", use_container_width=True):
+        st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
+        st.rerun()
+    st.caption("Scan all Transports for a supplier and flag any modality whose inventory "
+               "differs from the others, or whose end date is not 2049-12-31. Read-only.")
+
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
@@ -1482,6 +1490,10 @@ if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
 
 if st.session_state.product_type == BULK_STOP_SALES_CHOICE:
     render_bulk_stop_sales_flow(client)
+    st.stop()
+
+if st.session_state.product_type == TRANSPORT_INVENTORY_AUDIT_CHOICE:
+    render_transport_inventory_audit_flow(client)
     st.stop()
 
 if st.session_state.product_type == TRANSFER_DUPLICATE_AND_CREATE_CHOICE:
