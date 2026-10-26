@@ -1273,6 +1273,13 @@ CONTACT_LINK_PATTERN = re.compile(
     # saying "Get in touch" or "Write us" leads to the same page a "Contact us" link would.
     r"|get(\s|-|_)?in(\s|-|_)?touch|write(\s|-|_)?(to(\s|-|_)?)?us|e-?mail(\s|-|_)?us"
     r"|reach(\s|-|_)?(out|us)", re.I)   # expanded
+# Pages confirmed by the product owner (2026-10-25) as carrying email addresses even when
+# the main contact page doesn't.  Collected into a separate pattern so find_contact_and_terms_links
+# can treat them as lower-priority fallbacks rather than mixing them with the primary contact link.
+_TEAM_PAGE_PATTERN = re.compile(
+    r"our\s+team|\bteam\b|about\s+us|\babout\b|staff|people|who\s+we\s+are"
+    r"|cooperate(\s+with\s+us)?|partner(\s+with\s+us)?|work\s+with\s+us"
+    r"|join\s+us|for\s+(tour\s+)?operators|trade|b2b", re.I)
 TERMS_LINK_PATTERN = re.compile(
     r"terms(\s|-|_)?(and|&)?(\s|-|_)?conditions|terms of (service|use)|\bterms\b|\bagb\b|\blegal\b", re.I)
 
@@ -1483,17 +1490,24 @@ def extract_email_and_instagram_from_page(soup: BeautifulSoup,
 
 
 def find_contact_and_terms_links(soup: BeautifulSoup, base_url: str) -> List[str]:
-    """Scans a homepage's own links for the best "Contact us" and "Terms/Impressum"
-    links, resolved absolute and restricted to the same site (never wanders off).
-    Returned in priority order - Contact first - matching how likely each is to list
-    a direct email."""
+    """Scans a homepage's own links for subpages that commonly carry a direct email.
+
+    Returned in priority order (highest first):
+      1. Primary contact page  (Contact us / Impressum / Get in touch / …)
+      2. Team / cooperate page (Our team / About us / Cooperate with us / Partners / …)
+      3. Terms / legal page    (Terms & conditions / Impressum if not already found above)
+
+    Restricted to the supplier's own domain - never wanders off to another site.
+    Only the FIRST match for each tier is kept; the caller iterates until an email is
+    found so the ordering determines which pages get visited first."""
     contact_link = None
+    team_link = None
     terms_link = None
     base_host = _hostname(base_url)
     if not base_host:
         return []
     for a in soup.select("a[href]"):
-        if contact_link and terms_link:
+        if contact_link and team_link and terms_link:
             break
         href = a.get("href") or ""
         if not href or href.startswith("mailto:") or href.startswith("tel:") or href.startswith("#"):
@@ -1506,13 +1520,13 @@ def find_contact_and_terms_links(soup: BeautifulSoup, base_url: str) -> List[str
             continue
         if _hostname(resolved) != base_host:
             continue  # stay on the supplier's own site
-        # if/elif exactly as the original: a link matching Contact when contact is
-        # already set is NOT then tested against Terms.
         if not contact_link and CONTACT_LINK_PATTERN.search(hay):
             contact_link = resolved
+        elif not team_link and _TEAM_PAGE_PATTERN.search(hay):
+            team_link = resolved
         elif not terms_link and TERMS_LINK_PATTERN.search(hay):
             terms_link = resolved
-    return [link for link in (contact_link, terms_link) if link]
+    return [link for link in (contact_link, team_link, terms_link) if link]
 
 
 # Looks for the supplier's own outbound "official website" link on a third-party

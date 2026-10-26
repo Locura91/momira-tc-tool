@@ -201,23 +201,34 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     Returns (payload, swap_report, route_info) - same shape as build_transport_swap_payload
     itself, with swap_report['description'] becoming "ai" (like the Transfer version) only when
     the rewrite genuinely changed the text."""
+    _ds = (source.get("datasheets") or {})
+    _en_src = _ds.get("EN") or {}
+    _src_diag = (
+        f"src_name={source.get('name')!r}"
+        f" en_name={_en_src.get('name')!r}"
+    )
+
     payload, swap_report, route_info = build_transport_swap_payload(source, api_client)
 
     datasheets = dict(payload.get("datasheets") or {})
     en = dict(datasheets.get("EN") or {})
+
+    # The name swap is handled by builder.build_transport_swap_payload directly:
+    # it performs a text swap on the source name string (e.g. "One-way transfer Taman Negara-
+    # Cameron Highlands" → "One-way transfer Cameron Highlands- Taman Negara"), preserving the
+    # original prefix and format exactly. No AI step needed for the name field.
+
+    # Always run the AI rewrite for the description too — a literal swap cannot understand
+    # directional meaning (e.g. "We pick you up from the airport" needs pickup/drop-off roles
+    # reversed, not just city names swapped). Haiku is cheap and returns text unchanged when
+    # no actual rewrite is needed.
     plain = _html_to_plain_for_editing(en.get("description", ""))
-    desc_status = swap_report.get("description")
-    # Always run the AI rewrite — the literal swap only exchanges place names verbatim and cannot
-    # understand directional meaning (e.g. "We pick you up from the airport" needs its pickup/
-    # drop-off roles reversed, not just city names swapped). The AI call is cheap (Haiku) and
-    # returns the text unchanged when no actual rewrite is needed.
-    if True:
-        rewritten = rewrite_route_description_for_new_direction(
-            plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
-            route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
-        if rewritten.strip() and rewritten.strip() != plain.strip():
-            en["description"] = _plain_to_html_for_saving(rewritten)
-            swap_report["description"] = "ai"
+    rewritten = rewrite_route_description_for_new_direction(
+        plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
+        route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
+    if rewritten.strip() and rewritten.strip() != plain.strip():
+        en["description"] = _plain_to_html_for_saving(rewritten)
+        swap_report["description"] = "ai"
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
@@ -388,6 +399,16 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
     (the brackets themselves are NOT lost - the caller's message should point the human at the new
     id to fix in Travel Compositor directly, same as the single-transport flow's own equivalent
     warning)."""
+    # Fetch the full transport record (the list endpoint omits datasheets and may have an
+    # empty/opaque name field; the swap builder needs datasheets.EN.name to produce a correct
+    # human-readable name for the new transport).  Mirror what flows/duplicate_transport.py's
+    # _fetch_source_and_options does before calling build_and_rewrite_transport_swap_payload.
+    transport_id = source.get("id")
+    if transport_id:
+        full = client.get_transport(supplier_id, transport_id)
+        if isinstance(full, dict) and "error" not in full:
+            source = full
+
     source_options = []
     for opt_code in (source.get("optionCodes") or []):
         opt = client.get_transport_option(supplier_id, source.get("id"), opt_code)
@@ -402,6 +423,13 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
     new_arr_name = route_info.get("new_arrival_name", "")
     label = source.get("name") or f"{new_dep_name} → {new_arr_name}"
     route_label = f"{new_dep_name} → {new_arr_name}"
+    # Diagnostic suffix — shows what the swap actually computed; remove once confirmed correct
+    _diag = (
+        f" | {_src_diag}"
+        f" dep={route_info.get('old_departure_name','?')!r}"
+        f" arr={route_info.get('old_arrival_name','?')!r}"
+        f" → TC_name={route_info.get('_diag_final_name','?')!r}"
+    )
 
     duplicated_options = [
         build_transport_option_swap_payload(opt, new_dep_name, new_arr_name) for opt in source_options
@@ -456,4 +484,4 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
                 "detail": f"{len(failed_options)} of {len(duplicated_options)} occupancy "
                           f"bracket(s) failed to publish: " +
                           ", ".join(code or "?" for code, _err in failed_options)}
-    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": None}
+    return {"status": "created", "name": label, "new_id": new_id, "route": route_label, "detail": f"[v2] {_diag}"}
