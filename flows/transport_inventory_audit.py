@@ -35,14 +35,6 @@ def _load_momira_suppliers(client):
     return sorted(out, key=lambda s: s["name"])
 
 
-def _inv_key(inv: dict) -> str:
-    """Normalised string representation of one inventory entry for comparison."""
-    date = inv.get("inventoryDate") or {}
-    start = date.get("start") or ""
-    end = date.get("end") or ""
-    qty = inv.get("quantity", 0)
-    return f"start={start} end={end} qty={qty}"
-
 
 def _audit_transport(client, supplier_id: str, transport: dict) -> dict:
     """
@@ -65,14 +57,12 @@ def _audit_transport(client, supplier_id: str, transport: dict) -> dict:
             continue
 
         inventories = opt.get("inventories") or []
-        inv_keys = [_inv_key(i) for i in inventories]
         options.append({
             "code": code,
             "active": opt.get("active", True),
             "min_pax": opt.get("minPassengers"),
             "max_pax": opt.get("maxPassengers"),
             "inventories": inventories,
-            "inv_keys": inv_keys,
         })
 
     issues = list(fetch_errors)
@@ -82,29 +72,20 @@ def _audit_transport(client, supplier_id: str, transport: dict) -> dict:
     elif not options and fetch_errors:
         pass  # errors already captured
     else:
-        # Check each option for bad end dates
-        for opt in options:
-            for inv in opt["inventories"]:
-                date = inv.get("inventoryDate") or {}
-                end = date.get("end") or ""
-                if end and end != _EXPECTED_END:
-                    issues.append(
-                        f"Option {opt['code']!r}: inventory end is {end!r} (expected {_EXPECTED_END})"
-                    )
-
-        # Check all options have the same inventories as each other
-        if len(options) > 1:
-            ref = options[0]
-            for opt in options[1:]:
-                if set(opt["inv_keys"]) != set(ref["inv_keys"]):
-                    issues.append(
-                        f"Options {ref['code']!r} and {opt['code']!r} have different inventories"
-                    )
-
-        # Flag options with no inventories at all
+        # The ONLY critical check: end date must be 2049-12-31.
+        # Start date differences between options are intentional (added at different times)
+        # and are never flagged. A start date in the past is also fine.
         for opt in options:
             if not opt["inventories"]:
                 issues.append(f"Option {opt['code']!r}: has no inventory entries")
+                continue
+            for inv in opt["inventories"]:
+                date = inv.get("inventoryDate") or {}
+                end = date.get("end") or ""
+                if end != _EXPECTED_END:
+                    issues.append(
+                        f"Option {opt['code']!r}: end date is {end!r} — should be {_EXPECTED_END}"
+                    )
 
     return {
         "transport_id": transport_id,
@@ -125,10 +106,10 @@ def render_transport_inventory_audit_flow(client):
         st.rerun()
 
     st.caption(
-        "Scans every live Transport for a supplier and flags any modality whose inventory "
-        "date range differs from the others on the same Transport, or whose end date is not "
-        f"**{_EXPECTED_END}** (the house 'always available' date). "
-        "Read-only — nothing is changed in Travel Compositor."
+        f"Scans every live Transport for a supplier and flags any modality whose inventory "
+        f"end date is not **{_EXPECTED_END}** (the house 'always available' date), or that "
+        f"has no inventory at all. Start date differences between modalities are normal and "
+        f"are ignored. Read-only — nothing is changed in Travel Compositor."
     )
 
     suppliers = _load_momira_suppliers(client)
