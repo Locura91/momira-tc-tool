@@ -33,7 +33,8 @@ import streamlit as st
 
 import stop_sales_tool as sst
 from ai_extractor import friendly_error_message
-from ui_components import momira_active_suppliers, is_active_supplier
+from ui_components import is_active_supplier
+from flows.flow_ui_helpers import load_momira_suppliers
 
 _PRODUCT_TYPES = ["Transfer", "Ticket", "ClosedTour", "Hotel"]
 _TYPE_LABELS = {
@@ -241,7 +242,7 @@ def render_bulk_stop_sales_flow(client):
                "Existing stop sales on each product are kept — these are merged in.")
 
     # ── supplier ──────────────────────────────────────────────────────────────
-    suppliers = momira_active_suppliers(client)
+    suppliers = load_momira_suppliers(client)
     supplier_names = [s["name"] for s in suppliers] if suppliers else []
     supplier_name = st.selectbox("Supplier", supplier_names,
                                  index=None, placeholder="Choose a supplier…",
