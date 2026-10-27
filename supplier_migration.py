@@ -342,7 +342,11 @@ def migrate_ticket(client, source_id: str, dest_id: str, record: Dict[str, Any])
             option_failures.append(f"{code} ({friendly_error_message(e)})")
             continue
         if isinstance(opt_res, dict) and "error" in opt_res:
-            option_failures.append(f"{code} ({_err_detail(opt_res)})")
+            if _error_means_already_exists(opt_res):
+                # Option already exists on destination — treat as success.
+                created_modality_codes.append(code)
+            else:
+                option_failures.append(f"{code} ({_err_detail(opt_res)})")
         else:
             created_modality_codes.append(code)
 
@@ -435,7 +439,11 @@ def migrate_closed_tour(client, source_id: str, dest_id: str, record: Dict[str, 
             option_failures.append(f"{code} ({friendly_error_message(e)})")
             continue
         if isinstance(opt_res, dict) and "error" in opt_res:
-            option_failures.append(f"{code} ({_err_detail(opt_res)})")
+            if _error_means_already_exists(opt_res):
+                # Option already exists on destination — treat as success.
+                created_modality_codes.append(code)
+            else:
+                option_failures.append(f"{code} ({_err_detail(opt_res)})")
         else:
             created_modality_codes.append(code)
 
