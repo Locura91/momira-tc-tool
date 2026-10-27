@@ -132,7 +132,7 @@ def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
 def _transfer_error_means_not_found(res: dict) -> bool:
     """True when TC's error response is the 'does not exist, use create' rejection."""
     errors = res.get("error") or []
-    if isinstance(errors, str):
+    if not isinstance(errors, (list, tuple)):
         errors = [errors]
     combined = " ".join(str(e).lower() for e in errors)
     return "does not exist" in combined or "does not exists" in combined or "use the create" in combined
