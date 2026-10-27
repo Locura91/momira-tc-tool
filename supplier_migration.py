@@ -124,45 +124,99 @@ def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------
-# Transfer - TRUE in-place move (2026-09-16, see module docstring) - one PUT straight to the
-# destination supplier's URL, same record id, nothing created or deactivated.
+# Transfer - in-place move attempted first (PUT to dest supplier), with automatic fallback to
+# create-then-deactivate when TC says the record doesn't exist under the destination supplier.
+# The in-place PUT works when both suppliers share the same TC account/database shard (the id
+# is truly portable); the fallback handles the case where TC scopes transfer ids per supplier.
 # ----------------------------------------------------------------------
+def _transfer_error_means_not_found(res: dict) -> bool:
+    """True when TC's error response is the 'does not exist, use create' rejection."""
+    errors = res.get("error") or []
+    if isinstance(errors, str):
+        errors = [errors]
+    combined = " ".join(str(e).lower() for e in errors)
+    return "does not exist" in combined or "does not exists" in combined or "use the create" in combined
+
+
 def migrate_transfer(client, source_id: str, dest_id: str, record: Dict[str, Any],
                      transfer_matcher=None) -> Dict[str, Any]:
     dep = (record.get("departure") or {}).get("name", "") if isinstance(record.get("departure"), dict) else ""
     arr = (record.get("arrival") or {}).get("name", "") if isinstance(record.get("arrival"), dict) else ""
     name = record.get("name") or f"{dep} - {arr}".strip(" -") or record.get("id") or "(unnamed transfer)"
-    moved_id = record.get("id")
+    original_id = record.get("id")
 
     payload = dict(record)
     _strip_nested_null_ids(payload)  # see that function's docstring - fixes the confirmed real
     # "null PK...find operation" failure (2026-09-16) - unrelated to which supplier owns it
+
+    # ── Attempt 1: in-place PUT to the destination supplier ───────────────
     try:
         res = client.update_transfer(dest_id, payload)
     except Exception as e:
         return {"name": name, "ok": False, "stage": "move", "detail": friendly_error_message(e)}
-    if isinstance(res, dict) and "error" in res:
+
+    if not (isinstance(res, dict) and "error" in res):
+        # PUT succeeded — record now belongs to dest supplier under the same id
+        if transfer_matcher is not None:
+            try:
+                if dep and arr:
+                    transfer_matcher.forget_transfer_id(source_id, dep, arr)
+                    transfer_matcher.remember_transfer_id(dest_id, dep, arr, original_id)
+            except Exception:
+                pass
+        return {"name": name, "ok": True, "stage": "done", "new_id": original_id, "moved_in_place": True}
+
+    # ── Attempt 2: fallback — create under dest, deactivate under source ──
+    # TC returned an error; if it's the "does not exist / use create" rejection, fall back to a
+    # recreate-then-deactivate sequence (same pattern Ticket/ClosedTour always use).
+    if not _transfer_error_means_not_found(res):
         return {"name": name, "ok": False, "stage": "move", "detail": _err_detail(res)}
+
+    create_payload = dict(record)
+    create_payload["id"] = None  # let TC assign a new id
+    _strip_nested_null_ids(create_payload)
+    try:
+        create_res = client.create_transfer(dest_id, create_payload)
+    except Exception as e:
+        return {"name": name, "ok": False, "stage": "create",
+                "detail": f"in-place move rejected by TC; fallback create also failed: {friendly_error_message(e)}"}
+    if isinstance(create_res, dict) and "error" in create_res:
+        return {"name": name, "ok": False, "stage": "create",
+                "detail": f"in-place move rejected by TC; fallback create also failed: {_err_detail(create_res)}"}
+
+    new_id = (create_res.get("id") if isinstance(create_res, dict) else None) or original_id
+
+    # Deactivate the original under the source supplier
+    deact_payload = dict(record)
+    deact_payload["active"] = False
+    _strip_nested_null_ids(deact_payload)
+    try:
+        deact_res = client.update_transfer(source_id, deact_payload)
+    except Exception as e:
+        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
+                "detail": f"created as id {new_id!r} under new supplier, but couldn't deactivate the original: {friendly_error_message(e)}"}
+    if isinstance(deact_res, dict) and "error" in deact_res:
+        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
+                "detail": f"created as id {new_id!r} under new supplier, but couldn't deactivate the original: {_err_detail(deact_res)}"}
 
     if transfer_matcher is not None:
         try:
             if dep and arr:
                 transfer_matcher.forget_transfer_id(source_id, dep, arr)
-                transfer_matcher.remember_transfer_id(dest_id, dep, arr, moved_id)
+                transfer_matcher.remember_transfer_id(dest_id, dep, arr, new_id)
         except Exception:
             pass
 
-    return {"name": name, "ok": True, "stage": "done", "new_id": moved_id, "moved_in_place": True}
+    return {"name": name, "ok": True, "stage": "done", "new_id": new_id}
 
 
 # ----------------------------------------------------------------------
-# Transport - TRUE in-place move (2026-09-16, see module docstring) - one PUT straight to the
-# destination supplier's URL, same record id, options move with it (they're keyed to the
-# transport's own id, not the supplier), nothing created or deactivated.
+# Transport - in-place move attempted first (PUT to dest supplier), with automatic fallback to
+# create-then-deactivate when TC says the record doesn't exist under the destination supplier.
 # ----------------------------------------------------------------------
 def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, Any]) -> Dict[str, Any]:
     name = record.get("name") or record.get("id") or "(unnamed transport)"
-    moved_id = record.get("id")
+    original_id = record.get("id")
 
     payload = dict(record)
     _strip_nested_null_ids(payload)  # see that function's docstring - fixes the confirmed real
@@ -174,14 +228,49 @@ def migrate_transport(client, source_id: str, dest_id: str, record: Dict[str, An
     # non-flight Transport routinely omits it or returns null. See bulk_notes.normalize_for_put's
     # own docstring for the full history.
     normalize_for_put(payload, "Transport")
+
+    # ── Attempt 1: in-place PUT to the destination supplier ───────────────
     try:
         res = client.update_transport(dest_id, payload)
     except Exception as e:
         return {"name": name, "ok": False, "stage": "move", "detail": friendly_error_message(e)}
-    if isinstance(res, dict) and "error" in res:
+
+    if not (isinstance(res, dict) and "error" in res):
+        return {"name": name, "ok": True, "stage": "done", "new_id": original_id, "moved_in_place": True}
+
+    # ── Attempt 2: fallback — create under dest, deactivate under source ──
+    if not _transfer_error_means_not_found(res):
         return {"name": name, "ok": False, "stage": "move", "detail": _err_detail(res)}
 
-    return {"name": name, "ok": True, "stage": "done", "new_id": moved_id, "moved_in_place": True}
+    create_payload = dict(record)
+    create_payload["id"] = None
+    _strip_nested_null_ids(create_payload)
+    normalize_for_put(create_payload, "Transport")
+    try:
+        create_res = client.create_transport(dest_id, create_payload)
+    except Exception as e:
+        return {"name": name, "ok": False, "stage": "create",
+                "detail": f"in-place move rejected by TC; fallback create also failed: {friendly_error_message(e)}"}
+    if isinstance(create_res, dict) and "error" in create_res:
+        return {"name": name, "ok": False, "stage": "create",
+                "detail": f"in-place move rejected by TC; fallback create also failed: {_err_detail(create_res)}"}
+
+    new_id = (create_res.get("id") if isinstance(create_res, dict) else None) or original_id
+
+    deact_payload = dict(record)
+    deact_payload["active"] = False
+    _strip_nested_null_ids(deact_payload)
+    normalize_for_put(deact_payload, "Transport")
+    try:
+        deact_res = client.update_transport(source_id, deact_payload)
+    except Exception as e:
+        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
+                "detail": f"created as id {new_id!r} under new supplier, but couldn't deactivate the original: {friendly_error_message(e)}"}
+    if isinstance(deact_res, dict) and "error" in deact_res:
+        return {"name": name, "ok": "partial", "stage": "deactivate", "new_id": new_id,
+                "detail": f"created as id {new_id!r} under new supplier, but couldn't deactivate the original: {_err_detail(deact_res)}"}
+
+    return {"name": name, "ok": True, "stage": "done", "new_id": new_id}
 
 
 # ----------------------------------------------------------------------
