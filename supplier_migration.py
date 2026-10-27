@@ -129,6 +129,18 @@ def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
 # The in-place PUT works when both suppliers share the same TC account/database shard (the id
 # is truly portable); the fallback handles the case where TC scopes transfer ids per supplier.
 # ----------------------------------------------------------------------
+def _error_means_already_exists(res: dict) -> bool:
+    """True when TC's error response is the 'already exists, use the update operation' rejection.
+    Checked against both res['message'] (raw body from _handle_response) and res['error']."""
+    combined_parts = [str(res.get("message") or "").lower()]
+    errors = res.get("error") or []
+    if not isinstance(errors, (list, tuple)):
+        errors = [errors]
+    combined_parts.extend(str(e).lower() for e in errors)
+    combined = " ".join(combined_parts)
+    return "already exists" in combined and ("use the update" in combined or "update operation" in combined)
+
+
 def _transfer_error_means_not_found(res: dict) -> bool:
     """True when TC's error response is the 'does not exist / use create' rejection.
 
@@ -300,8 +312,14 @@ def migrate_ticket(client, source_id: str, dest_id: str, record: Dict[str, Any])
     except Exception as e:
         return {"name": name, "ok": False, "stage": "create", "detail": friendly_error_message(e)}
     if isinstance(create_res, dict) and "error" in create_res:
-        return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
-    real_code = create_res.get("code") if isinstance(create_res, dict) else None
+        if _error_means_already_exists(create_res):
+            # Ticket already exists under dest supplier (same code) — treat as if create
+            # succeeded and re-use the existing code; proceed with modalities + finalize.
+            real_code = ticket_code
+        else:
+            return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
+    else:
+        real_code = (create_res.get("code") if isinstance(create_res, dict) else None) or ticket_code
     if not real_code:
         return {"name": name, "ok": False, "stage": "create",
                 "detail": "the create call didn't return a code - the original was NOT "
@@ -387,8 +405,14 @@ def migrate_closed_tour(client, source_id: str, dest_id: str, record: Dict[str, 
     except Exception as e:
         return {"name": name, "ok": False, "stage": "create", "detail": friendly_error_message(e)}
     if isinstance(create_res, dict) and "error" in create_res:
-        return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
-    real_code = create_res.get("code") if isinstance(create_res, dict) else None
+        if _error_means_already_exists(create_res):
+            # Closed tour already exists under dest supplier (same code) — treat as if create
+            # succeeded and re-use the existing code; proceed with modalities + finalize.
+            real_code = tour_code
+        else:
+            return {"name": name, "ok": False, "stage": "create", "detail": _err_detail(create_res)}
+    else:
+        real_code = (create_res.get("code") if isinstance(create_res, dict) else None) or tour_code
     if not real_code:
         return {"name": name, "ok": False, "stage": "create",
                 "detail": "the create call didn't return a code - the original was NOT "
