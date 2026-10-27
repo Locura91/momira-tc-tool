@@ -130,11 +130,21 @@ def _strip_nested_null_ids(obj: Any, _top: bool = True) -> None:
 # is truly portable); the fallback handles the case where TC scopes transfer ids per supplier.
 # ----------------------------------------------------------------------
 def _transfer_error_means_not_found(res: dict) -> bool:
-    """True when TC's error response is the 'does not exist, use create' rejection."""
+    """True when TC's error response is the 'does not exist / use create' rejection.
+
+    _handle_response returns {"error": <status_int>, "message": <raw body text>} on non-2xx.
+    The human-readable TC error is in "message" as raw JSON text; we also check the "error"
+    field in case a caller ever passes a pre-parsed TC body {"error": [...], "status": ...}.
+    """
+    combined_parts = []
+    # "message" from _handle_response carries the raw TC response body as text
+    combined_parts.append(str(res.get("message") or "").lower())
+    # "error" from a pre-parsed TC body could be a list of strings or a single value
     errors = res.get("error") or []
     if not isinstance(errors, (list, tuple)):
         errors = [errors]
-    combined = " ".join(str(e).lower() for e in errors)
+    combined_parts.extend(str(e).lower() for e in errors)
+    combined = " ".join(combined_parts)
     return "does not exist" in combined or "does not exists" in combined or "use the create" in combined
 
 
