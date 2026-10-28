@@ -5640,13 +5640,42 @@ case - most documents describe just one property's rooms/rates/offers), set "mul
     return hotels
 
 
+def extract_hotel_room_names(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """Fast, cheap first pass: extract ONLY the list of room/villa/suite/residence type names
+    from a hotel contract, so a human can pick which rooms to include BEFORE the full extraction
+    runs. Returns a list of {"name": str, "max_occupancy": int|None} dicts. The full extraction
+    (extract_hotel_data) is then called only for the selected rooms, saving tokens on rooms the
+    human would have discarded anyway."""
+    prompt = """You are scanning a hotel contract document. Your ONLY job is to list every distinct
+ROOM TYPE / VILLA TYPE / SUITE / RESIDENCE that has its own pricing in this document.
+
+Output ONLY valid JSON, no markdown fences, no explanation:
+{"rooms": [{"name": "<exact room name as it appears in the document>", "max_occupancy": <max total people or null if not stated>}]}
+
+Rules:
+- One entry per distinct room/villa/suite category - do NOT list individual unit numbers or repeat the same category.
+- Use the room name EXACTLY as the document writes it (e.g. "Hideaway Pool Villa", "Two Bedroom Signature Pool Villa").
+- If the document states a maximum occupancy for the room, put it in max_occupancy; otherwise null.
+- Do NOT extract prices, seasons, meal plans, offers or any other data - names and max_occupancy only."""
+    data = _call_claude(prompt, raw_text, model, max_tokens=1024,
+                        input_schema={"type": "object", "required": ["rooms"],
+                                      "properties": {"rooms": {"type": "array"}}})
+    rooms = data.get("rooms") or []
+    print(f"🏨 Detected {len(rooms)} room type(s): {[r.get('name') for r in rooms]}")
+    return rooms
+
+
 def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint: str = None,
-                        human_hint: str = None) -> dict:
+                        human_hint: str = None, rooms_hint: list = None) -> dict:
     """Full extraction for one Hotel contract - hotel fields, rooms, meal plans, offers,
     supplements, and rates (with nested seasons/room_prices/stop_sales). See
     HOTEL_EXTRACTION_SYSTEM_PROMPT for the full field-by-field extraction contract, and
     builder.py's build_hotel_contract_payload/build_hotel_offer_payloads/
-    build_hotel_supplement_payloads/build_hotel_rate_payloads for how this shape is consumed."""
+    build_hotel_supplement_payloads/build_hotel_rate_payloads for how this shape is consumed.
+
+    rooms_hint: optional list of room name strings selected by the human in the room-picker step.
+    When provided, the AI is instructed to extract pricing ONLY for those rooms and skip all others,
+    saving significant output tokens on large contracts."""
     user_content = raw_text
     prefix_parts = []
     if hotel_hint:
@@ -5655,6 +5684,15 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
             f"Extract ONLY the following one, pulling in every room/rate/offer/supplement detail that belongs "
             f"to it specifically, and completely ignore every other property described elsewhere in the "
             f"text: {hotel_hint}"
+        )
+    if rooms_hint:
+        rooms_list = ", ".join(f'"{r}"' for r in rooms_hint)
+        prefix_parts.append(
+            f"IMPORTANT - ROOM FILTER (human pre-selected): Extract pricing/distributions/room_prices ONLY "
+            f"for these room types: {rooms_list}. Include these rooms in the 'rooms' array and their "
+            f"distribution_prices in every season's room_prices. Completely ignore all other room types "
+            f"that appear in the document - do not add them to 'rooms' or room_prices, and skip any "
+            f"offers/supplements that apply EXCLUSIVELY to the ignored room types."
         )
     if human_hint:
         prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
