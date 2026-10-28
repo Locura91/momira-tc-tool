@@ -1162,9 +1162,29 @@ def render_hotel_flow(client):
 
     pre_config = HotelHumanPreConfig(supplier_id=supplier_id, provider_code=provider_code,
                                       currency=currency, days_available_before_release=release_days)
+    # Pre-compute rooms with no prices in any rate season in this run. Their distributions
+    # will be cleared in Phase 1 so TC doesn't require prices for them in the published rates.
+    # A room counts as "having prices" if any of its distribution_prices rows has amount > 0
+    # in any season across any rate in this document.
+    _rooms_with_any_price = set()
+    for _rt in data.get("rates") or []:
+        for _sn in (_rt or {}).get("seasons") or []:
+            for _rp in (_sn or {}).get("room_prices") or []:
+                _rn = (_rp or {}).get("room_name")
+                if _rn and any(
+                    float(_dp.get("amount") or 0) > 0
+                    for _dp in (_rp or {}).get("distribution_prices") or []
+                    if isinstance(_dp, dict)
+                ):
+                    _rooms_with_any_price.add(_rn)
+    # Rooms with distributions but no prices in this run — distributions will be cleared.
+    _all_room_names_in_doc = {(r or {}).get("name") for r in data.get("rooms") or [] if (r or {}).get("name")}
+    _rooms_with_no_prices = _all_room_names_in_doc - _rooms_with_any_price
+
     contract_result = build_hotel_contract_payload(
         pre_config, data, existing_hotel_snapshot=existing_snapshot,
-        rooms_to_delete=data.get("rooms_to_delete"))
+        rooms_to_delete=data.get("rooms_to_delete"),
+        rooms_with_no_prices=_rooms_with_no_prices)
 
     if contract_result.get("hotel_error"):
         st.error(f"⚠️ This hotel can't be built yet: {contract_result['hotel_error']}")

@@ -6017,7 +6017,7 @@ def _build_room_payload(room_data, existing_room=None):
 
 
 def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hotel_snapshot=None,
-                                  rooms_to_delete=None):
+                                  rooms_to_delete=None, rooms_with_no_prices=None):
     """
     PHASE 1 of the two-phase Hotel build - see the section docstring above. Builds the hotel-
     level ContractHotelVO payload (hotel fields + rooms[] + mealPlans[] + descriptions +
@@ -6092,13 +6092,29 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
     # wouldn't be in `seen_room_names` (built from the document's own, single-spaced name).
     # Keying off the actual returned object sidesteps string comparison here entirely, so this
     # loop can never drift out of sync with whatever match_room_by_name decides, now or later.
+    # CONFIRMED PRODUCT-OWNER RULE (2026-10-28): rooms with no prices in ANY rate being published
+    # in this run have their distributions cleared to [] in Phase 1. TC requires every room that
+    # has distributions to be priced in every rate - a room with distributions but no prices causes
+    # TC to reject even rates that don't include that room. Clearing distributions means TC stops
+    # requiring prices for it, and the room is still in the hotel (just not bookable until prices
+    # are added). `rooms_with_no_prices` is pre-computed by the caller from the extracted rates.
+    _rooms_with_no_prices = set(rooms_with_no_prices or [])
+
     matched_existing_room_ids = set()
     room_payloads = []
     room_name_matches = {}
     for room_data in document_rooms:
         room_name = (room_data or {}).get("name")
         existing_room = hotel_matcher.match_room_by_name(room_name, existing_rooms)
-        room_payloads.append(_build_room_payload(room_data, existing_room=existing_room))
+        if room_name in _rooms_with_no_prices:
+            room_payloads.append(ContractRoomVO(
+                name=room_name,
+                typeId=(room_data or {}).get("type_id"),
+                providerCode=(existing_room or {}).get("providerCode") if existing_room else None,
+                distributions=[],
+            ))
+        else:
+            room_payloads.append(_build_room_payload(room_data, existing_room=existing_room))
         room_name_matches[room_name] = (existing_room or {}).get("providerCode")
         if existing_room is not None:
             matched_existing_room_ids.add(id(existing_room))
@@ -6112,12 +6128,18 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
             continue
         if id(existing_room) not in matched_existing_room_ids:
             # Carried forward unchanged - not mentioned in this document, but never silently dropped.
+            # If this carried-forward room has no prices in the current run, clear its distributions
+            # so TC doesn't require prices for it in the rates being published.
+            _cf_name = existing_room.get("name")
+            _cf_dists = [] if _cf_name in _rooms_with_no_prices else [
+                ContractRoomDistributionVO(adults=d.get("adults", 1), children=d.get("children", 0))
+                for d in existing_room.get("distributions") or []
+            ]
             room_payloads.append(ContractRoomVO(
-                name=existing_room.get("name"),
+                name=_cf_name,
                 typeId=existing_room.get("typeId"),
                 providerCode=existing_room.get("providerCode"),
-                distributions=[ContractRoomDistributionVO(adults=d.get("adults", 1), children=d.get("children", 0))
-                               for d in existing_room.get("distributions") or []],
+                distributions=_cf_dists,
             ))
 
     # ---- Meal plans: same carry-forward merge, keyed by mealPlan type (only one entry per type) ----
