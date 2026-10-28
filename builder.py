@@ -6288,7 +6288,15 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
         maximumChildrenAge=_safe_int(extracted.get("max_children_age", 12), fallback=12),
         rooms=room_payloads,
         mealPlans=meal_plan_payloads,
-        descriptions=_translation_list_or_existing(extracted.get("description"), (existing_hotel_snapshot or {}).get("descriptions")),
+        # On update, preserve TC's existing descriptions exactly - same rule as hotelname/
+        # address/images (product owner: "the information already provided by Travel C is great
+        # and no rewrite needed"). The extracted description only wins on a brand-new create
+        # (where existing_hotel_snapshot is None and existing_descriptions is always empty).
+        descriptions=([TranslationVO(**t) for t in existing_descriptions
+                       if isinstance(t, dict)]
+                      if is_update and (existing_descriptions := (existing_hotel_snapshot or {}).get("descriptions"))
+                      else _translation_list_or_existing(extracted.get("description"),
+                                                         (existing_hotel_snapshot or {}).get("descriptions"))),
         voucherRemarks=_translation_list_or_existing(voucher_text, (existing_hotel_snapshot or {}).get("voucherRemarks")),
         images=hotel_images,
     )
