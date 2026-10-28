@@ -236,7 +236,7 @@ def render_hotel_flow(client):
         if _hp_precheck_snapshot:
             currency_in = _hp_precheck_snapshot.get("currency")
             st.info(f"📌 Hotel code **{_hp_precheck_code}** already exists "
-                    f"(“{_hp_precheck_snapshot.get('hotelname')}”) - publishing will UPDATE it, so the "
+                    f"('{_hp_precheck_snapshot.get('hotelname')}') - publishing will UPDATE it, so the "
                     f"currency it's already denominated in (**{currency_in}**) is used automatically; "
                     f"no need to ask again.")
         else:
@@ -477,16 +477,16 @@ def render_hotel_flow(client):
     # Mirrors flows/multi_tour.py's select_modalities phase - see the CONFIRMED comment above
     # where this phase is entered.
     # ------------------------------------------------------------------
-    if st.session_state.hp_phase == “select_rooms”:
+    if st.session_state.hp_phase == "select_rooms":
         _hp_hotelname = (st.session_state.hp_data or {}).get('hotelname') or '(unnamed)'
-        st.header(f”Hotel — Room types for \”{_hp_hotelname}\””)
-        if not st.session_state.get(“hp_room_candidates”):
+        st.header(f"Hotel — Room types for \"{_hp_hotelname}\"")
+        if not st.session_state.get("hp_room_candidates"):
             # Fallback: if hp_room_candidates wasn't seeded by the cheap call (e.g. old session
-            # state from before two-phase was deployed), build from hp_data[“rooms”] as before.
+            # state from before two-phase was deployed), build from hp_data["rooms"] as before.
             st.session_state.hp_room_candidates = [
-                {“name”: r.get(“name”) or “”, “distributions”: r.get(“distributions”) or [],
-                 “type_id”: r.get(“type_id”), “selected”: True}
-                for r in ((st.session_state.hp_data or {}).get(“rooms”) or [])
+                {"name": r.get("name") or "", "distributions": r.get("distributions") or [],
+                 "type_id": r.get("type_id"), "selected": True}
+                for r in ((st.session_state.hp_data or {}).get("rooms") or [])
             ]
         candidates = st.session_state.hp_room_candidates
         st.caption("Auto-detected from your document - untick any room type you don't want to add, or remove "
@@ -572,8 +572,7 @@ def render_hotel_flow(client):
                      "hp_room_candidates", "hp_selected_room_names", "hp_hotel_hint", "hp_combined_hint",
                      "hp_doc_raw_images", "hp_md_image_urls_list", "hp_md_geo"]
 
-    st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
-
+    st.header(f"Hotel — Step 4: Review \"{data.get('hotelname') or '(unnamed)'}\"")
     _hp_md_seed_used = st.session_state.get("hp_masterdata_seed")
     if _hp_md_seed_used:
         _hp_md_img_count = len(_hp_md_seed_used.get("image_urls") or [])
@@ -612,7 +611,7 @@ def render_hotel_flow(client):
     existing_snapshot = st.session_state.get("hp_existing_snapshot")
     if existing_snapshot:
         st.info(f"📌 Hotel code **{provider_code}** already exists in Travel Compositor "
-                f"(“{existing_snapshot.get('hotelname')}”, contract {existing_snapshot.get('contractId')}). "
+                f"('{existing_snapshot.get('hotelname')}', contract {existing_snapshot.get('contractId')}). "
                 f"Publishing will UPDATE it. Rooms and meal plans already there that this document doesn't "
                 f"mention are preserved, not dropped.")
         # CONFIRMED REAL RULE (product owner): same "look before you update" safety bar just
@@ -796,7 +795,7 @@ def render_hotel_flow(client):
 
     # ---- Rooms ----
     st.markdown("#### Rooms")
-    st.caption("“Allowed distributions” uses Travel Compositor's own Adult+child shorthand, e.g. "
+    st.caption("'Allowed distributions' uses Travel Compositor's own Adult+child shorthand, e.g. "
               "`1+0, 2+0, 2+1` means 1 adult; 2 adults; 2 adults + 1 child. Any combination totalling more "
               "than 9 people is dropped automatically (system cap).")
     rooms_df = pd.DataFrame([
