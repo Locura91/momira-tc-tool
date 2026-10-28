@@ -368,6 +368,214 @@ def render_bulk_stop_sales_flow(client):
     st.caption("ℹ️ Travel Compositor does not store a name/label on stop sales — "
                "the dates themselves are the record.")
 
+    # ── remove expired stop sales ─────────────────────────────────────────────
+    st.divider()
+    with st.expander("🧹 Remove expired stop sales", expanded=False):
+        st.caption(
+            "Scans the selected products for stop-sale ranges whose end date is already in "
+            "the past, shows you what would be removed, and deletes them all in one go."
+        )
+        today_str = date.today().isoformat()
+
+        if st.button("🔍 Scan for expired stop sales", key="bss_scan_expired"):
+            expired_items = []
+            with st.spinner("Scanning…"):
+                for product in selected_products:
+                    kind = product["kind"]
+                    pid = product["id"]
+                    pname = product["name"]
+                    if kind == "Transfer":
+                        try:
+                            rec = client.get_transfer(supplier_id, pid)
+                        except Exception:
+                            continue
+                        if isinstance(rec, dict) and "error" not in rec:
+                            for s in (rec.get("stopSales") or []):
+                                if isinstance(s, dict) and (s.get("end") or "") < today_str:
+                                    expired_items.append({
+                                        "kind": kind, "pid": pid, "pname": pname,
+                                        "label": pname,
+                                        "start": s.get("start"), "end": s.get("end"),
+                                    })
+                    elif kind in ("Ticket", "ClosedTour"):
+                        for mod_code in (product.get("modalities") or []):
+                            try:
+                                if kind == "Ticket":
+                                    opt = client.get_ticket_option(supplier_id, pid, mod_code)
+                                else:
+                                    opt = client.get_closed_tour_option(supplier_id, pid, mod_code)
+                            except Exception:
+                                continue
+                            if not isinstance(opt, dict) or "error" in opt:
+                                continue
+                            for s in (opt.get("stopSales") or []):
+                                if isinstance(s, dict) and (s.get("end") or "") < today_str:
+                                    expired_items.append({
+                                        "kind": kind, "pid": pid, "pname": pname,
+                                        "mod": mod_code,
+                                        "label": f"{pname} / {mod_code}",
+                                        "start": s.get("start"), "end": s.get("end"),
+                                    })
+                    elif kind == "Hotel":
+                        try:
+                            rec = client.get_hotel(supplier_id, pid)
+                        except Exception:
+                            continue
+                        if isinstance(rec, dict) and "error" not in rec:
+                            for rate in (rec.get("rates") or []):
+                                if not isinstance(rate, dict):
+                                    continue
+                                rate_name = rate.get("name") or rate.get("code") or "(rate)"
+                                for s in (rate.get("stopSales") or []):
+                                    if isinstance(s, dict) and (s.get("end") or "") < today_str:
+                                        expired_items.append({
+                                            "kind": kind, "pid": pid, "pname": pname,
+                                            "rate_code": rate.get("code"),
+                                            "label": f"{pname} / {rate_name}",
+                                            "start": s.get("start"), "end": s.get("end"),
+                                        })
+            _set("bss_expired_items", expired_items)
+            st.rerun()
+
+        expired_items = _get("bss_expired_items")
+        if expired_items is not None:
+            if not expired_items:
+                st.success("No expired stop sales found on the selected products.")
+            else:
+                st.warning(
+                    f"Found **{len(expired_items)} expired stop-sale range(s)** "
+                    f"across the selected products:"
+                )
+                for item in expired_items:
+                    st.markdown(
+                        f"- **{item['label']}**: "
+                        f"{item['start']} → {item['end']}"
+                    )
+
+                if st.button(
+                    f"🗑️ Remove all {len(expired_items)} expired range(s)",
+                    type="primary", key="bss_delete_expired"
+                ):
+                    deleted_count = 0
+                    delete_errors = []
+                    bar2 = st.progress(0.0, text="Removing…")
+
+                    # Group by (kind, pid, mod/rate_code) to batch per record
+                    from collections import defaultdict
+                    groups = defaultdict(list)
+                    for item in expired_items:
+                        key = (item["kind"], item["pid"],
+                               item.get("mod") or item.get("rate_code") or "")
+                        groups[key].append({"start": item["start"], "end": item["end"]})
+
+                    total = len(groups)
+                    for idx, ((kind, pid, sub_key), ranges_to_remove) in \
+                            enumerate(groups.items()):
+                        bar2.progress((idx + 1) / total,
+                                      text=f"{idx + 1}/{total}: {kind} {pid}")
+                        try:
+                            if kind == "Transfer":
+                                rec = client.get_transfer(supplier_id, pid)
+                                if isinstance(rec, dict) and "error" not in rec:
+                                    live = [s for s in (rec.get("stopSales") or [])
+                                            if isinstance(s, dict)]
+                                    kept = [s for s in live
+                                            if not any(
+                                                s.get("start") == r["start"] and
+                                                s.get("end") == r["end"]
+                                                for r in ranges_to_remove)]
+                                    payload = dict(rec)
+                                    payload["stopSales"] = kept
+                                    res = client.update_transfer(supplier_id, payload)
+                                    if isinstance(res, dict) and "error" in res:
+                                        delete_errors.append(
+                                            f"Transfer {pid}: "
+                                            f"{res.get('message') or res.get('error')}")
+                                    else:
+                                        deleted_count += len(ranges_to_remove)
+                            elif kind == "Ticket":
+                                opt = client.get_ticket_option(supplier_id, pid, sub_key)
+                                if isinstance(opt, dict) and "error" not in opt:
+                                    live = [s for s in (opt.get("stopSales") or [])
+                                            if isinstance(s, dict)]
+                                    kept = [s for s in live
+                                            if not any(
+                                                s.get("start") == r["start"] and
+                                                s.get("end") == r["end"]
+                                                for r in ranges_to_remove)]
+                                    opt_payload = dict(opt)
+                                    opt_payload["stopSales"] = kept
+                                    res = client.update_ticket_option(
+                                        supplier_id, pid, opt_payload)
+                                    if isinstance(res, dict) and "error" in res:
+                                        delete_errors.append(
+                                            f"Ticket {pid}/{sub_key}: "
+                                            f"{res.get('message') or res.get('error')}")
+                                    else:
+                                        deleted_count += len(ranges_to_remove)
+                            elif kind == "ClosedTour":
+                                opt = client.get_closed_tour_option(
+                                    supplier_id, pid, sub_key)
+                                if isinstance(opt, dict) and "error" not in opt:
+                                    live = [s for s in (opt.get("stopSales") or [])
+                                            if isinstance(s, dict)]
+                                    kept = [s for s in live
+                                            if not any(
+                                                s.get("start") == r["start"] and
+                                                s.get("end") == r["end"]
+                                                for r in ranges_to_remove)]
+                                    opt_payload = dict(opt)
+                                    opt_payload["stopSales"] = kept
+                                    res = client.update_closed_tour_option(
+                                        supplier_id, pid, opt_payload)
+                                    if isinstance(res, dict) and "error" in res:
+                                        delete_errors.append(
+                                            f"ClosedTour {pid}/{sub_key}: "
+                                            f"{res.get('message') or res.get('error')}")
+                                    else:
+                                        deleted_count += len(ranges_to_remove)
+                            elif kind == "Hotel":
+                                rec = client.get_hotel(supplier_id, pid)
+                                if isinstance(rec, dict) and "error" not in rec:
+                                    updated_rates = []
+                                    for rate in (rec.get("rates") or []):
+                                        if not isinstance(rate, dict):
+                                            updated_rates.append(rate)
+                                            continue
+                                        if (rate.get("code") or rate.get("name") or "") \
+                                                == sub_key:
+                                            live = [s for s in (rate.get("stopSales") or [])
+                                                    if isinstance(s, dict)]
+                                            kept_r = [s for s in live
+                                                      if not any(
+                                                          s.get("start") == r["start"] and
+                                                          s.get("end") == r["end"]
+                                                          for r in ranges_to_remove)]
+                                            rate = dict(rate)
+                                            rate["stopSales"] = kept_r
+                                            deleted_count += len(ranges_to_remove)
+                                        updated_rates.append(rate)
+                                    payload = dict(rec)
+                                    payload["rates"] = updated_rates
+                                    res = client.update_hotel(supplier_id, payload)
+                                    if isinstance(res, dict) and "error" in res:
+                                        delete_errors.append(
+                                            f"Hotel {pid}: "
+                                            f"{res.get('message') or res.get('error')}")
+                                        deleted_count -= len(ranges_to_remove)
+                        except Exception as e:
+                            delete_errors.append(f"{kind} {pid}: {friendly_error_message(e)}")
+
+                    bar2.empty()
+                    _set("bss_expired_items", None)
+                    if deleted_count:
+                        st.success(f"✅ Removed {deleted_count} expired range(s).")
+                    if delete_errors:
+                        st.error(f"❌ {len(delete_errors)} error(s):")
+                        for err in delete_errors:
+                            st.markdown(f"- {err}")
+                    st.rerun()
+
     # ── apply ─────────────────────────────────────────────────────────────────
     st.divider()
     st.warning(
