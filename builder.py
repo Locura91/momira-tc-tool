@@ -6855,7 +6855,10 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
             if existing_season and existing_season.get("id") is not None:
                 matched_existing_season_ids.add(existing_season["id"])
 
-            room_prices = []
+            # Pass 1: collect per-room intermediate data (prices, caps, units) without
+            # building VOs yet - we need all rooms' final distribution sets before we can
+            # do the cross-room union fill in pass 2 below.
+            _room_intermediates = []
             for rp_data in (season_data or {}).get("room_prices") or []:
                 room_name = (rp_data or {}).get("room_name")
                 provider_room_code = room_name_to_provider_code.get(room_name)
@@ -6946,18 +6949,76 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 else:
                     _hp_units_quota = _hp_stated_units_quota
                     _hp_units_on_request = _hp_stated_units_on_request
+                _room_intermediates.append({
+                    "rp_data": rp_data,
+                    "room_name": room_name,
+                    "provider_room_code": provider_room_code,
+                    "distribution_prices_data": distribution_prices_data,
+                    "effective_base_price": effective_base_price,
+                    "hp_units_quota": _hp_units_quota,
+                    "hp_units_on_request": _hp_units_on_request,
+                })
+
+            # Pass 2: cross-room distribution union fill.
+            # CONFIRMED REAL BUG (2026-10-28, Six Senses Zil Pasyon): TC validates rates at
+            # the SEASON level - if ANY room in a season is priced for combo X (e.g. 2+2,
+            # 3+1), TC requires EVERY room in that season to have a price for X, even rooms
+            # that physically don't allow that occupancy (e.g. Hideaway Pool Villa max 3 pax).
+            # Without this second pass, rooms with a smaller distribution set get TC's
+            # cryptic "Room price missing for distributions: 2 Ad. + 2 Ch., 3 Ad. + 1 Ch."
+            # The fix: collect the union of all (adults, children) combos that appear across
+            # all rooms in this season, then fill any room missing one of those combos using
+            # the same total-pax price rule already used above. If no same-total-pax price
+            # exists, the combo lands in missing_price_notes and blocks the rate with a clear
+            # editable message rather than a raw TC exception.
+            _all_season_combos = set()
+            for _ri in _room_intermediates:
+                for _p in _ri["distribution_prices_data"]:
+                    if isinstance(_p, dict) and _safe_float(_p.get("amount", 0)) > 0:
+                        _all_season_combos.add((
+                            _safe_int(_p.get("adults", 1), fallback=1),
+                            _safe_int(_p.get("children", 0)),
+                        ))
+            for _ri in _room_intermediates:
+                _have = {
+                    (_safe_int(_p.get("adults", 1), fallback=1), _safe_int(_p.get("children", 0)))
+                    for _p in _ri["distribution_prices_data"]
+                    if isinstance(_p, dict) and _safe_float(_p.get("amount", 0)) > 0
+                }
+                _extra = [{"adults": a, "children": c}
+                          for a, c in sorted(_all_season_combos - _have)]
+                if _extra:
+                    _dpd2, _sm2, _fn2 = _fill_missing_distribution_prices(
+                        _ri["distribution_prices_data"], _extra)
+                    if _fn2:
+                        rate_warnings.append(
+                            f"Season '{season_name}', room '{_ri['room_name']}': cross-room fill "
+                            f"added price(s) required by other rooms in this season: "
+                            f"{', '.join(_fn2)}.")
+                    if _sm2:
+                        missing_price_notes.append(
+                            f"Season '{season_name}', room '{_ri['room_name']}' needs a price for "
+                            f"{', '.join(_sm2)} because other rooms in this season are priced for "
+                            f"{'that combo' if len(_sm2) == 1 else 'those combos'} - add it on the "
+                            f"review screen (Travel Compositor requires all rooms in a season to "
+                            f"cover every occupancy combination any room in that season uses).")
+                    _ri["distribution_prices_data"] = _dpd2
+
+            # Pass 3: build ContractHotelSeasonPricesVO objects from the filled intermediates.
+            room_prices = []
+            for _ri in _room_intermediates:
                 room_prices.append(ContractHotelSeasonPricesVO(
-                    unitsQuota=_hp_units_quota,
-                    unitsOnRequest=_hp_units_on_request,
-                    providerRoomCode=provider_room_code,
+                    unitsQuota=_ri["hp_units_quota"],
+                    unitsOnRequest=_ri["hp_units_on_request"],
+                    providerRoomCode=_ri["provider_room_code"],
                     distributionPrices=[ContractRoomDistributionPriceVO(
-                        amount=_safe_float(p.get("amount", 0)),
-                        adults=_safe_int(p.get("adults", 1), fallback=1),
-                        children=_safe_int(p.get("children", 0)),
-                    ) for p in distribution_prices_data],
-                    basePrice=effective_base_price,
-                    adultPrices=[round_up_currency(_safe_float(p)) for p in (rp_data or {}).get("adult_prices") or []],
-                    childPrices=[round_up_currency(_safe_float(p)) for p in (rp_data or {}).get("child_prices") or []],
+                        amount=_safe_float(_p.get("amount", 0)),
+                        adults=_safe_int(_p.get("adults", 1), fallback=1),
+                        children=_safe_int(_p.get("children", 0)),
+                    ) for _p in _ri["distribution_prices_data"]],
+                    basePrice=_ri["effective_base_price"],
+                    adultPrices=[round_up_currency(_safe_float(p)) for p in (_ri["rp_data"] or {}).get("adult_prices") or []],
+                    childPrices=[round_up_currency(_safe_float(p)) for p in (_ri["rp_data"] or {}).get("child_prices") or []],
                 ))
 
             # CONFIRMED REAL BUG (2026-10-28): Travel Compositor validates every rate against
