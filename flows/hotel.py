@@ -1417,6 +1417,23 @@ def render_hotel_flow(client):
                  type="primary", key="hp_publish",
                  disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok or not supplements_ok):
         st.session_state.hp_publish_succeeded = False
+        # Pre-publish: fill any adult+child distribution prices that are still null by copying
+        # from the matching adult-only price. Handles sessions extracted before this fix was
+        # deployed, and any case where the AI clarification tool added distributions without prices.
+        for _rate in (data.get("rates") or []):
+            for _season in (_rate.get("seasons") or []):
+                for _rp in (_season.get("room_prices") or []):
+                    _dps = _rp.get("distribution_prices") or []
+                    _adult_only = {
+                        dp["adults"]: dp["amount"]
+                        for dp in _dps
+                        if dp.get("children", 0) == 0 and dp.get("amount") is not None
+                    }
+                    for dp in _dps:
+                        if dp.get("children", 0) > 0 and dp.get("amount") is None:
+                            _fb = _adult_only.get(dp.get("adults"))
+                            if _fb is not None:
+                                dp["amount"] = _fb
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
