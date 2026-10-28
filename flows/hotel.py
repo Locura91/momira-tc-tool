@@ -1417,23 +1417,47 @@ def render_hotel_flow(client):
                  type="primary", key="hp_publish",
                  disabled=not rooms_ok or not priced_rooms or not images_ok or not geo_ok or not supplements_ok):
         st.session_state.hp_publish_succeeded = False
-        # Pre-publish: fill any adult+child distribution prices that are still null by copying
-        # from the matching adult-only price. Handles sessions extracted before this fix was
-        # deployed, and any case where the AI clarification tool added distributions without prices.
+        # Pre-publish: ensure every declared distribution has a price entry in the rate table.
+        # Two problems this covers:
+        #   1. Entry exists but amount is null → fill from adult-only price
+        #   2. Entry is completely absent → add it with the adult-only price
+        # Both cause TC's "Room price missing for distributions" rejection.
+        # Build room-name → declared distributions lookup once, then walk the rate table.
+        _room_dists = {}
+        for _room in (data.get("rooms") or []):
+            _rname = (_room.get("name") or "").strip().lower()
+            if _rname:
+                _room_dists[_rname] = [
+                    (d.get("adults", 1), d.get("children", 0))
+                    for d in (_room.get("distributions") or [])
+                ]
         for _rate in (data.get("rates") or []):
             for _season in (_rate.get("seasons") or []):
                 for _rp in (_season.get("room_prices") or []):
-                    _dps = _rp.get("distribution_prices") or []
+                    _dps = _rp.get("distribution_prices")
+                    if _dps is None:
+                        _rp["distribution_prices"] = []
+                        _dps = _rp["distribution_prices"]
+                    # adult-only prices available in this room_prices block
                     _adult_only = {
                         dp["adults"]: dp["amount"]
                         for dp in _dps
                         if dp.get("children", 0) == 0 and dp.get("amount") is not None
                     }
+                    # fix null amounts on existing entries
                     for dp in _dps:
                         if dp.get("children", 0) > 0 and dp.get("amount") is None:
                             _fb = _adult_only.get(dp.get("adults"))
                             if _fb is not None:
                                 dp["amount"] = _fb
+                    # add completely missing entries for declared distributions
+                    _existing = {(dp.get("adults"), dp.get("children", 0)) for dp in _dps}
+                    _rp_name = (_rp.get("room_name") or "").strip().lower()
+                    for (_a, _c) in _room_dists.get(_rp_name, []):
+                        if (_a, _c) not in _existing and _c > 0:
+                            _fb = _adult_only.get(_a)
+                            if _fb is not None:
+                                _dps.append({"adults": _a, "children": _c, "amount": _fb})
         progress = st.container()
         try:
             # ---- PHASE 1: the hotel contract itself (rooms + meal plans inline) ----
