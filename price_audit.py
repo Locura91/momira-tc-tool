@@ -155,7 +155,7 @@ def run_hotel_price_audit(raw_text: str, model: str = "claude-sonnet-5") -> Dict
     from ai_extractor import _call_claude, _required_keys_schema
 
     defaults = {"price_facts": []}
-    data = _call_claude(HOTEL_PRICE_AUDIT_SYSTEM_PROMPT, raw_text, model, max_tokens=8192,
+    data = _call_claude(HOTEL_PRICE_AUDIT_SYSTEM_PROMPT, raw_text, model, max_tokens=16000,
                          input_schema=_required_keys_schema(defaults))
     if not isinstance(data.get("price_facts"), list):
         data["price_facts"] = []
