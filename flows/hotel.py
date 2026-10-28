@@ -125,9 +125,11 @@ def render_hotel_flow(client):
     st.header("Hotel — Step 2: Supplier & hotel code")
 
     if st.session_state.hp_step1_confirmed:
+        _confirmed_on_req = st.session_state.get("hp_all_on_request", False)
         st.success(f"✅ Supplier ID: **{st.session_state.hp_cfg_supplier_id}** | "
                    f"Hotel code: **{st.session_state.hp_cfg_provider_code}** | "
-                   f"Currency: **{st.session_state.hp_cfg_currency}**")
+                   f"Currency: **{st.session_state.hp_cfg_currency}**"
+                   + (" | 🔄 All rooms on request" if _confirmed_on_req else ""))
         if st.button("🔄 Change supplier / hotel code", key="hp_change_action"):
             st.session_state.hp_step1_confirmed = False
             st.rerun()
@@ -248,12 +250,22 @@ def render_hotel_flow(client):
             help="Confirmed real field name is releaseDays - real value seen in live data = 7."
         )
 
+        all_on_request_in = st.checkbox(
+            "🔄 All rooms on request (test mode)",
+            value=st.session_state.get("hp_all_on_request", False),
+            key="hp_all_on_request_input",
+            help="Forces every room in every season to quota=0, on-request=1. "
+                 "Useful during testing so nothing is bookable without a manual check. "
+                 "Uncheck when ready to go live with real allotments."
+        )
+
         if st.button("➡️ Continue to Step 3", type="primary",
                      disabled=not (supplier_id_choice and provider_code_in.strip()), key="hp_continue1"):
             st.session_state.hp_cfg_supplier_id = supplier_id_choice
             st.session_state.hp_cfg_provider_code = provider_code_in.strip()
             st.session_state.hp_cfg_currency = currency_in
             st.session_state.hp_cfg_release_days = release_days_in
+            st.session_state.hp_all_on_request = all_on_request_in
             # Carry the precheck forward so Phase 2's existence check doesn't need to repeat the
             # same GET we just made - same cache shape it already uses.
             if _hp_precheck_snapshot is not None:
@@ -989,6 +1001,11 @@ def render_hotel_flow(client):
 
     # ---- Rates / seasons / prices ----
     st.markdown("#### Rates, seasons & prices")
+    _all_on_request = st.session_state.get("hp_all_on_request", False)
+    if _all_on_request:
+        st.info("🔄 **Test mode: all rooms on request.** Every room is published with quota=0 and "
+                "on-request=1. Go back to Step 2 and uncheck 'All rooms on request' when ready to "
+                "set real allotments.")
     if not data.get("rates"):
         data["rates"] = [{"name": data.get("hotelname") or "Standard Rates", "minimum_stay": 1,
                           "seasons": [], "stop_sales": [], "offer_names": [], "supplement_names": []}]
@@ -1050,19 +1067,24 @@ def render_hotel_flow(client):
                                                                 "units_on_request": 0, "distribution_prices": []}
                     existing_room_prices[rm_name] = rp
 
-                    qcol1, qcol2 = st.columns(2)
-                    with qcol1:
-                        rp["units_quota"] = st.number_input(
-                            f"{rm_name} — quota (rooms allotted)", min_value=0,
-                            value=_safe_int(rp.get("units_quota"), fallback=20),
-                            key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
-                            help="Defaults to 20 when the contract doesn't state an allotment.")
-                    with qcol2:
-                        rp["units_on_request"] = st.number_input(
-                            f"{rm_name} — on request", min_value=0,
-                            value=_safe_int(rp.get("units_on_request"), fallback=0),
-                            key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
-                            help="Defaults to 0 when the contract doesn't state one.")
+                    if _all_on_request:
+                        # Test mode: force quota=0, on-request=1 for every room, no inputs shown
+                        rp["units_quota"] = 0
+                        rp["units_on_request"] = 1
+                    else:
+                        qcol1, qcol2 = st.columns(2)
+                        with qcol1:
+                            rp["units_quota"] = st.number_input(
+                                f"{rm_name} — quota (rooms allotted)", min_value=0,
+                                value=_safe_int(rp.get("units_quota"), fallback=20),
+                                key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
+                                help="Defaults to 20 when the contract doesn't state an allotment.")
+                        with qcol2:
+                            rp["units_on_request"] = st.number_input(
+                                f"{rm_name} — on request", min_value=0,
+                                value=_safe_int(rp.get("units_on_request"), fallback=0),
+                                key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
+                                help="Defaults to 0 when the contract doesn't state one.")
 
                     dp_df = pd.DataFrame(rp.get("distribution_prices") or [{"adults": 1, "children": 0, "amount": 0.0}])
                     for col in ["adults", "children", "amount"]:
