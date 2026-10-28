@@ -6691,15 +6691,36 @@ def _fill_missing_distribution_prices(distribution_prices_data, allowed_distribu
     in `still_missing` rather than invented from nothing, so the caller can surface it as an
     error instead of letting Travel Compositor's own cryptic exception be the first anyone hears
     of it."""
-    have = {(_safe_int(p.get("adults", 1), fallback=1), _safe_int(p.get("children", 0)))
-            for p in distribution_prices_data}
+    # Only treat an entry as "priced" when its amount is a real positive number.
+    # amount=0 or amount=null means TC will reject it as "missing", so we must
+    # fill those just like genuinely absent entries.
     price_by_total_pax = {}
     for p in distribution_prices_data:
-        total = _safe_int(p.get("adults", 1), fallback=1) + _safe_int(p.get("children", 0))
-        price_by_total_pax.setdefault(total, _safe_float(p.get("amount", 0)))
+        amount = _safe_float(p.get("amount", 0))
+        if amount > 0:
+            total = _safe_int(p.get("adults", 1), fallback=1) + _safe_int(p.get("children", 0))
+            price_by_total_pax.setdefault(total, amount)
 
-    filled = list(distribution_prices_data)
+    # Pass 1: fix existing entries that have a zero/null amount.
+    filled = []
     fill_notes = []
+    have = set()
+    for p in distribution_prices_data:
+        adults = _safe_int(p.get("adults", 1), fallback=1)
+        children = _safe_int(p.get("children", 0))
+        amount = _safe_float(p.get("amount", 0))
+        if amount <= 0:
+            fallback = price_by_total_pax.get(adults + children)
+            if fallback:
+                p = {**p, "amount": fallback}
+                fill_notes.append(
+                    f"{adults} Ad. + {children} Ch. (filled zero from {adults + children}-pax price)")
+                amount = fallback
+        filled.append(p)
+        if amount > 0:
+            have.add((adults, children))
+
+    # Pass 2: add completely absent entries.
     still_missing = []
     for d in allowed_distributions or []:
         if not isinstance(d, dict):
