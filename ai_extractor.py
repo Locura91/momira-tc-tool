@@ -5562,6 +5562,14 @@ described under "rooms" above, e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 02 CH" all un
 each of those combinations its OWN distribution_prices entry using that SAME column's price - this is not the
 "invent a formula/increment" mistake the rule above warns against, since the document itself states one price
 for all of them; it is only "not spreading it across the listed combinations" that would leave some unpriced.
+CONFIRMED PRODUCT-OWNER RULE - FREE CHILDREN / ADULT-ONLY PRICE TABLES: many hotel contracts only print
+adult-occupancy price columns (Single/Double/Triple Adult) while separately stating that children are free or
+have no extra charge (e.g. "Child [6-11 years]: Free", "infants: Free", no child surcharge column). When the
+room's "distributions" include adult+child combinations (e.g. 2+1, 2+2, 3+1) but the price table gives no
+separate child-rate column for them, use the same price as the corresponding adult-only combination for that
+same number of adults - e.g. "2 Ad.+1 Ch." gets the same amount as "2 Ad.+0 Ch.", "3 Ad.+1 Ch." gets the same
+as "3 Ad.+0 Ch." - since the child occupies the room at no extra cost. Do NOT leave these combos unpriced or
+omit them; TC will reject the rate with "Room price missing for distributions: N Ad. + M Ch.".
 CONFIRMED PRODUCT-OWNER RULE - BASE RATE PLUS PER-BEDROOM/PER-EXTRA-CAP SUPPLEMENT: some documents do NOT give a
 full occupancy grid at all - instead they give ONE flat rate for the room/villa at its base occupancy (e.g. "2
 Bedroom Villa: USD 1,200/night, based on 2 adults"), plus a SEPARATE flat supplement for each additional
