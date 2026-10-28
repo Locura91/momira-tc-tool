@@ -5721,4 +5721,23 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
+    # POST-PROCESSING: fill missing adult+child distribution prices from adult-only prices.
+    # Many contracts only print adult-only columns; children are stated as free. The AI prompt
+    # rule doesn't catch this 100% of the time, so this code pass guarantees it:
+    # if (N adults + 0 children) has a price but (N adults + M children) does not, copy it.
+    for _rate in (data.get("rates") or []):
+        for _season in (_rate.get("seasons") or []):
+            for _rp in (_season.get("room_prices") or []):
+                _dps = _rp.get("distribution_prices") or []
+                _adult_only = {
+                    dp["adults"]: dp["amount"]
+                    for dp in _dps
+                    if dp.get("children", 0) == 0 and dp.get("amount") is not None
+                }
+                for dp in _dps:
+                    if dp.get("children", 0) > 0 and dp.get("amount") is None:
+                        _fb = _adult_only.get(dp.get("adults"))
+                        if _fb is not None:
+                            dp["amount"] = _fb
+
     return data
