@@ -6884,11 +6884,17 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                         f"Season '{season_name}', room '{room_name}': filled missing price(s) for "
                         f"{', '.join(fill_notes)}.")
                 if still_missing:
-                    missing_price_notes.append(
-                        f"Season '{season_name}', room '{room_name}' has no price for "
-                        f"{', '.join(still_missing)}, and no same-occupancy-count price to reuse - "
-                        f"add a price for {'this combo' if len(still_missing) == 1 else 'these combos'} "
-                        f"on the review screen.")
+                    # CONFIRMED PRODUCT-OWNER RULE (2026-10-28): "if there is no price, just
+                    # upload it like this" - missing combos are auto-skipped (not included in
+                    # distributionPrices) rather than blocking the whole rate. The room is still
+                    # sold under the combos it DOES have prices for; it simply won't be bookable
+                    # for the skipped combo. A warning is surfaced so the user can see what was
+                    # omitted. Note: if TC still rejects because the room's own distributions
+                    # include the missing combo, add the price manually on the review screen.
+                    rate_warnings.append(
+                        f"Season '{season_name}', room '{room_name}': skipped "
+                        f"{', '.join(still_missing)} (no price and no same-occupancy-count price "
+                        f"to reuse — not included in this rate).")
                 # CONFIRMED HOUSE RULE (product owner, 2026-10-02, verbatim: "if we ever have
                 # numbers or prices from a document, we round up ... 35 and 10 cents ... would
                 # say 36") - rounded once, here, before any of this block's several downstream
@@ -6996,12 +7002,15 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                             f"added price(s) required by other rooms in this season: "
                             f"{', '.join(_fn2)}.")
                     if _sm2:
-                        missing_price_notes.append(
-                            f"Season '{season_name}', room '{_ri['room_name']}' needs a price for "
-                            f"{', '.join(_sm2)} because other rooms in this season are priced for "
-                            f"{'that combo' if len(_sm2) == 1 else 'those combos'} - add it on the "
-                            f"review screen (Travel Compositor requires all rooms in a season to "
-                            f"cover every occupancy combination any room in that season uses).")
+                        # CONFIRMED PRODUCT-OWNER RULE (2026-10-28): auto-skip missing cross-room
+                        # combos rather than blocking. The combo won't be in distributionPrices.
+                        # If TC rejects because it still requires cross-room parity, add the price
+                        # manually on the review screen.
+                        rate_warnings.append(
+                            f"Season '{season_name}', room '{_ri['room_name']}': cross-room combos "
+                            f"{', '.join(_sm2)} auto-skipped (other rooms in this season use "
+                            f"{'that combo' if len(_sm2) == 1 else 'those combos'} but no same-"
+                            f"occupancy-count price exists for this room — not included in this rate).")
                     _ri["distribution_prices_data"] = _dpd2
 
             # Pass 3: build ContractHotelSeasonPricesVO objects from the filled intermediates.
@@ -7021,15 +7030,11 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                     childPrices=[round_up_currency(_safe_float(p)) for p in (_ri["rp_data"] or {}).get("child_prices") or []],
                 ))
 
-            # CONFIRMED REAL BUG (2026-10-28): Travel Compositor validates every rate against
-            # EVERY room's own allowed distributions, not just the ones this season's
-            # room_prices mentions. If a room exists in the hotel with distributions set but
-            # this season doesn't carry any prices for it, TC rejects the whole rate with its
-            # own "Room price missing for distributions" exception, naming the combos that
-            # went un-priced. The per-room _fill_missing_distribution_prices safety net above
-            # only runs for rooms that ARE in this season's room_prices - it can't see a room
-            # that was never priced here at all. Catch that case here with the same editable
-            # error pattern, naming which room needs prices adding on the review screen.
+            # CONFIRMED PRODUCT-OWNER RULE (2026-10-28): rooms with distributions but no
+            # prices in this rate are auto-skipped (not included in room_prices) rather than
+            # blocking the rate. TC only validates distributions for rooms that ARE in the
+            # rate's room_prices, so omitting the room entirely is safe. A warning surfaces
+            # what was skipped so the user can add prices later if needed.
             priced_room_names = {(rp_data or {}).get("room_name")
                                  for rp_data in (season_data or {}).get("room_prices") or []
                                  if isinstance(rp_data, dict)}
@@ -7048,12 +7053,10 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                     f"{_safe_int(d.get('adults', 1), fallback=1)} Ad. + "
                     f"{_safe_int(d.get('children', 0))} Ch."
                     for d in _cd if isinstance(d, dict))
-                missing_price_notes.append(
-                    f"Season '{season_name}', room '{_rn}' has no prices in this rate at all "
-                    f"({_combos}). Travel Compositor requires every room with allowed "
-                    f"distributions to be priced in every rate - add this room's prices on "
-                    f"the review screen, or remove its distributions if it shouldn't be sold "
-                    f"under this rate.")
+                rate_warnings.append(
+                    f"Season '{season_name}', room '{_rn}' auto-skipped from this rate "
+                    f"(has distributions [{_combos}] but no prices were provided — not "
+                    f"included in this rate; add prices on the review screen to sell it here).")
 
             season_meal_plans = [_build_meal_plan_payload(mp) for mp in (season_data or {}).get("meal_plans") or []]
 
