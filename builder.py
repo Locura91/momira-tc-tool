@@ -6960,6 +6960,40 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                     childPrices=[round_up_currency(_safe_float(p)) for p in (rp_data or {}).get("child_prices") or []],
                 ))
 
+            # CONFIRMED REAL BUG (2026-10-28): Travel Compositor validates every rate against
+            # EVERY room's own allowed distributions, not just the ones this season's
+            # room_prices mentions. If a room exists in the hotel with distributions set but
+            # this season doesn't carry any prices for it, TC rejects the whole rate with its
+            # own "Room price missing for distributions" exception, naming the combos that
+            # went un-priced. The per-room _fill_missing_distribution_prices safety net above
+            # only runs for rooms that ARE in this season's room_prices - it can't see a room
+            # that was never priced here at all. Catch that case here with the same editable
+            # error pattern, naming which room needs prices adding on the review screen.
+            priced_room_names = {(rp_data or {}).get("room_name")
+                                 for rp_data in (season_data or {}).get("room_prices") or []
+                                 if isinstance(rp_data, dict)}
+            for _rn, _rd in (room_name_to_distributions or {}).items():
+                if not _rn or _rn in priced_room_names:
+                    continue
+                if not room_name_to_provider_code.get(_rn):
+                    continue
+                _rsc = _safe_int(room_name_to_max_occupancy.get(_rn), fallback=None) \
+                    if room_name_to_max_occupancy.get(_rn) not in (None, "") else None
+                _rc = min(_MAX_OCCUPANCY_PAX, _rsc) if _rsc and _rsc > 0 else _MAX_OCCUPANCY_PAX
+                _cd = _clip_distributions_to_pax_cap(_rd or [], max_cap=_rc)
+                if not _cd:
+                    continue
+                _combos = ", ".join(
+                    f"{_safe_int(d.get('adults', 1), fallback=1)} Ad. + "
+                    f"{_safe_int(d.get('children', 0))} Ch."
+                    for d in _cd if isinstance(d, dict))
+                missing_price_notes.append(
+                    f"Season '{season_name}', room '{_rn}' has no prices in this rate at all "
+                    f"({_combos}). Travel Compositor requires every room with allowed "
+                    f"distributions to be priced in every rate - add this room's prices on "
+                    f"the review screen, or remove its distributions if it shouldn't be sold "
+                    f"under this rate.")
+
             season_meal_plans = [_build_meal_plan_payload(mp) for mp in (season_data or {}).get("meal_plans") or []]
 
             season_payloads.append(ContractHotelSeasonVO(
