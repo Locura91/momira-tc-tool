@@ -3629,40 +3629,142 @@ def _render_hotel_price_audit_section(data, primary):
                    "plan supplements, offers/early-birds, other supplements - and flags anything that doesn't "
                    "match what's above. This is a temporary safety net while the app is still learning how "
                    "different suppliers structure their contracts; it costs one extra AI call per run.")
-    if st.button("🔍 Run price audit", key="hp_price_audit_run"):
-        with st.spinner("Re-reading the contract for prices only..."):
+    if st.button(“🔍 Run price audit”, key=”hp_price_audit_run”):
+        with st.spinner(“Re-reading the contract for prices only...”):
             try:
-                _hp_audit_result = run_hotel_price_audit(st.session_state.get("hp_raw_text") or "")
-                st.session_state.hp_price_audit_facts = _hp_audit_result.get("price_facts") or []
+                _hp_audit_result = run_hotel_price_audit(st.session_state.get(“hp_raw_text”) or “”)
+                st.session_state.hp_price_audit_facts = _hp_audit_result.get(“price_facts”) or []
+                # Reset per-finding decisions when a fresh audit runs
+                st.session_state.hp_price_audit_decisions = {}
             except Exception as e:
                 st.session_state.hp_price_audit_facts = None
-                st.error(f"Price audit failed: {e}")
+                st.error(f”Price audit failed: {e}”)
 
-    _hp_audit_facts = st.session_state.get("hp_price_audit_facts")
+    _hp_audit_facts = st.session_state.get(“hp_price_audit_facts”)
     if _hp_audit_facts is not None:
         _hp_audit_findings = compare_price_audit_to_extraction(_hp_audit_facts, data)
         _hp_audit_summary = summarize_findings(_hp_audit_findings)
-        if _hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"]:
-            st.warning(f"⚠️ Price audit found **{_hp_audit_summary['mismatch']} mismatch(es)** and "
-                       f"**{_hp_audit_summary['not_found']} item(s) not found** in the extraction above "
-                       f"(**{_hp_audit_summary['match']}** verified OK). Review before publishing.")
+        # Track per-finding decisions: “keep” (keep extraction) or “contract” (use audited value)
+        if “hp_price_audit_decisions” not in st.session_state:
+            st.session_state.hp_price_audit_decisions = {}
+        _decisions = st.session_state.hp_price_audit_decisions
+
+        if _hp_audit_summary[“mismatch”] or _hp_audit_summary[“not_found”]:
+            st.warning(f”⚠️ Price audit found **{_hp_audit_summary['mismatch']} mismatch(es)** and “
+                       f”**{_hp_audit_summary['not_found']} item(s) not found** in the extraction above “
+                       f”(**{_hp_audit_summary['match']}** verified OK). Review each item below.”)
         elif _hp_audit_findings:
-            st.success(f"✅ Price audit: all **{_hp_audit_summary['match']}** priced item(s) it found in "
-                       f"the contract match what's above.")
+            st.success(f”✅ Price audit: all **{_hp_audit_summary['match']}** priced item(s) it found in “
+                       f”the contract match what's above.”)
         else:
-            st.info("Price audit ran but found no price-bearing numbers to check.")
+            st.info(“Price audit ran but found no price-bearing numbers to check.”)
 
         if _hp_audit_findings:
-            with st.expander(f"🔍 Price audit details ({len(_hp_audit_findings)} item(s) checked)",
-                              expanded=bool(_hp_audit_summary["mismatch"] or _hp_audit_summary["not_found"])):
-                _status_icon = {"match": "✅", "mismatch": "❌", "not_found": "❓"}
-                # Worst-first ordering so a human scanning the list sees the money-affecting
-                # problems (mismatch) before the merely-unmatched ones, and both before the OK's.
-                _status_order = {"mismatch": 0, "not_found": 1, "match": 2}
-                for _finding in sorted(_hp_audit_findings, key=lambda f: _status_order.get(f.get("status"), 3)):
-                    st.markdown(f"{_status_icon.get(_finding.get('status'), '•')} {_finding.get('message')}")
-                    if _finding.get("quote"):
-                        st.caption(f"Contract: “{_finding['quote']}”")
+            _status_icon = {“match”: “✅”, “mismatch”: “❌”, “not_found”: “❓”}
+            _status_order = {“mismatch”: 0, “not_found”: 1, “match”: 2}
+            _sorted_findings = sorted(_hp_audit_findings,
+                                       key=lambda f: _status_order.get(f.get(“status”), 3))
+
+            with st.expander(f”🔍 Price audit details ({len(_hp_audit_findings)} item(s) checked)”,
+                              expanded=bool(_hp_audit_summary[“mismatch”] or _hp_audit_summary[“not_found”])):
+                for _fi, _finding in enumerate(_sorted_findings):
+                    _fstatus = _finding.get(“status”)
+                    _fkind = _finding.get(“kind”)
+                    _fkey = f”audit_{_fi}”
+                    _fdecision = _decisions.get(_fkey)
+
+                    st.markdown(f”{_status_icon.get(_fstatus, '•')} {_finding.get('message')}”)
+                    if _finding.get(“quote”):
+                        st.caption(f”Contract: \”{_finding['quote']}\””)
+
+                    # Only mismatches on room_price/meal_plan_price/offer/supplement get
+                    # accept/apply buttons — not_found items have no extraction value to override,
+                    # and matches need no action.
+                    if _fstatus == “mismatch” and _fkind in (“room_price”, “meal_plan_price”,
+                                                               “offer”, “supplement”):
+                        # Find the audited (contract) amount/value for the button label
+                        _fact = next((f for f in (_hp_audit_facts or [])
+                                      if f.get(“kind”) == _fkind
+                                      and f.get(“label”) == _finding.get(“label”)), None)
+                        if _fact is None:
+                            # Fall back: match by position against same-kind facts
+                            _same_kind_facts = [f for f in (_hp_audit_facts or [])
+                                                if f.get(“kind”) == _fkind]
+                            _same_kind_findings = [f for f in _sorted_findings
+                                                   if f.get(“kind”) == _fkind
+                                                   and f.get(“status”) == “mismatch”]
+                            _pos = next((i for i, f in enumerate(_same_kind_findings)
+                                        if f is _finding), None)
+                            _fact = _same_kind_facts[_pos] if _pos is not None and _pos < len(_same_kind_facts) else None
+                        _contract_val = (_fact.get(“amount”) if _fkind in (“room_price”, “meal_plan_price”)
+                                         else _fact.get(“value”)) if _fact else None
+
+                        if _fdecision == “keep”:
+                            st.success(“✓ Keeping extraction value.”)
+                        elif _fdecision == “contract”:
+                            st.success(“✓ Applied contract value.”)
+                        else:
+                            _col_keep, _col_apply = st.columns(2)
+                            with _col_keep:
+                                if st.button(“✓ Keep extraction value”, key=f”{_fkey}_keep”):
+                                    _decisions[_fkey] = “keep”
+                                    st.rerun()
+                            with _col_apply:
+                                _apply_label = (f”↩ Use contract value ({_contract_val})”
+                                                if _contract_val is not None else “↩ Use contract value”)
+                                if st.button(_apply_label, key=f”{_fkey}_apply”):
+                                    # Apply the contract value back into data in-place
+                                    _applied = False
+                                    if _fact and _fkind == “room_price”:
+                                        _rname = _fact.get(“room_name”)
+                                        _adults = _fact.get(“adults”)
+                                        _children = _fact.get(“children”, 0)
+                                        for _rate in (data.get(“rates”) or []):
+                                            for _season in (_rate.get(“seasons”) or []):
+                                                for _rp in (_season.get(“room_prices”) or []):
+                                                    from price_audit import _loose_name_match as _lnm
+                                                    if _lnm(_rp.get(“room_name”), _rname):
+                                                        for _dp in (_rp.get(“distribution_prices”) or []):
+                                                            if (isinstance(_dp, dict)
+                                                                    and _dp.get(“adults”) == _adults
+                                                                    and _dp.get(“children”, 0) == _children):
+                                                                _dp[“amount”] = _contract_val
+                                                                _applied = True
+                                    elif _fact and _fkind == “meal_plan_price”:
+                                        _mpname = _fact.get(“meal_plan_name”)
+                                        _which = (_fact.get(“which”) or “base”).strip().lower()
+                                        from price_audit import _loose_name_match as _lnm
+                                        for _mp in (data.get(“meal_plans”) or []):
+                                            if _lnm(_mp.get(“meal_plan_hint”), _mpname):
+                                                if _which == “base”:
+                                                    _mp[“base_price”] = _contract_val
+                                                    _applied = True
+                                                elif _which == “extra_adult”:
+                                                    if _mp.get(“adult_prices”):
+                                                        _mp[“adult_prices”][0] = _contract_val
+                                                        _applied = True
+                                                elif _which == “child”:
+                                                    if _mp.get(“child_prices”):
+                                                        _mp[“child_prices”][0] = _contract_val
+                                                        _applied = True
+                                    elif _fact and _fkind in (“offer”, “supplement”):
+                                        _oname = _fact.get(“name”)
+                                        _items = data.get(“offers” if _fkind == “offer” else “supplements”) or []
+                                        from price_audit import _loose_name_match as _lnm
+                                        for _item in _items:
+                                            if isinstance(_item, dict) and _lnm(_item.get(“name”), _oname):
+                                                _item[“value”] = _contract_val
+                                                _applied = True
+                                                break
+                                    _decisions[_fkey] = “contract”
+                                    if _applied:
+                                        st.success(f”Applied {_contract_val} from contract.”)
+                                    else:
+                                        st.warning(“Could not find the item in the extraction to update — “
+                                                   “please edit manually in the tables above.”)
+                                    st.rerun()
+                    elif _fstatus == “not_found”:
+                        st.caption(“ℹ️ Not in extraction — add manually in the relevant table above if needed.”)
 
 
 UPDATE_REFRESH_SERVICE_TYPES = ["ClosedTour", "Hotel", "Ticket", "Transfer", "Transport"]

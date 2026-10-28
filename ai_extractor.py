@@ -5562,6 +5562,14 @@ described under "rooms" above, e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 02 CH" all un
 each of those combinations its OWN distribution_prices entry using that SAME column's price - this is not the
 "invent a formula/increment" mistake the rule above warns against, since the document itself states one price
 for all of them; it is only "not spreading it across the listed combinations" that would leave some unpriced.
+CONFIRMED PRODUCT-OWNER RULE - FREE CHILDREN / ADULT-ONLY PRICE TABLES: many hotel contracts only print
+adult-occupancy price columns (Single/Double/Triple Adult) while separately stating that children are free or
+have no extra charge (e.g. "Child [6-11 years]: Free", "infants: Free", no child surcharge column). When the
+room's "distributions" include adult+child combinations (e.g. 2+1, 2+2, 3+1) but the price table gives no
+separate child-rate column for them, use the same price as the corresponding adult-only combination for that
+same number of adults - e.g. "2 Ad.+1 Ch." gets the same amount as "2 Ad.+0 Ch.", "3 Ad.+1 Ch." gets the same
+as "3 Ad.+0 Ch." - since the child occupies the room at no extra cost. Do NOT leave these combos unpriced or
+omit them; TC will reject the rate with "Room price missing for distributions: N Ad. + M Ch.".
 CONFIRMED PRODUCT-OWNER RULE - BASE RATE PLUS PER-BEDROOM/PER-EXTRA-CAP SUPPLEMENT: some documents do NOT give a
 full occupancy grid at all - instead they give ONE flat rate for the room/villa at its base occupancy (e.g. "2
 Bedroom Villa: USD 1,200/night, based on 2 adults"), plus a SEPARATE flat supplement for each additional
@@ -5632,13 +5640,42 @@ case - most documents describe just one property's rooms/rates/offers), set "mul
     return hotels
 
 
+def extract_hotel_room_names(raw_text: str, model: str = "claude-sonnet-5") -> list:
+    """Fast, cheap first pass: extract ONLY the list of room/villa/suite/residence type names
+    from a hotel contract, so a human can pick which rooms to include BEFORE the full extraction
+    runs. Returns a list of {"name": str, "max_occupancy": int|None} dicts. The full extraction
+    (extract_hotel_data) is then called only for the selected rooms, saving tokens on rooms the
+    human would have discarded anyway."""
+    prompt = """You are scanning a hotel contract document. Your ONLY job is to list every distinct
+ROOM TYPE / VILLA TYPE / SUITE / RESIDENCE that has its own pricing in this document.
+
+Output ONLY valid JSON, no markdown fences, no explanation:
+{"rooms": [{"name": "<exact room name as it appears in the document>", "max_occupancy": <max total people or null if not stated>}]}
+
+Rules:
+- One entry per distinct room/villa/suite category - do NOT list individual unit numbers or repeat the same category.
+- Use the room name EXACTLY as the document writes it (e.g. "Hideaway Pool Villa", "Two Bedroom Signature Pool Villa").
+- If the document states a maximum occupancy for the room, put it in max_occupancy; otherwise null.
+- Do NOT extract prices, seasons, meal plans, offers or any other data - names and max_occupancy only."""
+    data = _call_claude(prompt, raw_text, model, max_tokens=1024,
+                        input_schema={"type": "object", "required": ["rooms"],
+                                      "properties": {"rooms": {"type": "array"}}})
+    rooms = data.get("rooms") or []
+    print(f"🏨 Detected {len(rooms)} room type(s): {[r.get('name') for r in rooms]}")
+    return rooms
+
+
 def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint: str = None,
-                        human_hint: str = None) -> dict:
+                        human_hint: str = None, rooms_hint: list = None) -> dict:
     """Full extraction for one Hotel contract - hotel fields, rooms, meal plans, offers,
     supplements, and rates (with nested seasons/room_prices/stop_sales). See
     HOTEL_EXTRACTION_SYSTEM_PROMPT for the full field-by-field extraction contract, and
     builder.py's build_hotel_contract_payload/build_hotel_offer_payloads/
-    build_hotel_supplement_payloads/build_hotel_rate_payloads for how this shape is consumed."""
+    build_hotel_supplement_payloads/build_hotel_rate_payloads for how this shape is consumed.
+
+    rooms_hint: optional list of room name strings selected by the human in the room-picker step.
+    When provided, the AI is instructed to extract pricing ONLY for those rooms and skip all others,
+    saving significant output tokens on large contracts."""
     user_content = raw_text
     prefix_parts = []
     if hotel_hint:
@@ -5647,6 +5684,15 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
             f"Extract ONLY the following one, pulling in every room/rate/offer/supplement detail that belongs "
             f"to it specifically, and completely ignore every other property described elsewhere in the "
             f"text: {hotel_hint}"
+        )
+    if rooms_hint:
+        rooms_list = ", ".join(f'"{r}"' for r in rooms_hint)
+        prefix_parts.append(
+            f"IMPORTANT - ROOM FILTER (human pre-selected): Extract pricing/distributions/room_prices ONLY "
+            f"for these room types: {rooms_list}. Include these rooms in the 'rooms' array and their "
+            f"distribution_prices in every season's room_prices. Completely ignore all other room types "
+            f"that appear in the document - do not add them to 'rooms' or room_prices, and skip any "
+            f"offers/supplements that apply EXCLUSIVELY to the ignored room types."
         )
     if human_hint:
         prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")

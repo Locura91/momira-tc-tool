@@ -22,7 +22,7 @@ from builder import (
 )
 from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
-from ai_extractor import detect_hotel_products, extract_hotel_data, friendly_error_message, apply_clarification
+from ai_extractor import detect_hotel_products, extract_hotel_room_names, extract_hotel_data, friendly_error_message, apply_clarification
 from pexels_client import search_images
 from pixabay_client import search_images as search_images_pixabay
 from r2_client import upload_images_with_errors as upload_images_r2_with_errors
@@ -125,9 +125,11 @@ def render_hotel_flow(client):
     st.header("Hotel — Step 2: Supplier & hotel code")
 
     if st.session_state.hp_step1_confirmed:
+        _confirmed_on_req = st.session_state.get("hp_all_on_request", False)
         st.success(f"✅ Supplier ID: **{st.session_state.hp_cfg_supplier_id}** | "
                    f"Hotel code: **{st.session_state.hp_cfg_provider_code}** | "
-                   f"Currency: **{st.session_state.hp_cfg_currency}**")
+                   f"Currency: **{st.session_state.hp_cfg_currency}**"
+                   + (" | 🔄 All rooms on request" if _confirmed_on_req else ""))
         if st.button("🔄 Change supplier / hotel code", key="hp_change_action"):
             st.session_state.hp_step1_confirmed = False
             st.rerun()
@@ -248,12 +250,22 @@ def render_hotel_flow(client):
             help="Confirmed real field name is releaseDays - real value seen in live data = 7."
         )
 
+        all_on_request_in = st.checkbox(
+            "🔄 All rooms on request (test mode)",
+            value=st.session_state.get("hp_all_on_request", False),
+            key="hp_all_on_request_input",
+            help="Forces every room in every season to quota=0, on-request=1. "
+                 "Useful during testing so nothing is bookable without a manual check. "
+                 "Uncheck when ready to go live with real allotments."
+        )
+
         if st.button("➡️ Continue to Step 3", type="primary",
                      disabled=not (supplier_id_choice and provider_code_in.strip()), key="hp_continue1"):
             st.session_state.hp_cfg_supplier_id = supplier_id_choice
             st.session_state.hp_cfg_provider_code = provider_code_in.strip()
             st.session_state.hp_cfg_currency = currency_in
             st.session_state.hp_cfg_release_days = release_days_in
+            st.session_state.hp_all_on_request = all_on_request_in
             # Carry the precheck forward so Phase 2's existence check doesn't need to repeat the
             # same GET we just made - same cache shape it already uses.
             if _hp_precheck_snapshot is not None:
@@ -426,68 +438,35 @@ def render_hotel_flow(client):
                     combined_hint = "\n\n".join(p for p in [_hp_purpose_hint, hp_hint] if p) or None
 
                     st.session_state.hp_raw_text = raw_text
-                    st.session_state.hp_data = extract_hotel_data(raw_text, hotel_hint=hotel_hint, human_hint=combined_hint)
-                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-16): "why must humans confirm the
-                    # geolocation ... this information is coming from the hotel information
-                    # already." When this hotel was seeded from a human-CONFIRMED Travel
-                    # Compositor master-data record (the destination-confirmed search above),
-                    # that record's own coordinates are Travel Compositor's own data - stashed
-                    # under master_latitude/master_longitude (never manual_latitude, so an
-                    # explicit document-stated coordinate still wins - see
-                    # build_hotel_contract_payload's own priority order in builder.py).
-                    _hp_md_geo = (_hp_md_seed or {}).get("geolocation") or {}
-                    if _hp_md_geo.get("latitude") is not None and _hp_md_geo.get("longitude") is not None:
-                        st.session_state.hp_data["master_latitude"] = _hp_md_geo["latitude"]
-                        st.session_state.hp_data["master_longitude"] = _hp_md_geo["longitude"]
-                    # Only fills in when this document didn't state its own cancellation
-                    # terms - see apply_cancellation_link_default's docstring. Runs once,
-                    # here at extraction time, not inside the review widgets.
-                    st.session_state.hp_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
-                        st.session_state.hp_data, supplier_id, "Hotel")
+                    # TWO-PHASE EXTRACTION (2026-10-28): cheap first pass lists only room names
+                    # so the human can pick which rooms to include BEFORE the expensive full
+                    # extraction runs. The full extract_hotel_data call is deferred to the new
+                    # "extracting" phase, after room selection, and receives rooms_hint so it
+                    # only prices the chosen rooms (saves tokens + avoids unused-room noise).
+                    room_candidates_cheap = extract_hotel_room_names(raw_text)
+                    # Stash everything the deferred full extraction will need later so it can
+                    # run in the "extracting" phase without re-reading the document.
+                    st.session_state.hp_hotel_hint = hotel_hint
+                    st.session_state.hp_combined_hint = combined_hint
                     st.session_state.hp_doc_raw_images = doc_raw_images
-                    # CONFIRMED REAL REQUEST (product owner, 2026-09-11, follow-up after seeing
-                    # the first fix in a screenshot): "make sure that all those images are
-                    # selected by default if they are coming from masterdata." The first version
-                    # of this fix folded master-data images into hp_data["images"] directly, but
-                    # LEFT THEM ALSO sitting in hp_hosted_image_candidates - so the "Images
-                    # found" picker still showed all of them as unchecked checkboxes, which
-                    # (reasonably) read as "these aren't selected" even though they already were.
-                    # Fix: master-data images are excluded from the generic "Images found"
-                    # candidate list entirely, since they don't need a manual pick at all - they
-                    # already live in hp_data["images"] (see below) and show up in the editable
-                    # "Image URLs" table above this picker. Only genuinely still-needs-a-decision
-                    # images (from the page/uploaded document) remain in this candidate list.
                     _hp_md_image_urls_list = (_hp_md_seed or {}).get("image_urls") or []
                     _hp_md_image_urls = set(_hp_md_image_urls_list)
+                    st.session_state.hp_md_image_urls_list = _hp_md_image_urls_list
                     st.session_state.hp_hosted_image_candidates = [
                         u for u in dict.fromkeys(doc_image_urls) if u not in _hp_md_image_urls]
-                    # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "We need to use the
-                    # provided images from the masterdata automatically. Please make sure that
-                    # all images are automatically selected when creating a hotel from
-                    # masterdata." Every OTHER image source (page scrape, uploaded document,
-                    # stock photos) is deliberately left as a candidate the human must pick from
-                    # (extract_hotel_data always starts "images": [] - see its own default) -
-                    # but a master-data match has already been confirmed by a human one step
-                    # earlier (Step 3's candidate-confirmation list, see
-                    # _render_hotel_masterdata_step's own docstring), so requiring a SECOND,
-                    # redundant manual pick here just to avoid the "no image added yet" publish
-                    # warning added no safety, only friction. Extend rather than replace, in the
-                    # unlikely case extract_hotel_data itself ever populates "images" from the
-                    # document text.
-                    if _hp_md_image_urls_list:
-                        st.session_state.hp_data["images"] = list(dict.fromkeys(
-                            (st.session_state.hp_data.get("images") or []) + _hp_md_image_urls_list))
-                    # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-19): "when creating new hotel room
-                    # types, ask human first which one he would like to add. Similar to the
-                    # modalities in closedtour, because we do not need to include all rooms that
-                    # are available." Forced to reinit from THIS fresh extraction rather than any
-                    # leftover candidates from an earlier run of this same session. Skipped
-                    # entirely when nothing was extracted (a rate-only update to an existing
-                    # hotel legitimately extracts zero rooms - see room_name_to_distributions'
-                    # own "seeded from existing" fix) - there's nothing to choose from.
-                    st.session_state.hp_room_candidates = None
+                    st.session_state.hp_md_geo = (_hp_md_seed or {}).get("geolocation") or {}
+                    # Seed hp_room_candidates from cheap call so select_rooms phase can render
+                    # them without hp_data (which doesn't exist yet). hp_data is intentionally
+                    # left empty at this point - it gets populated in the "extracting" phase.
+                    st.session_state.hp_data = {}
+                    st.session_state.hp_room_candidates = [
+                        {"name": r.get("name") or "", "distributions": [],
+                         "type_id": None, "selected": True,
+                         "max_occupancy": r.get("max_occupancy")}
+                        for r in room_candidates_cheap
+                    ] if room_candidates_cheap else None
                     st.session_state.hp_phase = (
-                        "select_rooms" if (st.session_state.hp_data.get("rooms") or []) else "reviewing")
+                        "select_rooms" if room_candidates_cheap else "extracting")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Extraction failed: {friendly_error_message(e)}")
@@ -498,13 +477,16 @@ def render_hotel_flow(client):
     # Mirrors flows/multi_tour.py's select_modalities phase - see the CONFIRMED comment above
     # where this phase is entered.
     # ------------------------------------------------------------------
-    if st.session_state.hp_phase == "select_rooms":
-        st.header(f"Hotel — Room types for “{st.session_state.hp_data.get('hotelname') or '(unnamed)'}”")
-        if not st.session_state.get("hp_room_candidates"):
+    if st.session_state.hp_phase == “select_rooms”:
+        _hp_hotelname = (st.session_state.hp_data or {}).get('hotelname') or '(unnamed)'
+        st.header(f”Hotel — Room types for \”{_hp_hotelname}\””)
+        if not st.session_state.get(“hp_room_candidates”):
+            # Fallback: if hp_room_candidates wasn't seeded by the cheap call (e.g. old session
+            # state from before two-phase was deployed), build from hp_data[“rooms”] as before.
             st.session_state.hp_room_candidates = [
-                {"name": r.get("name") or "", "distributions": r.get("distributions") or [],
-                 "type_id": r.get("type_id"), "selected": True}
-                for r in (st.session_state.hp_data.get("rooms") or [])
+                {“name”: r.get(“name”) or “”, “distributions”: r.get(“distributions”) or [],
+                 “type_id”: r.get(“type_id”), “selected”: True}
+                for r in ((st.session_state.hp_data or {}).get(“rooms”) or [])
             ]
         candidates = st.session_state.hp_room_candidates
         st.caption("Auto-detected from your document - untick any room type you don't want to add, or remove "
@@ -534,14 +516,51 @@ def render_hotel_flow(client):
             candidates.append({"name": "", "distributions": [], "type_id": None, "selected": True})
             st.rerun()
 
-        if st.button("➡️ Continue to full review", type="primary"):
-            st.session_state.hp_data["rooms"] = [
-                {"name": c["name"], "type_id": c.get("type_id"), "distributions": c.get("distributions") or []}
-                for c in candidates if c["selected"] and (c["name"] or "").strip()
+        if st.button("➡️ Extract prices for selected rooms", type="primary"):
+            # Store the selected room names so the full extraction pass can filter to them only.
+            # hp_data["rooms"] is intentionally NOT set here - it will be populated by
+            # extract_hotel_data in the "extracting" phase (which respects rooms_hint).
+            st.session_state.hp_selected_room_names = [
+                c["name"] for c in candidates if c["selected"] and (c["name"] or "").strip()
             ]
             st.session_state.hp_room_candidates = None
-            st.session_state.hp_phase = "reviewing"
+            st.session_state.hp_phase = "extracting"
             st.rerun()
+        return
+
+    # ------------------------------------------------------------------
+    # PHASE 1c: full extraction with rooms_hint (two-phase, 2026-10-28)
+    # Runs AFTER human selects rooms in select_rooms, so extract_hotel_data only
+    # prices the chosen rooms - saves tokens and avoids extracting unused rooms.
+    # ------------------------------------------------------------------
+    if st.session_state.hp_phase == "extracting":
+        st.header("Extracting hotel data…")
+        st.info("Running full extraction for selected rooms. This may take a moment.")
+        with st.spinner("Extracting prices and rates from the contract…"):
+            try:
+                raw_text = st.session_state.hp_raw_text
+                hotel_hint = st.session_state.get("hp_hotel_hint")
+                combined_hint = st.session_state.get("hp_combined_hint")
+                rooms_hint = st.session_state.get("hp_selected_room_names") or None
+                st.session_state.hp_data = extract_hotel_data(
+                    raw_text, hotel_hint=hotel_hint, human_hint=combined_hint, rooms_hint=rooms_hint)
+                # Apply master-data geolocation (same logic as the old single-phase gather).
+                _hp_md_geo = st.session_state.get("hp_md_geo") or {}
+                if _hp_md_geo.get("latitude") is not None and _hp_md_geo.get("longitude") is not None:
+                    st.session_state.hp_data["master_latitude"] = _hp_md_geo["latitude"]
+                    st.session_state.hp_data["master_longitude"] = _hp_md_geo["longitude"]
+                # Apply cancellation link default now that we have the full extraction.
+                st.session_state.hp_cancellation_link_scope = cancellation_links.apply_cancellation_link_default(
+                    st.session_state.hp_data, supplier_id, "Hotel")
+                # Apply master-data image URLs now that we have hp_data.
+                _hp_md_image_urls_list = st.session_state.get("hp_md_image_urls_list") or []
+                if _hp_md_image_urls_list:
+                    st.session_state.hp_data["images"] = list(dict.fromkeys(
+                        (st.session_state.hp_data.get("images") or []) + _hp_md_image_urls_list))
+                st.session_state.hp_phase = "reviewing"
+                st.rerun()
+            except Exception as e:
+                st.error(f"Extraction failed: {friendly_error_message(e)}")
         return
 
     # ------------------------------------------------------------------
@@ -550,7 +569,8 @@ def render_hotel_flow(client):
     data = st.session_state.hp_data
     HP_STATE_KEYS = ["hp_phase", "hp_raw_text", "hp_data", "hp_existing_snapshot", "hp_existing_checked",
                      "hp_cancellation_link_scope", "hp_price_audit_facts", "hp_contract_purpose",
-                     "hp_room_candidates"]
+                     "hp_room_candidates", "hp_selected_room_names", "hp_hotel_hint", "hp_combined_hint",
+                     "hp_doc_raw_images", "hp_md_image_urls_list", "hp_md_geo"]
 
     st.header(f"Hotel — Step 4: Review “{data.get('hotelname') or '(unnamed)'}”")
 
@@ -989,6 +1009,11 @@ def render_hotel_flow(client):
 
     # ---- Rates / seasons / prices ----
     st.markdown("#### Rates, seasons & prices")
+    _all_on_request = st.session_state.get("hp_all_on_request", False)
+    if _all_on_request:
+        st.info("🔄 **Test mode: all rooms on request.** Every room is published with quota=0 and "
+                "on-request=1. Go back to Step 2 and uncheck 'All rooms on request' when ready to "
+                "set real allotments.")
     if not data.get("rates"):
         data["rates"] = [{"name": data.get("hotelname") or "Standard Rates", "minimum_stay": 1,
                           "seasons": [], "stop_sales": [], "offer_names": [], "supplement_names": []}]
@@ -1050,19 +1075,24 @@ def render_hotel_flow(client):
                                                                 "units_on_request": 0, "distribution_prices": []}
                     existing_room_prices[rm_name] = rp
 
-                    qcol1, qcol2 = st.columns(2)
-                    with qcol1:
-                        rp["units_quota"] = st.number_input(
-                            f"{rm_name} — quota (rooms allotted)", min_value=0,
-                            value=_safe_int(rp.get("units_quota"), fallback=20),
-                            key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
-                            help="Defaults to 20 when the contract doesn't state an allotment.")
-                    with qcol2:
-                        rp["units_on_request"] = st.number_input(
-                            f"{rm_name} — on request", min_value=0,
-                            value=_safe_int(rp.get("units_on_request"), fallback=0),
-                            key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
-                            help="Defaults to 0 when the contract doesn't state one.")
+                    if _all_on_request:
+                        # Test mode: force quota=0, on-request=1 for every room, no inputs shown
+                        rp["units_quota"] = 0
+                        rp["units_on_request"] = 1
+                    else:
+                        qcol1, qcol2 = st.columns(2)
+                        with qcol1:
+                            rp["units_quota"] = st.number_input(
+                                f"{rm_name} — quota (rooms allotted)", min_value=0,
+                                value=_safe_int(rp.get("units_quota"), fallback=20),
+                                key=f"hp_quota_{r_idx}_{s_idx}_{rm_name}",
+                                help="Defaults to 20 when the contract doesn't state an allotment.")
+                        with qcol2:
+                            rp["units_on_request"] = st.number_input(
+                                f"{rm_name} — on request", min_value=0,
+                                value=_safe_int(rp.get("units_on_request"), fallback=0),
+                                key=f"hp_onreq_{r_idx}_{s_idx}_{rm_name}",
+                                help="Defaults to 0 when the contract doesn't state one.")
 
                     dp_df = pd.DataFrame(rp.get("distribution_prices") or [{"adults": 1, "children": 0, "amount": 0.0}])
                     for col in ["adults", "children", "amount"]:
