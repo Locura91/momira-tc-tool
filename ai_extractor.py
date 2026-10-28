@@ -5721,40 +5721,4 @@ def extract_hotel_data(raw_text: str, model: str = "claude-sonnet-5", hotel_hint
 
     data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
 
-    # POST-PROCESSING: ensure every declared distribution has a price in the rate table.
-    # Two cases: (1) entry exists but amount is null, (2) entry is completely absent.
-    # Both cause TC's "Room price missing for distributions" rejection on free-children contracts.
-    _room_dists = {}
-    for _room in (data.get("rooms") or []):
-        _rname = (_room.get("name") or "").strip().lower()
-        if _rname:
-            _room_dists[_rname] = [
-                (d.get("adults", 1), d.get("children", 0))
-                for d in (_room.get("distributions") or [])
-            ]
-    for _rate in (data.get("rates") or []):
-        for _season in (_rate.get("seasons") or []):
-            for _rp in (_season.get("room_prices") or []):
-                _dps = _rp.get("distribution_prices")
-                if _dps is None:
-                    _rp["distribution_prices"] = []
-                    _dps = _rp["distribution_prices"]
-                _adult_only = {
-                    dp["adults"]: dp["amount"]
-                    for dp in _dps
-                    if dp.get("children", 0) == 0 and dp.get("amount") is not None
-                }
-                for dp in _dps:
-                    if dp.get("children", 0) > 0 and dp.get("amount") is None:
-                        _fb = _adult_only.get(dp.get("adults"))
-                        if _fb is not None:
-                            dp["amount"] = _fb
-                _existing = {(dp.get("adults"), dp.get("children", 0)) for dp in _dps}
-                _rp_name = (_rp.get("room_name") or "").strip().lower()
-                for (_a, _c) in _room_dists.get(_rp_name, []):
-                    if (_a, _c) not in _existing and _c > 0:
-                        _fb = _adult_only.get(_a)
-                        if _fb is not None:
-                            _dps.append({"adults": _a, "children": _c, "amount": _fb})
-
     return data
