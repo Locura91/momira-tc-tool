@@ -7135,12 +7135,11 @@ def build_hotel_rate_payloads(extracted_rates, room_name_to_provider_code, offer
                 # (bugged) behavior rather than making anything worse.
                 pass
 
-        offer_codes = [c for c in (offer_name_to_provider_code.get(n) for n in (rate_data or {}).get("offer_names") or []) if c]
-        supplement_codes = [c for c in (supplement_name_to_provider_code.get(n) for n in (rate_data or {}).get("supplement_names") or []) if c]
-        # Carry forward any existing offer/supplement links this document's own extraction
-        # didn't restate - see the carry-forward note above.
-        offer_codes = list(dict.fromkeys(offer_codes + [c for c in (existing_rate or {}).get("offers") or [] if c]))
-        supplement_codes = list(dict.fromkeys(supplement_codes + [c for c in (existing_rate or {}).get("supplements") or [] if c]))
+        # Only link offers/supplements the current document explicitly names — do NOT carry
+        # forward old codes from the existing rate. Old links accumulate duplicates across
+        # re-publishes as offer names drift slightly between document versions.
+        offer_codes = list(dict.fromkeys(c for c in (offer_name_to_provider_code.get(n) for n in (rate_data or {}).get("offer_names") or []) if c))
+        supplement_codes = list(dict.fromkeys(c for c in (supplement_name_to_provider_code.get(n) for n in (rate_data or {}).get("supplement_names") or []) if c))
 
         stop_sales_payloads = []
         _fresh_stop_sale_room_names = set()
