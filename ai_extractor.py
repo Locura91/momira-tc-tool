@@ -5485,9 +5485,11 @@ hotel/contract itself:
    name like "Season 1" only if the document genuinely gives none),
    "date_ranges": [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}] (can be multiple non-contiguous ranges if the
    document groups them under one price table),
-   "price_type": "DISTRIBUTION" (the normal case - one flat price per adult+children occupancy combination, as
-   in a typical rate grid) or "PAX" (only if the document genuinely prices per-person with a base rate plus
-   incremental extra-person charges, not a full occupancy grid),
+   "price_type": "DISTRIBUTION" (ALWAYS use this - never "PAX". DISTRIBUTION means one explicit total price per
+   adult+children occupancy combination. This covers every contract style: flat villa rates, per-person rates
+   that the AI pre-multiplies to totals, per-room rates with child add-ons, increasing totals - everything.
+   TC's PAX mode stores base+incremental-deltas which are non-intuitive, non-reviewable, and unnecessary since
+   DISTRIBUTION gives full control over every combination's price. Always output "DISTRIBUTION" here.),
    "minimum_stay": 1, "maximum_stay": null, "release_days": null,
    "meal_plans": [] (only if THIS season's meal-plan prices differ from the hotel-level ones above - same
    shape as top-level meal_plans; leave empty to just use the hotel-level ones),
