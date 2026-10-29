@@ -1178,8 +1178,15 @@ def render_hotel_flow(client):
                 ):
                     _rooms_with_any_price.add(_rn)
     # Rooms with distributions but no prices in this run — distributions will be cleared.
+    # Include both document rooms AND carried-forward existing-snapshot rooms so TC doesn't
+    # require prices for a room that lives in TC but isn't priced in this document.
     _all_room_names_in_doc = {(r or {}).get("name") for r in data.get("rooms") or [] if (r or {}).get("name")}
-    _rooms_with_no_prices = _all_room_names_in_doc - _rooms_with_any_price
+    _existing_snapshot_room_names = {
+        (r or {}).get("name")
+        for r in (existing_snapshot or {}).get("rooms") or []
+        if (r or {}).get("name")
+    }
+    _rooms_with_no_prices = (_all_room_names_in_doc | _existing_snapshot_room_names) - _rooms_with_any_price
 
     contract_result = build_hotel_contract_payload(
         pre_config, data, existing_hotel_snapshot=existing_snapshot,
