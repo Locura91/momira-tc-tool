@@ -6127,9 +6127,16 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
             # deliberately left OUT of the rebuilt array rather than carried forward.
             continue
         if id(existing_room) not in matched_existing_room_ids:
-            # Not in this document — skip it. The document is the source of truth;
-            # rooms absent from it are simply not included in this publish.
-            continue
+            # Room exists in TC but not in this document. We MUST still include it in the PUT
+            # payload — TC rejects deletion of rooms that have offers linked (FK constraint).
+            # Clear distributions so TC doesn't require prices for it in the published rates.
+            _cf_name = existing_room.get("name")
+            room_payloads.append(ContractRoomVO(
+                name=_cf_name,
+                typeId=existing_room.get("typeId"),
+                providerCode=existing_room.get("providerCode"),
+                distributions=[],
+            ))
 
     # ---- Meal plans: same carry-forward merge, keyed by mealPlan type (only one entry per type) ----
     document_meal_plans = _ensure_room_only_meal_plan(extracted.get("meal_plans") or [])
