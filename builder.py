@@ -6127,20 +6127,9 @@ def build_hotel_contract_payload(pre_config, extracted_hotel_data, existing_hote
             # deliberately left OUT of the rebuilt array rather than carried forward.
             continue
         if id(existing_room) not in matched_existing_room_ids:
-            # Carried forward unchanged - not mentioned in this document, but never silently dropped.
-            # If this carried-forward room has no prices in the current run, clear its distributions
-            # so TC doesn't require prices for it in the rates being published.
-            _cf_name = existing_room.get("name")
-            _cf_dists = [] if _cf_name in _rooms_with_no_prices else [
-                ContractRoomDistributionVO(adults=d.get("adults", 1), children=d.get("children", 0))
-                for d in existing_room.get("distributions") or []
-            ]
-            room_payloads.append(ContractRoomVO(
-                name=_cf_name,
-                typeId=existing_room.get("typeId"),
-                providerCode=existing_room.get("providerCode"),
-                distributions=_cf_dists,
-            ))
+            # Not in this document — skip it. The document is the source of truth;
+            # rooms absent from it are simply not included in this publish.
+            continue
 
     # ---- Meal plans: same carry-forward merge, keyed by mealPlan type (only one entry per type) ----
     document_meal_plans = _ensure_room_only_meal_plan(extracted.get("meal_plans") or [])
