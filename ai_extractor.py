@@ -5523,30 +5523,30 @@ already room totals - is exactly the mistake that has actually happened and is t
 PER-PERSON BASIS RULE - decide this FOR EACH room/season price table, since one document can mix styles.
 CONFIRMED PRODUCT-OWNER RULE, THE PRIMARY SIGNAL TO CHECK FIRST: "it is usually per pax, and it is easily
 detected on contracts - when the single price is higher than the double or triple price, then it is a per pax
-price." A price table where SINGLE > DOUBLE > TRIPLE (occupancy price decreasing, or at least not increasing,
-as more people share the room) is ALWAYS per-person, whether or not the table is explicitly labelled "per
-person"/"PP"/"per pax" - most real contracts do NOT bother labelling this explicitly, so do not wait for an
-explicit label before applying this rule. Treat this decreasing-price pattern as the default assumption for
-any hotel room-price table; only treat a table as already-a-total (see the second bullet below) when the
-figures genuinely do NOT follow this decreasing pattern, or the document is EXPLICITLY and unambiguously
-labelled as a per-room/whole-unit rate.
-  - PER PERSON (multiply) - the default assumption, confirmed by SINGLE > DOUBLE > TRIPLE (or an explicit
-    "per person"/"PP"/"rate per pax" label): for each distribution_prices entry, amount = (the stated
-    per-person rate for that occupancy tier) x (the number of PAYING pax in that specific adults+children
-    combination - normally adults+children together, unless the document separately states a DIFFERENT,
-    typically lower or free, per-person child rate, in which case use that child rate for the children instead
-    of the adult rate: amount = adult_rate x adults + child_rate x children). Example: a table stating "1 Pax:
-    USD 220, Double: USD 120, Triple: USD 100" is per-person (220 > 120 > 100) - Double = 120 x 2 = USD 240
-    total, Triple = 100 x 3 = USD 300 total for 3 adults (or for 2 adults + 1 child sharing that tier, absent a
-    separately stated child rate).
-  - PER ROOM / ALREADY A TOTAL (do not multiply) - only when the figures do NOT decrease with occupancy (e.g.
-    a flat rate regardless of how many people are in the room, or a rate that increases with occupancy because
-    it's charging per additional person on top of a base) AND/OR the table is explicitly and unambiguously
-    labelled "per room"/"room rate"/"whole unit" with no per-person qualifier. Use the stated figure as-is -
-    do NOT invent a multiplication here.
+price." STRICTLY DECREASING means each occupancy tier's price is LOWER than the previous (Single > Double >
+Triple where each is numerically less than the one before). The correct rule:
+  - PER PERSON (multiply) - ONLY when Single > Double AND/OR Double > Triple (price STRICTLY FALLS as more
+    people share the room, i.e. the per-person rate is cheaper in larger groups) OR the table is explicitly
+    labelled "per person"/"PP"/"rate per pax". For each distribution_prices entry: amount = (stated per-person
+    rate for that occupancy tier) x (number of PAYING pax in that combination - normally adults+children
+    together, unless the document separately states a different child rate: amount = adult_rate x adults +
+    child_rate x children). Example: "Single: USD 220, Double: USD 120, Triple: USD 100" is per-person (220
+    > 120 > 100) - Double = 120 x 2 = USD 240 total, Triple = 100 x 3 = USD 300 total.
+  - PER ROOM / ALREADY A TOTAL (do NOT multiply) - when the prices do NOT strictly fall with occupancy:
+      * FLAT: Single = Double = Triple (all the same amount). This is the room/villa price regardless of
+        how many adults occupy it. A real example: "Hideaway Pool Villa: Single €1506, Double €1506, Triple
+        €1506" - the villa costs €1506/night regardless of 1, 2, or 3 adults. Store €1506 for each
+        distribution as-is; do NOT multiply by 2 or 3.
+      * INCREASING: Triple > Double (each extra adult adds to the total). Store each stated figure as-is.
+      * MIXED BASE: Single = Double < Triple (flat up to 2 adults, then increases for a 3rd). Store each
+        stated figure as-is - e.g. Double €420, Triple €520 → 2-adult distribution = €420, 3-adult = €520.
+    Also treat as per-room when the document is explicitly labelled "per room"/"per villa"/"whole unit"/"NETT
+    per Room/Villa per Night" even if the per-person heuristic might otherwise apply.
   CRITICAL SELF-CHECK: before finalizing every distribution_prices amount, explicitly verify which basis this
   table uses and that you applied it CONSISTENTLY across every occupancy combo for that room/season - never
-  multiply some combos and leave others as literal per-person figures within the same table.
+  multiply some combos and leave others as literal per-person figures within the same table. A flat price
+  (Single = Double = Triple) is NEVER per-person - multiplying a flat rate by 2 or 3 would mean adding a
+  second guest triples the room cost, which is economically nonsensical.
 CRITICAL: beyond the per-person multiplication above, still extract distribution_prices LITERALLY, one entry
 per adults+children combination the document actually prices - NEVER assume a formula or fixed increment
 between DIFFERENT occupancy TIERS (real contracts have shown non-monotonic, irregular differences between
@@ -5562,14 +5562,22 @@ described under "rooms" above, e.g. "2 AD +1 CH, or 3 AD, or 1 AD+ 02 CH" all un
 each of those combinations its OWN distribution_prices entry using that SAME column's price - this is not the
 "invent a formula/increment" mistake the rule above warns against, since the document itself states one price
 for all of them; it is only "not spreading it across the listed combinations" that would leave some unpriced.
-CONFIRMED PRODUCT-OWNER RULE - FREE CHILDREN / ADULT-ONLY PRICE TABLES: many hotel contracts only print
-adult-occupancy price columns (Single/Double/Triple Adult) while separately stating that children are free or
-have no extra charge (e.g. "Child [6-11 years]: Free", "infants: Free", no child surcharge column). When the
-room's "distributions" include adult+child combinations (e.g. 2+1, 2+2, 3+1) but the price table gives no
-separate child-rate column for them, use the same price as the corresponding adult-only combination for that
-same number of adults - e.g. "2 Ad.+1 Ch." gets the same amount as "2 Ad.+0 Ch.", "3 Ad.+1 Ch." gets the same
-as "3 Ad.+0 Ch." - since the child occupies the room at no extra cost. Do NOT leave these combos unpriced or
-omit them; TC will reject the rate with "Room price missing for distributions: N Ad. + M Ch.".
+CONFIRMED PRODUCT-OWNER RULE - CHILDREN ON PER-ROOM TABLES: for a PER-ROOM (non-multiplying) price table,
+there are two sub-cases based on whether the contract shows a child cost:
+  a) FREE CHILDREN (no child column, or column says "Free"/"—"): use the same amount as the corresponding
+     adult-only combination for the same adult count. "2 Ad.+1 Ch." = same as "2 Ad.+0 Ch.", etc. Do NOT
+     add any extra for the child.
+  b) CHARGED CHILDREN (the contract shows a per-child flat amount, e.g. "Child [3-12 years]: €60"): for each
+     adult+child distribution, amount = [adult base price for that adult count] + [child rate × number of
+     children]. Example: Garden Villa Double Adult = €420/room, child rate = €60/child → "2 Ad.+1 Ch." =
+     €420 + 1×€60 = €480, "2 Ad.+2 Ch." = €420 + 2×€60 = €540, "3 Ad.+1 Ch." = €520 (triple base) +
+     1×€60 = €580. The child rate from the table header/column applies the same way to EVERY adult combo.
+Do NOT leave adult+child combos unpriced or omit them; TC will reject the rate with "Room price missing for
+distributions: N Ad. + M Ch.".
+CONFIRMED PRODUCT-OWNER RULE - FREE CHILDREN / ADULT-ONLY PRICE TABLES (PER-PERSON basis): on a per-person
+table where the contract separately states children are free or have no charge, the child combos' amounts are
+still the adult-only total for those adults (adult_rate x adults + 0 x children = same as adult-only combo
+at that adult count). This matches the per-room free-children rule but arises on per-person tables too.
 CONFIRMED PRODUCT-OWNER RULE - BASE RATE PLUS PER-BEDROOM/PER-EXTRA-CAP SUPPLEMENT: some documents do NOT give a
 full occupancy grid at all - instead they give ONE flat rate for the room/villa at its base occupancy (e.g. "2
 Bedroom Villa: USD 1,200/night, based on 2 adults"), plus a SEPARATE flat supplement for each additional
