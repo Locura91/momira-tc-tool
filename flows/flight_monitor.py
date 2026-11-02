@@ -95,7 +95,9 @@ def render_flight_monitor_flow():
                 with st.container(border=True):
                     cols = st.columns([2, 2, 2, 2])
                     cols[0].markdown(f"**Flight**  \n{flight.flight_number}")
-                    cols[1].markdown(f"**Route**  \n{flight.departure_iata or '?'} → {flight.arrival_iata or '?'}")
+                    dep_label = f"{flight.departure_iata or '?'}" + (f" ({flight.departure_name})" if flight.departure_name else "")
+                    arr_label = f"{flight.arrival_iata or '?'}" + (f" ({flight.arrival_name})" if flight.arrival_name else "")
+                    cols[1].markdown(f"**Route**  \n{dep_label} → {arr_label}")
                     cols[2].markdown(f"**Departure (TC)**  \n{flight.scheduled_departure or '—'}")
                     cols[3].markdown(f"**Pax**  \n{flight.pax_count if flight.pax_count is not None else '—'}")
 

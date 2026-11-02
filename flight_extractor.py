@@ -21,6 +21,8 @@ class FlightRecord:
     flight_number: str
     departure_iata: Optional[str]
     arrival_iata: Optional[str]
+    departure_name: Optional[str]        # e.g. "Frankfurt am Main" - only on shape (a), see below
+    arrival_name: Optional[str]
     scheduled_departure: Optional[str]   # ISO datetime string, as TC gave it
     scheduled_arrival: Optional[str]
     pax_count: Optional[int]
@@ -55,6 +57,8 @@ def _extract_api_booked(booking: Dict[str, Any], pax_count: Optional[int]) -> Li
                 flight_number=str(flight_number).strip(),
                 departure_iata=segment.get("departureAirport"),
                 arrival_iata=segment.get("arrivalAirport"),
+                departure_name=segment.get("departureAirportName"),
+                arrival_name=segment.get("arrivalAirportName"),
                 scheduled_departure=segment.get("departureDate"),
                 scheduled_arrival=segment.get("arrivalDate"),
                 pax_count=pax_count,
@@ -78,6 +82,8 @@ def _extract_manual(booking: Dict[str, Any], pax_count: Optional[int]) -> List[F
             flight_number=str(flight_number).strip(),
             departure_iata=t.get("origin"),
             arrival_iata=t.get("destination"),
+            departure_name=None,  # BookedTransportManualServiceVO has no airport-name field
+            arrival_name=None,
             scheduled_departure=t.get("departureHour"),
             scheduled_arrival=t.get("arrivalHour"),
             pax_count=pax_count,
