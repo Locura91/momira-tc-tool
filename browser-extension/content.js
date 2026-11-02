@@ -102,50 +102,29 @@
   }
 
   // ── idea page flow ──────────────────────────────────────────────────────────────────────
-  // Click BOOK first; TC may open a modal with a date picker OR redirect to travel-map.
+  // Correct order: set the departure date FIRST (field exists on the page before clicking),
+  // then click “Book directly without changes”. TC uses the date that's already in the field
+  // when the button is clicked — waiting for a modal after the click doesn't work because TC
+  // redirects straight to travel-map.xhtml without showing a date picker modal.
   var tries = 0;
   var iv0 = setInterval(function () {
     attach();
+    var inp = document.querySelector('input[name*=”departureDateMultidestination”]');
     var book = buttonByText(BOOK);
-    if (book) {
+    if (inp && book) {
       clearInterval(iv0);
-      say("Clicking “Book directly without changes”…");
-      book.click();
-      // Wait briefly for a modal date field — if TC redirects instead, the
-      // travel-map handler above will take over on the new page.
-      var t2 = 0;
-      var iv1 = setInterval(function () {
-        var modal = document.querySelector('form[id*="mySeparateForm"]') ||
-                    document.querySelector('div[id*="mySeparateForm"]') ||
-                    document.querySelector('.ui-dialog:not([style*="display:none"]):not([style*="display: none"])');
-        var inp = findDateInput(modal || undefined);
-        if (inp) {
-          clearInterval(iv1);
-          setValue(inp, DATE);
-          say("Date set to <b>" + DATE + "</b>. Looking for Start Trip…");
-          var goTries = 0;
-          var iv2 = setInterval(function () {
-            var go = buttonByText(GO, modal || undefined) || buttonByText(GO);
-            if (go && !go.disabled) {
-              clearInterval(iv2);
-              say("Starting the trip… you'll land on the summary to review. ✅");
-              go.click();
-              setTimeout(function () { if (box.isConnected) box.remove(); }, 7000);
-            } else if (++goTries > 40) {
-              clearInterval(iv2);
-              say("Date filled ✅<br>Please click <b>Start Trip</b> yourself to continue.");
-            }
-          }, 250);
-        } else if (++t2 > 30) {
-          // No modal appeared in 6 s — TC likely redirected to travel-map already.
-          clearInterval(iv1);
-          say("Waiting for Travel Compositor to load the date page…");
-        }
-      }, 200);
+      say(“Setting departure date to <b>” + DATE + “</b>…”);
+      setValue(inp, DATE);
+      // Short pause so TC can process the date change before the button click.
+      setTimeout(function () {
+        say(“Date set ✅ — clicking “Book directly without changes”…”);
+        book.click();
+        // The rest (confirming the trip) is done by the human.
+      }, 300);
     } else if (++tries > 60) {
       clearInterval(iv0);
-      say("Couldn't find “Book directly without changes” on this page.<br>" +
-          "Make sure you're on the package idea page, then reload.");
+      say(“Couldn't find the date field or “Book directly without changes” on this page.<br>” +
+          “Make sure you're on the package idea page, then reload.”);
     }
   }, 200);
 })();

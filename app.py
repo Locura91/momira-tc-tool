@@ -1101,6 +1101,10 @@ TOOL_PACKAGEROLLOVER = "🔁 Package Rollover"
 # 2026-10-13: list of ALL packages sorted by departure date (soonest/most-overdue first) so
 # the human knows which ones need updating. Mirrors the competitor's ideas_list view.
 TOOL_PACKAGESTALENESS = "📋 Packages Needing Update"
+# v1 TEST PHASE (2026-11-01): human pastes in a BNR, tool fetches its flights from Travel
+# Compositor and checks them against AviationStack. No cron yet - see flows/flight_monitor.py's
+# module docstring and flight_monitor.py's comparison-rule docstring.
+TOOL_FLIGHTMONITOR = "✈️ Flight Change Monitor"
 # Follow-up checklist rather than a tool: hotels published from here that still need "Automap
 # with master" set by hand in Travel Compositor's back office. Deliberately NOT given a permanent
 # card on the home screen - it only appears when there is actually something on it (see the
@@ -1297,12 +1301,16 @@ if st.session_state.active_tool is None:
         st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
                   "beach in Spain\") into structured destination/dates/party/theme fields. "
                   "Doesn't touch Travel Compositor — not a real search yet.")
-        if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
-            st.session_state.active_tool = TOOL_PACKAGEROLLOVER
+        # Package Rollover's own Prototypes entry point removed (2026-11-02) - it's reached via
+        # "Packages Needing Update" -> Open now (which already launches straight into it for
+        # any package on the list), so a second standalone entry point here was redundant.
+        # TOOL_PACKAGEROLLOVER itself and its dispatch block below are UNCHANGED - still used
+        # by that Open link.
+        if st.button(TOOL_FLIGHTMONITOR, key="tool_btn_flightmonitor", use_container_width=True):
+            st.session_state.active_tool = TOOL_FLIGHTMONITOR
             st.rerun()
-        st.caption("Look up a Holiday Package by ID and see a proposed replacement departure "
-                  "(14-day trigger, ~4 months out, rating 8+, price within +3.5%). Read-only — "
-                  "real GET calls, never writes anything.")
+        st.caption("Paste in a booking reference (BNR-XXXX) and check its flight(s) against live "
+                  "flight data. v1 test phase — manual lookup only, no cron job yet.")
     st.stop()
 
 # ---- Outreach tool: hand straight off, it has no product-type step ----
@@ -1330,6 +1338,13 @@ if st.session_state.active_tool == TOOL_TRIPIDEA:
 # its own Packages-API client (see package_rollover_tool.py's module docstring) ----
 if st.session_state.active_tool == TOOL_PACKAGEROLLOVER:
     render_package_rollover_tool()
+    st.stop()
+
+# ---- Flight Change Monitor (v1 test phase): hand straight off, uses its own Booking-API
+# client (see flows/flight_monitor.py's module docstring) ----
+if st.session_state.active_tool == TOOL_FLIGHTMONITOR:
+    from flows.flight_monitor import render_flight_monitor_flow
+    render_flight_monitor_flow()
     st.stop()
 
 # ---- Packages Needing Update: full list sorted by departure date (soonest first) ----
