@@ -10,7 +10,7 @@ CONFIRMED PRODUCT-OWNER DECISION (2026-11-01): shape (c) is explicitly OUT of sc
 flights are the supplier's own responsibility to monitor, not Momira's. Only (a) and (b) are
 extracted here.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 

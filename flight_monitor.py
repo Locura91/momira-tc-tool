@@ -42,7 +42,14 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     candidates = [value, value.replace("Z", "+00:00")]
     for candidate in candidates:
         try:
-            return datetime.fromisoformat(candidate)
+            parsed = datetime.fromisoformat(candidate)
+            # CONFIRMED BUG FIX (weekly audit, 2026-11-02): TC's departureDate is typically
+            # tz-naive, AviationStack's departure.scheduled is typically tz-aware (+00:00) -
+            # subtracting one from the other crashes with "can't subtract offset-naive and
+            # offset-aware datetimes". Strip tzinfo so both sides compare as local wall-clock
+            # time, which is what we actually want here (we're comparing the same airport's
+            # own stated local time, not converting between timezones).
+            return parsed.replace(tzinfo=None)
         except ValueError:
             continue
     return None
@@ -103,8 +110,14 @@ def compare_flight(flight: FlightRecord) -> ComparisonResult:
     if tc_dt and live_dt:
         delta_minutes = round(abs((live_dt - tc_dt).total_seconds()) / 60)
 
+    def _normalize_flight_number(value: str) -> str:
+        # CONFIRMED FIX (weekly audit, 2026-11-02): strip ALL whitespace, not just leading/
+        # trailing - "LH 441" vs "LH441" is the same flight, not a flight-number change.
+        return "".join(value.split()).upper()
+
     flight_number_changed = bool(
-        live_flight_number and live_flight_number.strip().upper() != flight.flight_number.strip().upper()
+        live_flight_number
+        and _normalize_flight_number(live_flight_number) != _normalize_flight_number(flight.flight_number)
     )
 
     flag = "GREEN"
