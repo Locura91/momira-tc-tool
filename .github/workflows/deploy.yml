@@ -12,11 +12,32 @@ jobs:
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          AVIATIONSTACK_API_KEY: ${{ secrets.AVIATIONSTACK_API_KEY }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: APP_PASSWORD,AVIATIONSTACK_API_KEY
           script: |
             cd /opt/momira-tc-tool
             git pull
+            # Write/update APP_PASSWORD and AVIATIONSTACK_API_KEY in .env from GitHub Secrets
+            # (2026-11-02 - set up so these can be configured from a phone browser via GitHub's
+            # Settings -> Secrets UI, no SSH needed). Only touches these two keys - every other
+            # line in .env (TRAVELC_USERNAME etc) is left untouched. Only writes a key if the
+            # corresponding GitHub Secret is actually set, so leaving a secret empty/unset keeps
+            # .env as-is rather than wiping an existing value.
+            touch .env
+            if [ -n "$APP_PASSWORD" ]; then
+              grep -v '^APP_PASSWORD=' .env > .env.tmp || true
+              echo "APP_PASSWORD=$APP_PASSWORD" >> .env.tmp
+              mv .env.tmp .env
+            fi
+            if [ -n "$AVIATIONSTACK_API_KEY" ]; then
+              grep -v '^AVIATIONSTACK_API_KEY=' .env > .env.tmp || true
+              echo "AVIATIONSTACK_API_KEY=$AVIATIONSTACK_API_KEY" >> .env.tmp
+              mv .env.tmp .env
+            fi
             systemctl restart momira-tc.service
