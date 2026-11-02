@@ -1301,12 +1301,11 @@ if st.session_state.active_tool is None:
         st.caption("Turn a customer's free-text trip idea (\"2 adults, February, city and "
                   "beach in Spain\") into structured destination/dates/party/theme fields. "
                   "Doesn't touch Travel Compositor — not a real search yet.")
-        if st.button(TOOL_PACKAGEROLLOVER, key="tool_btn_packagerollover", use_container_width=True):
-            st.session_state.active_tool = TOOL_PACKAGEROLLOVER
-            st.rerun()
-        st.caption("Look up a Holiday Package by ID and see a proposed replacement departure "
-                  "(14-day trigger, ~4 months out, rating 8+, price within +3.5%). Read-only — "
-                  "real GET calls, never writes anything.")
+        # Package Rollover's own Prototypes entry point removed (2026-11-02) - it's reached via
+        # "Packages Needing Update" -> Open now (which already launches straight into it for
+        # any package on the list), so a second standalone entry point here was redundant.
+        # TOOL_PACKAGEROLLOVER itself and its dispatch block below are UNCHANGED - still used
+        # by that Open link.
         if st.button(TOOL_FLIGHTMONITOR, key="tool_btn_flightmonitor", use_container_width=True):
             st.session_state.active_tool = TOOL_FLIGHTMONITOR
             st.rerun()
