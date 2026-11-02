@@ -573,18 +573,25 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
         res = self._request("GET", url)
         return self._handle_response(res)
 
-    def get_bookings_departing_between(self, micrositeId: str, from_departure_date: str,
-                                        to_departure_date: str, first: int = 0,
-                                        limit: int = 100) -> Dict[str, Any]:
+    def get_bookings_departing_between(self, micrositeId: str, creation_from: str, creation_to: str,
+                                        from_departure_date: str, to_departure_date: str,
+                                        first: int = 0, limit: int = 100) -> Dict[str, Any]:
         """Executes GET /booking/bookings — bookings whose DEPARTURE falls in the given window.
-        from_departure_date/to_departure_date are the fromDepartureDate/toDepartureDate query
-        params (format not yet confirmed against a live response - try YYYY-MM-DD first). Paginates
-        via query-param first/limit (confirmed against live Swagger, NOT the header-based family
-        get_closed_tours/get_tickets use). NOT used by the v1 manual-BNR test phase yet - kept here
-        for the later bulk 48h pull once the manual lookup is confirmed working."""
+        CONFIRMED against live Swagger (2026-11-02): `from`/`to` (creation date) are REQUIRED,
+        all date params use yyyyMMdd (NOT ISO YYYY-MM-DD) - e.g. "20261102". This endpoint only
+        returns lightweight BookingsBasicDataVO pointers (bookingReference/creationDate/
+        micrositeId/status) - it has NO flight/segment data. The bulk-pull flow must call
+        get_booking() per bookingReference returned here to get the actual BookedTripVO with
+        flights. Paginates via query-param first/limit. NOT used by the v1 manual-BNR test phase
+        yet - kept here for the later bulk 48h pull once the manual lookup is confirmed working.
+        creation_from/creation_to must be set to a wide-enough range to catch all relevant
+        bookings regardless of when they were made (e.g. a year back), since TC requires them
+        even though the real filter we care about is the departure-date window."""
         url = f"{self.api_base_url}/booking/bookings"
         params = {
             "microsite": micrositeId,
+            "from": creation_from,
+            "to": creation_to,
             "fromDepartureDate": from_departure_date,
             "toDepartureDate": to_departure_date,
             "first": first,

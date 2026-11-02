@@ -41,7 +41,10 @@ def _extract_api_booked(booking: Dict[str, Any], pax_count: Optional[int]) -> Li
     records = []
     booking_ref = booking.get("bookingReference") or booking.get("reference") or ""
     for service in booking.get("transportservice") or []:
-        transport_ref = service.get("transportBookingReference") or service.get("bookingReference")
+        # CONFIRMED against live Swagger (BookedTransportServiceVO, 2026-11-02): the field is
+        # bookingReference (providerBookingReference as fallback) - there is no
+        # transportBookingReference field.
+        transport_ref = service.get("bookingReference") or service.get("providerBookingReference")
         for segment in service.get("segment") or []:
             flight_number = segment.get("flightNumber")
             if not flight_number:
