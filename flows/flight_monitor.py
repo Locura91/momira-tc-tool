@@ -62,6 +62,13 @@ def render_flight_monitor_flow():
         st.session_state.fm_booking_result = None
         st.session_state.fm_flights = None
         st.session_state.fm_error = None
+        # CONFIRMED BUG FIX (weekly audit, 2026-11-02): per-flight comparison results are keyed
+        # by INDEX (fm_comparison_0, fm_comparison_1, ...), not by flight number - without this,
+        # looking up a second booking showed the FIRST booking's stale check result against the
+        # second booking's flight at the same index until re-checked.
+        for key in list(st.session_state.keys()):
+            if key.startswith("fm_comparison_"):
+                del st.session_state[key]
 
         if not booking_ref.strip():
             st.session_state.fm_error = "Please enter a booking reference."
@@ -103,8 +110,16 @@ def render_flight_monitor_flow():
 
                     if st.button("Check live status", key=f"fm_check_{i}"):
                         with st.spinner("Checking AviationStack…"):
-                            comparison = compare_flight(flight)
-                        st.session_state[f"fm_comparison_{i}"] = comparison
+                            try:
+                                comparison = compare_flight(flight)
+                            except Exception as e:
+                                # Defensive: compare_flight is written to never raise, but a
+                                # crash here would otherwise take down the whole page - show it
+                                # as an error on this one flight instead (weekly audit, 2026-11-02).
+                                st.error(f"Could not check this flight: {e}")
+                                comparison = None
+                        if comparison is not None:
+                            st.session_state[f"fm_comparison_{i}"] = comparison
 
                     comparison = st.session_state.get(f"fm_comparison_{i}")
                     if comparison:
@@ -118,4 +133,7 @@ def render_flight_monitor_flow():
     if st.button("Reset", key="fm_reset_btn"):
         for key in _RESET_KEYS:
             st.session_state.pop(key, None)
+        for key in list(st.session_state.keys()):
+            if key.startswith("fm_comparison_"):
+                del st.session_state[key]
         st.rerun()
