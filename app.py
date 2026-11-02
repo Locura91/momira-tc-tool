@@ -55,7 +55,7 @@ import pandas as pd
 
 if hasattr(st, "secrets"):
     for _key in ["TRAVELC_BASE_URL", "TRAVELC_MICROSITE_ID", "TRAVELC_USERNAME",
-                 "TRAVELC_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "PIXABAY_API_KEY",
+                 "TRAVELC_PASSWORD", "APP_PASSWORD", "ANTHROPIC_API_KEY", "PEXELS_API_KEY", "PIXABAY_API_KEY",
                  # R2 (Cloudflare) image hosting - see r2_client.py's module docstring. Replaces
                  # the old FREEIMAGE_API_KEY entry that used to be here (freeimage_client.py is
                  # gone - r2_client.py is the only image-hosting path now). Without these five
@@ -769,6 +769,27 @@ from flows.price_refresh import render_price_refresh_flow, render_ticket_price_r
 
 
 st.set_page_config(page_title="Momira Travel Platform", layout="wide")
+
+# ---- Shared-password login gate (2026-11-02, product-owner request: "should we also include
+# a login to the app?") --------------------------------------------------------------------
+# This tool can publish/modify live Travel Compositor pricing and now also looks up real
+# customer booking/flight/passenger data (Flight Change Monitor) - it was reachable by anyone
+# with the URL. A single team password, not full multi-user accounts, is the deliberately
+# minimal fix: set APP_PASSWORD in the server's .env (same place as TRAVELC_USERNAME etc) or in
+# Streamlit secrets. If APP_PASSWORD is unset, the gate is skipped entirely (so local dev / a
+# fresh checkout with no .env configured still runs) - this means setting it on the live server
+# is what actually turns the gate on, not a code change.
+_APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+if _APP_PASSWORD and not st.session_state.get("_authenticated"):
+    st.title("🔒 Momira Travel Platform")
+    entered = st.text_input("Password", type="password", key="_login_password_input")
+    if st.button("Log in", type="primary"):
+        if entered == _APP_PASSWORD:
+            st.session_state["_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
 # built almost entirely on rem units, so scaling the ROOT font-size (rather
