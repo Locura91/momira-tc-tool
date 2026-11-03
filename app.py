@@ -779,17 +779,75 @@ st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 # Streamlit secrets. If APP_PASSWORD is unset, the gate is skipped entirely (so local dev / a
 # fresh checkout with no .env configured still runs) - this means setting it on the live server
 # is what actually turns the gate on, not a code change.
+#
+# PERSISTENT LOGIN (2026-11-03, product-owner request: "if I'm logged in once, I would like
+# that the user stays into it, for a minimum 24 hours"). st.session_state alone does NOT survive
+# closing the browser/tab - it's tied to the live WebSocket connection. A real "stay logged in"
+# needs a browser-side cookie plus a server-side session record, so re-opening the tab tomorrow
+# still works. Implementation: on successful login, generate a random opaque token, store
+# {token: expiry} in platform_store (durable across redeploys/restarts, same store everything
+# else in the app already uses), and set it as a browser cookie valid 24h. On every page load,
+# before showing the password form, check for that cookie and validate it against the stored
+# token/expiry - if valid, skip straight past the login screen.
+import secrets as _secrets_mod
+import time as _time_mod
+import platform_store as _platform_store
+_AUTH_COOKIE_NAME = "momira_auth_token"
+_AUTH_SESSION_SECONDS = 24 * 60 * 60  # 24 hours, per product-owner request - minimum, not exact
+
+
+def _issue_auth_cookie():
+    token = _secrets_mod.token_urlsafe(32)
+    expires_at = _time_mod.time() + _AUTH_SESSION_SECONDS
+    _platform_store.set("auth_sessions", token, {"expires_at": expires_at})
+    import streamlit.components.v1 as _components
+    _components.html(
+        f"""<script>
+        document.cookie = "{_AUTH_COOKIE_NAME}={token}; max-age={_AUTH_SESSION_SECONDS}; path=/; SameSite=Lax";
+        </script>""",
+        height=0,
+    )
+
+
+def _check_auth_cookie() -> bool:
+    try:
+        token = st.context.cookies.get(_AUTH_COOKIE_NAME)
+    except Exception:
+        token = None
+    if not token:
+        return False
+    record = _platform_store.get("auth_sessions", token)
+    if not record or not isinstance(record, dict):
+        return False
+    if _time_mod.time() > record.get("expires_at", 0):
+        _platform_store.delete("auth_sessions", token)
+        return False
+    return True
+
+
 _APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 if _APP_PASSWORD and not st.session_state.get("_authenticated"):
-    st.title("🔒 Momira Travel Platform")
-    entered = st.text_input("Password", type="password", key="_login_password_input")
-    if st.button("Log in", type="primary"):
-        if entered == _APP_PASSWORD:
+    if _check_auth_cookie():
+        st.session_state["_authenticated"] = True
+    else:
+        st.title("🔒 Momira Travel Platform")
+        entered = st.text_input("Password", type="password", key="_login_password_input")
+        _login_clicked = st.button("Log in", type="primary")
+        if _login_clicked and entered == _APP_PASSWORD:
             st.session_state["_authenticated"] = True
-            st.rerun()
-        else:
+            # Deliberately NOT followed by st.rerun(): the cookie-setting script below is
+            # injected via components.html, which needs a moment in the browser to actually
+            # execute. Calling st.rerun() right after it risks tearing down the page before
+            # that happens, so the cookie would silently never get set. Instead we let THIS
+            # same run fall through past the `if not authenticated: st.stop()` check right
+            # below and render the rest of the app in the same response - the cookie script
+            # and the real page both reach the browser together, no race.
+            _issue_auth_cookie()
+        elif _login_clicked:
             st.error("Incorrect password.")
-    st.stop()
+
+        if not st.session_state.get("_authenticated"):
+            st.stop()
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
 # built almost entirely on rem units, so scaling the ROOT font-size (rather
