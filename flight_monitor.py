@@ -105,6 +105,7 @@ def compare_flight(flight: FlightRecord) -> ComparisonResult:
     fields = aviationstack_client.extract_comparison_fields(lookup["data"])
     live_dt = _parse_dt(fields["live_scheduled_departure"])
     live_flight_number = fields["live_flight_number"]
+    codeshared_iata = fields.get("codeshared_iata")
 
     delta_minutes = None
     if tc_dt and live_dt:
@@ -115,9 +116,15 @@ def compare_flight(flight: FlightRecord) -> ComparisonResult:
         # trailing - "LH 441" vs "LH441" is the same flight, not a flight-number change.
         return "".join(value.split()).upper()
 
+    tc_norm = _normalize_flight_number(flight.flight_number)
+    # CONFIRMED REAL BUG FIX (2026-11-03, live test against LH441 - see
+    # aviationstack_client.py's extract_comparison_fields docstring): a codeshare flight's
+    # top-level flight_number is the OPERATING carrier's number, not the MARKETING number TC/the
+    # customer's ticket shows. A match against EITHER the top-level number OR the codeshare
+    # number means "no change" - only flag RED if it matches neither.
+    live_candidates = [c for c in (live_flight_number, codeshared_iata) if c]
     flight_number_changed = bool(
-        live_flight_number
-        and _normalize_flight_number(live_flight_number) != _normalize_flight_number(flight.flight_number)
+        live_candidates and all(_normalize_flight_number(c) != tc_norm for c in live_candidates)
     )
 
     flag = "GREEN"

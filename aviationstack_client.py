@@ -59,11 +59,23 @@ def lookup_flight(flight_number: str, flight_date: str) -> Dict[str, Any]:
 def extract_comparison_fields(as_flight: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """Pulls the fields the Flight Change Monitor compares against TC's stored data: the
     SCHEDULED departure time (not estimated/actual - see flight_monitor.py's compare logic for
-    why) and the live flight number."""
+    why) and the live flight number.
+
+    CONFIRMED REAL BUG (2026-11-03, live test call against LH441): a looked-up flight can be a
+    CODESHARE - AviationStack's top-level flight.iata is the OPERATING carrier's number (e.g.
+    "NZ4219" for Air New Zealand), while the number we actually searched for and the number a
+    customer's ticket/TC booking shows (the MARKETING carrier's number, e.g. "LH441") only
+    appears nested at flight.codeshared.flight_iata. Reading only the top-level flight.iata would
+    make EVERY codeshare flight falsely trigger a "flight number changed" RED alert on every
+    check, even with zero actual change - codesharing is common on long-haul/connecting flights,
+    so this isn't an edge case. codeshared_iata is returned alongside live_flight_number so
+    flight_monitor.py's compare_flight can treat a match against EITHER as "no change"."""
     departure = as_flight.get("departure") or {}
     flight = as_flight.get("flight") or {}
+    codeshared = flight.get("codeshared") or {}
     return {
         "live_scheduled_departure": departure.get("scheduled"),
         "live_flight_number": flight.get("iata") or flight.get("number"),
+        "codeshared_iata": codeshared.get("flight_iata"),
         "flight_status": as_flight.get("flight_status"),
     }
