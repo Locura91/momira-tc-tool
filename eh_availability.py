@@ -300,7 +300,18 @@ def closed_dates_for_url(page, url: str, open_calendar_timeout_ms: int = 90000) 
     no date is clicked, the room count is left alone, and the funnel is never advanced past the
     calendar step.
     """
-    page.goto(url, wait_until="domcontentloaded")
+    # CONFIRMED REAL FAILURE (2026-11-04, production run log): "Page.goto: Timeout 30000ms
+    # exceeded" on CNX-4 - page.goto() previously had NO explicit timeout, so Playwright's
+    # 30s default applied, far shorter than the 90s budget the rest of this function gets via
+    # open_calendar_timeout_ms. A slow supplier page load is a transient network/server-load
+    # condition, not a site redesign - unlike a calendar-shape disagreement (which correctly
+    # raises immediately, see this module's own docstring), a plain timeout is worth one retry
+    # with a longer explicit timeout before giving up the whole tour for this run.
+    _goto_timeout_ms = max(45000, open_calendar_timeout_ms // 2)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=_goto_timeout_ms)
+    except Exception:
+        page.goto(url, wait_until="domcontentloaded", timeout=open_calendar_timeout_ms)
     _advance_to_checkin(page, open_calendar_timeout_ms)
     _open_calendar(page, open_calendar_timeout_ms)
     months = read_calendar(page)
