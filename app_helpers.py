@@ -202,8 +202,11 @@ def _geo_search_default(client, place_name):
 
 
 CURRENCY_OPTIONS = [
-    "EUR", "USD", "GBP", "AUD", "CAD", "CHF", "CNY", "IDR", "INR", "JPY",
-    "MXN", "NZD", "SEK", "SGD", "THB", "TRY", "VND", "ZAR",
+    "AED", "AUD", "BDT", "BRL", "CAD", "CHF", "CLP", "CNY", "COP", "CZK",
+    "DKK", "EGP", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY",
+    "KES", "KRW", "KWD", "LKR", "MAD", "MXN", "MYR", "NGN", "NOK", "NZD",
+    "PHP", "PKR", "PLN", "QAR", "RON", "RUB", "SAR", "SEK", "SGD", "THB",
+    "TRY", "TWD", "UAH", "USD", "VND", "ZAR", "BHD", "OMR", "PEN", "CRC",
 ]
 
 
