@@ -114,28 +114,41 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         st.stop()
 
                     raw_text = "\n\n".join(combined_parts)
-                    detected = detect_tour_variants(raw_text)
 
-                    candidates = []
-                    for v in detected:
-                        candidates.append({
-                            "label": v.get("label", ""), "nights": v.get("nights"),
-                            # This label came from a REAL AI-detected candidate, so it's safe
-                            # to later tell the extraction "only extract this one, ignore the
-                            # rest" - see is_genuine_variant usage in PHASE 3 below.
-                            "is_genuine_variant": True,
-                        })
-                    if not candidates:
-                        candidates = [{"label": "", "nights": None, "is_genuine_variant": False}]
+                    # When multiple separate files are uploaded (no URL), treat each file
+                    # as its own ClosedTour — one file = one candidate. This avoids merging
+                    # all 8 PDFs and running detect_tour_variants on the combined blob (slow,
+                    # error-prone). Each candidate stores _file_idx so later phases extract
+                    # from that file's text only, not the combined raw_text.
+                    multiple_separate_files = bool(uploaded_files and len(uploaded_files) > 1 and not url)
+                    if multiple_separate_files:
+                        per_file_texts = [
+                            combined_parts[i] if i < len(combined_parts) else ""
+                            for i in range(len(uploaded_files))
+                        ]
+                        st.session_state.mct_files_texts = per_file_texts
+                        candidates = []
+                        for i, uploaded in enumerate(uploaded_files):
+                            label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
+                            candidates.append({
+                                "label": label, "nights": None,
+                                "is_genuine_variant": False,
+                                "_file_idx": i,
+                            })
+                    else:
+                        st.session_state.pop("mct_files_texts", None)
+                        detected = detect_tour_variants(raw_text)
+                        candidates = []
+                        for v in detected:
+                            candidates.append({
+                                "label": v.get("label", ""), "nights": v.get("nights"),
+                                "is_genuine_variant": True,
+                            })
+                        if not candidates:
+                            candidates = [{"label": "", "nights": None, "is_genuine_variant": False}]
 
-                    # Fold any images found on the page into the SAME pool as
-                    # document-embedded images (downloaded server-side, not
-                    # hotlinked) - see _add_page_images_to_doc_pool's docstring.
                     _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
 
-                    # Only offer "needs hosting" for images that DIDN'T get auto-uploaded -
-                    # if every image already got a real URL, showing them again in a second
-                    # section would just be a confusing, redundant duplicate of "Images found" above.
                     if len(doc_image_urls) >= len(doc_raw_images):
                         doc_raw_images = []
 
@@ -278,18 +291,28 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             render_skip_item_button(
                 tour['label'] or tour['tour_code'], queue, qidx,
                 "mct_queue", "mct_queue_index",
-                ["mct_phase", "mct_raw_text", "mct_candidates", "mct_queue", "mct_queue_index",
+                ["mct_phase", "mct_raw_text", "mct_files_texts", "mct_candidates", "mct_queue", "mct_queue_index",
                  "mct_doc_raw_images", "mct_hosted_image_candidates"],
                 button_key=f"mct_skip{_ks}",
                 widget_state_prefixes=["mct_"] + SHARED_WIDGET_STATE_PREFIXES
             )
+
+        # Use per-file text when this tour came from a specific uploaded file
+        # (multi-file batch); fall back to the combined raw_text otherwise.
+        _file_idx = tour.get("_file_idx")
+        _files_texts = st.session_state.get("mct_files_texts") or []
+        _extraction_text = (
+            _files_texts[_file_idx]
+            if _file_idx is not None and 0 <= _file_idx < len(_files_texts)
+            else st.session_state.mct_raw_text
+        )
 
         if tour["main_data"] is None:
             variant_hint = tour["label"] if tour.get("is_genuine_variant") else None
             with st.spinner(f"Extracting tour details{f' focused on ' + repr(tour['label']) if variant_hint else ''}..."):
                 try:
                     tour["main_data"] = extract_structured_data(
-                        st.session_state.mct_raw_text, variant_hint=variant_hint,
+                        _extraction_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint),
                         max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
                     )
@@ -417,7 +440,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if not mct_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
                 "Send", disabled=not mct_clarify_q.strip(), key=f"mct_clarify_send_main{_ks}"):
             with st.spinner("Thinking..."):
-                result = apply_clarification(st.session_state.mct_raw_text, data, mct_clarify_q)
+                result = apply_clarification(_extraction_text, data, mct_clarify_q)
                 st.session_state[f"mct_clarify_result_main{_ks}"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_clarify_q, result)
                 if result.get("changes"):
@@ -452,10 +475,18 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         main_name = (tour["main_data"] or {}).get("tour_name") or tour["tour_code"]
         st.subheader(f"Modalities for: {main_name}")
 
+        _file_idx = tour.get("_file_idx")
+        _files_texts = st.session_state.get("mct_files_texts") or []
+        _extraction_text = (
+            _files_texts[_file_idx]
+            if _file_idx is not None and 0 <= _file_idx < len(_files_texts)
+            else st.session_state.mct_raw_text
+        )
+
         if tour["modality_candidates"] is None:
             with st.spinner("Detecting pricing categories (Modalities)..."):
                 try:
-                    detected = detect_multiple_modalities(st.session_state.mct_raw_text)
+                    detected = detect_multiple_modalities(_extraction_text)
                 except Exception:
                     detected = []
                 candidates = []
@@ -575,6 +606,14 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         midx = tour["modality_index"]
         mod = modalities[midx]
 
+        _file_idx = tour.get("_file_idx")
+        _files_texts = st.session_state.get("mct_files_texts") or []
+        _extraction_text = (
+            _files_texts[_file_idx]
+            if _file_idx is not None and 0 <= _file_idx < len(_files_texts)
+            else st.session_state.mct_raw_text
+        )
+
         if len(queue) > 1:
             st.caption(f"Tour {qidx + 1} of {len(queue)}: **{tour['label'] or tour['tour_code']}**")
         st.subheader(f"Modality {midx + 1} of {len(modalities)}: **{mod['code']}**")
@@ -612,7 +651,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                     # call - the one that builds the price list. Every pricing rule taught to the
                     # platform was being ignored at exactly the point it mattered most.
                     mod["data"] = extract_modality_data(
-                        st.session_state.mct_raw_text, tour_nights=tour_nights,
+                        _extraction_text, tour_nights=tour_nights,
                         human_hint=with_learned_guidance(
                             clarify_supplier_id(supplier_id), "ClosedTour",
                             mod["hint"] or mod["code"]),
@@ -802,7 +841,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
         if not mct_mod_clarify_q.strip().upper().startswith(HOUSE_RULE_CODEWORD.upper()) and st.button(
                 "Send", disabled=not mct_mod_clarify_q.strip(), key=f"mct_mod_clarify_send{_ks}_{midx}"):
             with st.spinner("Thinking..."):
-                result = apply_clarification(st.session_state.mct_raw_text, data, mct_mod_clarify_q)
+                result = apply_clarification(_extraction_text, data, mct_mod_clarify_q)
                 st.session_state[f"mct_mod_clarify_result{_ks}_{midx}"] = result
                 remember_clarification(clarify_supplier_id(supplier_id), "ClosedTour", mct_mod_clarify_q, result)
                 if result.get("changes"):
