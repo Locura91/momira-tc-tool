@@ -443,6 +443,34 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
                     f"price wildly wrong, e.g. free-plus-refund on a >100% discount).")
         if not any(k in cleaned for k in _MONEY_KEYS):
             continue
+
+        # PRICE ORDERING GUARD (product owner, 2026-11-07): singlePrice >= doublePrice >=
+        # triplePrice >= quadruplePrice ALWAYS, because fewer people sharing a room = each person
+        # pays more. A violation means the AI misread the document (e.g. treating a per-room total
+        # as a per-person price for single occupancy). Flag it loudly so the human catches it
+        # before publishing — a singlePrice lower than doublePrice means one person could book the
+        # room at less than half the cost, causing real financial loss.
+        if notes is not None:
+            amounts = []
+            for key in _MONEY_KEYS:
+                m = cleaned.get(key)
+                if m is not None and isinstance(m, dict):
+                    try:
+                        amt = float(m.get("amount", 0))
+                    except (TypeError, ValueError):
+                        amt = 0.0
+                    amounts.append((key, amt))
+            for i in range(len(amounts) - 1):
+                higher_key, higher_amt = amounts[i]
+                lower_key, lower_amt = amounts[i + 1]
+                if higher_amt < lower_amt:
+                    label = row.get("name") or f"{row.get('startDate', '?')} - {row.get('endDate', '?')}"
+                    notes.append(
+                        f"⚠️ PRICE ORDER WARNING in '{label}': {higher_key} ({higher_amt}) is LOWER "
+                        f"than {lower_key} ({lower_amt}). This is almost certainly wrong — fewer "
+                        f"people sharing a room should mean a HIGHER per-person price, not lower. "
+                        f"Please check the source document.")
+
         row["price"] = cleaned
         out.append(row)
     return out

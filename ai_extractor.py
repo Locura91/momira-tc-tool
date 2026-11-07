@@ -627,7 +627,29 @@ Rules:
   Set to null/empty if the source describes a regular weekly/daily schedule instead - this field is ONLY
   for a genuinely irregular, explicitly enumerated date list. A human tool will turn this into the actual
   blocked-date (stop_sales) ranges between departures - do not also try to do that yourself in stop_sales.
-- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
+- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers.
+  ============================================================
+  FUNDAMENTAL DEFINITION - WHAT EACH PRICE SLOT MEANS (read this FIRST, before anything else):
+  Every price is PER PERSON - it is what ONE traveller pays when booking. The room type determines
+  how many people share the room cost:
+    - singlePrice = price ONE person pays occupying a room ALONE (they bear the FULL room cost)
+    - doublePrice = price ONE person pays when TWO people share a room (room cost / 2)
+    - triplePrice = price ONE person pays when THREE people share a room (room cost / 3)
+    - quadruplePrice = price ONE person pays when FOUR people share a room (room cost / 4)
+  The relationship between these prices follows directly from the math:
+    singlePrice >= doublePrice >= triplePrice >= quadruplePrice (ALWAYS, because fewer people
+    sharing = each person pays more). If your calculated prices violate this order, something is
+    wrong - re-read the source document.
+  EXAMPLE: a document says "Room rate: €1000 per room" for a 5-night tour:
+    singlePrice = 1000 (one person pays the full room)
+    doublePrice = 500  (two people split → 1000/2)
+    triplePrice = 334  (three people split → 1000/3 rounded up)
+    quadruplePrice = 250 (four people split → 1000/4)
+  NEVER set singlePrice LOWER than doublePrice. That would mean a person travelling alone pays
+  LESS than someone sharing - which makes no business sense and causes real financial loss: one
+  person could book the whole room at half the cost, and the operator covers the difference.
+  ============================================================
+  Use this EXACT shape for each entry (confirmed against the real API schema):
   {
     "name": "optional label, e.g. the season or date range description",
     "startDate": "YYYY-MM-DD",
