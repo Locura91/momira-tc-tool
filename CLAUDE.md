@@ -13,3 +13,11 @@ When building bulk update tools for **transport**, **transfers**, or **tickets**
 - Reason: applying granular per-quantity prices requires significant manual work and the difference is usually only €1–5, not worth it.
 
 **Summary rule**: display cheaper prices as a warning/hint, but the Apply action must leave prices unchanged (or apply the same existing price, not the cheaper one).
+
+## ClosedTour pricing structure (CRITICAL)
+
+When creating or building prices for a **ClosedTour**:
+
+- Prices may only be set for these occupancy types: **single room**, **double room**, **triple room**, **quadruple room**. No other occupancy types exist.
+- If prices differ by **date range** (e.g. high season vs low season), this must be handled by creating **separate modalities** (options), each with its own date range — NOT by adding multiple price rows within one modality.
+- Never try to encode seasonal price variation within a single modality's price list; the correct model is one modality per season/date range.
