@@ -525,15 +525,9 @@ def reset_session_keep_core():
 
 
 def _reset_mct_state():
-    """Clears all state for the single-ClosedTour create flow, ready to start over."""
+    """Clears all state for the multi-ClosedTour batch create flow, ready to start over."""
     for key in ["mct_phase", "mct_raw_text", "mct_candidates", "mct_doc_raw_images",
-               "mct_hosted_image_candidates", "mct_tour",
-               # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): the "Just published: X"
-               # success panel (and its "Add another Modality to this same ClosedTour" prefill)
-               # read these two keys, but they were only ever SET on a successful publish and
-               # never cleared here - so starting a genuinely new ClosedTour after a publish
-               # kept showing tour A's "just published" panel on tour B's screen, and "Add
-               # another Modality" on tour B would prefill tour A's code.
+               "mct_hosted_image_candidates", "mct_tour", "mct_queue", "mct_queue_index",
                "just_published_tour_code", "just_published_supplier_id"]:
         st.session_state.pop(key, None)
     # CONFIRMED BUG FIX (full-app audit MEDIUM (plausible), 2026-09-01): see the matching fix in
