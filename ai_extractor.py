@@ -627,6 +627,11 @@ Rules:
   Set to null/empty if the source describes a regular weekly/daily schedule instead - this field is ONLY
   for a genuinely irregular, explicitly enumerated date list. A human tool will turn this into the actual
   blocked-date (stop_sales) ranges between departures - do not also try to do that yourself in stop_sales.
+- tour_code: if the source document assigns its own reference code to this tour (e.g. "MYH-KUL-3D2N",
+  "SCITS-BJ01", "MD-SE17", "TBC2", a "Code" or "Ref" column value), extract it VERBATIM here. This will
+  be used as the modality code in Travel Compositor so the supplier can match automatic booking emails back
+  to their records. Only extract a code the document explicitly assigns — do not invent one. Leave empty
+  string if no code is given.
 - price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers.
   ============================================================
   FUNDAMENTAL DEFINITION - WHAT EACH PRICE SLOT MEANS (read this FIRST, before anything else):
@@ -722,16 +727,10 @@ Rules:
   Do NOT invent triplePrice or quadruplePrice by dividing by 3 or 4 - only fill those if the
   document actually prices triple or quadruple occupancy.
   ============================================================
-  QUADRUPLE PRICE DEFAULT RULE (product owner, 2026-11-07):
-  If the document does NOT explicitly state a quadruple room price, set quadruplePrice = doublePrice.
-  Rationale: a quadruple booking is typically two separate double rooms, so each person pays the
-  double-room per-person rate. This is a business default — only override it when the document
-  gives an explicit quadruple/quad rate.
-  ============================================================
-  TOUR CODE → MODALITY CODE RULE (product owner, 2026-11-07):
-  If the source document assigns a tour code (e.g. "MYH-KUL-3D2N", "SCITS-BJ01", "MD-SE17"),
-  that code MUST be used as the modality_code for the corresponding tour option. Do not invent
-  codes — use the document's own code verbatim. If no code is given, leave modality_code empty.
+  QUADRUPLE PRICE DEFAULT (code-enforced, product owner, 2026-11-07):
+  If the document does NOT explicitly state a quadruple room price, leave quadruplePrice EMPTY.
+  The builder code will automatically default it to doublePrice (a quad booking = two double rooms).
+  Only set quadruplePrice yourself when the document gives an explicit quad/quadruple rate.
   ============================================================
   TC 2-HOUR AIRPORT BUFFER RULE (product owner, 2026-11-07):
   Travel Compositor adds a 2-hour buffer between the tour timing and airport times:
@@ -826,7 +825,8 @@ Output this exact JSON structure:
   "price_list": [],
   "release_days_mentions": [],
   "guaranteed_departure_rule": null,
-  "fixed_departure_dates": null
+  "fixed_departure_dates": null,
+  "tour_code": ""
 }"""
 
 
@@ -2095,6 +2095,16 @@ CONFIRMED PRODUCT-OWNER RULE (2026-10-05): three additional hard rules that over
    Multiple price rows within that single Modality (different start/end dates, different occupancy prices)
    are always valid and expected - they are NOT separate Modalities.
 
+CONFIRMED PRODUCT-OWNER RULE (2026-11-07): GROUP-SIZE PRICING TIERS are a VALID reason for separate
+Modalities. Many DMCs price by total group size (e.g. "1 pax: €4330", "2-3 pax: €2460", "4-5 pax: €1870",
+"6-10 pax: €1650") where different group sizes get different per-person prices AND potentially different
+service levels (guide ratio, vehicle size). Each group-size bracket with a DIFFERENT price becomes a
+SEPARATE Modality with its own min/max occupancy. This is NOT the same as seasonal pricing (which stays
+in one Modality) — group-size tiers are about WHO books (how many people), not WHEN. For each tier,
+set suggested_code to a short label like "1pax", "2-3pax", "4-5pax" (or the document's own code if given),
+and include the min/max pax range in the label. Do NOT squeeze multiple group-size tiers into one Modality's
+price_list — that produces wrong prices because TC adds together overlapping price rows.
+
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing
 else. A real production error was caused by a suggested_code of "Standard English min. 2 people" (the
@@ -3244,6 +3254,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": [],
         "guaranteed_departure_rule": None, "fixed_departure_dates": None,
+        "tour_code": "",
     }
     # CONFIRMED REAL BUG: this used to be defaults.update(data), which is NOT None-safe - any
     # field Claude returns as JSON null OVERWRITES the safe default instead of falling back to
