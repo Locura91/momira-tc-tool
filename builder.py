@@ -5590,6 +5590,25 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     if "companyName" not in payload or payload.get("companyName") is None:
         payload["companyName"] = ""
 
+    # CONFIRMED REAL BUG (product owner, 2026-11-07): TC rejects CREATE with
+    # "Range Age not valid: minChildAge must be from 2 years and max age must be
+    # greater than min age" when the source transport has missing/invalid child age
+    # fields. A live GET can return 0/0 or omit these entirely; deepcopy carries
+    # that through unchanged. Fix: enforce TC's own floor (minChildAge >= 2,
+    # maxChildAge > minChildAge, minInfantAge >= 0, maxInfantAge >= minInfantAge).
+    min_child = payload.get("minChildAge")
+    max_child = payload.get("maxChildAge")
+    min_infant = payload.get("minInfantAge")
+    max_infant = payload.get("maxInfantAge")
+    if not isinstance(min_child, int) or min_child < 2:
+        payload["minChildAge"] = 2
+    if not isinstance(max_child, int) or max_child <= payload.get("minChildAge", 2):
+        payload["maxChildAge"] = 11
+    if not isinstance(min_infant, int) or min_infant < 0:
+        payload["minInfantAge"] = 0
+    if not isinstance(max_infant, int) or max_infant < payload.get("minInfantAge", 0):
+        payload["maxInfantAge"] = 2
+
     segments = payload.get("segments") or []
     old_departure_code = (segments[0].get("departureLocationCode") if segments else "") or ""
     old_arrival_code = (segments[-1].get("arrivalLocationCode") if segments else "") or ""
