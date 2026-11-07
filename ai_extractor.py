@@ -627,7 +627,34 @@ Rules:
   Set to null/empty if the source describes a regular weekly/daily schedule instead - this field is ONLY
   for a genuinely irregular, explicitly enumerated date list. A human tool will turn this into the actual
   blocked-date (stop_sales) ranges between departures - do not also try to do that yourself in stop_sales.
-- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers. Use this EXACT shape for each entry (confirmed against the real API schema):
+- tour_code: if the source document assigns its own reference code to this tour (e.g. "MYH-KUL-3D2N",
+  "SCITS-BJ01", "MD-SE17", "TBC2", a "Code" or "Ref" column value), extract it VERBATIM here. This will
+  be used as the modality code in Travel Compositor so the supplier can match automatic booking emails back
+  to their records. Only extract a code the document explicitly assigns — do not invent one. Leave empty
+  string if no code is given.
+- price_list: only populate this if the document contains an actual pricing table (dates + per-occupancy prices). If pricing is vague, marketing-only, or absent, return an empty list - do not guess numbers.
+  ============================================================
+  FUNDAMENTAL DEFINITION - WHAT EACH PRICE SLOT MEANS (read this FIRST, before anything else):
+  Every price is PER PERSON - it is what ONE traveller pays when booking. The room type determines
+  how many people share the room cost:
+    - singlePrice = price ONE person pays occupying a room ALONE (they bear the FULL room cost)
+    - doublePrice = price ONE person pays when TWO people share a room (room cost / 2)
+    - triplePrice = price ONE person pays when THREE people share a room (room cost / 3)
+    - quadruplePrice = price ONE person pays when FOUR people share a room (room cost / 4)
+  The relationship between these prices follows directly from the math:
+    singlePrice >= doublePrice >= triplePrice >= quadruplePrice (ALWAYS, because fewer people
+    sharing = each person pays more). If your calculated prices violate this order, something is
+    wrong - re-read the source document.
+  EXAMPLE: a document says "Room rate: €1000 per room" for a 5-night tour:
+    singlePrice = 1000 (one person pays the full room)
+    doublePrice = 500  (two people split → 1000/2)
+    triplePrice = 334  (three people split → 1000/3 rounded up)
+    quadruplePrice = 250 (four people split → 1000/4)
+  NEVER set singlePrice LOWER than doublePrice. That would mean a person travelling alone pays
+  LESS than someone sharing - which makes no business sense and causes real financial loss: one
+  person could book the whole room at half the cost, and the operator covers the difference.
+  ============================================================
+  Use this EXACT shape for each entry (confirmed against the real API schema):
   {
     "name": "optional label, e.g. the season or date range description",
     "startDate": "YYYY-MM-DD",
@@ -700,6 +727,58 @@ Rules:
   Do NOT invent triplePrice or quadruplePrice by dividing by 3 or 4 - only fill those if the
   document actually prices triple or quadruple occupancy.
   ============================================================
+  QUADRUPLE PRICE DEFAULT (code-enforced, product owner, 2026-11-07):
+  If the document does NOT explicitly state a quadruple room price, leave quadruplePrice EMPTY.
+  The builder code will automatically default it to doublePrice (a quad booking = two double rooms).
+  Only set quadruplePrice yourself when the document gives an explicit quad/quadruple rate.
+  ============================================================
+  TC 2-HOUR AIRPORT BUFFER RULE (product owner, 2026-11-07):
+  Travel Compositor adds a 2-hour buffer between the tour timing and airport times:
+    - If the document says "arrive at airport before 8:00 AM" → tour start_time = "10:00"
+    - If the document says "departure flight at 17:00" → tour end_time = "15:00"
+  Always subtract 2 hours from a stated flight departure to get end_time, and add 2 hours to a
+  stated airport arrival to get start_time. If the document gives actual tour start/end times
+  (not airport times), use those directly without adjustment.
+  ============================================================
+  PRICING VOCABULARY MAPPING (multi-language, derived from real DMC documents):
+  These terms from source documents map to TC price slots as follows:
+    English:
+      "Twin share" / "Double/Twin" / "Per person twin share" / "Per person in double" → doublePrice
+      "Triple share" / "Per person in triple" → triplePrice
+      "Single traveller" / "1 pax" (solo traveller, different pricing tier) → singlePrice
+        NOTE: "Single traveller" means a solo person needing their own tour/guide, NOT just a
+        single room supplement. It is typically much more expensive than doublePrice + supplement.
+      "Single room supplement" / "Single supplement" / "SRS" → ADD to doublePrice to get singlePrice
+    German:
+      "DZ" (Doppelzimmer) / "im DZ" / "pro Person im DZ" → doublePrice
+      "EZ" (Einzelzimmer) / "im EZ" → singlePrice (if given as full price)
+      "EZZ" (Einzelzimmerzuschlag) → single room supplement, ADD to doublePrice for singlePrice
+      "DRZ" (Dreibettzimmer) → triplePrice
+    French:
+      "chambre double" / "par personne en double" → doublePrice
+      "chambre single" / "supplément single" → singlePrice or supplement
+    General:
+      "Per cabin" / "Per suite" / "Per room" → this is the ROOM total, divide by occupancy count
+      "Per person" / "Per pax" / "pp" / "p.p." → already per-person, do NOT divide further
+  ============================================================
+  GROUP-SIZE TIERS → SEPARATE MODALITIES (derived from real DMC documents):
+  Many DMCs price by total group size (e.g. 1 pax / 2-3 pax / 4-6 pax / 7-10 pax). Each tier
+  with a DIFFERENT price becomes a SEPARATE modality (tour option) with its own min/max occupancy.
+  Example from a real Madagascar document:
+    - Modality 1: "1 person" → min=1, max=1, singlePrice=4330
+    - Modality 2: "2-3 people" → min=2, max=3, doublePrice=2460, singlePrice=2460+510=2970
+    - Modality 3: "4-5 people" → min=4, max=5, doublePrice=1870, singlePrice=1870+510=2380
+  Do NOT try to squeeze all tiers into one modality's price_list — that produces wrong prices.
+  Each tier's "per person" price maps to doublePrice (for group tiers of 2+), and singlePrice
+  = doublePrice + single supplement for that tier.
+  ============================================================
+  SEASONAL PRICING → SEPARATE PRICE_LIST ENTRIES (NOT separate modalities):
+  When the same tour has different prices for different seasons (e.g. Low/Peak/High season),
+  these go as separate entries in ONE modality's price_list array, each with its own date range.
+  Example: Low season (Nov-Dec) $150 double, Peak season (Dec-Jan) $230 double → two price_list
+  entries in the same modality, with non-overlapping date ranges.
+  Only create separate modalities when the GROUP SIZE or TOUR VARIANT differs, not for seasons.
+  ============================================================
   OCCUPANCIES MUST AGREE BETWEEN PRICES AND SUPPLEMENTS - CONFIRMED HOUSE RULE (product owner):
   "If no price in Triple or in Quadruple, there can't be any price for triple or quadruple in the
   supplement neither - it goes hand in hand." An occupancy that is not sold cannot carry a
@@ -746,7 +825,8 @@ Output this exact JSON structure:
   "price_list": [],
   "release_days_mentions": [],
   "guaranteed_departure_rule": null,
-  "fixed_departure_dates": null
+  "fixed_departure_dates": null,
+  "tour_code": ""
 }"""
 
 
@@ -2015,6 +2095,16 @@ CONFIRMED PRODUCT-OWNER RULE (2026-10-05): three additional hard rules that over
    Multiple price rows within that single Modality (different start/end dates, different occupancy prices)
    are always valid and expected - they are NOT separate Modalities.
 
+CONFIRMED PRODUCT-OWNER RULE (2026-11-07): GROUP-SIZE PRICING TIERS are a VALID reason for separate
+Modalities. Many DMCs price by total group size (e.g. "1 pax: €4330", "2-3 pax: €2460", "4-5 pax: €1870",
+"6-10 pax: €1650") where different group sizes get different per-person prices AND potentially different
+service levels (guide ratio, vehicle size). Each group-size bracket with a DIFFERENT price becomes a
+SEPARATE Modality with its own min/max occupancy. This is NOT the same as seasonal pricing (which stays
+in one Modality) — group-size tiers are about WHO books (how many people), not WHEN. For each tier,
+set suggested_code to a short label like "1pax", "2-3pax", "4-5pax" (or the document's own code if given),
+and include the min/max pax range in the label. Do NOT squeeze multiple group-size tiers into one Modality's
+price_list — that produces wrong prices because TC adds together overlapping price rows.
+
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing
 else. A real production error was caused by a suggested_code of "Standard English min. 2 people" (the
@@ -3164,6 +3254,7 @@ def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", varia
         "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
         "schedule_notes": "", "pricing_notes": "", "stop_sales": [], "price_list": [], "release_days_mentions": [],
         "guaranteed_departure_rule": None, "fixed_departure_dates": None,
+        "tour_code": "",
     }
     # CONFIRMED REAL BUG: this used to be defaults.update(data), which is NOT None-safe - any
     # field Claude returns as JSON null OVERWRITES the safe default instead of falling back to

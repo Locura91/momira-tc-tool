@@ -19,5 +19,16 @@ When building bulk update tools for **transport**, **transfers**, or **tickets**
 When creating or building prices for a **ClosedTour**:
 
 - Prices may only be set for these occupancy types: **single room**, **double room**, **triple room**, **quadruple room**. No other occupancy types exist.
-- If prices differ by **date range** (e.g. high season vs low season), this must be handled by creating **separate modalities** (options), each with its own date range — NOT by adding multiple price rows within one modality.
-- Never try to encode seasonal price variation within a single modality's price list; the correct model is one modality per season/date range.
+- **Seasonal pricing** (e.g. high season vs low season): one modality CAN have multiple price_list entries with **non-overlapping** date ranges. Different seasons = different rows in the same modality's price_list, NOT separate modalities.
+- **Separate modalities** are needed when the **tour variant or group size** differs (e.g. "2-3 pax" vs "4-6 pax" tiers, or "Standard" vs "Deluxe").
+- Date ranges within one modality must NEVER overlap — overlapping ranges require separate modalities.
+
+## ClosedTour pricing rules (derived from real DMC documents)
+
+- **Price ordering invariant**: singlePrice >= doublePrice >= triplePrice >= quadruplePrice ALWAYS (fewer people sharing = higher per-person cost).
+- **Quadruple price default**: if not explicitly stated, quadruplePrice = doublePrice (a quad booking = two double rooms). Code-enforced in builder.py.
+- **Single supplement**: singlePrice = doublePrice + single supplement. Never copy doublePrice as singlePrice unless the document explicitly waives the supplement.
+- **Per-night pricing**: multiply by number of nights before entering prices. A "per cabin" rate must be divided by occupancy count to get per-person price.
+- **Tour code → modality code**: if the document provides a tour code, use it as the modality_code.
+- **TC 2-hour airport buffer**: tour start_time = airport arrival + 2h; tour end_time = flight departure − 2h.
+- **Group-size tiers → separate modalities**: each group-size bracket (e.g. 1 pax, 2-3 pax, 4-6 pax) with different pricing = separate modality with min/max occupancy.

@@ -443,6 +443,44 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
                     f"price wildly wrong, e.g. free-plus-refund on a >100% discount).")
         if not any(k in cleaned for k in _MONEY_KEYS):
             continue
+
+        # PRICE ORDERING GUARD (product owner, 2026-11-07): singlePrice >= doublePrice >=
+        # triplePrice >= quadruplePrice ALWAYS, because fewer people sharing a room = each person
+        # pays more. A violation means the AI misread the document (e.g. treating a per-room total
+        # as a per-person price for single occupancy). Flag it loudly so the human catches it
+        # before publishing — a singlePrice lower than doublePrice means one person could book the
+        # room at less than half the cost, causing real financial loss.
+        if notes is not None:
+            amounts = []
+            for key in _MONEY_KEYS:
+                m = cleaned.get(key)
+                if m is not None and isinstance(m, dict):
+                    try:
+                        amt = float(m.get("amount", 0))
+                    except (TypeError, ValueError):
+                        amt = 0.0
+                    amounts.append((key, amt))
+            for i in range(len(amounts) - 1):
+                higher_key, higher_amt = amounts[i]
+                lower_key, lower_amt = amounts[i + 1]
+                if higher_amt < lower_amt:
+                    label = row.get("name") or f"{row.get('startDate', '?')} - {row.get('endDate', '?')}"
+                    notes.append(
+                        f"⚠️ PRICE ORDER WARNING in '{label}': {higher_key} ({higher_amt}) is LOWER "
+                        f"than {lower_key} ({lower_amt}). This is almost certainly wrong — fewer "
+                        f"people sharing a room should mean a HIGHER per-person price, not lower. "
+                        f"Please check the source document.")
+
+        # QUADRUPLE PRICE DEFAULT (product owner, 2026-11-07): if quadruplePrice is absent
+        # but doublePrice exists, default quadruplePrice = doublePrice (a quad booking is
+        # typically two double rooms, so each person pays the double-room rate).
+        if "quadruplePrice" not in cleaned and "doublePrice" in cleaned:
+            if max_occupancy_int is None or max_occupancy_int >= 4:
+                cleaned["quadruplePrice"] = dict(cleaned["doublePrice"])
+                if notes is not None:
+                    notes.append(
+                        "quadruplePrice defaulted to doublePrice (house rule: quad = two double rooms).")
+
         row["price"] = cleaned
         out.append(row)
     return out
@@ -5551,6 +5589,25 @@ def build_transport_swap_payload(existing_transport_payload: Dict[str, Any], api
     # airlineCode just above.
     if "companyName" not in payload or payload.get("companyName") is None:
         payload["companyName"] = ""
+
+    # CONFIRMED REAL BUG (product owner, 2026-11-07): TC rejects CREATE with
+    # "Range Age not valid: minChildAge must be from 2 years and max age must be
+    # greater than min age" when the source transport has missing/invalid child age
+    # fields. A live GET can return 0/0 or omit these entirely; deepcopy carries
+    # that through unchanged. Fix: enforce TC's own floor (minChildAge >= 2,
+    # maxChildAge > minChildAge, minInfantAge >= 0, maxInfantAge >= minInfantAge).
+    min_child = payload.get("minChildAge")
+    max_child = payload.get("maxChildAge")
+    min_infant = payload.get("minInfantAge")
+    max_infant = payload.get("maxInfantAge")
+    if not isinstance(min_child, int) or min_child < 2:
+        payload["minChildAge"] = 2
+    if not isinstance(max_child, int) or max_child <= payload.get("minChildAge", 2):
+        payload["maxChildAge"] = 11
+    if not isinstance(min_infant, int) or min_infant < 0:
+        payload["minInfantAge"] = 0
+    if not isinstance(max_infant, int) or max_infant < payload.get("minInfantAge", 0):
+        payload["maxInfantAge"] = 2
 
     segments = payload.get("segments") or []
     old_departure_code = (segments[0].get("departureLocationCode") if segments else "") or ""

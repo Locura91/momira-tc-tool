@@ -1930,7 +1930,12 @@ else:
         # "update_tour" needs the SAME "which existing Modality" semantics as
         # "update_option" now (see ACTION_FIELDS's comment) - both are asking for an
         # ALREADY-LIVE modality's code, not a brand-new one.
-        default_modality = st.session_state.get("check_modality_pick", "") if action in ("update_option", "update_tour") else ""
+        if action in ("update_option", "update_tour"):
+            default_modality = st.session_state.get("check_modality_pick", "")
+        else:
+            # Pre-fill from extracted tour_code when available (product owner, 2026-11-07:
+            # "if the document has a tour code, we must use this tour code for our modality code")
+            default_modality = (st.session_state.get("extracted") or {}).get("tour_code", "") or ""
         label = "Modality Code to update" if action in ("update_option", "update_tour") else "Unique Modality Code"
         modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise")
     if "on_request" in needed:
