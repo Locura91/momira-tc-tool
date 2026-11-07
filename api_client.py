@@ -491,6 +491,9 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
           - Exact/custom codes (e.g. 'ASW', 'EDF-2') -> direct GET by ID
           - Free-text names (e.g. 'Edfu', 'Kom Ombo') -> local match against
             the cached full destination list (exact -> substring -> fuzzy)
+          - "City, Country" format (e.g. 'Bangkok, Thailand') -> strips the
+            country suffix for name matching but uses it to prefer the right
+            match when multiple TC destinations share the same city name.
 
         Returns: {"tc_code": str, "name": str, "valid": bool, ...}
         """
@@ -498,8 +501,20 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
         if not clean_query:
             return {"tc_code": None, "name": None, "valid": False}
 
-        # 1. Direct code lookup
-        code_candidate = clean_query.upper()
+        # Detect "City, Country" format produced by the AI extractor.
+        # The country hint is used ONLY to rank candidates - it never blocks a
+        # match if no country-matching destination exists (graceful fallback).
+        country_hint = None
+        name_part = clean_query
+        if "," in clean_query:
+            parts = clean_query.rsplit(",", 1)
+            if len(parts) == 2 and parts[1].strip():
+                name_part = parts[0].strip()
+                country_hint = parts[1].strip().lower()
+
+        # 1. Direct code lookup (uses name_part so "BKK, Thailand" doesn't send
+        #    "BKK, THAILAND" as the code when the user types a code with a comma)
+        code_candidate = name_part.upper()
         url_direct = f"{self.api_base_url}/destination/{self.microsite_id}/{code_candidate}"
         try:
             res = self._request("GET", url_direct, params={"lang": "EN"})
@@ -519,34 +534,50 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
             print(f"⚠️ Could not fetch destination list: {e}")
             destinations = []
 
-        query_lower = clean_query.lower()
+        query_lower = name_part.lower()
+
+        def _country_matches(dest: dict) -> bool:
+            if not country_hint:
+                return False
+            dest_country = (dest.get("country") or "").lower()
+            return country_hint in dest_country or dest_country in country_hint
+
+        def _best_of(candidates: list) -> dict:
+            # Prefer a destination whose country field matches the hint.
+            if country_hint:
+                country_matches = [d for d in candidates if _country_matches(d)]
+                if country_matches:
+                    return country_matches[0]
+            return candidates[0]
 
         # 2a. Exact name match
-        for dest in destinations:
-            if dest.get("name", "").strip().lower() == query_lower:
-                code, name = dest.get("code"), dest.get("name")
-                print(f"✅ RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
-                return {"tc_code": code, "name": name, "valid": True, "match_type": "exact_name"}
+        exact = [d for d in destinations if d.get("name", "").strip().lower() == query_lower]
+        if exact:
+            best = _best_of(exact)
+            code, name = best.get("code"), best.get("name")
+            print(f"✅ RESOLVED (exact name): '{clean_query}' -> {code} ({name})")
+            return {"tc_code": code, "name": name, "valid": True, "match_type": "exact_name"}
 
         # 2b. Substring match
         matches = [d for d in destinations if query_lower in d.get("name", "").lower()]
         if matches:
-            best = matches[0]
+            best = _best_of(matches)
             code, name = best.get("code"), best.get("name")
             print(f"✅ RESOLVED (partial name, {len(matches)} candidates): '{clean_query}' -> {code} ({name})")
             return {"tc_code": code, "name": name, "valid": True, "match_type": "partial_name", "alternatives": len(matches)}
 
-        # 2c. Fuzzy fallback (typos)
+        # 2c. Fuzzy fallback (typos) - only on the name part, not the country suffix
         names = [d.get("name", "") for d in destinations if d.get("name")]
-        close = difflib.get_close_matches(clean_query, names, n=1, cutoff=0.75)
+        close = difflib.get_close_matches(name_part, names, n=3, cutoff=0.75)
         if close:
-            best = next(d for d in destinations if d.get("name") == close[0])
+            candidates = [d for d in destinations if d.get("name") in close]
+            best = _best_of(candidates)
             code, name = best.get("code"), best.get("name")
             print(f"✅ RESOLVED (fuzzy): '{clean_query}' -> {code} ({name})")
             return {"tc_code": code, "name": name, "valid": True, "match_type": "fuzzy"}
 
         print(f"⚠️ Destination '{clean_query}' not found anywhere. Flagging as invalid.")
-        return {"tc_code": code_candidate, "name": clean_query, "valid": False, "match_type": "none"}
+        return {"tc_code": code_candidate, "name": name_part, "valid": False, "match_type": "none"}
 
     def lookup_destination_code(self, destination_id: str) -> str:
         """
