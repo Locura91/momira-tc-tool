@@ -471,6 +471,16 @@ def normalize_price_list(rows, currency, fallback_child_discount_percentage=None
                         f"people sharing a room should mean a HIGHER per-person price, not lower. "
                         f"Please check the source document.")
 
+        # QUADRUPLE PRICE DEFAULT (product owner, 2026-11-07): if quadruplePrice is absent
+        # but doublePrice exists, default quadruplePrice = doublePrice (a quad booking is
+        # typically two double rooms, so each person pays the double-room rate).
+        if "quadruplePrice" not in cleaned and "doublePrice" in cleaned:
+            if max_occupancy_int is None or max_occupancy_int >= 4:
+                cleaned["quadruplePrice"] = dict(cleaned["doublePrice"])
+                if notes is not None:
+                    notes.append(
+                        "quadruplePrice defaulted to doublePrice (house rule: quad = two double rooms).")
+
         row["price"] = cleaned
         out.append(row)
     return out
