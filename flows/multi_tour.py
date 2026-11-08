@@ -26,7 +26,7 @@ from document_reader import extract_raw_text, extract_images
 from document_reader import scanned_document_warning as document_reader_scanned_warning
 from ai_extractor import (
     apply_clarification, detect_multiple_modalities, detect_tour_variants,
-    extract_modality_data, extract_structured_data, friendly_error_message,
+    extract_closed_tour_main_info, extract_modality_data, extract_structured_data, friendly_error_message,
     min_pax_forces_on_request, min_pax_guaranteed_departure_note,
 )
 from pexels_client import search_images
@@ -311,7 +311,7 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
             variant_hint = tour["label"] if tour.get("is_genuine_variant") else None
             with st.spinner(f"Extracting tour details{f' focused on ' + repr(tour['label']) if variant_hint else ''}..."):
                 try:
-                    tour["main_data"] = extract_structured_data(
+                    tour["main_data"] = extract_closed_tour_main_info(
                         _extraction_text, variant_hint=variant_hint,
                         human_hint=with_learned_guidance(supplier_id, "ClosedTour", extraction_hint),
                         max_occupancy_hint=max_pax if max_pax and max_pax < 9 else None,
