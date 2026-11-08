@@ -762,15 +762,20 @@ Rules:
       "Per person" / "Per pax" / "pp" / "p.p." → already per-person, do NOT divide further
   ============================================================
   GROUP-SIZE TIERS → OCCUPANCY PRICES IN ONE MODALITY (CORRECTED 2026-11-08):
-  Many DMCs price by total group size (e.g. 1 pax / 2-3 pax / 4-6 pax). These are NOT separate
-  modalities — they map to room occupancy prices within ONE modality:
-    - "1 pax" tier → singlePrice
-    - "2 pax" or "2-3 pax" tier → doublePrice (use the 2-pax price)
-    - "3 pax" or "3-4 pax" tier → triplePrice (use the 3-pax price)
-    - "4 pax" or "4+ pax" tier → quadruplePrice (use the 4-pax price)
-  Any tier above 4 pax is informational only — note it in pricing_notes but do NOT create extra
-  modalities or price entries. Max passengers per booking is 9. Single supplement still applies:
-  singlePrice = doublePrice + single supplement when a supplement is stated.
+  Many DMCs price by total group size (e.g. "1 | 2-3 | 4-6 | 7-10 | 11-14 | 15+").
+  These are NOT separate modalities and NOT separate price_list rows. They map to the 4
+  occupancy price slots within ONE SINGLE price_list entry:
+    - "1" / "1 pax" column → singlePrice (+ single supplement if stated separately)
+    - "2-3" / "2 pax" column → BOTH doublePrice AND triplePrice (same price, because
+      2 and 3 are in the same tier, so per-person cost is identical)
+    - "4-6" / "4-8" / "4 pax" column → quadruplePrice
+  Tiers above 4 pax (7-10, 11-14, 15+, 20+) are INFORMATIONAL ONLY — note them in
+  pricing_notes but NEVER create price_list rows for them.
+  REAL EXAMPLE: document shows "1=1092, 2-3=736, 4-6=708, 7-10=704, 11-14=695, 15+=695"
+  → ONE price_list entry: singlePrice=1092, doublePrice=736, triplePrice=736, quadruplePrice=708.
+  The 7-10/11-14/15+ tiers go in pricing_notes only.
+  CRITICAL: this produces exactly ONE price_list entry per date range, with all 4 prices
+  in its price object. NEVER create separate price_list rows named "1 pax", "2-3 pax" etc.
   ============================================================
   SEASONAL PRICING → SEPARATE PRICE_LIST ENTRIES (NOT separate modalities):
   When the same tour has different prices for different seasons (e.g. Low/Peak/High season),
@@ -787,7 +792,7 @@ Rules:
   too, and the same for quadruple. This is checked automatically before publishing, but extract
   it correctly in the first place rather than relying on that.
   ============================================================
-  IMPORTANT - occupancy/group-size-tiered pricing tables (columns like "1", "2", "3-5", "6-8", "9-14", "15-up" showing per-person price by TOTAL group size, not room-sharing): this schema only has 4 slots (single/double/triple/quadruple) tied to room-sharing, so a table with more than 4 tiers CANNOT be fully represented. Map tiers onto slots by closest fit: the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, the tier containing "4" (or the next one up) -> quadruplePrice, "1" -> singlePrice (omit if the source says N/A for 1 pax). Any tier beyond quadruple (e.g. "9-14", "15-up") CANNOT be included in price_list - instead, describe exactly what was approximated and what had to be dropped (with the real numbers) in the pricing_notes field, so a human can review before publishing. Never silently lose pricing information without flagging it there.
+  IMPORTANT - occupancy/group-size-tiered pricing tables (columns like "1", "2-3", "4-6", "7-10", "11-14", "15+" showing per-person price by TOTAL group size): map to the 4 occupancy slots as described in the GROUP-SIZE TIERS section above. "1" → singlePrice, the tier containing 2-3 → BOTH doublePrice AND triplePrice (same amount), the tier containing 4 → quadruplePrice. Tiers above 4 pax are informational — describe them in pricing_notes. All 4 prices go into ONE price_list entry per date range. NEVER create separate price_list rows for different group-size tiers.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into the price object of ONE SINGLE price_list entry - NEVER create multiple separate entries that share the same or overlapping startDate/endDate just to hold different occupancy tiers. Travel Compositor ADDS TOGETHER the prices from any entries with overlapping dates within one option, so multiple rows for the same period would silently produce a wrong, inflated total price. Only create a NEW entry when the dates genuinely change (e.g. a different season).
 - pricing_notes: leave empty UNLESS you had to approximate or drop something while fitting an occupancy/group-size pricing table into the 4-slot Distribution schema (see above) - in that case, explain exactly what was mapped where and what was dropped, including the real numbers, so the human can catch and adjust it.
 - release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
@@ -2768,7 +2773,15 @@ Extract ONLY:
       "quadrupleChildPercentageDiscount": 0
     }
   }
-  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
+  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate.
+  GROUP-SIZE TIER MAPPING (CRITICAL — CORRECTED 2026-11-08): if the pricing table has columns by group size (e.g. "1 | 2-3 | 4-6 | 7-10 | 11-14 | 15+"), create exactly ONE price_list entry per date range with all 4 occupancy prices mapped as follows:
+    - "1" column → singlePrice (or use 1-pax price + single supplement if supplement is stated separately)
+    - "2-3" column (or whichever tier contains 2 and 3) → BOTH doublePrice AND triplePrice (SAME amount — 2 and 3 pax are in the same pricing tier so per-person cost is identical)
+    - "4-6" / "4-8" column (whichever tier contains 4) → quadruplePrice
+    - Tiers above 4 pax (7-10, 11-14, 15+, 20+) → INFORMATIONAL ONLY, describe in pricing_notes
+  REAL EXAMPLE: "1=1260, 2-3=840, 4-8=824, Single Supplement=130"
+  → ONE entry: singlePrice=1390 (1260+130), doublePrice=840, triplePrice=840, quadruplePrice=824.
+  NEVER create separate price_list rows named "1 pax", "2-3 pax", "4-8 pax" etc. — that is WRONG and produces inflated prices because TC adds overlapping rows together.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
   singleChildPercentageDiscount/doubleChildPercentageDiscount/tripleChildPercentageDiscount/
   quadrupleChildPercentageDiscount: same value as this Modality's stated child_discount_percentage
@@ -2924,7 +2937,15 @@ Extract:
       "quadrupleChildPercentageDiscount": 0
     }
   }
-  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate. If pricing is a group-size-tiered table (columns like "1","2","3-5","6-8" showing per-person price by TOTAL group size), map the "2" tier -> doublePrice, the tier containing "3" -> triplePrice, "4"-or-higher -> quadruplePrice, "1" -> singlePrice (omit if N/A) - this schema only has 4 slots, so describe anything that had to be dropped/approximated in pricing_notes.
+  If the document only gives a single arrival date per row (not a range), use that same date for both startDate and endDate.
+  GROUP-SIZE TIER MAPPING (CRITICAL — CORRECTED 2026-11-08): if the pricing table has columns by group size (e.g. "1 | 2-3 | 4-6 | 7-10 | 11-14 | 15+"), create exactly ONE price_list entry per date range with all 4 occupancy prices mapped as follows:
+    - "1" column → singlePrice (or use 1-pax price + single supplement if supplement is stated separately)
+    - "2-3" column (or whichever tier contains 2 and 3) → BOTH doublePrice AND triplePrice (SAME amount — 2 and 3 pax are in the same pricing tier so per-person cost is identical)
+    - "4-6" / "4-8" column (whichever tier contains 4) → quadruplePrice
+    - Tiers above 4 pax (7-10, 11-14, 15+, 20+) → INFORMATIONAL ONLY, describe in pricing_notes
+  REAL EXAMPLE: "1=1260, 2-3=840, 4-8=824, Single Supplement=130"
+  → ONE entry: singlePrice=1390 (1260+130), doublePrice=840, triplePrice=840, quadruplePrice=824.
+  NEVER create separate price_list rows named "1 pax", "2-3 pax", "4-8 pax" etc. — that is WRONG and produces inflated prices because TC adds overlapping rows together.
   CRITICAL: singlePrice/doublePrice/triplePrice/quadruplePrice for the SAME date range MUST all go into ONE price_list entry - never create multiple entries with the same/overlapping dates (Travel Compositor ADDS prices together for overlapping-date entries within one option).
   singleChildPercentageDiscount/doubleChildPercentageDiscount/tripleChildPercentageDiscount/
   quadrupleChildPercentageDiscount: same value as this Modality's stated child_discount_percentage
