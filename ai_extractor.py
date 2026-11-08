@@ -3193,6 +3193,119 @@ def extract_option_only_data(raw_text: str, model: str = "claude-sonnet-5", huma
     return data
 
 
+_CLOSED_TOUR_MAIN_INFO_PRICING_OVERRIDE = """
+
+=== OVERRIDE FOR THIS EXTRACTION STEP ===
+This is the FIRST extraction step (main info only). Do NOT extract any pricing data.
+Specifically:
+- price_list: return an EMPTY list []. Pricing will be extracted in a separate, later step.
+- pricing_notes: return an empty string "".
+- release_days_mentions: return an EMPTY list [].
+Skip all price_list rules, seasonal pricing rules, per-night calculations, single supplement
+calculations, and occupancy price math from the instructions above — none of that applies here.
+Extract EVERYTHING ELSE as instructed (tour_name, description, itinerary, hotels, supplements,
+included/excluded, policies, schedule, stop_sales, etc.).
+"""
+
+CLOSED_TOUR_MAIN_INFO_SYSTEM_PROMPT = EXTRACTION_SYSTEM_PROMPT + _CLOSED_TOUR_MAIN_INFO_PRICING_OVERRIDE
+
+CLOSED_TOUR_MAIN_INFO_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {k: v for k, v in EXTRACTION_TOOL_SCHEMA["properties"].items()
+                   if k not in ("price_list", "pricing_notes", "release_days_mentions")},
+    "required": [k for k in EXTRACTION_TOOL_SCHEMA["required"]
+                 if k not in ("price_list", "pricing_notes", "release_days_mentions")],
+}
+
+
+def extract_closed_tour_main_info(raw_text: str, model: str = "claude-sonnet-5",
+                                  variant_hint: str = None, human_hint: str = None,
+                                  max_occupancy_hint=None) -> dict:
+    """Extract ClosedTour MAIN info only (name/description/itinerary/hotels/supplements/policies/
+    schedule) — deliberately excludes pricing fields (price_list/pricing_notes/release_days_mentions),
+    which are extracted separately by extract_modality_data() in a later step.
+
+    CONFIRMED PRODUCT-OWNER REQUEST: split extraction into steps so multi-tour batch uploads are
+    fast — main info uses fewer tokens and completes quickly, pricing happens one-modality-at-a-time
+    during the modality review phase."""
+    user_content = raw_text
+    prefix_parts = []
+    if variant_hint:
+        prefix_parts.append(
+            f"IMPORTANT: This document describes MULTIPLE tour variants. "
+            f"Extract ONLY the following variant, and completely ignore any other "
+            f"variant/itinerary mentioned elsewhere in the text: {variant_hint}"
+        )
+    _occupancy_clause = _max_occupancy_focus_clause(max_occupancy_hint)
+    if _occupancy_clause:
+        prefix_parts.append(_occupancy_clause)
+    if human_hint:
+        prefix_parts.append(f"IMPORTANT - human guidance for this extraction: {human_hint}")
+    if prefix_parts:
+        user_content = "\n\n".join(prefix_parts) + f"\n\n--- Source content ---\n{raw_text}"
+
+    print(f"🤖 Extracting main info via Claude ({model})..."
+          + (f" [variant: {variant_hint}]" if variant_hint else ""))
+
+    data = _call_claude(CLOSED_TOUR_MAIN_INFO_SYSTEM_PROMPT, user_content, model, max_tokens=8192,
+                       input_schema=CLOSED_TOUR_MAIN_INFO_TOOL_SCHEMA)
+
+    defaults = {
+        "tour_name": "", "description": "", "hotels_text": "", "hotels_count": 1, "supplements": [], "included": "",
+        "excluded": "", "meeting_point": "", "policy_remarks": "", "park_fee_notes": "", "what_to_bring": "",
+        "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+        "itinerary_destinations": [], "nights": 0, "start_time": "", "end_time": "", "min_child_age": 2, "max_child_age": 12,
+        "child_discount_percentage": None,
+        "extra_child_allowed": True,
+        "extra_child_max_overrides": {"single": None, "double": None, "triple": None, "quadruple": None},
+        "max_occupancy": None,
+        "operational_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+        "schedule_notes": "", "stop_sales": [],
+        "guaranteed_departure_rule": None, "fixed_departure_dates": None,
+        "tour_code": "",
+        # Pricing fields — always empty from this step, populated later by extract_modality_data
+        "pricing_notes": "", "price_list": [], "release_days_mentions": [],
+    }
+    for key, default in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default
+
+    # Same safety net as extract_structured_data: retry if name/description empty
+    missing_required = [f for f in ("tour_name", "description") if not (data.get(f) or "").strip()]
+    if missing_required:
+        retry_content = (
+            user_content
+            + f"\n\nIMPORTANT CORRECTION NEEDED: your previous extraction left "
+              f"{' and '.join(missing_required)} empty. Neither may ever be blank - look again at "
+              f"the ENTIRE source above and build a real value for each from whatever facts it "
+              f"actually contains (a title, heading, or the activity/city/duration described), "
+              f"per the rules already given for these fields. Do not invent facts that aren't in "
+              f"the source, but do not return an empty string either - every real document has "
+              f"enough in it to write from."
+        )
+        retry_data = _call_claude(CLOSED_TOUR_MAIN_INFO_SYSTEM_PROMPT, retry_content, model, max_tokens=8192,
+                                  input_schema=CLOSED_TOUR_MAIN_INFO_TOOL_SCHEMA)
+        for field in missing_required:
+            new_value = (retry_data.get(field) or "").strip()
+            if new_value:
+                data[field] = new_value
+
+    if not (data.get("tour_name") or "").strip() and variant_hint:
+        data["tour_name"] = variant_hint.strip()
+
+    if not (data.get("description") or "").strip():
+        _desc_name = (data.get("tour_name") or variant_hint or "This tour").strip()
+        data["description"] = f"<p>{_desc_name}.</p>"
+
+    data["cancellation_policy_tiers"] = _sanitize_cancellation_tiers(data.get("cancellation_policy_tiers"))
+
+    _apply_guaranteed_departure_rule(data)
+    _apply_fixed_departure_dates(data)
+    _drop_incomplete_stop_sales_entries(data)
+
+    return data
+
+
 def extract_structured_data(raw_text: str, model: str = "claude-sonnet-5", variant_hint: str = None,
                              human_hint: str = None, max_occupancy_hint=None) -> dict:
     """
