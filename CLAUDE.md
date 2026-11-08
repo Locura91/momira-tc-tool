@@ -20,7 +20,7 @@ When creating or building prices for a **ClosedTour**:
 
 - Prices may only be set for these occupancy types: **single room**, **double room**, **triple room**, **quadruple room**. No other occupancy types exist.
 - **Seasonal pricing** (e.g. high season vs low season): one modality CAN have multiple price_list entries with **non-overlapping** date ranges. Different seasons = different rows in the same modality's price_list, NOT separate modalities.
-- **Separate modalities** are needed when the **tour variant or group size** differs (e.g. "2-3 pax" vs "4-6 pax" tiers, or "Standard" vs "Deluxe").
+- **Separate modalities** are needed ONLY when the **type of service** differs (e.g. "Standard" vs "Deluxe" cabin, English vs German guide). NOT for group-size pricing tiers.
 - Date ranges within one modality must NEVER overlap — overlapping ranges require separate modalities.
 
 ## ClosedTour pricing rules (derived from real DMC documents)
@@ -31,4 +31,4 @@ When creating or building prices for a **ClosedTour**:
 - **Per-night pricing**: multiply by number of nights before entering prices. A "per cabin" rate must be divided by occupancy count to get per-person price.
 - **Tour code → modality code**: if the document provides a tour code, use it as the modality_code.
 - **TC 2-hour airport buffer**: tour start_time = airport arrival + 2h; tour end_time = flight departure − 2h.
-- **Group-size tiers → separate modalities**: each group-size bracket (e.g. 1 pax, 2-3 pax, 4-6 pax) with different pricing = separate modality with min/max occupancy.
+- **Group-size tiers → occupancy prices, NOT separate modalities**: DMC documents often list per-group-size prices (1 pax, 2-3 pax, 4-6 pax). These map to singlePrice/doublePrice/triplePrice/quadruplePrice within ONE modality. Max 9 passengers per booking. Tiers beyond 4 pax are informational only.

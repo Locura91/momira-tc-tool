@@ -761,23 +761,24 @@ Rules:
       "Per cabin" / "Per suite" / "Per room" → this is the ROOM total, divide by occupancy count
       "Per person" / "Per pax" / "pp" / "p.p." → already per-person, do NOT divide further
   ============================================================
-  GROUP-SIZE TIERS → SEPARATE MODALITIES (derived from real DMC documents):
-  Many DMCs price by total group size (e.g. 1 pax / 2-3 pax / 4-6 pax / 7-10 pax). Each tier
-  with a DIFFERENT price becomes a SEPARATE modality (tour option) with its own min/max occupancy.
-  Example from a real Madagascar document:
-    - Modality 1: "1 person" → min=1, max=1, singlePrice=4330
-    - Modality 2: "2-3 people" → min=2, max=3, doublePrice=2460, singlePrice=2460+510=2970
-    - Modality 3: "4-5 people" → min=4, max=5, doublePrice=1870, singlePrice=1870+510=2380
-  Do NOT try to squeeze all tiers into one modality's price_list — that produces wrong prices.
-  Each tier's "per person" price maps to doublePrice (for group tiers of 2+), and singlePrice
-  = doublePrice + single supplement for that tier.
+  GROUP-SIZE TIERS → OCCUPANCY PRICES IN ONE MODALITY (CORRECTED 2026-11-08):
+  Many DMCs price by total group size (e.g. 1 pax / 2-3 pax / 4-6 pax). These are NOT separate
+  modalities — they map to room occupancy prices within ONE modality:
+    - "1 pax" tier → singlePrice
+    - "2 pax" or "2-3 pax" tier → doublePrice (use the 2-pax price)
+    - "3 pax" or "3-4 pax" tier → triplePrice (use the 3-pax price)
+    - "4 pax" or "4+ pax" tier → quadruplePrice (use the 4-pax price)
+  Any tier above 4 pax is informational only — note it in pricing_notes but do NOT create extra
+  modalities or price entries. Max passengers per booking is 9. Single supplement still applies:
+  singlePrice = doublePrice + single supplement when a supplement is stated.
   ============================================================
   SEASONAL PRICING → SEPARATE PRICE_LIST ENTRIES (NOT separate modalities):
   When the same tour has different prices for different seasons (e.g. Low/Peak/High season),
   these go as separate entries in ONE modality's price_list array, each with its own date range.
   Example: Low season (Nov-Dec) $150 double, Peak season (Dec-Jan) $230 double → two price_list
   entries in the same modality, with non-overlapping date ranges.
-  Only create separate modalities when the GROUP SIZE or TOUR VARIANT differs, not for seasons.
+  Only create separate modalities when the TOUR VARIANT or SERVICE TYPE differs, not for seasons
+  or group size.
   ============================================================
   OCCUPANCIES MUST AGREE BETWEEN PRICES AND SUPPLEMENTS - CONFIRMED HOUSE RULE (product owner):
   "If no price in Triple or in Quadruple, there can't be any price for triple or quadruple in the
@@ -2095,15 +2096,14 @@ CONFIRMED PRODUCT-OWNER RULE (2026-10-05): three additional hard rules that over
    Multiple price rows within that single Modality (different start/end dates, different occupancy prices)
    are always valid and expected - they are NOT separate Modalities.
 
-CONFIRMED PRODUCT-OWNER RULE (2026-11-07): GROUP-SIZE PRICING TIERS are a VALID reason for separate
-Modalities. Many DMCs price by total group size (e.g. "1 pax: €4330", "2-3 pax: €2460", "4-5 pax: €1870",
-"6-10 pax: €1650") where different group sizes get different per-person prices AND potentially different
-service levels (guide ratio, vehicle size). Each group-size bracket with a DIFFERENT price becomes a
-SEPARATE Modality with its own min/max occupancy. This is NOT the same as seasonal pricing (which stays
-in one Modality) — group-size tiers are about WHO books (how many people), not WHEN. For each tier,
-set suggested_code to a short label like "1pax", "2-3pax", "4-5pax" (or the document's own code if given),
-and include the min/max pax range in the label. Do NOT squeeze multiple group-size tiers into one Modality's
-price_list — that produces wrong prices because TC adds together overlapping price rows.
+CONFIRMED PRODUCT-OWNER RULE (2026-11-08, CORRECTS 2026-11-07): GROUP-SIZE PRICING TIERS are NEVER
+a reason for separate Modalities. Many DMCs price by total group size (e.g. "1 pax: €500", "2-3 pax: €400",
+"4-6 pax: €350") — these are NOT separate Modalities. They map to the ROOM OCCUPANCY prices within ONE
+Modality: 1 pax → singlePrice, 2 pax → doublePrice, 3 pax → triplePrice, 4 pax → quadruplePrice.
+Maximum passengers is always 9 per booking. Group-size tiers beyond 4 pax are informational only and
+should be noted in pricing_notes but NOT create extra Modalities. A Modality distinguishes the TYPE
+OF SERVICE (hotel class, cabin type, guide language), never the NUMBER OF PEOPLE. If the ONLY difference
+between two rows is the number of people traveling, they belong in ONE Modality as occupancy prices.
 
 CRITICAL - CONFIRMED REAL FAILURE TO AVOID: "suggested_code" gets sent DIRECTLY to Travel Compositor's
 API as the Modality's identifier - it must be SHORT and CLEAN, just the category name itself, nothing
