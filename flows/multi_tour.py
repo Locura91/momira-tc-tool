@@ -14,6 +14,7 @@ defined in its own namespace, so `from app import ...` resolves correctly despit
 import shape.
 """
 import os
+import re
 import copy
 import tempfile
 import pandas as pd
@@ -130,6 +131,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                         candidates = []
                         for i, uploaded in enumerate(uploaded_files):
                             label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
+                            # Strip trailing hash suffixes from filenames (e.g. "dead8f7c", "1c94d88b (1)")
+                            label = re.sub(r'\s+[0-9a-f]{6,8}(?:\s*\(\d+\))?\s*$', '', label, flags=re.IGNORECASE).strip()
                             candidates.append({
                                 "label": label, "nights": None,
                                 "is_genuine_variant": False,

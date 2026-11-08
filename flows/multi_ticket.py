@@ -110,6 +110,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         candidates = []
                         for i, uploaded in enumerate(tk_files):
                             label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
+                            # Strip trailing hash suffixes from filenames (e.g. "dead8f7c", "1c94d88b (1)")
+                            label = re.sub(r'\s+[0-9a-f]{6,8}(?:\s*\(\d+\))?\s*$', '', label, flags=re.IGNORECASE).strip()
                             _modality_code = _clean_modality_code(label) or "Standard"
                             candidates.append({
                                 "label": label,
