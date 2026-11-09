@@ -41,6 +41,7 @@ from travelcompositor_api import TravelCompositorAPI as TranslationTCAPI
 from translator import get_translator, required_api_key_env_var
 from state_store import StateStore
 from ui_components import is_active_supplier
+import platform_store as _ps
 
 from sync_holiday_package import sync_holiday_package, sync_all_holiday_packages
 from sync_ticket import (
@@ -144,6 +145,21 @@ def _scope_picker(entity_label, specific_label, example, key_prefix):
     return is_all, specific_value, limit
 
 
+_CT_CODES_NS = "known_closed_tour_codes"
+
+
+def remember_closed_tour_code(supplier_id: str, code: str, name: str = ""):
+    """Store a closed tour code so the translation picker can suggest it later."""
+    existing = _ps.get(_CT_CODES_NS, supplier_id) or {}
+    existing[code] = name or existing.get(code, "")
+    _ps.set(_CT_CODES_NS, supplier_id, existing)
+
+
+def get_known_closed_tour_codes(supplier_id: str) -> dict:
+    """Returns {code: name} of all closed tour codes ever seen for this supplier."""
+    return _ps.get(_CT_CODES_NS, supplier_id) or {}
+
+
 def _closed_tour_manual_picker(supplier_id):
     """Fallback for _closed_tour_bulk_picker below, used only when the real listing call
     (TranslationTCAPI.get_closed_tours) fails - paste the known codes and fetch each one by
@@ -153,6 +169,18 @@ def _closed_tour_manual_picker(supplier_id):
 
     Returns the list of currently-checked Closed Tour codes.
     """
+    known = get_known_closed_tour_codes(supplier_id)
+    if known:
+        st.caption(f"📋 **{len(known)} previously used code(s)** for this supplier:")
+        _kc_col1, _kc_col2 = st.columns([4, 1])
+        with _kc_col1:
+            for _kc, _kn in sorted(known.items()):
+                st.write(f"`{_kc}`{' — ' + _kn if _kn else ''}")
+        with _kc_col2:
+            if st.button("Fill all ↓", key="tr_ct_fill_known"):
+                st.session_state["tr_ct_codes_raw"] = "\n".join(sorted(known.keys()))
+                st.rerun()
+
     raw_codes = st.text_area("Closed Tour codes", key="tr_ct_codes_raw", height=100,
                              placeholder="TNR-03\nASW-CT1\nCAI-CT2")
     pasted_codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
@@ -166,8 +194,10 @@ def _closed_tour_manual_picker(supplier_id):
                 candidates.append({"code": code, "name": None, "found": False,
                                    "detail": describe_tc_fetch_error(entry, f"closed tour {code!r}")})
             else:
-                candidates.append({"code": code, "name": _label_for_closed_tour(entry, "ClosedTour"),
+                _ct_name = _label_for_closed_tour(entry, "ClosedTour")
+                candidates.append({"code": code, "name": _ct_name,
                                    "found": True, "detail": None})
+                remember_closed_tour_code(supplier_id, code, _ct_name)
         st.session_state.tr_ct_candidates = candidates
         st.session_state.tr_ct_candidates_supplier = supplier_id
         for c in candidates:
@@ -706,6 +736,7 @@ def render_translation_tool():
                         skipped = sum(1 for r in result["options"] if r.get("status") == "skipped")
                         log_message(f"      Options: {len(result['options'])} total, {up_to_date} up-to-date, "
                                     f"{updated} updated, {skipped} skipped")
+                    remember_closed_tour_code(supplier_id, code, result.get("name", ""))
                 results.append(result)
                 log_message(f"   ✅ Finished closed tour {code}")
             progress_placeholder.empty()

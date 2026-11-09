@@ -3170,6 +3170,8 @@ if st.session_state.extracted:
                             # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see
                             # mark_code_as_taken's docstring.
                             mark_code_as_taken("tour", payloads["supplier_id"], payloads["main_tour_code"], result.get("name"))
+                            from translation_tool import remember_closed_tour_code
+                            remember_closed_tour_code(payloads["supplier_id"], real_code, result.get("name", ""))
                             if real_code and real_code != payloads["main_tour_code"]:
                                 mark_code_as_taken("tour", payloads["supplier_id"], real_code, result.get("name"))
                             st.success(f"✅ Main tour created (active) with real Code: **{real_code}** "
