@@ -775,7 +775,7 @@ Rules:
   → ONE price_list entry: singlePrice=1092, doublePrice=736, triplePrice=736, quadruplePrice=708.
   The 7-10/11-14/15+ tiers go in pricing_notes only.
   CRITICAL: this produces exactly ONE price_list entry per date range, with all 4 prices
-  in its price object. NEVER create separate price_list rows named "1 pax", "2-3 pax" etc.
+  in its price object. NEVER create separate price_list rows named "1 pax", "2-3 pax" etc. origin/main
   ============================================================
   SEASONAL PRICING → SEPARATE PRICE_LIST ENTRIES (NOT separate modalities):
   When the same tour has different prices for different seasons (e.g. Low/Peak/High season),
