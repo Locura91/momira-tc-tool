@@ -360,12 +360,16 @@ def _resolve_short_google_maps_url(url: str) -> str:
         return url
 
 
-# A place page's URL path names the place right in it, e.g.
-# .../maps/place/Steigenberger+Golf+Resort+El+Gouna/data=!4m2!3m1!1s0x1450...  - used as a
-# LAST-RESORT geocode query (see parse_google_maps_url's fallback below) when the link itself
-# carries no coordinates at all. "+" is a literal space in this position (URL path, not query
-# string), and the segment is percent-decoded the normal way.
-_PLACE_NAME_PATTERN = re.compile(r"/maps/place/([^/@]+)")
+# A place/search page's URL path names the place right in it, e.g.
+# .../maps/place/Steigenberger+Golf+Resort+El+Gouna/data=!4m2!3m1!1s0x1450...
+# .../maps/search/Langkawi+Cable+Car/@6.38,99.67,15z
+# Used as a LAST-RESORT geocode query (see parse_google_maps_url's fallback below) when the link
+# itself carries no coordinates at all. "+" is a literal space in this position (URL path, not
+# query string), and the segment is percent-decoded the normal way.
+_PLACE_NAME_PATTERNS = (
+    re.compile(r"/maps/place/([^/@]+)"),
+    re.compile(r"/maps/search/([^/@]+)"),
+)
 
 
 def parse_google_maps_url(url: str) -> dict:
@@ -438,7 +442,19 @@ def parse_google_maps_url(url: str) -> dict:
         if -90 <= lat <= 90 and -180 <= lng <= 180:
             return {"latitude": lat, "longitude": lng, "valid": True, "error": None, "source": "link"}
 
-    name_match = _PLACE_NAME_PATTERN.search(resolved)
+    # Try extracting a place name from the URL path (/place/Name or /search/Name)
+    name_match = None
+    for _np in _PLACE_NAME_PATTERNS:
+        name_match = _np.search(resolved)
+        if name_match:
+            break
+    # Fallback: ?q=PlaceName (non-coordinate text query)
+    if not name_match:
+        _q_match = re.search(r"[?&]q=([^&]+)", resolved)
+        if _q_match:
+            _q_val = unquote(_q_match.group(1).replace("+", " ")).strip()
+            if _q_val and not re.match(r"^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$", _q_val):
+                name_match = _q_match
     if name_match:
         place_query = unquote(name_match.group(1).replace("+", " ")).strip()
         if place_query:
