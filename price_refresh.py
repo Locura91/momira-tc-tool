@@ -1702,14 +1702,16 @@ def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, A
         payload = rebuild_ticket_prices(route, proposal["changes"])
 
         old_code = route.get("modality_code") or ""
-        # Build a date-based suffix for the new modality code
+        # Build a date-based suffix for the new modality code (TC max 50 chars)
         if new_start_date:
             suffix = new_start_date[:10].replace("-", "")
         elif new_end_date:
             suffix = new_end_date[:10].replace("-", "")
         else:
             suffix = date.today().strftime("%Y%m%d")
-        new_code = f"{old_code}_{suffix}"
+        max_base = 50 - len(suffix) - 1  # 1 for the underscore
+        truncated = old_code[:max_base] if len(old_code) > max_base else old_code
+        new_code = f"{truncated}_{suffix}"
         payload["code"] = new_code
 
         if new_start_date:
