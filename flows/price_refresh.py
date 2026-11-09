@@ -848,32 +848,41 @@ def render_ticket_price_refresh_flow(client):
     # modality (POST) instead of updating in-place (PUT).  The original stays untouched; a new
     # modality is created with the new prices and new date range.
     from datetime import date as _date, timedelta as _timedelta
-    _default_start = _date.today()
-    _default_end = _date.today().replace(year=_date.today().year + 1)
+    # Find the latest endDate across all changed modalities — the new season starts the day after
+    _cur_end_date = None
     _cur_end_str = None
     for _p in changed:
         _raw = (_p.get("route") or {}).get("raw") or {}
-        _cur_end_str = _raw.get("endDate")
-        if _cur_end_str:
-            break
+        _end = _raw.get("endDate")
+        if _end:
+            try:
+                _parsed = _date.fromisoformat(str(_end)[:10])
+                if _cur_end_date is None or _parsed > _cur_end_date:
+                    _cur_end_date = _parsed
+                    _cur_end_str = _end
+            except (ValueError, TypeError):
+                pass
+    # New season starts the day after the existing modality ends
+    _default_start = (_cur_end_date + _timedelta(days=1)) if _cur_end_date else _date.today()
+    _default_end = _default_start.replace(year=_default_start.year + 1)
     if _cur_end_str:
         st.info(f"ℹ️ Current operational end date on the existing Modality: **{_cur_end_str}** "
-                f"(will NOT be changed — a new modality will be created instead)")
+                f"— new modality will start on **{_default_start.strftime('%d.%m.%Y')}** (next day)")
     col_start, col_end = st.columns(2)
     with col_start:
         tpr_new_start = st.date_input(
             "Start date for the NEW Modality",
             value=_default_start,
-            min_value=_date.today(),
+            min_value=_default_start,
             format="DD.MM.YYYY",
             key="tpr_new_start_date",
-            help="Sets the startDate on each newly created Modality.",
+            help="Defaults to the day after the existing modality's end date.",
         )
     with col_end:
         tpr_new_end = st.date_input(
             "End date for the NEW Modality",
             value=_default_end,
-            min_value=_date.today(),
+            min_value=_default_start,
             format="DD.MM.YYYY",
             key="tpr_new_end_date",
             help="Sets the endDate on each newly created Modality.",
