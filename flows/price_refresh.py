@@ -539,7 +539,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *“{finding['matched_row']}”*")
+                bits.append(f"from the row *"{finding['matched_row']}"*")
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
@@ -844,13 +844,12 @@ def render_ticket_price_refresh_flow(client):
               + (f" · {len(blocked)} could not be read" if blocked else "")
               + (f" · {len(unsupported)} not supported yet (SERVICE pricing)" if unsupported else ""))
 
-    # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-20): "when bulk updating price, it must also
-    # check if operational days need to be made longer. Usually with a new price comes a new
-    # season, and each modality must have a longer from/to time. The to operational dates must
-    # always get longer at the same time as the price."
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-11-09): ticket price refresh must DUPLICATE the
+    # modality (POST) instead of updating in-place (PUT).  The original stays untouched; a new
+    # modality is created with the new prices and new date range.
     from datetime import date as _date, timedelta as _timedelta
+    _default_start = _date.today()
     _default_end = _date.today().replace(year=_date.today().year + 1)
-    # Show the current endDate of the first changed modality as a reference
     _cur_end_str = None
     for _p in changed:
         _raw = (_p.get("route") or {}).get("raw") or {}
@@ -858,18 +857,29 @@ def render_ticket_price_refresh_flow(client):
         if _cur_end_str:
             break
     if _cur_end_str:
-        st.info(f"ℹ️ Current operational end date on the first changed Modality: **{_cur_end_str}**")
-    tpr_new_end = st.date_input(
-        "New operational end date for ALL updated Modalities",
-        value=_default_end,
-        min_value=_date.today(),
-        format="DD.MM.YYYY",
-        key="tpr_new_end_date",
-        help="Sets the endDate on every Modality you accept below. Clear if you do NOT want to "
-             "change dates — leave it as-is and only prices will move.",
-    )
+        st.info(f"ℹ️ Current operational end date on the existing Modality: **{_cur_end_str}** "
+                f"(will NOT be changed — a new modality will be created instead)")
+    col_start, col_end = st.columns(2)
+    with col_start:
+        tpr_new_start = st.date_input(
+            "Start date for the NEW Modality",
+            value=_default_start,
+            min_value=_date.today(),
+            format="DD.MM.YYYY",
+            key="tpr_new_start_date",
+            help="Sets the startDate on each newly created Modality.",
+        )
+    with col_end:
+        tpr_new_end = st.date_input(
+            "End date for the NEW Modality",
+            value=_default_end,
+            min_value=_date.today(),
+            format="DD.MM.YYYY",
+            key="tpr_new_end_date",
+            help="Sets the endDate on each newly created Modality.",
+        )
     tpr_update_dates = st.checkbox(
-        "Also extend the operational end date (recommended when updating for a new season)",
+        "Set date range on the new modality (recommended)",
         value=True, key="tpr_update_dates_cb"
     )
 
@@ -938,7 +948,7 @@ def render_ticket_price_refresh_flow(client):
                                   f"(document gave no separate child price)")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *“{finding['matched_row']}”*")
+                bits.append(f"from the row *"{finding['matched_row']}"*")
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
@@ -1036,29 +1046,32 @@ def render_ticket_price_refresh_flow(client):
 
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    _date_note = (f" + extend end date to **{tpr_new_end.strftime('%d.%m.%Y')}**"
+    _date_note = (f" · date range **{tpr_new_start.strftime('%d.%m.%Y')}** – **{tpr_new_end.strftime('%d.%m.%Y')}**"
                   if tpr_update_dates else "")
-    st.warning(f"This changes prices{_date_note} on **{len(accepted)} live Ticket Modality(ies)** "
-               f"for supplier {supplier_id}.")
-    if st.button(f"🚀 Update {len(accepted)} Modality(ies)", type="primary",
+    st.warning(f"This will **create {len(accepted)} NEW Modality(ies)**{_date_note} with updated prices "
+               f"for supplier {supplier_id}. Existing modalities stay untouched.")
+    if st.button(f"🚀 Create {len(accepted)} new Modality(ies)", type="primary",
                  disabled=not accepted, key="tpr_apply"):
-        bar = st.progress(0.0, text="Updating…")
+        bar = st.progress(0.0, text="Creating…")
 
         def _tick2(done, total, name):
-            bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
+            bar.progress(min(done / max(total, 1), 1.0), text=f"Creating {name} ({done}/{total})")
 
         _new_end_iso = tpr_new_end.isoformat() if tpr_update_dates else None
+        _new_start_iso = tpr_new_start.isoformat() if tpr_update_dates else None
         st.session_state.tpr_result = price_refresh.apply_ticket_proposals(
-            client, supplier_id, proposals, progress=_tick2, new_end_date=_new_end_iso)
+            client, supplier_id, proposals, progress=_tick2,
+            new_end_date=_new_end_iso, new_start_date=_new_start_iso)
         bar.empty()
         st.rerun()
 
     result = st.session_state.get("tpr_result")
     if result:
         if result["updated"]:
-            st.success(f"✅ {len(result['updated'])} Modality(ies) repriced.")
+            st.success(f"✅ {len(result['updated'])} new Modality(ies) created with updated prices.")
             for u in result["updated"]:
-                st.write(f"- {u['name']}: " + ", ".join(
+                _code_note = f" (new code: `{u['new_code']}`)" if u.get("new_code") else ""
+                st.write(f"- {u['name']}{_code_note}: " + ", ".join(
                     f"{c['min_pax']} pax {c['old']} → {c['new']}" for c in u["changes"]))
         if result["failed"]:
             st.error(f"❌ {len(result['failed'])} failed:")
