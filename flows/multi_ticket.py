@@ -109,20 +109,42 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                         st.session_state.mt_files_texts = per_file_texts
                         candidates = []
                         for i, uploaded in enumerate(tk_files):
-                            label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
-                            # Strip trailing hash suffixes from filenames (e.g. "dead8f7c", "1c94d88b (1)")
-                            label = re.sub(r'\s+[0-9a-f]{6,8}(?:\s*\(\d+\))?\s*$', '', label, flags=re.IGNORECASE).strip()
-                            _modality_code = _clean_modality_code(label) or "Standard"
-                            candidates.append({
-                                "label": label,
-                                "ticket_code": "",
-                                "modality_code": _modality_code,
-                                "modality_name": "Standard",
-                                "selected": True,
-                                "is_genuine_variant": False,
-                                "_modcode_touched": False,
-                                "_file_idx": i,
-                            })
+                            file_text = per_file_texts[i] if i < len(per_file_texts) else ""
+                            # Detect all excursions within this file (one doc may have many tours)
+                            detected_in_file = detect_ticket_variants(file_text) if file_text.strip() else []
+                            if detected_in_file:
+                                for e in detected_in_file:
+                                    _base_modality_name = "Standard Private" if e.get("is_private") else "Standard"
+                                    _supplier_code = str(e.get("supplier_code") or "").strip()
+                                    _excursion_label = str(e.get("label") or "").strip()
+                                    _modality_code = (
+                                        f"{_base_modality_name.upper().replace(' ', '_')}_{_supplier_code}" if _supplier_code
+                                        else (_clean_modality_code(_excursion_label) or _base_modality_name)
+                                    )
+                                    candidates.append({
+                                        "label": e.get("label", ""), "ticket_code": "",
+                                        "modality_code": _modality_code,
+                                        "modality_name": _base_modality_name,
+                                        "selected": True,
+                                        "is_genuine_variant": True,
+                                        "_modcode_touched": bool(_supplier_code),
+                                        "_file_idx": i,
+                                    })
+                            else:
+                                # Fallback: no excursions detected — treat the whole file as one ticket
+                                label = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
+                                label = re.sub(r'\s+[0-9a-f]{6,8}(?:\s*\(\d+\))?\s*$', '', label, flags=re.IGNORECASE).strip()
+                                _modality_code = _clean_modality_code(label) or "Standard"
+                                candidates.append({
+                                    "label": label,
+                                    "ticket_code": "",
+                                    "modality_code": _modality_code,
+                                    "modality_name": "Standard",
+                                    "selected": True,
+                                    "is_genuine_variant": False,
+                                    "_modcode_touched": False,
+                                    "_file_idx": i,
+                                })
                     else:
                         st.session_state.pop("mt_files_texts", None)
                         detected = detect_ticket_variants(raw_text)
