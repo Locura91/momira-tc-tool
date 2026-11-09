@@ -711,7 +711,7 @@ def render_ticket_flow(client):
                     st.error("🚫 Description is empty - fill it in above before continuing.")
                 editable_field("City", data, "city", widget="text_input")
                 render_cancellation_policy_editor(data, "legacy_ticket")
-                editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80)
+                # "Condition (internal remarks)" REMOVED (product owner, 2026-11-09)
                 # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Voucher Remarks" and "What to
                 # bring" combined into one editable box - see merge_what_to_bring_into_voucher_
                 # remarks' docstring; they always ended up concatenated at publish time anyway.

@@ -505,7 +505,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                           f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
                           f"clear it if this ticket needs different terms.")
             render_cancellation_policy_editor(data, f"mt_{idx}")
-            editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
+            # "Condition (internal remarks)" REMOVED (product owner, 2026-11-09):
+            # cancellation_policy_text is never published — the 30-day/100% house rule applies.
             # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-25): "Voucher Remarks" and "What to
             # bring" combined into one editable box - see merge_what_to_bring_into_voucher_
             # remarks' docstring; they always ended up concatenated at publish time anyway.
@@ -1773,7 +1774,7 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
                           f"below was filled in from {current['_cancellation_link_scope']}. Edit or "
                           f"clear it if this ticket needs different terms.")
             render_cancellation_policy_editor(data, f"mtu_{idx}")
-            editable_field("Condition (internal remarks)", data, "cancellation_policy_text", widget="text_area", height=80, key_suffix=f"_{idx}")
+            # "Condition (internal remarks)" REMOVED (product owner, 2026-11-09)
             merge_what_to_bring_into_voucher_remarks(data)
             editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                            "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
