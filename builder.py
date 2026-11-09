@@ -1282,7 +1282,8 @@ def format_what_to_bring_line(items_text):
             items.append(line)
     if not items:
         return ""
-    return f"What to bring: {', '.join(items)}"
+    result = f"What to bring: {', '.join(items)}"
+    return result[:250]
 
 
 def _with_what_to_bring(voucher_text, extracted_data):
