@@ -321,9 +321,9 @@ class _RecordingApplyClient:
         self.calls = []
         self.fail_codes = fail_codes or set()
 
-    def update_ticket_option(self, supplier_id, ticket_code, payload):
+    def create_ticket_option(self, supplier_id, ticket_code, payload):
         self.calls.append((supplier_id, ticket_code, payload))
-        if payload.get("code") in self.fail_codes:
+        if any(fc in payload.get("code", "") for fc in self.fail_codes):
             return {"error": 500, "message": "server exploded"}
         return {"code": payload.get("code")}
 
@@ -338,7 +338,7 @@ def _accepted_proposal(ticket_code="ALX-01", modality_code="MOD-A", old=45.0, ne
                        "child_old": None, "child_new": None}]}
 
 
-def test_apply_updates_the_accepted_proposal_via_update_ticket_option():
+def test_apply_creates_new_modality_via_create_ticket_option():
     client = _RecordingApplyClient()
     proposal = _accepted_proposal()
     result = apply_ticket_proposals(client, "999", [proposal])
@@ -347,7 +347,7 @@ def test_apply_updates_the_accepted_proposal_via_update_ticket_option():
     supplier_id, ticket_code, payload = client.calls[0]
     assert supplier_id == "999"
     assert ticket_code == "ALX-01"
-    assert payload["code"] == "MOD-A"
+    assert payload["code"].startswith("MOD-A_")
     assert payload["occupancyPrices"][0]["amount"] == 50.0
 
 
@@ -363,7 +363,7 @@ def test_apply_skips_unaccepted_and_changeless_proposals():
     assert client.calls == []
 
 
-def test_apply_reports_a_failed_update_without_raising():
+def test_apply_reports_a_failed_create_without_raising():
     client = _RecordingApplyClient(fail_codes={"MOD-A"})
     proposal = _accepted_proposal()
     result = apply_ticket_proposals(client, "999", [proposal])
@@ -374,7 +374,7 @@ def test_apply_reports_a_failed_update_without_raising():
 
 def test_apply_reports_a_raised_exception_with_a_friendly_message():
     class _RaisingClient:
-        def update_ticket_option(self, *a, **k):
+        def create_ticket_option(self, *a, **k):
             raise RuntimeError("network down")
     proposal = _accepted_proposal()
     result = apply_ticket_proposals(_RaisingClient(), "999", [proposal])
