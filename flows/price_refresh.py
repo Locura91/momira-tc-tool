@@ -46,8 +46,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
     radio's default selection, not skip rendering the radio itself - the same question appeared
     twice in a row. Only asked fresh when this is None (no caller currently does that, but kept
     as the honest fallback rather than assuming there's always a preselection)."""
-    st.header("💶 Refresh prices from a rate sheet")
-    if st.button("🔙 Back", key="pr_back"):
+    st.header("\U0001f4b6 Refresh prices from a rate sheet")
+    if st.button("\U0001f519 Back", key="pr_back"):
         st.session_state.product_type = None
         st.rerun()
     st.caption("For a rate sheet covering products that already exist. The list of routes comes "
@@ -93,13 +93,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
     if kind == price_refresh.KIND_TRANSPORT and supplier_id:
         pr_mode = st.radio(
             "How do you want to set the new price?",
-            ["📄 From a rate sheet document", "🔢 Manual %/absolute adjustment",
-             "🔎 Yearly price consistency check (read-only)"],
+            ["\U0001f4c4 From a rate sheet document", "\U0001f522 Manual %/absolute adjustment",
+             "\U0001f50e Yearly price consistency check (read-only)"],
             horizontal=True, key="pr_source_mode")
-        if pr_mode == "🔢 Manual %/absolute adjustment":
+        if pr_mode == "\U0001f522 Manual %/absolute adjustment":
             render_transport_manual_adjustment_flow(client, supplier_id)
             return
-        if pr_mode == "🔎 Yearly price consistency check (read-only)":
+        if pr_mode == "\U0001f50e Yearly price consistency check (read-only)":
             render_transport_price_consistency_flow(client, supplier_id)
             return
 
@@ -177,7 +177,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
             return True
         return False
 
-    if st.button(f"🔍 Read prices for this supplier's {kind.lower()}s", type="primary",
+    if st.button(f"\U0001f50d Read prices for this supplier's {kind.lower()}s", type="primary",
                  disabled=not supplier_id, key="pr_read"):
         st.session_state.pop("pr_scope_answered", None)
         raw_parts = []
@@ -268,7 +268,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # price on top? Sedan Modality would be base price and if I would update the Hiace the
         # price difference must be calculated and the price must then be added to the price
         # supplement." An auto-detect fallback used to exist here and picked whichever option
-        # currently carries no live supplement — REMOVED entirely, because that is exactly the
+        # currently carries no live supplement - REMOVED entirely, because that is exactly the
         # read that can be wrong: Travel Compositor's own API is confirmed to under-report a real
         # supplement as 0.0 (see claude/transport-supplement-admin-ui-vs-api-mismatch-2026-09-10.
         # md), and this app's own prior update run is confirmed to have zeroed out real
@@ -362,14 +362,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
               + (f" · {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
     _scope = st.session_state.get("pr_scope")
     if _scope:
-        st.info("🎯 This round is scoped to the "
+        st.info("\U0001f3af This round is scoped to the "
                 + " and ".join(f"**{lo}-{hi} pax**" for lo, hi in _scope)
                 + " modality only. Every other modality is left exactly as it is — its price is "
                   "not read, not compared, and not written.")
     _base_override = st.session_state.get("pr_base_override")
     if _base_override:
         lo, hi = _base_override
-        st.info(f"🧮 **{lo}-{hi} pax** is set as the base price modality for this round. Every "
+        st.info(f"\U0001f9ee **{lo}-{hi} pax** is set as the base price modality for this round. Every "
                 f"other modality's price is being stored as base + a price difference (a price "
                 f"supplement), rather than auto-detected from which one currently reads with no "
                 f"supplement.")
@@ -387,7 +387,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
 
     if blocked:
         st.error(
-            f"🚫 **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
+            f"\U0001f6ab **{len(blocked)} route(s) could not be fully read from Travel Compositor** and have "
             f"been left untouched. This is usually a temporary API hiccup - re-run the price refresh "
             f"for this supplier and they should load. They are not repriced, because the base price "
             f"is shared across a transport's modalities: repricing the ones that did load would "
@@ -404,7 +404,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # here if its live modality structure changed between the choice and this screen.
     if needs_base:
         st.error(
-            f"🚫 **{len(needs_base)} route(s) have two or more modalities and no vehicle/base "
+            f"\U0001f6ab **{len(needs_base)} route(s) have two or more modalities and no vehicle/base "
             f"price was designated for them** - re-run this refresh and pick the vehicle/base "
             f"modality in Step 2. Nothing here is proposed or writable until that's answered; "
             f"there is no fallback guess."
@@ -418,7 +418,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # wrong, not that nothing needs to change here.
     if zero_supplement:
         st.error(
-            f"🚫 **{len(zero_supplement)} route(s) would compute a price supplement of exactly 0** "
+            f"\U0001f6ab **{len(zero_supplement)} route(s) would compute a price supplement of exactly 0** "
             f"for a modality that isn't the vehicle/base price - that can never be right, so "
             f"nothing on these routes is writable until it's resolved. Check whether the vehicle/"
             f"base modality was designated correctly, or use the AI text field in Step 2 to "
@@ -539,7 +539,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *"{finding['matched_row']}"*")
+                bits.append(f'from the row *“{finding["matched_row"]}”*')
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
@@ -567,7 +567,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 _ex_period = (f" ({_ex['start_date']} → {_ex['end_date']})"
                              if _ex.get("start_date") or _ex.get("end_date") else "")
                 st.caption(
-                    f"🧮 **{_ex['name']}**'s new price{_ex_period} will be stored as base "
+                    f"\U0001f9ee **{_ex['name']}**'s new price{_ex_period} will be stored as base "
                     f"({_ex['base_name']}: {_ex['base_price']}) {_sign} a price supplement of "
                     f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} — this is "
                     f"exactly what gets written to the price supplement field on Publish.")
@@ -576,12 +576,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # route) short of fixing the number by hand above. This re-reads ONLY this one
             # route, with the extra instruction folded in, and replaces its proposal in place -
             # every other route in the batch is untouched.
-            with st.expander("🤖 Not right? Tell the AI more about this route", expanded=False):
+            with st.expander("\U0001f916 Not right? Tell the AI more about this route", expanded=False):
                 route_hint = st.text_input(
                     "Extra instruction for this route only",
                     key=f"pr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
                     placeholder="e.g. use the Port Ghalib price, not Marsa Allam")
-                if st.button("🔁 Re-read this route", key=f"pr_reread_{p['index']}",
+                if st.button("\U0001f501 Re-read this route", key=f"pr_reread_{p['index']}",
                              disabled=not route_hint.strip()):
                     with st.spinner("Re-reading this route..."):
                         combined_hint = "\n".join(
@@ -674,7 +674,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
     st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
                f"{supplier_id}. Nothing else is touched — validity dates stay as they are, even "
                f"where they run to 2049 or 2099.")
-    if st.button(f"🚀 Update {len(accepted)} {kind.lower()}(s)", type="primary",
+    if st.button(f"\U0001f680 Update {len(accepted)} {kind.lower()}(s)", type="primary",
                  disabled=not accepted, key="pr_apply"):
         bar = st.progress(0.0, text="Updating…")
 
@@ -701,7 +701,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 # from "we wrote the wrong option" is right here, no Postman round-trip needed.
                 _dbg = u.get("debug")
                 if _dbg:
-                    with st.expander(f"🔍 Raw request/response for {u['name']} (debug)"):
+                    with st.expander(f"\U0001f50d Raw request/response for {u['name']} (debug)"):
                         st.write(f"write_kind: `{_dbg.get('write_kind')}`")
                         if _dbg.get("transport_request") is not None:
                             st.caption("Transport (parent) request body:")
@@ -719,9 +719,9 @@ def render_price_refresh_flow(client, preselected_kind=None):
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
                 if f.get("debug"):
-                    with st.expander(f"🔍 Raw request/response for {f.get('name')} (debug)"):
+                    with st.expander(f"\U0001f50d Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
-        if st.button("🆕 Start again", key="pr_new"):
+        if st.button("\U0001f195 Start again", key="pr_new"):
             for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -740,7 +740,7 @@ def render_ticket_price_refresh_flow(client):
     Tickets/Modalities comes from Travel Compositor, the document is only asked what each known
     CODE now costs, and nothing but occupancyPrices ever changes - dates, languages, supplements
     and modality structure are left exactly as they are."""
-    st.header("🎟️ Refresh Ticket prices from a rate sheet")
+    st.header("\U0001f39f️ Refresh Ticket prices from a rate sheet")
     st.caption("For a rate sheet covering Tickets that already exist. The list of Tickets/"
               "Modalities comes from Travel Compositor, not from the document — the document is "
               "only asked what each known CODE now costs. Nothing is created, and **only the "
@@ -774,7 +774,7 @@ def render_ticket_price_refresh_flow(client):
     hint = st.text_input("Instruction (optional)", key="tpr_hint",
                          placeholder="e.g. only the Alexandria tours section")
 
-    if st.button("🔍 Read prices for this supplier's Tickets", type="primary",
+    if st.button("\U0001f50d Read prices for this supplier's Tickets", type="primary",
                  disabled=not supplier_id, key="tpr_read"):
         raw_parts = []
         if url:
@@ -884,7 +884,7 @@ def render_ticket_price_refresh_flow(client):
     )
 
     if blocked:
-        st.error(f"🚫 **{len(blocked)} Modality(ies) could not be fully read from Travel "
+        st.error(f"\U0001f6ab **{len(blocked)} Modality(ies) could not be fully read from Travel "
                 f"Compositor** and have been left untouched. Re-run the price refresh and they "
                 f"should load.")
         for p in blocked:
@@ -948,7 +948,7 @@ def render_ticket_price_refresh_flow(client):
                                   f"(document gave no separate child price)")
             bits = []
             if finding.get("matched_row"):
-                bits.append(f"from the row *"{finding['matched_row']}"*")
+                bits.append(f'from the row *“{finding["matched_row"]}”*')
             if finding.get("confidence") and finding["confidence"] != "high":
                 bits.append(f"**{finding['confidence']} confidence**")
             if finding.get("note"):
@@ -958,12 +958,12 @@ def render_ticket_price_refresh_flow(client):
                             f"**{route.get('currency')}** — the price is applied as-is, not converted")
             if bits:
                 st.caption("  ·  ".join(bits))
-            with st.expander("🤖 Not right? Tell the AI more about this Ticket", expanded=False):
+            with st.expander("\U0001f916 Not right? Tell the AI more about this Ticket", expanded=False):
                 route_hint = st.text_input(
                     "Extra instruction for this Ticket only",
                     key=f"tpr_hint_{p['index']}_{p.get('widget_token', 'g0')}",
                     placeholder="e.g. use the half-day price, not the full-day one")
-                if st.button("🔁 Re-read this Ticket", key=f"tpr_reread_{p['index']}",
+                if st.button("\U0001f501 Re-read this Ticket", key=f"tpr_reread_{p['index']}",
                              disabled=not route_hint.strip()):
                     with st.spinner("Re-reading this Ticket..."):
                         combined_hint = "\n".join(
@@ -1050,7 +1050,7 @@ def render_ticket_price_refresh_flow(client):
                   if tpr_update_dates else "")
     st.warning(f"This will **create {len(accepted)} NEW Modality(ies)**{_date_note} with updated prices "
                f"for supplier {supplier_id}. Existing modalities stay untouched.")
-    if st.button(f"🚀 Create {len(accepted)} new Modality(ies)", type="primary",
+    if st.button(f"\U0001f680 Create {len(accepted)} new Modality(ies)", type="primary",
                  disabled=not accepted, key="tpr_apply"):
         bar = st.progress(0.0, text="Creating…")
 
@@ -1077,7 +1077,7 @@ def render_ticket_price_refresh_flow(client):
             st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
-        if st.button("🆕 Start again", key="tpr_new"):
+        if st.button("\U0001f195 Start again", key="tpr_new"):
             for key in ("tpr_proposals", "tpr_routes", "tpr_raw_text", "tpr_result"):
                 st.session_state.pop(key, None)
             st.rerun()
