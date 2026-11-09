@@ -3500,7 +3500,7 @@ def build_ticket_payloads(
             # docstring for exactly what keeps its bullets (Voucher Remarks) vs. what doesn't
             # (this field).
             remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code,
-                                        remarks=_strip_bullet_points(ticket_cancellation_voucher_text))},
+                                        remarks=_strip_bullet_points(ticket_cancellation_voucher_text)[:255])},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
