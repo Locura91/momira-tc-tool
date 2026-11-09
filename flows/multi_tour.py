@@ -1116,6 +1116,8 @@ def render_multi_tour_flow(client, supplier_id, currency, on_request, release_da
                                 mark_code_as_taken("tour", supplier_id, tour["tour_code"], result.get("name"))
                                 if real_code and real_code != tour["tour_code"]:
                                     mark_code_as_taken("tour", supplier_id, real_code, result.get("name"))
+                                from translation_tool import remember_closed_tour_code
+                                remember_closed_tour_code(supplier_id, real_code, result.get("name", ""))
                                 created_modality_codes = []
 
                                 option_result = None
