@@ -495,36 +495,46 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
                 ]
                 st.rerun()
 
+    # CONFIRMED PRODUCT-OWNER REQUEST (2026-11-09): occupancy rows must be deletable.
+    # When min_pax > 1 (e.g. "minimum 2 pax") or the document says N/A for 1 pax,
+    # the human must be able to remove the 1-pax row. Deleted rows are simply not
+    # published to TC — no occupancy price means that pax count isn't offered.
     if children_allowed:
         occ_df = pd.DataFrame([
             {"Pax": o["occupancy"], "Price": o["amount"], "Child Price": o.get("child_amount", o["amount"])}
             for o in data["occupancy_prices"]
         ])
 
-        def _save_occupancy(edf, data=data, cap=cap):
-            edited = {_safe_int(r.get("Pax"), 1): (_safe_float(r.get("Price")), _safe_float(r.get("Child Price")))
-                     for _, r in edf.iterrows()}
+        def _save_occupancy(edf, data=data):
             data["occupancy_prices"] = [
-                {"occupancy": n, "amount": edited.get(n, (0, 0))[0], "child_amount": edited.get(n, (0, 0))[1]}
-                for n in range(1, cap + 1)
+                {"occupancy": _safe_int(r.get("Pax"), 1),
+                 "amount": _safe_float(r.get("Price")),
+                 "child_amount": _safe_float(r.get("Child Price"))}
+                for _, r in edf.iterrows()
+                if _safe_int(r.get("Pax"), 0) > 0
             ]
 
+        _occ_count = len(data["occupancy_prices"])
         editable_table(
-            f"Occupancy Price ({cap} row(s), 1-{cap} pax) - Child Price covers age {child_age_min}-{child_age_max}",
+            f"Occupancy Price ({_occ_count} row(s), 1-{cap} pax) - Child Price covers age {child_age_min}-{child_age_max}",
             occ_df, f"{key_prefix}_occupancy",
-            on_save=_save_occupancy, num_rows="fixed",
+            on_save=_save_occupancy, num_rows="dynamic",
             column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
         )
     else:
         occ_df = pd.DataFrame([{"Pax": o["occupancy"], "Price": o["amount"]} for o in data["occupancy_prices"]])
 
-        def _save_occupancy(edf, data=data, cap=cap):
-            edited = {_safe_int(r.get("Pax"), 1): _safe_float(r.get("Price")) for _, r in edf.iterrows()}
-            data["occupancy_prices"] = [{"occupancy": n, "amount": edited.get(n, 0)} for n in range(1, cap + 1)]
+        def _save_occupancy(edf, data=data):
+            data["occupancy_prices"] = [
+                {"occupancy": _safe_int(r.get("Pax"), 1), "amount": _safe_float(r.get("Price"))}
+                for _, r in edf.iterrows()
+                if _safe_int(r.get("Pax"), 0) > 0
+            ]
 
+        _occ_count = len(data["occupancy_prices"])
         editable_table(
-            f"Occupancy Price ({cap} row(s), 1-{cap} pax)", occ_df, f"{key_prefix}_occupancy",
-            on_save=_save_occupancy, num_rows="fixed",
+            f"Occupancy Price ({_occ_count} row(s), 1-{cap} pax)", occ_df, f"{key_prefix}_occupancy",
+            on_save=_save_occupancy, num_rows="dynamic",
             column_config={"Pax": st.column_config.NumberColumn(disabled=True)}
         )
 
