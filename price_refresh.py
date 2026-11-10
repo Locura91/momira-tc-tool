@@ -420,6 +420,7 @@ def load_supplier_transports(client, supplier_id: str,
             "base_infant": _num(record.get("baseInfantPrice")) if per_pax else 0.0,
             "options": sorted(options, key=lambda o: o.get("min_pax", 0)),
             "full_fetch_failed": full_fetch_failed,
+            "transport_type": (record.get("transportType") or "").upper().strip(),
             "raw": record,
         })
     return out, None
@@ -1243,6 +1244,36 @@ def bracket_periods_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
         out.append({"price": round(price * multiplier, 2),
                     "child_price": s.get("child_price"), "infant_price": s.get("infant_price"),
                     "start_date": s.get("start_date") or None, "end_date": s.get("end_date") or None})
+    return out
+
+
+_TRANSPORT_TYPE_LABELS: Dict[str, str] = {
+    "CAR":      "Car / Private Transfer",
+    "VAN":      "Van / Shuttle",
+    "PLANE":    "Flight / Ferry",
+    "FERRY":    "Ferry",
+    "BUS":      "Bus / Coach",
+    "TRAIN":    "Train",
+    "COMBINED": "Combined (multi-mode)",
+}
+
+
+def transport_type_groups(routes: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Distinct transport types across a supplier's routes, for the type picker.
+
+    Returns a list of {type, label, count} dicts, one per distinct transportType value.
+    Only returned when two or more types exist — a supplier with only one type never needs
+    the picker."""
+    seen: Dict[str, int] = {}
+    for r in routes:
+        t = (r.get("transport_type") or "OTHER").upper().strip() or "OTHER"
+        seen[t] = seen.get(t, 0) + 1
+    if len(seen) <= 1:
+        return []
+    out = []
+    for t, count in sorted(seen.items()):
+        label = _TRANSPORT_TYPE_LABELS.get(t, t.title())
+        out.append({"type": t, "label": f"{label} ({count} product{'s' if count != 1 else ''})"})
     return out
 
 
