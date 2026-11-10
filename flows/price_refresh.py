@@ -323,12 +323,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # required human decision every round, with no silent fallback if it's left unanswered.
         st.caption("Every modality on a transport shares one base (vehicle) price; every other "
                    "modality is stored as its own price supplement, in its own separate round. "
-                   "This choice is required — pick whichever modality this round's document "
-                   "prices as the vehicle rate.")
+                   "The widest passenger range is auto-selected as the base — change it only if "
+                   "this document prices a different modality as the vehicle rate.")
         _base_placeholder = "— choose the vehicle/base-price modality (required) —"
+        # Auto-detect the base: the group with the widest pax span (max-min), then highest
+        # max_pax as tiebreaker. This is the confirmed common case: 3-8, 3-6, 4-6, 4-8 pax
+        # is always the base; 1-1 and 2-2/2-3 pax are supplements on top.
+        _widest = max(_pending["groups"],
+                      key=lambda g: (g["max_pax"] - g["min_pax"], g["max_pax"]))
+        _auto_base_label = _widest["label"]
         _base_label_options = [_base_placeholder] + _labels
+        _auto_idx = _base_label_options.index(_auto_base_label) if _auto_base_label in _base_label_options else 0
         _base_pick = st.selectbox("Which modality is the VEHICLE/BASE price this round?",
-                                  _base_label_options, index=0, key="pr_base_pick")
+                                  _base_label_options, index=_auto_idx, key="pr_base_pick")
 
         # CONFIRMED REAL REQUEST (product owner, 2026-09-11, same message as the worked-example
         # request above): "there should also be an AI text field, in case the human shall
