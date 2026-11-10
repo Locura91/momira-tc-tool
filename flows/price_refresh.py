@@ -90,6 +90,27 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # earlier bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
     # correctly): "we must then update in the future in bulk only the pricevehicle or the
     # priceperpax... ignore the modalities... add just for transport an update field so the human
+    # Transport type filter — scope to specific types (e.g. Ferry, Car) BEFORE choosing the mode,
+    # because it affects all three modes (rate sheet, manual adjustment, consistency check) and
+    # is the first scoping decision: "which transports am I updating?" comes before "how?".
+    # Placed here so the mode radio (which exits early for manual/consistency) sees it too.
+    pr_transport_types = None
+    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
+        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
+        _type_choice = st.multiselect(
+            "Transport type (leave empty for all)",
+            _type_labels, default=[], key="pr_transport_type_filter",
+            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
+                 "Leave empty to update every transport type. Only transports of the selected "
+                 "type(s) will appear in the modality list and be updated.")
+        if _type_choice:
+            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
+                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
+            _type_display = ", ".join(_type_choice)
+            st.caption(f"Only **{_type_display}** transports will be updated.")
+        else:
+            st.caption("All transport types will be updated.")
+
     # can manually add a absolute or percentage number." A second, simpler mode alongside the
     # existing document-reading flow (kept for when there IS a rate sheet to read) - added only
     # for Transport, which has one shared vehicle/base price field; Transfer has no such single
@@ -103,29 +124,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
              "\U0001f50e Yearly price consistency check (read-only)"],
             horizontal=True, key="pr_source_mode")
         if pr_mode == "\U0001f522 Manual %/absolute adjustment":
-            render_transport_manual_adjustment_flow(client, supplier_id)
+            render_transport_manual_adjustment_flow(client, supplier_id,
+                                                   transport_types=pr_transport_types)
             return
         if pr_mode == "\U0001f50e Yearly price consistency check (read-only)":
-            render_transport_price_consistency_flow(client, supplier_id)
+            render_transport_price_consistency_flow(client, supplier_id,
+                                                   transport_types=pr_transport_types)
             return
-
-    # Transport type filter — lets the human scope the update to specific transport types
-    # (e.g. only ferries, only cars) so the AI reads the document more accurately and only
-    # matching transports are updated.
-    pr_transport_types = None
-    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
-        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
-        _type_choice = st.multiselect(
-            "Filter by transport type (leave empty for all)",
-            _type_labels, default=[], key="pr_transport_type_filter",
-            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
-                 "Leave empty to update every transport type.")
-        if _type_choice:
-            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
-                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
-            st.caption(f"Only **{', '.join(_type_choice)}** transports will be updated.")
-        else:
-            st.caption("All transport types will be updated.")
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
