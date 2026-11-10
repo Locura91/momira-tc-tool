@@ -1111,7 +1111,7 @@ def _render_review_and_send():
                 st.caption(f"{len(learned)} supplier(s) remembered from manual adds. Each one "
                            f"automatically appears again in a future search for the exact same "
                            f"country + theme it was added for.")
-                for entry in learned:
+                for _li, entry in enumerate(learned):
                     lc1, lc2 = st.columns([4, 1])
                     with lc1:
                         where = " · ".join(x for x in (entry["country"], entry["theme"]) if x)
@@ -1119,7 +1119,7 @@ def _render_review_and_send():
                         st.write(f"**{entry['name']}** — {where}")
                         st.caption(contact)
                     with lc2:
-                        if st.button("🗑️ Forget", key=f"or_forget_{entry['id']}"):
+                        if st.button("🗑️ Forget", key=f"or_forget_{_li}_{entry['id']}"):
                             if oln.forget_supplier(entry["country"], entry["theme"], entry["id"]):
                                 st.session_state["or_learned_result"] = (
                                     f"Forgot {entry['name']} for {where} — it won't be "
