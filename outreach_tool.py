@@ -1122,7 +1122,8 @@ def _render_review_and_send():
                         st.write(f"**{entry['name']}** — {where}")
                         st.caption(contact)
                     with lc2:
-                        if st.button("🗑️ Forget", key=f"or_forget_{entry['id']}"):
+                        _fkey = f"or_forget_{entry['id']}_{entry['country']}_{entry['theme']}".replace(" ", "_")
+                        if st.button("🗑️ Forget", key=_fkey):
                             if oln.forget_supplier(entry["country"], entry["theme"], entry["id"]):
                                 st.session_state["or_learned_result"] = (
                                     f"Forgot {entry['name']} for {where} — it won't be "
