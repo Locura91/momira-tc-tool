@@ -26,6 +26,12 @@ from app_helpers import (
     render_transport_manual_adjustment_flow, render_transport_price_consistency_flow,
 )
 
+_TRANSPORT_TYPE_OPTIONS = [
+    ("CAR", "Car"), ("VAN", "Van"), ("BUS", "Bus"), ("FERRY", "Ferry"),
+    ("TRAIN", "Train"), ("PLANE", "Plane"), ("COMBINED", "Combined"),
+]
+_TRANSPORT_TYPE_LABEL_TO_KEY = {label: key for key, label in _TRANSPORT_TYPE_OPTIONS}
+
 
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
@@ -102,6 +108,24 @@ def render_price_refresh_flow(client, preselected_kind=None):
         if pr_mode == "\U0001f50e Yearly price consistency check (read-only)":
             render_transport_price_consistency_flow(client, supplier_id)
             return
+
+    # Transport type filter — lets the human scope the update to specific transport types
+    # (e.g. only ferries, only cars) so the AI reads the document more accurately and only
+    # matching transports are updated.
+    pr_transport_types = None
+    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
+        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
+        _type_choice = st.multiselect(
+            "Filter by transport type (leave empty for all)",
+            _type_labels, default=[], key="pr_transport_type_filter",
+            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
+                 "Leave empty to update every transport type.")
+        if _type_choice:
+            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
+                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
+            st.caption(f"Only **{', '.join(_type_choice)}** transports will be updated.")
+        else:
+            st.caption("All transport types will be updated.")
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
@@ -227,6 +251,24 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
+                if pr_transport_types:
+                    pre_filter = len(routes)
+                    routes = [r for r in routes
+                              if (r.get("raw", {}).get("transportType") or "").upper()
+                              in {t.upper() for t in pr_transport_types}]
+                    type_names = ", ".join(
+                        dict(_TRANSPORT_TYPE_OPTIONS).get(t, t) for t in pr_transport_types)
+                    if routes:
+                        st.info(f"Filtered to **{len(routes)}** of {pre_filter} transports "
+                                f"(type: {type_names}).")
+                    else:
+                        st.warning(f"None of this supplier's {pre_filter} transports match "
+                                   f"type **{type_names}**.")
+                    if not routes:
+                        return
+                    type_hint_extra = (f"Focus only on {type_names} transport prices in the "
+                                       f"document — ignore prices for other transport types.")
+                    hint = f"{hint}; {type_hint_extra}" if hint else type_hint_extra
                 # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
                 # human confirmation for the bulk transport price update. So the app detects all
                 # modalities first, and before the AI reads the document, the app asks the human
