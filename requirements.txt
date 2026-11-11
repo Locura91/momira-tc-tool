@@ -14,4 +14,3 @@ openpyxl
 google-genai
 psycopg2-binary
 boto3
-playwright

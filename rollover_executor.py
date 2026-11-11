@@ -52,11 +52,14 @@ def execute_rollover(
     pw = None
     try:
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(
-            headless=True,
-            executable_path="/opt/pw-browsers/chromium",
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
+        chromium_path = os.getenv("CHROMIUM_PATH", "")
+        launch_kwargs = {
+            "headless": True,
+            "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        }
+        if chromium_path:
+            launch_kwargs["executable_path"] = chromium_path
+        browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
