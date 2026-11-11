@@ -578,12 +578,12 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
 
 
 DEFAULT_TEMPLATE = {
-    "subject": "Net Rate Partnership – Momira Travel / [Country]",
+    "subject": "Partnership Opportunity with Momira Travel – [Country]",
     "textBody": """Dear [SupplierName] Team,
 
-We are Momira Travel, a tour operator specialising in [Country], and we are looking for reliable local partners who can provide net / B2B contract rates for [FocusKeyword].
+We are Momira Travel, a German-based B2B tour operator with a focus on European travellers. We specialise in [Country] and are looking for reliable local partners who can provide net / B2B contract rates for [FocusKeyword].
 
-The workflow is simple: you send us your net price list, we load it directly into our booking system, and from there we can start sending bookings. No complicated setup on your end.
+The workflow is straightforward and completely free for you: you send us your net price list, we load it into our booking system, and from there we can start sending bookings directly to you. No setup costs, no obligations.
 
 To get started we would need:
 
@@ -592,7 +592,7 @@ To get started we would need:
 - Emergency phone number
 - Bank details for payments
 
-If it is easier, I am happy to jump on a short call — I can show you exactly how our system works and walk through the whole workflow in 10–15 minutes. Just reply and we will find a time.
+If it helps, I am happy to arrange a short 10–15 minute call — I can walk you through how our platform works and answer any questions. Just reply and we will find a time.
 
 Best regards,
 Christian Hitzl
