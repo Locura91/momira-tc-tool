@@ -1,14 +1,12 @@
 """
-Bulk transfer supplement tool — three modes:
+Bulk transfer supplement tool — two modes:
 
-1. UPDATE existing supplements: change startTime/endTime (and reset startDate to
-   today) across all or filtered supplements for a supplier.
-2. CREATE a new supplement: append a brand-new supplement to every transfer (or
+1. CREATE a new supplement: append a brand-new supplement to every transfer (or
    selected transfers) for a supplier.
-3. DELETE all supplements: wipe every supplement from every transfer for a
+2. DELETE all supplements: wipe every supplement from every transfer for a
    supplier (useful before re-adding supplements from scratch).
 
-All three use PUT /transfer/{supplierId} which sends the full transfer including
+Both use PUT /transfer/{supplierId} which sends the full transfer including
 its supplements array.
 """
 import copy
@@ -46,88 +44,6 @@ def _load_transfers(client, supplier_id):
         progress.progress((i + 1) / len(transfers))
     progress.empty()
     return full_transfers
-
-
-def _collect_supplement_rows(transfers):
-    """Flatten all supplements across all transfers into a list of dicts."""
-    rows = []
-    for t in transfers:
-        tid = t.get("id", "")
-        tname = t.get("name") or t.get("routeName") or tid
-        for idx, s in enumerate(t.get("supplements") or []):
-            rows.append({
-                "transfer_id": tid,
-                "transfer_name": tname,
-                "supp_idx": idx,
-                "name": s.get("name", ""),
-                "type": s.get("type", ""),
-                "amount": s.get("amount", 0),
-                "startTime": s.get("startTime") or "",
-                "endTime": s.get("endTime") or "",
-                "startDate": s.get("startDate") or "",
-                "endDate": s.get("endDate") or "",
-                "active": s.get("active", True),
-            })
-    return rows
-
-
-def _render_update_mode(transfers):
-    """UI for updating existing supplements."""
-    rows = _collect_supplement_rows(transfers)
-
-    if not rows:
-        st.warning(f"None of the {len(transfers)} transfers have any supplements.")
-        return None
-
-    st.success(f"Found **{len(rows)}** supplement(s) across **{len(transfers)}** transfers.")
-
-    unique_names = sorted({r["name"] for r in rows if r["name"]})
-    scope = st.radio("Which supplements to update?",
-                     ["All supplements", "Only supplements with a specific name"],
-                     key="tsb_scope")
-
-    selected_rows = rows
-    if scope == "Only supplements with a specific name" and unique_names:
-        pick = st.multiselect("Supplement name(s)", unique_names, key="tsb_name_filter")
-        if pick:
-            selected_rows = [r for r in rows if r["name"] in pick]
-        else:
-            st.info("Pick at least one supplement name.")
-            return None
-
-    st.info(f"**{len(selected_rows)}** supplement(s) will be updated.")
-
-    with st.expander(f"Preview ({len(selected_rows)} supplements)", expanded=False):
-        for r in selected_rows:
-            st.text(f"{r['transfer_name']}  |  {r['name']}  |  "
-                    f"time: {r['startTime']}-{r['endTime']}  |  "
-                    f"dates: {r['startDate']} → {r['endDate']}  |  "
-                    f"{r['type']} {r['amount']}")
-
-    st.subheader("New values")
-    col1, col2 = st.columns(2)
-    with col1:
-        new_start_time = st.text_input("New startTime (HH:MM)", value="",
-                                       key="tsb_new_start_time", help="e.g. 20:00")
-    with col2:
-        new_end_time = st.text_input("New endTime (HH:MM)", value="",
-                                     key="tsb_new_end_time", help="e.g. 08:00")
-
-    today_str = date.today().isoformat()
-    st.caption(f"startDate will be set to **{today_str}** (today) on all updated supplements.")
-
-    if not new_start_time or not new_end_time:
-        st.warning("Enter both startTime and endTime to proceed.")
-        return None
-    if not _TIME_PAT.match(new_start_time) or not _TIME_PAT.match(new_end_time):
-        st.error("Times must be in HH:MM format (e.g. 22:00, 08:00).")
-        return None
-
-    affected = {}
-    for r in selected_rows:
-        affected.setdefault(r["transfer_id"], []).append(r["supp_idx"])
-
-    return ("update", affected, new_start_time, new_end_time, len(selected_rows))
 
 
 def _render_create_mode(transfers):
@@ -214,24 +130,26 @@ def _render_create_mode(transfers):
 
 def _render_delete_mode(transfers):
     """UI for deleting all supplements from every transfer."""
-    rows = _collect_supplement_rows(transfers)
-    transfers_with_supps = len({r["transfer_id"] for r in rows})
+    total_supps = sum(len(t.get("supplements") or []) for t in transfers)
+    transfers_with_supps = sum(1 for t in transfers if t.get("supplements"))
 
-    if not rows:
+    if not total_supps:
         st.warning(f"None of the {len(transfers)} transfers have any supplements — nothing to delete.")
         return None
 
     st.warning(
-        f"This will **delete all {len(rows)} supplement(s)** from "
+        f"This will **delete all {total_supps} supplement(s)** from "
         f"**{transfers_with_supps}** transfer(s). "
         f"The remaining {len(transfers) - transfers_with_supps} transfer(s) have no supplements and will not be touched."
     )
 
-    with st.expander(f"Show all supplements to be deleted ({len(rows)})", expanded=False):
-        for r in rows:
-            st.text(f"{r['transfer_name']}  |  {r['name']}  |  "
-                    f"time: {r['startTime']}-{r['endTime']}  |  "
-                    f"{r['type']} {r['amount']}")
+    with st.expander(f"Show all supplements to be deleted ({total_supps})", expanded=False):
+        for t in transfers:
+            for s in (t.get("supplements") or []):
+                tname = t.get("name") or t.get("routeName") or t.get("id", "")
+                st.text(f"{tname}  |  {s.get('name', '')}  |  "
+                        f"time: {s.get('startTime','')}-{s.get('endTime','')}  |  "
+                        f"{s.get('type','')} {s.get('amount',0)}")
 
     confirm = st.checkbox(
         "Yes, I want to delete all supplements from all transfers for this supplier",
@@ -239,7 +157,7 @@ def _render_delete_mode(transfers):
     if not confirm:
         return None
 
-    return ("delete", transfers_with_supps, len(rows))
+    return ("delete", transfers_with_supps, total_supps)
 
 
 def render_transfer_surcharge_bulk_flow(client):
@@ -270,16 +188,13 @@ def render_transfer_surcharge_bulk_flow(client):
     st.info(f"**{len(transfers)}** transfers loaded.")
 
     mode = st.radio("What do you want to do?",
-                    ["Update existing supplement times",
-                     "Create a new supplement on transfers",
+                    ["Create a new supplement on transfers",
                      "Delete all supplements"],
                     key="tsb_mode")
 
     st.divider()
 
-    if mode == "Update existing supplement times":
-        result = _render_update_mode(transfers)
-    elif mode == "Create a new supplement on transfers":
+    if mode == "Create a new supplement on transfers":
         result = _render_create_mode(transfers)
     else:
         result = _render_delete_mode(transfers)
@@ -289,11 +204,7 @@ def render_transfer_surcharge_bulk_flow(client):
 
     # ── Apply button ─────────────────────────────────────────────────
     st.divider()
-    if result[0] == "update":
-        _, affected, new_start_time, new_end_time, supp_count = result
-        target_count = len(affected)
-        label = f"Update {supp_count} supplement(s) on {target_count} transfer(s)"
-    elif result[0] == "create":
+    if result[0] == "create":
         _, new_supp, selected_tids, target_count = result
         label = f"Add supplement to {target_count} transfer(s)"
     else:
@@ -309,37 +220,13 @@ def render_transfer_surcharge_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    today_str = date.today().isoformat()
     transfer_map = {t.get("id"): t for t in transfers}
     progress = st.progress(0, text="Applying…")
     ok_count = 0
     err_count = 0
     errors = []
 
-    if result[0] == "update":
-        items = list(affected.items())
-        for i, (tid, supp_indices) in enumerate(items):
-            t = transfer_map.get(tid)
-            if not t:
-                err_count += 1
-                errors.append(f"{tid}: not found")
-                continue
-            payload = copy.deepcopy(t)
-            supplements = payload.get("supplements") or []
-            for idx in supp_indices:
-                if idx < len(supplements):
-                    supplements[idx]["startTime"] = new_start_time
-                    supplements[idx]["endTime"] = new_end_time
-                    supplements[idx]["startDate"] = today_str
-            try:
-                client.update_transfer(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{tid}: {e}")
-            progress.progress((i + 1) / len(items))
-
-    elif result[0] == "create":
+    if result[0] == "create":
         targets = [t for t in transfers
                    if selected_tids is None or t.get("id") in selected_tids]
         for i, t in enumerate(targets):
