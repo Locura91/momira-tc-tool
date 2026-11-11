@@ -578,26 +578,21 @@ def dispatch_batch(suppliers: List[Dict[str, Any]], session: Dict[str, Any],
 
 
 DEFAULT_TEMPLATE = {
-    "subject": "Partnership Opportunity with Momira Travel – Portfolio Expansion & Integration",
+    "subject": "Partnership Opportunity with Momira Travel – [Country]",
     "textBody": """Dear [SupplierName] Team,
 
-I hope this email finds you well.
+I am reaching out on behalf of Momira Travel, a specialized tour operator focused on [Country]. We would love to feature [SupplierName] in our platform and are ready to move quickly.
 
-I am reaching out on behalf of Momira Travel, a specialized tour operator focusing on high-quality travel experiences in [Country]. We are currently expanding our portfolio and are eager to feature [SupplierName] in our B2B2C tool as soon as possible.
-
-To fast-track the integration of your product within our platform, could you please provide us with the following operational and contracting details?
+To get started, could you send us:
 
 - Net Price List / B2B Contract Rates for your [FocusKeyword] offerings
-- Dedicated Booking Email address for reservations
-- General / Reservation Phone Number
-- Emergency Contact Phone Number (for operational support)
-- Bank Account Details (wire transfer/banking information for payments)
+- Booking Email address
+- General & Emergency Phone Numbers
+- Bank Account Details for payments
 
-We are excited about the prospect of working together and bringing a steady flow of travelers your way. In case you have any questions, please feel free to reach out at any time - I am more than happy to assist. I am also very open to a call if you prefer to discuss the setup directly.
+Happy to jump on a quick call to walk through everything if that is easier — just let me know.
 
-Thank you for your time and prompt assistance. We look forward to hearing from you.
-
-Liebe Grüße / Best regards,
+Best regards,
 Christian Hitzl
 
 Mail: christian@momira.de

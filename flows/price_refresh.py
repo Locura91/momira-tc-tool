@@ -26,6 +26,12 @@ from app_helpers import (
     render_transport_manual_adjustment_flow, render_transport_price_consistency_flow,
 )
 
+_TRANSPORT_TYPE_OPTIONS = [
+    ("CAR", "Car"), ("VAN", "Van"), ("BUS", "Bus"), ("FERRY", "Ferry"),
+    ("TRAIN", "Train"), ("PLANE", "Plane"), ("COMBINED", "Combined"),
+]
+_TRANSPORT_TYPE_LABEL_TO_KEY = {label: key for key, label in _TRANSPORT_TYPE_OPTIONS}
+
 
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
@@ -84,6 +90,27 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # earlier bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
     # correctly): "we must then update in the future in bulk only the pricevehicle or the
     # priceperpax... ignore the modalities... add just for transport an update field so the human
+    # Transport type filter — scope to specific types (e.g. Ferry, Car) BEFORE choosing the mode,
+    # because it affects all three modes (rate sheet, manual adjustment, consistency check) and
+    # is the first scoping decision: "which transports am I updating?" comes before "how?".
+    # Placed here so the mode radio (which exits early for manual/consistency) sees it too.
+    pr_transport_types = None
+    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
+        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
+        _type_choice = st.multiselect(
+            "Transport type (leave empty for all)",
+            _type_labels, default=[], key="pr_transport_type_filter",
+            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
+                 "Leave empty to update every transport type. Only transports of the selected "
+                 "type(s) will appear in the modality list and be updated.")
+        if _type_choice:
+            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
+                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
+            _type_display = ", ".join(_type_choice)
+            st.caption(f"Only **{_type_display}** transports will be updated.")
+        else:
+            st.caption("All transport types will be updated.")
+
     # can manually add a absolute or percentage number." A second, simpler mode alongside the
     # existing document-reading flow (kept for when there IS a rate sheet to read) - added only
     # for Transport, which has one shared vehicle/base price field; Transfer has no such single
@@ -97,10 +124,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
              "\U0001f50e Yearly price consistency check (read-only)"],
             horizontal=True, key="pr_source_mode")
         if pr_mode == "\U0001f522 Manual %/absolute adjustment":
-            render_transport_manual_adjustment_flow(client, supplier_id)
+            render_transport_manual_adjustment_flow(client, supplier_id,
+                                                   transport_types=pr_transport_types)
             return
         if pr_mode == "\U0001f50e Yearly price consistency check (read-only)":
-            render_transport_price_consistency_flow(client, supplier_id)
+            render_transport_price_consistency_flow(client, supplier_id,
+                                                   transport_types=pr_transport_types)
             return
 
     st.subheader("1 — The new rate sheet")
@@ -227,6 +256,24 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
+                if pr_transport_types:
+                    pre_filter = len(routes)
+                    routes = [r for r in routes
+                              if (r.get("raw", {}).get("transportType") or "").upper()
+                              in {t.upper() for t in pr_transport_types}]
+                    type_names = ", ".join(
+                        dict(_TRANSPORT_TYPE_OPTIONS).get(t, t) for t in pr_transport_types)
+                    if routes:
+                        st.info(f"Filtered to **{len(routes)}** of {pre_filter} transports "
+                                f"(type: {type_names}).")
+                    else:
+                        st.warning(f"None of this supplier's {pre_filter} transports match "
+                                   f"type **{type_names}**.")
+                    if not routes:
+                        return
+                    type_hint_extra = (f"Focus only on {type_names} transport prices in the "
+                                       f"document — ignore prices for other transport types.")
+                    hint = f"{hint}; {type_hint_extra}" if hint else type_hint_extra
                 # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
                 # human confirmation for the bulk transport price update. So the app detects all
                 # modalities first, and before the AI reads the document, the app asks the human
@@ -315,12 +362,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
         # required human decision every round, with no silent fallback if it's left unanswered.
         st.caption("Every modality on a transport shares one base (vehicle) price; every other "
                    "modality is stored as its own price supplement, in its own separate round. "
-                   "This choice is required — pick whichever modality this round's document "
-                   "prices as the vehicle rate.")
+                   "The widest passenger range is auto-selected as the base — change it only if "
+                   "this document prices a different modality as the vehicle rate.")
         _base_placeholder = "— choose the vehicle/base-price modality (required) —"
+        # Auto-detect the base: the group with the widest pax span (max-min), then highest
+        # max_pax as tiebreaker. This is the confirmed common case: 3-8, 3-6, 4-6, 4-8 pax
+        # is always the base; 1-1 and 2-2/2-3 pax are supplements on top.
+        _widest = max(_pending["groups"],
+                      key=lambda g: (g["max_pax"] - g["min_pax"], g["max_pax"]))
+        _auto_base_label = _widest["label"]
         _base_label_options = [_base_placeholder] + _labels
+        _auto_idx = _base_label_options.index(_auto_base_label) if _auto_base_label in _base_label_options else 0
         _base_pick = st.selectbox("Which modality is the VEHICLE/BASE price this round?",
-                                  _base_label_options, index=0, key="pr_base_pick")
+                                  _base_label_options, index=_auto_idx, key="pr_base_pick")
 
         # CONFIRMED REAL REQUEST (product owner, 2026-09-11, same message as the worked-example
         # request above): "there should also be an AI text field, in case the human shall

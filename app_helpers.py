@@ -4121,7 +4121,7 @@ def _render_update_refresh_coded_service(client, service):
         st.rerun()
 
 
-def render_transport_manual_adjustment_flow(client, supplier_id):
+def render_transport_manual_adjustment_flow(client, supplier_id, transport_types=None):
     """CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11 - see
     price_refresh.build_manual_adjustment_proposals' own docstring for the full transcript):
     a simpler alternative to the rate-sheet-reading flow, for when there is no document at all -
@@ -4130,7 +4130,10 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
     vehiclePrice/baseAdultPrice field moves, the same field a "vehicle" round in the document flow
     touches. Reuses price_refresh.load_supplier_products (kind=Transport) for the route list, so
     the list of transports is exactly the same live-from-Travel-Compositor fact the document flow
-    already trusts."""
+    already trusts.
+
+    transport_types: optional list of transportType values (e.g. ["FERRY", "CAR"]) to filter to.
+    None means all types."""
     st.subheader("1 — Load this supplier's transports")
     if st.button("🔍 Load transports", type="primary", key="pma_load"):
         bar = st.progress(0.0, text="Loading transports from Travel Compositor…")
@@ -4146,6 +4149,10 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
         elif not routes:
             st.warning("This supplier has no transports yet.")
         else:
+            if transport_types:
+                routes = [r for r in routes
+                          if (r.get("raw", {}).get("transportType") or "").upper()
+                          in {t.upper() for t in transport_types}]
             st.session_state.pma_routes = routes
             st.session_state.pop("pma_result", None)
             st.rerun()
@@ -4231,7 +4238,7 @@ def render_transport_manual_adjustment_flow(client, supplier_id):
             st.rerun()
 
 
-def render_transport_price_consistency_flow(client, supplier_id):
+def render_transport_price_consistency_flow(client, supplier_id, transport_types=None):
     """CONFIRMED REAL REQUEST (product owner, 2026-09-11 - see
     price_refresh.transport_price_consistency_report's own docstring for the full transcript):
     "can the app help then, to identify price errors at least for contract transport... once a
@@ -4241,7 +4248,10 @@ def render_transport_price_consistency_flow(client, supplier_id):
     at all, unlike every other Transport flow in this app. It only loads this supplier's live
     transports and ranks routes by how far their own modality supplement sits from what this
     SAME supplier's other routes suggest is normal, so a human can go fix anything that looks
-    wrong directly in Travel Compositor (or with the manual adjustment / rate-sheet flows above)."""
+    wrong directly in Travel Compositor (or with the manual adjustment / rate-sheet flows above).
+
+    transport_types: optional list of transportType values (e.g. ["FERRY"]) to filter to.
+    None means all types."""
     st.caption("Loads this supplier's live transports and compares each modality's price "
               "supplement against what this SAME supplier's OTHER routes usually charge for that "
               "same passenger bracket. Nothing is written — this only helps you spot a route "
@@ -4260,6 +4270,10 @@ def render_transport_price_consistency_flow(client, supplier_id):
         elif not routes:
             st.warning("This supplier has no transports yet.")
         else:
+            if transport_types:
+                routes = [r for r in routes
+                          if (r.get("raw", {}).get("transportType") or "").upper()
+                          in {t.upper() for t in transport_types}]
             st.session_state.pcc_routes = routes
             st.rerun()
 

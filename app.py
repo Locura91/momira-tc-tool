@@ -750,6 +750,7 @@ from flows.supplier_migration import render_supplier_migration_flow
 from flows.cancellation import render_transport_cancellation_bulk_flow, render_generic_cancellation_bulk_flow
 
 from flows.transfer_image_bulk import render_transfer_image_bulk_flow
+from flows.transfer_surcharge_bulk import render_transfer_surcharge_bulk_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
@@ -1227,6 +1228,7 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # above - it acts on many already-identified live records at once, not one record a human is
 # currently reviewing. See transfer_image_bulk.py's own docstring for how this differs from
 # supplier_images.py's per-direction "applies to future builds" feature.
+TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer surcharges"
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
 TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality consistency)"
@@ -1546,6 +1548,12 @@ if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type
                "the app lists every route with no reverse-direction pair yet, so you can "
                "create them as a batch — or duplicate one specific Transfer by id instead.")
 
+    if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="pt_choice_transfer_surcharge_bulk", use_container_width=True):
+        st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
+        st.rerun()
+    st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
+               "for a supplier in bulk.")
+
     if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
         st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
         st.rerun()
@@ -1592,6 +1600,10 @@ if st.session_state.product_type == TRANSPORT_INVENTORY_AUDIT_CHOICE:
 
 if st.session_state.product_type == TRANSFER_DUPLICATE_AND_CREATE_CHOICE:
     render_transfer_duplicate_and_create_flow(client)
+    st.stop()
+
+if st.session_state.product_type == TRANSFER_SURCHARGE_BULK_CHOICE:
+    render_transfer_surcharge_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:
