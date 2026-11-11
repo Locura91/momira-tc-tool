@@ -14,6 +14,8 @@ import re
 import streamlit as st
 from datetime import date
 
+from app_helpers import _ur_pick_momira_supplier
+
 _TIME_PAT = re.compile(r"^\d{2}:\d{2}$")
 
 
@@ -214,11 +216,14 @@ def _render_create_mode(transfers):
 def render_transfer_surcharge_bulk_flow(client):
     st.header("Bulk Transfer surcharges")
 
-    supplier_id = st.text_input("Supplier ID", key="tsb_supplier_id",
-                                help="e.g. 50421")
+    supplier_id = _ur_pick_momira_supplier(client, key_prefix="tsb")
     if not supplier_id:
-        st.info("Enter a supplier ID to start.")
         return
+
+    # Reset loaded data when supplier changes
+    if st.session_state.get("tsb_last_supplier_id") != supplier_id:
+        st.session_state.tsb_last_supplier_id = supplier_id
+        st.session_state.tsb_transfers = None
 
     if st.button("Load transfers", key="tsb_load"):
         with st.spinner("Fetching transfers…"):
