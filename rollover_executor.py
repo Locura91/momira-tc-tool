@@ -1,67 +1,29 @@
 """
-rollover_executor.py — Package rollover via two-step PrimeFaces AJAX.
+rollover_executor.py — Package rollover via Playwright (headless Chromium).
 
-Flow confirmed live by browser inspection (2026-10-23):
-  1. Log into momira.travel as the TC operator → get JSESSIONID
-  2. GET idea page (authenticated) → extract initial ViewState
-  3. POST AJAX: trigger "Book directly without changes" button
-     → server refreshes mySeparateForm + returns new ViewState
-  4. POST AJAX: submit mySeparateForm (startTrip) with departure date
-     → server redirects to summary.xhtml?tripId=N
+Uses a real browser to bypass Cloudflare protection that blocks raw HTTP requests.
+Flow:
+  1. Launch headless Chromium, navigate to momira.travel login
+  2. Log in with TC operator credentials
+  3. Navigate to the idea/package page
+  4. Click "Book directly without changes"
+  5. Set departure date in the date picker
+  6. Click "Start trip" → extract tripId from the resulting page
 """
+import os
 import re
-import time
-import requests
-from bs4 import BeautifulSoup
-from tc_web_session import create_web_session
 
-MODULE_BUILD = "2026-10-24-rollover-ext"
+MODULE_BUILD = "2026-11-11-playwright"
 
 _BASE = "https://momira.travel"
-_TIMEOUT_GET  = 15
-_TIMEOUT_POST = 30
+_LOGIN_URL = f"{_BASE}/login.xhtml"
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-}
-
-_AJAX_HEADERS = {
-    "Faces-Request": "partial/ajax",
-    "X-Requested-With": "XMLHttpRequest",
-    "Content-Type": "application/x-www-form-urlencoded",
-}
-
-
-def _extract_viewstate_from_ajax(xml_text: str) -> str:
-    """Extract updated ViewState from a PrimeFaces partial-response XML body."""
-    # Try xml.etree first
-    try:
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(xml_text)
-        for update in root.iter("update"):
-            uid = update.get("id", "")
-            if "ViewState" in uid or uid == "j_id__v_0":
-                return (update.text or "").strip()
-    except Exception:
-        pass
-    # Regex fallbacks
-    for pat in (
-        r'<update id="javax\.faces\.ViewState[^"]*"><!\[CDATA\[([^\]]+)\]\]>',
-        r'<update id="javax\.faces\.ViewState[^"]*">([^<]+)<',
-        r'<update id="j_id__v_0"><!\[CDATA\[([^\]]+)\]\]>',
-    ):
-        m = re.search(pat, xml_text)
-        if m:
-            return m.group(1).strip()
-    return ""
+_BOOK_BUTTON_TEXTS = [
+    "book directly without changes",
+    "reserva directamente sin cambios",
+    "direkt buchen ohne änderungen",
+    "réserver directement sans modifications",
+]
 
 
 def execute_rollover(
@@ -70,113 +32,141 @@ def execute_rollover(
     flight_class: str = "ECONOMY",
 ) -> dict:
     """
-    Execute a package rollover via two PrimeFaces AJAX calls.
+    Execute a package rollover using Playwright headless Chromium.
 
     Returns:
-        {"success": True,  "url": "https://momira.travel/summary.xhtml?tripId=N", "trip_id": "N"}
+        {"success": True,  "url": "...", "trip_id": "N"}
         {"success": False, "error": "...", "detail": "..."}
     """
-    # ── Step 0: Authenticate — get a TC web session (JSESSIONID) ────────────
+    username = os.getenv("TRAVELC_USERNAME", "")
+    password = os.getenv("TRAVELC_PASSWORD", "")
+    if not username or not password:
+        return {"success": False, "error": "TC web credentials not configured (TRAVELC_USERNAME / TRAVELC_PASSWORD)"}
+
     try:
-        session = create_web_session()
-        # Override default headers with our AJAX-compatible ones
-        session.headers.update(_HEADERS)
-    except Exception as e:
-        return {"success": False, "error": f"TC login failed: {e}"}
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"success": False, "error": "Playwright is not installed on this server."}
 
-    # ── Step 1: GET the idea page ─────────────────────────────────────────────
-    for attempt in range(3):
-        try:
-            resp = session.get(idea_url, timeout=_TIMEOUT_GET, allow_redirects=True)
-            if resp.status_code == 429:
-                time.sleep(2 ** attempt)
-                continue
-            resp.raise_for_status()
-            break
-        except Exception as e:
-            if attempt == 2:
-                return {"success": False, "error": f"Could not load page: {e}"}
-            time.sleep(2 ** attempt)
-    else:
-        return {"success": False, "error": "Page blocked after 3 attempts (429)"}
-
-    page_url = resp.url  # final URL after redirects
-    soup = BeautifulSoup(resp.text, "html.parser")
-    vs_tag = soup.find("input", {"name": "javax.faces.ViewState"})
-    if not vs_tag:
-        return {"success": False, "error": "ViewState not found — page may require login or layout changed"}
-    viewstate = vs_tag.get("value", "")
-
-    # ── Step 2: AJAX — trigger "Book directly without changes" ────────────────
-    # This loads/updates mySeparateForm server-side and returns a fresh ViewState.
+    browser = None
+    pw = None
     try:
-        ajax1 = session.post(
-            page_url,
-            data={
-                "javax.faces.partial.ajax": "true",
-                "javax.faces.source": "idea-info-form:j_id_3r_4y:directBook",
-                "javax.faces.partial.execute": "idea-info-form",
-                "javax.faces.partial.render": "@(#mySeparateForm),carousel:destinations-photos",
-                "idea-info-form:j_id_3r_4y:directBook": "idea-info-form:j_id_3r_4y:directBook",
-                "idea-info-form_SUBMIT": "1",
-                "javax.faces.ViewState": viewstate,
-            },
-            headers={**_AJAX_HEADERS, "Referer": page_url},
-            timeout=_TIMEOUT_POST,
+        pw = sync_playwright().start()
+        browser = pw.chromium.launch(
+            headless=True,
+            executable_path="/opt/pw-browsers/chromium",
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-    except Exception as e:
-        return {"success": False, "error": f"Step 2 AJAX failed: {e}"}
-
-    # Use refreshed ViewState from AJAX response if available
-    fresh_vs = _extract_viewstate_from_ajax(ajax1.text)
-    if fresh_vs:
-        viewstate = fresh_vs
-
-    # ── Step 3: AJAX — submit mySeparateForm with departure date ──────────────
-    try:
-        ajax2 = session.post(
-            page_url,
-            data={
-                "javax.faces.partial.ajax": "true",
-                "javax.faces.source": "modal-init-compositor-all:j_id_53_f_1xa:startTrip",
-                "javax.faces.partial.execute": "mySeparateForm",
-                "javax.faces.partial.render": "mySeparateForm",
-                "mySeparateForm": "mySeparateForm",
-                "modal-init-compositor-all:j_id_53_f_1sv:ClassOption": flight_class,
-                "modal-init-compositor-all:departureDateMultidestination:input": departure_date,
-                "modal-init-compositor-all:directSubmit": "",
-                "mySeparateForm_SUBMIT": "1",
-                "javax.faces.ViewState": viewstate,
-            },
-            headers={**_AJAX_HEADERS, "Referer": page_url},
-            allow_redirects=True,
-            timeout=_TIMEOUT_POST,
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+            ignore_https_errors=True,
         )
+        page = context.new_page()
+
+        # ── Step 1: Login ────────────────────────────────────────────────
+        page.goto(_LOGIN_URL, wait_until="networkidle", timeout=30000)
+
+        username_field = page.locator("input[id*='username'], input[name*='username']").first
+        password_field = page.locator("input[id*='password'], input[name*='password']").first
+        login_button = page.locator("button[id*='loginButton'], input[id*='loginButton'], a[id*='loginButton']").first
+
+        if not username_field.is_visible(timeout=10000):
+            return {"success": False, "error": "Login page did not load — Cloudflare may be blocking",
+                    "detail": page.url}
+
+        username_field.fill(username)
+        password_field.fill(password)
+        login_button.click()
+
+        page.wait_for_load_state("networkidle", timeout=15000)
+
+        if "login" in page.url.lower():
+            error_el = page.locator(".error, .ui-messages-error").first
+            msg = error_el.text_content() if error_el.is_visible() else "Login failed"
+            return {"success": False, "error": f"TC login failed: {msg}"}
+
+        # ── Step 2: Navigate to the idea page ────────────────────────────
+        page.goto(idea_url, wait_until="networkidle", timeout=30000)
+
+        # ── Step 3: Click "Book directly without changes" ────────────────
+        book_btn = None
+        for text in _BOOK_BUTTON_TEXTS:
+            candidates = page.locator(f"a:has-text('{text}'), button:has-text('{text}'), span:has-text('{text}')")
+            if candidates.count() > 0:
+                book_btn = candidates.first
+                break
+
+        if not book_btn:
+            btn_by_id = page.locator("[id*='directBook']")
+            if btn_by_id.count() > 0:
+                book_btn = btn_by_id.first
+
+        if not book_btn:
+            return {"success": False, "error": "Could not find 'Book directly without changes' button",
+                    "detail": f"URL: {page.url}"}
+
+        book_btn.click()
+        page.wait_for_timeout(2000)
+        page.wait_for_load_state("networkidle", timeout=15000)
+
+        # ── Step 4: Set departure date ───────────────────────────────────
+        date_input = page.locator("input[id*='departureDateMultidestination'], input[id*='departureDate']").first
+        if not date_input.is_visible(timeout=5000):
+            date_input = page.locator("input[id*='departure']").first
+
+        if not date_input.is_visible(timeout=5000):
+            return {"success": False, "error": "Departure date field not found after clicking 'Book directly'",
+                    "detail": f"URL: {page.url}"}
+
+        date_input.click(click_count=3)
+        date_input.fill(departure_date)
+        date_input.press("Tab")
+        page.wait_for_timeout(500)
+
+        # ── Step 5: Click "Start trip" / search ──────────────────────────
+        start_btn = page.locator("[id*='startTrip']").first
+        if not start_btn.is_visible(timeout=3000):
+            start_btn = page.locator("button:has-text('Start'), a:has-text('Start'), button:has-text('Buscar'), a:has-text('Search')").first
+
+        if not start_btn.is_visible(timeout=3000):
+            return {"success": False, "error": "Could not find 'Start trip' button",
+                    "detail": f"URL: {page.url}"}
+
+        start_btn.click()
+        page.wait_for_load_state("networkidle", timeout=30000)
+        page.wait_for_timeout(2000)
+
+        # ── Step 6: Extract tripId ───────────────────────────────────────
+        final_url = page.url
+        if "tripId=" in final_url:
+            trip_id = final_url.split("tripId=")[1].split("&")[0]
+            return {"success": True, "url": final_url, "trip_id": trip_id}
+
+        m = re.search(r"tripId=(\d+)", page.content())
+        if m:
+            trip_url = f"{_BASE}/summary.xhtml?tripId={m.group(1)}"
+            return {"success": True, "url": trip_url, "trip_id": m.group(1)}
+
+        m2 = re.search(r"travel-map\.xhtml\?tripId=(\d+)", page.content())
+        if m2:
+            trip_url = f"{_BASE}/travel-map.xhtml?tripId={m2.group(1)}"
+            return {"success": True, "url": trip_url, "trip_id": m2.group(1)}
+
+        return {
+            "success": False,
+            "error": "Rollover completed but no tripId found in response",
+            "detail": f"Final URL: {final_url}, page title: {page.title()}",
+        }
+
     except Exception as e:
-        return {"success": False, "error": f"Step 3 AJAX failed: {e}"}
-
-    # ── Step 4: Extract tripId ────────────────────────────────────────────────
-    final_url = ajax2.url
-    if "tripId=" in final_url:
-        trip_id = final_url.split("tripId=")[1].split("&")[0]
-        return {"success": True, "url": final_url, "trip_id": trip_id}
-
-    # PrimeFaces may return a <redirect> element in the XML response
-    redirect_match = re.search(r'<redirect url="([^"]+)"', ajax2.text)
-    if redirect_match:
-        redir = redirect_match.group(1)
-        full = redir if redir.startswith("http") else _BASE + redir
-        if "tripId=" in full:
-            trip_id = full.split("tripId=")[1].split("&")[0]
-            return {"success": True, "url": full, "trip_id": trip_id}
-
-    # Check body for embedded tripId
-    m = re.search(r"summary\.xhtml\?tripId=(\d+)", ajax2.text)
-    if m:
-        return {"success": True, "url": f"{_BASE}/summary.xhtml?tripId={m.group(1)}", "trip_id": m.group(1)}
-
-    return {
-        "success": False,
-        "error": "No tripId in response — booking may require TC login or field names changed",
-        "detail": ajax2.text[:800],
-    }
+        return {"success": False, "error": f"Playwright error: {e}"}
+    finally:
+        if browser:
+            browser.close()
+        if pw:
+            pw.stop()
