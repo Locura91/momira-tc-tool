@@ -39,11 +39,10 @@ class MultiWander_AI_Planner {
 
     public function render_admin_page() {
         if (!current_user_can('manage_options')) return;
-        $saved = get_settings_errors('mw_ai_settings');
         ?>
         <div class="wrap">
             <h1 style="display:flex;align-items:center;gap:10px;">
-                <span style="font-size:24px;">✈️</span> MultiWander AI Planner — Ustawienia
+                <span style="font-size:24px;">✈️</span> MultiWander AI Planner — Settings
             </h1>
 
             <?php settings_errors('mw_ai_settings'); ?>
@@ -54,7 +53,7 @@ class MultiWander_AI_Planner {
                 <table class="form-table" role="presentation">
 
                     <tr>
-                        <th scope="row"><label for="mw_openai_api_key">Klucz API OpenAI</label></th>
+                        <th scope="row"><label for="mw_openai_api_key">OpenAI API Key</label></th>
                         <td>
                             <?php $key = get_option('mw_openai_api_key', ''); ?>
                             <input
@@ -67,29 +66,31 @@ class MultiWander_AI_Planner {
                                 placeholder="sk-..."
                             />
                             <p class="description">
-                                Wklej swój klucz z <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
-                                Klucz jest przechowywany w bazie danych WordPress.
+                                Paste your key from <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
+                                The key is stored in the WordPress database.
                             </p>
                             <?php if (!empty($key)): ?>
-                                <p style="color:#3dbf8e;font-weight:600;">✔ Klucz jest zapisany.</p>
+                                <p style="color:#3dbf8e;font-weight:600;">✔ API key is saved.</p>
+                            <?php else: ?>
+                                <p style="color:#c0392b;font-weight:600;">⚠ No API key set — the widget will not work until you save one.</p>
                             <?php endif; ?>
                         </td>
                     </tr>
 
                     <tr>
-                        <th scope="row"><label for="mw_openai_model">Model OpenAI</label></th>
+                        <th scope="row"><label for="mw_openai_model">OpenAI Model</label></th>
                         <td>
                             <?php $model = get_option('mw_openai_model', 'gpt-4o-mini'); ?>
                             <select id="mw_openai_model" name="mw_openai_model">
-                                <option value="gpt-4o-mini"  <?php selected($model, 'gpt-4o-mini'); ?>>gpt-4o-mini (szybki, tani)</option>
-                                <option value="gpt-4o"       <?php selected($model, 'gpt-4o'); ?>>gpt-4o (najlepsza jakość)</option>
-                                <option value="gpt-3.5-turbo"<?php selected($model, 'gpt-3.5-turbo'); ?>>gpt-3.5-turbo (najszybszy)</option>
+                                <option value="gpt-4o-mini"   <?php selected($model, 'gpt-4o-mini'); ?>>gpt-4o-mini — fast &amp; affordable (recommended)</option>
+                                <option value="gpt-4o"        <?php selected($model, 'gpt-4o'); ?>>gpt-4o — best quality</option>
+                                <option value="gpt-3.5-turbo" <?php selected($model, 'gpt-3.5-turbo'); ?>>gpt-3.5-turbo — fastest</option>
                             </select>
                         </td>
                     </tr>
 
                     <tr>
-                        <th scope="row"><label for="mw_openai_temperature">Kreatywność (temperature)</label></th>
+                        <th scope="row"><label for="mw_openai_temperature">Creativity (temperature)</label></th>
                         <td>
                             <?php $temp = get_option('mw_openai_temperature', 0.7); ?>
                             <input
@@ -102,14 +103,27 @@ class MultiWander_AI_Planner {
                                 style="width:200px;vertical-align:middle;"
                             />
                             &nbsp;<strong id="mw_temp_val"><?php echo esc_html($temp); ?></strong>
-                            <p class="description">0 = odpowiedzi deterministyczne, 1 = bardzo kreatywne. Zalecane: 0.7</p>
+                            <p class="description">0 = deterministic, 1 = very creative. Recommended: 0.7</p>
                         </td>
                     </tr>
 
                 </table>
 
-                <?php submit_button('Zapisz ustawienia'); ?>
+                <?php submit_button('Save Settings'); ?>
             </form>
+
+            <hr />
+            <h2>Language behaviour</h2>
+            <p>
+                The widget automatically detects the page language:<br />
+                &bull; Any page on <code>multiwander.com</code> → <strong>Polish</strong><br />
+                &bull; Any page under <code>multiwander.com/en/</code> → <strong>English</strong>
+            </p>
+            <h2>Topic restrictions (legal)</h2>
+            <p style="color:#c0392b;">
+                The AI is hard-coded to <strong>refuse all questions about visas, vaccines, entry requirements, and health/legal advice</strong>.
+                This cannot be changed from the settings — it is enforced directly in the plugin code for legal compliance.
+            </p>
         </div>
         <?php
     }
@@ -118,10 +132,15 @@ class MultiWander_AI_Planner {
         wp_enqueue_style('mw-ai-style', plugin_dir_url(__FILE__) . 'assets/css/widget.css', array(), '2.0.0');
         wp_enqueue_script('mw-ai-script', plugin_dir_url(__FILE__) . 'assets/js/widget.js', array('jquery'), '2.0.0', true);
 
+        // Detect language from URL path: /en/ prefix → English
+        $request_uri = $_SERVER['REQUEST_URI'] ?? '';
+        $is_english  = (strpos($request_uri, '/en/') === 0 || $request_uri === '/en');
+
         wp_localize_script('mw-ai-script', 'mwAI', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'logo_url' => plugin_dir_url(__FILE__) . 'assets/logo.png',
-            'nonce'    => wp_create_nonce('mw_ai_nonce')
+            'nonce'    => wp_create_nonce('mw_ai_nonce'),
+            'lang'     => $is_english ? 'en' : 'pl'
         ));
     }
 
@@ -153,6 +172,7 @@ class MultiWander_AI_Planner {
 
         $user_message  = sanitize_text_field($_POST['message'] ?? '');
         $prompt_index  = intval($_POST['prompt_index'] ?? 1);
+        $lang          = sanitize_text_field($_POST['lang'] ?? 'pl');
         $history_raw   = $_POST['history'] ?? '[]';
         $history       = json_decode(stripslashes($history_raw), true);
         if (!is_array($history)) $history = array();
@@ -167,7 +187,7 @@ class MultiWander_AI_Planner {
 
         // Build messages array for OpenAI
         $messages = array(
-            array('role' => 'system', 'content' => $this->get_system_prompt($prompt_index))
+            array('role' => 'system', 'content' => $this->get_system_prompt($prompt_index, $lang))
         );
 
         // Append prior turns from frontend history
@@ -205,10 +225,54 @@ class MultiWander_AI_Planner {
         wp_send_json_success(array('reply' => $reply));
     }
 
-    private function get_system_prompt(int $prompt_index): string {
-        $base = "Jesteś ekspertem ds. planowania podróży dla MultiWander (multiwander.com). Specjalizujesz się w łączonych podróżach multi-destination dla polskich klientów.
+    private function get_system_prompt(int $prompt_index, string $lang = 'pl'): string {
+        $is_en = ($lang === 'en');
 
-ZASADY BEZWZGLĘDNE:
+        // ── Hard-coded topic restrictions (legal compliance) ──────────────────
+        // These refusal rules are fixed regardless of any other instruction.
+        $refusal = $is_en
+            ? "ABSOLUTE RESTRICTIONS (non-negotiable, legal compliance):
+- You MUST NOT provide any information about visas, entry requirements, work permits, or immigration.
+- You MUST NOT provide any information about vaccines, vaccinations, health certificates, or medical requirements for travel.
+- You MUST NOT provide any health, legal, or insurance advice of any kind.
+- If the user asks about any of the above topics, respond ONLY with: \"I'm sorry, I can only help with creating your travel itinerary. For visa and health information, please consult the relevant embassy or a travel health clinic.\"
+- Do not elaborate, do not refer to external sources beyond that one sentence."
+            : "BEZWZGLĘDNE OGRANICZENIA (nienaruszalne, wymogi prawne):
+- NIE wolno Ci udzielać żadnych informacji o wizach, wymaganiach wjazdowych, zezwoleniach ani imigracji.
+- NIE wolno Ci udzielać żadnych informacji o szczepionkach, szczepieniach, zaświadczeniach zdrowotnych ani wymaganiach medycznych.
+- NIE wolno Ci udzielać żadnych porad zdrowotnych, prawnych ani ubezpieczeniowych.
+- Jeśli użytkownik zapyta o powyższe tematy, odpowiedz WYŁĄCZNIE: \"Przepraszam, mogę pomóc tylko w tworzeniu planu podróży. W sprawie wiz i informacji zdrowotnych prosimy skontaktować się z właściwą ambasadą lub kliniką medycyny podróży.\"
+- Nie rozwijaj tematu, nie podawaj żadnych dodatkowych źródeł.";
+
+        // ── Core planning rules ───────────────────────────────────────────────
+        $base = $is_en
+            ? "You are a travel planning expert for MultiWander (multiwander.com), specialising in multi-destination combined trips.
+
+RULES:
+1. DURATION MATH:
+   - '2 weeks' = exactly 14 days / 13 nights.
+   - '1 week'  = exactly 7 days / 6 nights.
+   - 'X nights' = X nights / X+1 days.
+   - Always calculate and state the exact number of days and nights.
+
+2. MULTI-DESTINATION USP (core value):
+   - NEVER propose a single location for an entire trip. Always split into at least 2 destinations/regions.
+   - Egypt → Cairo + Hurghada or Nile Cruise. Spain → Barcelona/Madrid + Andalusia or Coast.
+   - Greece → Athens + one island. Turkey → Istanbul + Riviera or Cappadocia.
+
+3. ITINERARY FORMAT:
+   - Group by day: 'Day 1 Cairo', 'Day 2 Cairo', 'Day 3 Hurghada', etc.
+   - Maximum ONE short recommendation line per day (sightseeing / attractions only).
+   - ABSOLUTE BAN: No restaurants, bars, cafés, or food recommendations. Attractions only.
+
+4. SCOPE:
+   - Your ONLY purpose is to create a travel itinerary.
+   - Refuse any off-topic request politely and redirect to itinerary planning.
+
+Respond in English. Be concise."
+            : "Jesteś ekspertem ds. planowania podróży dla MultiWander (multiwander.com). Specjalizujesz się w łączonych podróżach multi-destination.
+
+ZASADY:
 1. MATEMATYKA CZASU POBYTU:
    - '2 tygodnie' = dokładnie 14 dni / 13 nocy.
    - '1 tydzień' = dokładnie 7 dni / 6 nocy.
@@ -225,16 +289,21 @@ ZASADY BEZWZGLĘDNE:
    - Do każdego dnia MAKSYMALNIE 1 krótka linia z rekomendacją atrakcji/zwiedzania.
    - ZAKAZ: Żadnych restauracji, barów, kawiarni, jedzenia. Wyłącznie zwiedzanie i atrakcje.
 
-4. VAGUE INPUT:
-   - Jeśli użytkownik nie podał konkretnego miejsca, zapytaj o preferowany klimat lub zaproponuj style podróżowania.
+4. ZAKRES:
+   - Twoim JEDYNYM celem jest tworzenie planu podróży.
+   - Grzecznie odmów każdego tematu poza planem podróży i wróć do tematu.
 
 Odpowiadaj po polsku. Bądź zwięzły.";
 
+        $refinement = $is_en
+            ? "\n\nThis is the user's second message — a refinement or adjustment. Update the itinerary based on the conversation so far. Keep the day-by-day format."
+            : "\n\nTo jest druga wiadomość użytkownika — doprecyzowanie lub zmiana. Dostosuj plan na podstawie poprzedniej rozmowy. Zachowaj format dzienny.";
+
         if ($prompt_index === 2) {
-            $base .= "\n\nTo jest druga wiadomość użytkownika — doprecyzowanie lub zmiana planu. Dostosuj plan na podstawie poprzedniej rozmowy. Zachowaj format dzienny.";
+            $base .= $refinement;
         }
 
-        return $base;
+        return $refusal . "\n\n" . $base;
     }
 
     public function handle_send_itinerary() {

@@ -5,6 +5,8 @@
     'use strict';
 
     // ── State ────────────────────────────────────────────────────────────────
+    var EN = (mwAI.lang === 'en');
+
     var state = {
         promptIndex: 0,
         history: [],
@@ -13,15 +15,63 @@
         passengers: 2
     };
 
-    var VAGUE_KEYWORDS = ['wakacje', 'urlop', 'wyjazd', 'nie wiem', 'coś fajnego', 'gdzieś', 'podróż', 'holidays', 'trip'];
+    var VAGUE_KEYWORDS = EN
+        ? ['holiday', 'holidays', 'trip', 'travel', 'vacation', 'somewhere', 'dunno', 'not sure', 'anything']
+        : ['wakacje', 'urlop', 'wyjazd', 'nie wiem', 'coś fajnego', 'gdzieś', 'podróż'];
 
-    var THEME_PILLS = [
+    var THEME_PILLS = EN ? [
+        { label: '🏙️ City Break',     value: 'City Break — short trip to a European city' },
+        { label: '🏝️ Island Hopping', value: 'Island Hopping — jumping between islands' },
+        { label: '🏖️ City & Beach',   value: 'City & Beach — city culture combined with the beach' },
+        { label: '🚗 Rental Car',      value: 'Rental Car Holiday — freedom to explore by car' },
+        { label: '🦁 Safari',          value: 'Safari — wildlife and nature' }
+    ] : [
         { label: '🏙️ City Break',     value: 'City Break — krótki wyjazd do europejskiego miasta' },
         { label: '🏝️ Island Hopping', value: 'Island Hopping — skakanie między wyspami' },
         { label: '🏖️ City & Beach',   value: 'City & Beach — miasto i plaża' },
         { label: '🚗 Rental Car',      value: 'Rental Car Holiday — wynajem auta i wolna eksploracja' },
         { label: '🦁 Safari',          value: 'Safari — przyroda i dzikie zwierzęta' }
     ];
+
+    var STR = {
+        greeting:       EN ? 'Describe your dream holiday and I\'ll build your itinerary. 🌍'
+                           : 'Opisz swoje wymarzone wakacje, a przygotuję plan. 🌍',
+        pillPrompt:     EN ? 'What travel style interests you?'
+                           : 'Jaki styl podróży Cię interesuje?',
+        refineHint:     EN ? 'Want to change anything? This is your second and final comment.'
+                           : 'Chcesz coś zmienić? Możesz doprecyzować — to Twój drugi i ostatni komentarz.',
+        formIntro:      EN ? '✅ Great plan! Add your details and we\'ll email it to you.'
+                           : '✅ Świetnie! Uzupełnij szczegóły, a wyślemy plan na Twój email.',
+        labelDate:      EN ? 'Departure date *'      : 'Data wyjazdu *',
+        labelAirport:   EN ? 'Departure airport *'   : 'Lotnisko wylotu *',
+        labelFlights:   EN ? 'Flights included'      : 'Loty w cenie oferty',
+        labelPax:       EN ? 'Number of travellers *': 'Liczba podróżnych *',
+        labelBudget:    EN ? 'Budget'                : 'Budżet',
+        labelEmail:     EN ? 'Email address *'       : 'Email *',
+        labelNote:      EN ? 'Note to MultiWander'   : 'Uwaga do MultiWander',
+        placeholderAirport: EN ? 'e.g. London (LHR), Manchester (MAN)…'
+                               : 'np. Warszawa (WAW), Kraków (KRK)…',
+        placeholderBudget:  EN ? 'e.g. €3,000 / person'
+                               : 'np. 3 000 EUR / os.',
+        placeholderNote:    EN ? 'e.g. prefer 4★ hotels'
+                               : 'np. preferujemy hotele 4★',
+        placeholderEmail:   EN ? 'your@email.com' : 'twoj@email.com',
+        consent:        EN ? 'I agree to receive my itinerary draft from MultiWander and to be contacted with a personalised travel offer.'
+                           : 'Wyrażam zgodę na przesłanie mi planu podróży przez MultiWander i kontakt z ofertą.',
+        submitBtn:      EN ? 'Send itinerary ✈'  : 'Wyślij plan ✈',
+        sending:        EN ? 'Sending…'           : 'Wysyłam…',
+        successMsg:     EN ? '✅ Done! Your plan has been sent to '  : '✅ Gotowe! Plan wysłany na ',
+        successSuffix:  EN ? '. We\'ll be in touch soon.'           : '. Wkrótce się odezwiemy.',
+        resetBtn:       EN ? '↩ Start over'       : '↩ Zacznij od nowa',
+        errDate:        EN ? 'Please select a departure date.'       : 'Wybierz datę wyjazdu.',
+        errAirport:     EN ? 'Please enter your departure airport.'  : 'Podaj lotnisko wylotu.',
+        errNet:         EN ? 'Connection error. Please try again.'   : 'Błąd sieci. Spróbuj ponownie.',
+        errGeneric:     EN ? 'Sorry, an error occurred. Please try again.'
+                           : 'Przepraszamy, wystąpił błąd. Spróbuj ponownie.',
+        typingDots:     '',  // animated — no text needed
+        optional:       EN ? '(optional)' : '(opcjonalnie)',
+        sendBtnLabel:   EN ? 'Send' : 'Wyślij'
+    };
 
     var PAX_PRESETS = [1, 2, 3, 4];
 
@@ -35,6 +85,13 @@
         $inputArea = $('#mw-ai-input-area');
         $input     = $('#mw-ai-user-input');
         $sendBtn   = $('#mw-ai-send-btn');
+
+        // Apply language strings to static DOM elements
+        $input.attr('placeholder', EN
+            ? 'e.g. 2 weeks in Egypt: pyramids and beach…'
+            : 'np. 2 tygodnie w Egipcie: piramidy i plaża…');
+        $sendBtn.text(STR.sendBtnLabel);
+        $messages.find('.mw-msg.bot-msg').first().text(STR.greeting);
 
         $('#mw-ai-toggle-btn').on('click', openWidget);
         $('#mw-ai-close-btn').on('click', closeWidget);
@@ -79,7 +136,7 @@
 
     // ── Theme pills ──────────────────────────────────────────────────────────
     function appendThemePills() {
-        var $wrap = $('<div class="mw-msg bot-msg" style="max-width:100%"><p style="margin:0 0 8px">Jaki styl podróży Cię interesuje?</p></div>');
+        var $wrap = $('<div class="mw-msg bot-msg" style="max-width:100%"><p style="margin:0 0 8px">' + escHtml(STR.pillPrompt) + '</p></div>');
         var $pills = $('<div class="mw-pills"></div>');
         THEME_PILLS.forEach(function (p) {
             var $pill = $('<button class="mw-pill"></button>').text(p.label).data('value', p.value);
@@ -114,6 +171,7 @@
                 nonce:        mwAI.nonce,
                 message:      userText,
                 prompt_index: state.promptIndex,
+                lang:         mwAI.lang,
                 history:      JSON.stringify(state.history)
             },
             success: function (res) {
@@ -122,7 +180,7 @@
                 $sendBtn.prop('disabled', false);
 
                 if (!res.success) {
-                    appendMsg('Przepraszamy, wystąpił błąd. Spróbuj ponownie.', 'bot');
+                    appendMsg(STR.errGeneric, 'bot');
                     return;
                 }
 
@@ -134,7 +192,7 @@
                 appendMsg(reply, 'bot');
 
                 if (state.promptIndex === 1) {
-                    appendMsg('Chcesz coś zmienić? Możesz doprecyzować — to Twój drugi i ostatni komentarz.', 'bot');
+                    appendMsg(STR.refineHint, 'bot');
                 } else {
                     // prompt 2 done → show form
                     hideInputArea();
@@ -145,7 +203,7 @@
                 $dot.remove();
                 state.busy = false;
                 $sendBtn.prop('disabled', false);
-                appendMsg('Błąd połączenia. Sprawdź internet i spróbuj ponownie.', 'bot');
+                appendMsg(STR.errNet, 'bot');
             }
         });
     }
@@ -156,40 +214,40 @@
 
         var $form = $('\
 <div class="mw-form-block">\
-  <p class="mw-form-intro">✅ Świetnie! Uzupełnij szczegóły, a wyślemy plan na Twój email.</p>\
-  <label>Data wyjazdu *\
+  <p class="mw-form-intro">' + escHtml(STR.formIntro) + '</p>\
+  <label>' + escHtml(STR.labelDate) + '\
     <input type="date" id="mw-f-date" min="' + today + '" required />\
   </label>\
-  <label>Lotnisko wylotu *\
-    <input type="text" id="mw-f-airport" placeholder="np. Warszawa (WAW), Kraków (KRK)…" maxlength="80" required />\
+  <label>' + escHtml(STR.labelAirport) + '\
+    <input type="text" id="mw-f-airport" placeholder="' + escHtml(STR.placeholderAirport) + '" maxlength="80" required />\
   </label>\
   <label>\
     <span class="mw-toggle-row">\
-      <span class="mw-toggle-label">Loty w cenie oferty</span>\
+      <span class="mw-toggle-label">' + escHtml(STR.labelFlights) + '</span>\
       <label class="mw-toggle-switch">\
         <input type="checkbox" id="mw-f-flights" />\
         <span class="mw-slider"></span>\
       </label>\
     </span>\
   </label>\
-  <label>Liczba podróżnych *\
+  <label>' + escHtml(STR.labelPax) + '\
     <div class="mw-pax-row" id="mw-pax-row"></div>\
   </label>\
-  <label>Budżet <span class="mw-opt-label">(opcjonalnie)</span>\
-    <input type="text" id="mw-f-budget" placeholder="np. 3 000 EUR / os." maxlength="60" />\
+  <label>' + escHtml(STR.labelBudget) + ' <span class="mw-opt-label">' + escHtml(STR.optional) + '</span>\
+    <input type="text" id="mw-f-budget" placeholder="' + escHtml(STR.placeholderBudget) + '" maxlength="60" />\
   </label>\
-  <label>Email *\
-    <input type="email" id="mw-f-email" placeholder="twoj@email.com" required />\
+  <label>' + escHtml(STR.labelEmail) + '\
+    <input type="email" id="mw-f-email" placeholder="' + escHtml(STR.placeholderEmail) + '" required />\
   </label>\
-  <label>Uwaga do MultiWander <span class="mw-opt-label">(opcjonalnie)</span> <span class="mw-counter" id="mw-counter">0/50</span>\
-    <input type="text" id="mw-f-note" maxlength="50" placeholder="np. preferujemy hotele 4★" />\
+  <label>' + escHtml(STR.labelNote) + ' <span class="mw-opt-label">' + escHtml(STR.optional) + '</span> <span class="mw-counter" id="mw-counter">0/50</span>\
+    <input type="text" id="mw-f-note" maxlength="50" placeholder="' + escHtml(STR.placeholderNote) + '" />\
   </label>\
   <label class="mw-consent-label">\
     <input type="checkbox" id="mw-f-consent" />\
-    Wyrażam zgodę na przesłanie mi planu podróży przez MultiWander i kontakt z ofertą.\
+    ' + escHtml(STR.consent) + '\
   </label>\
   <div id="mw-form-error" class="mw-form-error"></div>\
-  <button id="mw-submit-btn" class="mw-submit-btn" disabled>Wyślij plan ✈</button>\
+  <button id="mw-submit-btn" class="mw-submit-btn" disabled>' + escHtml(STR.submitBtn) + '</button>\
 </div>');
 
         // Build passenger pills
@@ -245,10 +303,10 @@
             var note    = $form.find('#mw-f-note').val();
 
             $errBox.text('');
-            if (!date)    { $errBox.text('Wybierz datę wyjazdu.'); return; }
-            if (!airport) { $errBox.text('Podaj lotnisko wylotu.'); return; }
+            if (!date)    { $errBox.text(STR.errDate);    return; }
+            if (!airport) { $errBox.text(STR.errAirport); return; }
 
-            $btn.prop('disabled', true).text('Wysyłam…');
+            $btn.prop('disabled', true).text(STR.sending);
 
             $.ajax({
                 url: mwAI.ajax_url,
@@ -268,16 +326,16 @@
                 success: function (res) {
                     $form.remove();
                     if (res.success) {
-                        appendMsg('✅ Gotowe! Plan wysłany na <strong>' + escHtml(email) + '</strong>. Wkrótce się odezwiemy.', 'bot');
+                        appendMsg(STR.successMsg + '<strong>' + escHtml(email) + '</strong>' + STR.successSuffix, 'bot');
                         appendResetButton();
                     } else {
-                        appendMsg('Błąd wysyłki: ' + escHtml(res.data), 'bot');
-                        $btn.prop('disabled', false).text('Wyślij plan ✈');
+                        appendMsg(escHtml(res.data), 'bot');
+                        $btn.prop('disabled', false).text(STR.submitBtn);
                     }
                 },
                 error: function () {
-                    $btn.prop('disabled', false).text('Wyślij plan ✈');
-                    $errBox.text('Błąd sieci. Spróbuj ponownie.');
+                    $btn.prop('disabled', false).text(STR.submitBtn);
+                    $errBox.text(STR.errNet);
                 }
             });
         });
@@ -288,10 +346,10 @@
 
     // ── Reset ────────────────────────────────────────────────────────────────
     function appendResetButton() {
-        var $btn = $('<button class="mw-reset-btn">↩ Zacznij od nowa</button>');
+        var $btn = $('<button class="mw-reset-btn">' + escHtml(STR.resetBtn) + '</button>');
         $btn.on('click', function () {
             state = { promptIndex: 0, history: [], itinerary: '', busy: false, passengers: 2 };
-            $messages.empty().append('<div class="mw-msg bot-msg">Opisz swoje wymarzone wakacje.</div>');
+            $messages.empty().append('<div class="mw-msg bot-msg">' + escHtml(STR.greeting) + '</div>');
             showInputArea();
             $input.focus();
         });
