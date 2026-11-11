@@ -1,13 +1,15 @@
 """
-Bulk transfer surcharge tool — two modes:
+Bulk transfer supplement tool — three modes:
 
-1. UPDATE existing surcharges: change startTime/endTime (and reset startDate to
-   today) across all or filtered surcharges for a supplier.
-2. CREATE a new surcharge: append a brand-new supplement to every transfer (or
+1. UPDATE existing supplements: change startTime/endTime (and reset startDate to
+   today) across all or filtered supplements for a supplier.
+2. CREATE a new supplement: append a brand-new supplement to every transfer (or
    selected transfers) for a supplier.
+3. DELETE all supplements: wipe every supplement from every transfer for a
+   supplier (useful before re-adding supplements from scratch).
 
-Both use PUT /transfer/{supplierId} which sends the full transfer including its
-supplements array.
+All three use PUT /transfer/{supplierId} which sends the full transfer including
+its supplements array.
 """
 import copy
 import re
@@ -21,7 +23,7 @@ _TIME_PAT = re.compile(r"^\d{2}:\d{2}$")
 
 def _load_transfers(client, supplier_id):
     """Fetch all transfers for a supplier, re-fetching each individually for
-    full supplement data. Stores result in session_state."""
+    full supplement data."""
     try:
         resp = client.get_transfers(supplier_id)
     except Exception as e:
@@ -46,7 +48,7 @@ def _load_transfers(client, supplier_id):
     return full_transfers
 
 
-def _collect_surcharge_rows(transfers):
+def _collect_supplement_rows(transfers):
     """Flatten all supplements across all transfers into a list of dicts."""
     rows = []
     for t in transfers:
@@ -70,32 +72,32 @@ def _collect_surcharge_rows(transfers):
 
 
 def _render_update_mode(transfers):
-    """UI for updating existing surcharges — returns (affected_transfer_ids_to_indices, new_start_time, new_end_time) or None."""
-    surcharge_rows = _collect_surcharge_rows(transfers)
+    """UI for updating existing supplements."""
+    rows = _collect_supplement_rows(transfers)
 
-    if not surcharge_rows:
-        st.warning(f"None of the {len(transfers)} transfers have any surcharges/supplements.")
+    if not rows:
+        st.warning(f"None of the {len(transfers)} transfers have any supplements.")
         return None
 
-    st.success(f"Found **{len(surcharge_rows)}** surcharge(s) across **{len(transfers)}** transfers.")
+    st.success(f"Found **{len(rows)}** supplement(s) across **{len(transfers)}** transfers.")
 
-    unique_names = sorted({r["name"] for r in surcharge_rows if r["name"]})
-    scope = st.radio("Which surcharges to update?",
-                     ["All surcharges", "Only surcharges with a specific name"],
+    unique_names = sorted({r["name"] for r in rows if r["name"]})
+    scope = st.radio("Which supplements to update?",
+                     ["All supplements", "Only supplements with a specific name"],
                      key="tsb_scope")
 
-    selected_rows = surcharge_rows
-    if scope == "Only surcharges with a specific name" and unique_names:
-        pick = st.multiselect("Surcharge name(s)", unique_names, key="tsb_name_filter")
+    selected_rows = rows
+    if scope == "Only supplements with a specific name" and unique_names:
+        pick = st.multiselect("Supplement name(s)", unique_names, key="tsb_name_filter")
         if pick:
-            selected_rows = [r for r in surcharge_rows if r["name"] in pick]
+            selected_rows = [r for r in rows if r["name"] in pick]
         else:
-            st.info("Pick at least one surcharge name.")
+            st.info("Pick at least one supplement name.")
             return None
 
-    st.info(f"**{len(selected_rows)}** surcharge(s) will be updated.")
+    st.info(f"**{len(selected_rows)}** supplement(s) will be updated.")
 
-    with st.expander(f"Preview ({len(selected_rows)} surcharges)", expanded=False):
+    with st.expander(f"Preview ({len(selected_rows)} supplements)", expanded=False):
         for r in selected_rows:
             st.text(f"{r['transfer_name']}  |  {r['name']}  |  "
                     f"time: {r['startTime']}-{r['endTime']}  |  "
@@ -112,7 +114,7 @@ def _render_update_mode(transfers):
                                      key="tsb_new_end_time", help="e.g. 08:00")
 
     today_str = date.today().isoformat()
-    st.caption(f"startDate will be set to **{today_str}** (today) on all updated surcharges.")
+    st.caption(f"startDate will be set to **{today_str}** (today) on all updated supplements.")
 
     if not new_start_time or not new_end_time:
         st.warning("Enter both startTime and endTime to proceed.")
@@ -129,15 +131,13 @@ def _render_update_mode(transfers):
 
 
 def _render_create_mode(transfers):
-    """UI for creating a new surcharge on transfers — returns the new supplement dict or None."""
-    st.success(f"Loaded **{len(transfers)}** transfers.")
+    """UI for creating a new supplement on transfers."""
+    st.subheader("New supplement details")
 
-    st.subheader("New surcharge details")
-
-    name = st.text_input("Surcharge name", key="tsb_c_name",
-                         help="e.g. Night Surcharge, Weekend Surcharge")
+    name = st.text_input("Supplement name", key="tsb_c_name",
+                         help="e.g. Night Supplement, Weekend Supplement")
     if not name:
-        st.warning("Enter a surcharge name.")
+        st.warning("Enter a supplement name.")
         return None
 
     supp_type = st.selectbox("Type", ["ABSOLUTE", "PERCENT"], key="tsb_c_type",
@@ -145,7 +145,7 @@ def _render_create_mode(transfers):
     amount = st.number_input("Amount", min_value=0.0, step=0.5, key="tsb_c_amount",
                              help="e.g. 15.0 for €15 (ABSOLUTE) or 50.0 for 50% (PERCENT)")
 
-    st.markdown("**Time window** (leave empty if the surcharge has no time condition)")
+    st.markdown("**Time window** (leave empty if the supplement has no time condition)")
     tc1, tc2 = st.columns(2)
     with tc1:
         start_time = st.text_input("startTime (HH:MM)", value="", key="tsb_c_start_time",
@@ -170,7 +170,6 @@ def _render_create_mode(transfers):
         end_date = st.date_input("endDate", value=date(today.year + 1, today.month, today.day),
                                  key="tsb_c_end_date")
 
-    # Transfer selection
     st.divider()
     transfer_scope = st.radio("Add to which transfers?",
                               ["All transfers", "Select specific transfers"],
@@ -205,7 +204,7 @@ def _render_create_mode(transfers):
 
     target_count = len(selected_tids) if selected_tids else len(transfers)
 
-    with st.expander("Preview new surcharge"):
+    with st.expander("Preview new supplement"):
         for k, v in new_supp.items():
             st.text(f"  {k}: {v}")
         st.caption(f"Will be added to **{target_count}** transfer(s).")
@@ -213,8 +212,38 @@ def _render_create_mode(transfers):
     return ("create", new_supp, selected_tids, target_count)
 
 
+def _render_delete_mode(transfers):
+    """UI for deleting all supplements from every transfer."""
+    rows = _collect_supplement_rows(transfers)
+    transfers_with_supps = len({r["transfer_id"] for r in rows})
+
+    if not rows:
+        st.warning(f"None of the {len(transfers)} transfers have any supplements — nothing to delete.")
+        return None
+
+    st.warning(
+        f"This will **delete all {len(rows)} supplement(s)** from "
+        f"**{transfers_with_supps}** transfer(s). "
+        f"The remaining {len(transfers) - transfers_with_supps} transfer(s) have no supplements and will not be touched."
+    )
+
+    with st.expander(f"Show all supplements to be deleted ({len(rows)})", expanded=False):
+        for r in rows:
+            st.text(f"{r['transfer_name']}  |  {r['name']}  |  "
+                    f"time: {r['startTime']}-{r['endTime']}  |  "
+                    f"{r['type']} {r['amount']}")
+
+    confirm = st.checkbox(
+        "Yes, I want to delete all supplements from all transfers for this supplier",
+        key="tsb_d_confirm")
+    if not confirm:
+        return None
+
+    return ("delete", transfers_with_supps, len(rows))
+
+
 def render_transfer_surcharge_bulk_flow(client):
-    st.header("Bulk Transfer surcharges")
+    st.header("Bulk Transfer supplements")
 
     supplier_id = _ur_pick_momira_supplier(client, key_prefix="tsb")
     if not supplier_id:
@@ -239,15 +268,19 @@ def render_transfer_surcharge_bulk_flow(client):
     st.info(f"**{len(transfers)}** transfers loaded.")
 
     mode = st.radio("What do you want to do?",
-                    ["Update existing surcharge times", "Create a new surcharge on transfers"],
+                    ["Update existing supplement times",
+                     "Create a new supplement on transfers",
+                     "Delete all supplements"],
                     key="tsb_mode")
 
     st.divider()
 
-    if mode == "Update existing surcharge times":
+    if mode == "Update existing supplement times":
         result = _render_update_mode(transfers)
-    else:
+    elif mode == "Create a new supplement on transfers":
         result = _render_create_mode(transfers)
+    else:
+        result = _render_delete_mode(transfers)
 
     if not result:
         return
@@ -257,10 +290,13 @@ def render_transfer_surcharge_bulk_flow(client):
     if result[0] == "update":
         _, affected, new_start_time, new_end_time, supp_count = result
         target_count = len(affected)
-        label = f"Update {supp_count} surcharge(s) on {target_count} transfer(s)"
-    else:
+        label = f"Update {supp_count} supplement(s) on {target_count} transfer(s)"
+    elif result[0] == "create":
         _, new_supp, selected_tids, target_count = result
-        label = f"Add surcharge to {target_count} transfer(s)"
+        label = f"Add supplement to {target_count} transfer(s)"
+    else:
+        _, transfers_with_supps, total_supps = result
+        label = f"⚠️ Delete all {total_supps} supplement(s) from {transfers_with_supps} transfer(s)"
 
     if not st.button(label, key="tsb_apply", type="primary"):
         return
@@ -295,7 +331,8 @@ def render_transfer_surcharge_bulk_flow(client):
                 err_count += 1
                 errors.append(f"{tid}: {e}")
             progress.progress((i + 1) / len(items))
-    else:
+
+    elif result[0] == "create":
         targets = [t for t in transfers
                    if selected_tids is None or t.get("id") in selected_tids]
         for i, t in enumerate(targets):
@@ -304,6 +341,20 @@ def render_transfer_surcharge_bulk_flow(client):
             supplements = payload.get("supplements") or []
             supplements.append(copy.deepcopy(new_supp))
             payload["supplements"] = supplements
+            try:
+                client.update_transfer(supplier_id, payload)
+                ok_count += 1
+            except Exception as e:
+                err_count += 1
+                errors.append(f"{tid}: {e}")
+            progress.progress((i + 1) / len(targets))
+
+    else:  # delete
+        targets = [t for t in transfers if t.get("supplements")]
+        for i, t in enumerate(targets):
+            tid = t.get("id", "")
+            payload = copy.deepcopy(t)
+            payload["supplements"] = []
             try:
                 client.update_transfer(supplier_id, payload)
                 ok_count += 1

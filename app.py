@@ -1228,7 +1228,7 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # above - it acts on many already-identified live records at once, not one record a human is
 # currently reviewing. See transfer_image_bulk.py's own docstring for how this differs from
 # supplier_images.py's per-direction "applies to future builds" feature.
-TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer surcharges"
+TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer supplements"
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
 TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality consistency)"
@@ -1494,8 +1494,8 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="upd_choice_transfer_surcharge", use_container_width=True):
         st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
         st.rerun()
-    st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
-               "for a supplier in bulk.")
+    st.caption("Update times on existing supplements, create a new supplement, or delete all "
+               "supplements from every transfer for a supplier in bulk.")
 
     if st.button(TRANSPORT_INVENTORY_AUDIT_CHOICE, key="upd_choice_tia", use_container_width=True):
         st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
