@@ -282,23 +282,62 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 # so it steers the extraction itself rather than only filtering the result.
                 # Confirmed shape: optional, everything preselected - a supplier whose transports
                 # all have one modality never sees this step at all.
-                _groups = price_refresh.modality_groups(routes) if kind == price_refresh.KIND_TRANSPORT else []
-                if len(_groups) > 1:
+                # NEW: if the supplier has multiple transport TYPES (Ferry + Private Transfer,
+                # CAR + VAN, etc.), ask which type this rate sheet covers BEFORE modalities.
+                # Filters routes down to just the chosen type so the modality picker and the
+                # AI read only the relevant subset.
+                _type_groups = (price_refresh.transport_type_groups(routes)
+                                if kind == price_refresh.KIND_TRANSPORT else [])
+                if _type_groups:
                     st.session_state.pr_pending = {
                         "routes": routes, "raw_text": raw_text, "hint": hint,
-                        "fts_csv_tmp_paths": fts_csv_tmp_paths, "groups": _groups,
+                        "fts_csv_tmp_paths": fts_csv_tmp_paths,
+                        "type_groups": _type_groups,
+                        "groups": [],  # filled after type is confirmed
                     }
                     st.rerun()
-                # Single-modality supplier (or a Transfer): nothing to confirm, read straight
-                # through exactly as before. The rerun stays conditional on a real result - see
-                # the 2026-09-01 audit fix it preserves: an unconditional rerun here used to wipe
-                # the error message a failed read had just put on screen.
-                elif _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
-                    st.rerun()
+                else:
+                    _groups = price_refresh.modality_groups(routes) if kind == price_refresh.KIND_TRANSPORT else []
+                    if len(_groups) > 1:
+                        st.session_state.pr_pending = {
+                            "routes": routes, "raw_text": raw_text, "hint": hint,
+                            "fts_csv_tmp_paths": fts_csv_tmp_paths, "groups": _groups,
+                        }
+                        st.rerun()
+                    # Single-modality supplier (or a Transfer): nothing to confirm, read straight
+                    # through exactly as before. The rerun stays conditional on a real result - see
+                    # the 2026-09-01 audit fix it preserves: an unconditional rerun here used to wipe
+                    # the error message a failed read had just put on screen.
+                    elif _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
+                        st.rerun()
 
-    # The modality confirmation step itself. Rendered only while a read is paused waiting for it.
+    # The confirmation steps. Rendered only while a read is paused waiting for them.
     _pending = st.session_state.get("pr_pending")
-    if _pending:
+    if _pending and _pending.get("type_groups"):
+        # Step 2a: transport type picker (shown when supplier has mixed types)
+        st.subheader("2 — Which transport type does this rate sheet cover?")
+        st.caption("This supplier has products of different types. Select the one this rate sheet "
+                   "prices — only those products will be shown in the next step and sent to the AI.")
+        _type_groups = _pending["type_groups"]
+        _type_labels = [g["label"] for g in _type_groups]
+        _chosen_type_label = st.radio("Transport type", _type_labels, key="pr_type_pick")
+        _chosen_type = next(g["type"] for g in _type_groups if g["label"] == _chosen_type_label)
+        if st.button("Continue →", type="primary", key="pr_type_confirm"):
+            _all_routes = _pending["routes"]
+            _filtered = [r for r in _all_routes if (r.get("transport_type") or "OTHER") == _chosen_type]
+            _groups = price_refresh.modality_groups(_filtered)
+            if len(_groups) > 1:
+                _pending["routes"] = _filtered
+                _pending["groups"] = _groups
+                _pending.pop("type_groups", None)
+                st.session_state.pr_pending = _pending
+                st.rerun()
+            elif _pr_read_and_build(_filtered, _pending["raw_text"],
+                                    _pending["fts_csv_tmp_paths"], _pending["hint"], None):
+                st.session_state.pop("pr_pending", None)
+                st.rerun()
+
+    if _pending and not _pending.get("type_groups"):
         st.subheader("2 — Which modality does this rate sheet price?")
         st.caption("Every modality is selected, which reprices exactly as before. Untick the ones "
                    "this document says nothing about — a rate sheet that only prices the Sedan "
