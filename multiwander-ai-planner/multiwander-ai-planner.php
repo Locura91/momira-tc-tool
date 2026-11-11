@@ -33,14 +33,16 @@ class MultiWander_AI_Planner {
     public function render_widget() {
         ?>
         <div id="mw-ai-widget-container" class="mw-ai-collapsed">
-            <button id="mw-ai-toggle-btn" aria-label="Otwórz planer podróży">✈️ Plan Multi-Trip</button>
+            <button id="mw-ai-toggle-btn" aria-label="Otwórz planer podróży">
+                <span class="mw-orb-label">Zaplanuj podróż ✈</span>
+            </button>
             <div id="mw-ai-chat-window" role="dialog" aria-label="AI Travel Planner">
                 <div class="mw-ai-header">
                     <img src="<?php echo esc_url(plugin_dir_url(__FILE__) . 'assets/logo.png'); ?>" alt="MultiWander" class="mw-ai-logo" />
                     <button id="mw-ai-close-btn" aria-label="Zamknij">&times;</button>
                 </div>
                 <div id="mw-ai-messages" aria-live="polite">
-                    <div class="mw-msg bot-msg">Jestem Twoim asystentem podróży. Opisz swoje wymarzone wakacje, a przygotuję dla Ciebie plan wyjazdu.</div>
+                    <div class="mw-msg bot-msg">Opisz swoje wymarzone wakacje, a przygotuję plan. 🌍</div>
                 </div>
                 <div id="mw-ai-input-area">
                     <input type="text" id="mw-ai-user-input" placeholder="np. 2 tygodnie w Egipcie: piramidy i plaża..." autocomplete="off" maxlength="400" />
@@ -142,7 +144,9 @@ Odpowiadaj po polsku. Bądź zwięzły.";
 
         $email      = sanitize_email($_POST['email'] ?? '');
         $start_date = sanitize_text_field($_POST['start_date'] ?? '');
-        $passengers = intval($_POST['passengers'] ?? 1);
+        $airport    = sanitize_text_field($_POST['airport'] ?? '');
+        $flights    = sanitize_text_field($_POST['flights'] ?? 'Nie');
+        $passengers = intval($_POST['passengers'] ?? 2);
         $budget     = sanitize_text_field($_POST['budget'] ?? '');
         $note       = sanitize_text_field(substr($_POST['note'] ?? '', 0, 50));
         $itinerary  = wp_kses_post($_POST['itinerary'] ?? '');
@@ -151,38 +155,40 @@ Odpowiadaj po polsku. Bądź zwięzły.";
             wp_send_json_error('Podano niepoprawny adres email.');
         }
 
-        if (empty($start_date) || empty($itinerary)) {
+        if (empty($start_date) || empty($airport) || empty($itinerary)) {
             wp_send_json_error('Brakuje wymaganych danych.');
         }
 
-        $logo_url   = plugin_dir_url(__FILE__) . 'assets/logo.png';
-        $budget_str = !empty($budget) ? esc_html($budget) : 'Nieokreślony';
-        $note_line  = !empty($note) ? '<li><strong>Wskazówka:</strong> ' . esc_html($note) . '</li>' : '';
+        $logo_url    = plugin_dir_url(__FILE__) . 'assets/logo.png';
+        $budget_str  = !empty($budget) ? esc_html($budget) : 'Nieokreślony';
+        $note_line   = !empty($note)   ? '<li><strong>Uwaga:</strong> ' . esc_html($note) . '</li>' : '';
 
         $email_html = '
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-            <div style="background: #0d5c63; padding: 20px; text-align: center;">
-                <img src="' . esc_url($logo_url) . '" alt="MultiWander" style="max-width: 160px; height: auto;" />
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
+            <div style="background: linear-gradient(135deg,#0d5c63,#0a7a6a); padding: 22px; text-align: center;">
+                <img src="' . esc_url($logo_url) . '" alt="MultiWander" style="max-width: 150px; height: auto;" />
             </div>
-            <div style="padding: 24px;">
+            <div style="padding: 26px;">
                 <h2 style="color: #0d5c63; text-align: center; margin-top: 0;">Twoja Propozycja Podróży Łączonej</h2>
-                <p>Dziękujemy za skorzystanie z AI Plannera <strong>MultiWander</strong>! Nasz zespół przejrzy Twój plan i skontaktuje się z Tobą, aby przygotować spersonalizowaną ofertę.</p>
-                <hr style="border: none; border-top: 1px solid #eeeeee;" />
-                <h3 style="color: #0d5c63;">Szczegóły zapytania</h3>
-                <ul style="line-height: 1.8;">
-                    <li><strong>Data rozpoczęcia:</strong> ' . esc_html($start_date) . '</li>
+                <p style="color:#444;">Dziękujemy za skorzystanie z AI Plannera <strong>MultiWander</strong>! Nasz zespół skontaktuje się z Tobą z gotową ofertą.</p>
+                <hr style="border: none; border-top: 1px solid #eeeeee; margin: 18px 0;" />
+                <h3 style="color: #0d5c63; margin-bottom: 10px;">Szczegóły zapytania</h3>
+                <ul style="line-height: 2; padding-left: 18px; color: #333;">
+                    <li><strong>Data wyjazdu:</strong> ' . esc_html($start_date) . '</li>
+                    <li><strong>Lotnisko wylotu:</strong> ' . esc_html($airport) . '</li>
+                    <li><strong>Loty w cenie:</strong> ' . esc_html($flights) . '</li>
                     <li><strong>Liczba podróżnych:</strong> ' . intval($passengers) . '</li>
                     <li><strong>Szacowany budżet:</strong> ' . $budget_str . '</li>
                     ' . $note_line . '
                 </ul>
-                <hr style="border: none; border-top: 1px solid #eeeeee;" />
-                <h3 style="color: #0d5c63;">Zarys planu podróży</h3>
-                <div style="background: #f9f9f9; padding: 16px; border-radius: 6px; white-space: pre-wrap; font-size: 14px; line-height: 1.7;">'
+                <hr style="border: none; border-top: 1px solid #eeeeee; margin: 18px 0;" />
+                <h3 style="color: #0d5c63; margin-bottom: 10px;">Zarys planu podróży</h3>
+                <div style="background: #f4fafa; padding: 16px; border-radius: 8px; font-size: 14px; line-height: 1.75; color: #222; white-space: pre-wrap;">'
                     . nl2br(esc_html($itinerary)) .
                 '</div>
                 <br />
-                <p style="font-size: 13px; color: #555;">Skontaktujemy się z Tobą wkrótce z gotową ofertą!</p>
-                <p style="text-align: center; font-size: 12px; color: #888;">© MultiWander — Travel Combinations Specialist</p>
+                <p style="font-size: 13px; color: #666;">Odezwiemy się wkrótce z gotową ofertą!</p>
+                <p style="text-align: center; font-size: 12px; color: #aaa; margin-top: 20px;">© MultiWander — Travel Combinations Specialist</p>
             </div>
         </div>';
 
@@ -193,7 +199,7 @@ Odpowiadaj po polsku. Bądź zwięzły.";
         );
 
         $subject_client = 'Twój wygenerowany plan podróży — MultiWander';
-        $subject_lead   = '[Nowy Lead AI] Plan dla ' . $email . ' | start: ' . $start_date . ' | ' . $passengers . ' os.';
+        $subject_lead   = '[Nowy Lead AI] Plan dla ' . $email . ' | start: ' . $start_date . ' | ' . $passengers . ' os. | lot: ' . $flights . ' | ' . $airport;
 
         wp_mail($email, $subject_client, $email_html, $headers);
         wp_mail('info@multiwander.com', $subject_lead, $email_html, $headers);
