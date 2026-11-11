@@ -253,12 +253,14 @@ def render_transfer_surcharge_bulk_flow(client):
     if st.session_state.get("tsb_last_supplier_id") != supplier_id:
         st.session_state.tsb_last_supplier_id = supplier_id
         st.session_state.tsb_transfers = None
+        st.session_state.tsb_applied_once = False
 
     if st.button("Load transfers", key="tsb_load"):
         with st.spinner("Fetching transfers…"):
             result = _load_transfers(client, supplier_id)
             if result:
                 st.session_state.tsb_transfers = result
+                st.session_state.tsb_applied_once = False
         st.rerun()
 
     transfers = st.session_state.get("tsb_transfers")
@@ -298,6 +300,11 @@ def render_transfer_surcharge_bulk_flow(client):
         _, transfers_with_supps, total_supps = result
         label = f"⚠️ Delete all {total_supps} supplement(s) from {transfers_with_supps} transfer(s)"
 
+    already_applied = st.session_state.get("tsb_applied_once") and result[0] == "create"
+    if already_applied:
+        st.button(label, key="tsb_apply", type="primary", disabled=True)
+        st.caption("✅ Supplement already added — reload transfers to add again or switch mode.")
+        return
     if not st.button(label, key="tsb_apply", type="primary"):
         return
 
@@ -348,6 +355,8 @@ def render_transfer_surcharge_bulk_flow(client):
                 err_count += 1
                 errors.append(f"{tid}: {e}")
             progress.progress((i + 1) / len(targets))
+        if ok_count:
+            st.session_state.tsb_applied_once = True
 
     else:  # delete
         targets = [t for t in transfers if t.get("supplements")]
