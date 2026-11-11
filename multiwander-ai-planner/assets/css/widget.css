@@ -1,0 +1,273 @@
+/* MultiWander AI Planner — widget.css v2.0.0 */
+
+/* ── Container & toggle button ─────────────────────────────────────────── */
+#mw-ai-widget-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99999;
+    font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+#mw-ai-toggle-btn {
+    background: #0d5c63;
+    color: #fff;
+    border: none;
+    border-radius: 28px;
+    padding: 12px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(13,92,99,0.35);
+    transition: background 0.2s, transform 0.15s;
+    white-space: nowrap;
+}
+#mw-ai-toggle-btn:hover { background: #0a474d; transform: translateY(-2px); }
+
+/* ── Chat window ────────────────────────────────────────────────────────── */
+#mw-ai-chat-window {
+    display: none;
+    position: absolute;
+    bottom: 56px;
+    right: 0;
+    width: 360px;
+    max-height: 560px;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mw-ai-collapsed #mw-ai-chat-window { display: none !important; }
+.mw-ai-open #mw-ai-chat-window      { display: flex !important; }
+.mw-ai-open #mw-ai-toggle-btn       { display: none; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.mw-ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #0d5c63;
+    padding: 10px 14px;
+    flex-shrink: 0;
+}
+.mw-ai-logo {
+    max-height: 32px;
+    width: auto;
+}
+#mw-ai-close-btn {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+}
+#mw-ai-close-btn:hover { opacity: 1; }
+
+/* ── Messages area ───────────────────────────────────────────────────────── */
+#mw-ai-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #f7f9fa;
+    scroll-behavior: smooth;
+}
+
+.mw-msg {
+    max-width: 88%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.55;
+    word-break: break-word;
+}
+.bot-msg {
+    background: #fff;
+    color: #1a1a1a;
+    align-self: flex-start;
+    border: 1px solid #e8eaec;
+    border-bottom-left-radius: 4px;
+}
+.user-msg {
+    background: #0d5c63;
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+}
+
+/* Typing indicator */
+.mw-typing {
+    color: #888 !important;
+    font-style: italic;
+    animation: mw-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mw-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+}
+
+/* ── Theme pills ─────────────────────────────────────────────────────────── */
+.mw-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 4px 0;
+}
+.mw-pill {
+    background: #fff;
+    border: 1.5px solid #0d5c63;
+    color: #0d5c63;
+    border-radius: 20px;
+    padding: 6px 13px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+}
+.mw-pill:hover {
+    background: #0d5c63;
+    color: #fff;
+}
+
+/* ── Text input area ─────────────────────────────────────────────────────── */
+#mw-ai-input-area {
+    display: flex;
+    gap: 7px;
+    padding: 10px 12px;
+    background: #fff;
+    border-top: 1px solid #e8eaec;
+    flex-shrink: 0;
+}
+#mw-ai-user-input {
+    flex: 1;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 8px 11px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+#mw-ai-user-input:focus { border-color: #0d5c63; }
+
+#mw-ai-send-btn {
+    background: #0d5c63;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+#mw-ai-send-btn:hover:not(:disabled) { background: #0a474d; }
+#mw-ai-send-btn:disabled { background: #9abfc2; cursor: not-allowed; }
+
+/* ── Submission form ─────────────────────────────────────────────────────── */
+.mw-form-block {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    align-self: stretch;
+}
+.mw-form-intro {
+    font-size: 13px;
+    color: #0d5c63;
+    font-weight: 600;
+    margin: 0;
+}
+.mw-form-block label {
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    color: #555;
+    gap: 4px;
+}
+.mw-form-block input[type="text"],
+.mw-form-block input[type="email"],
+.mw-form-block input[type="number"],
+.mw-form-block input[type="date"] {
+    border: 1px solid #ccc;
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+    box-sizing: border-box;
+}
+.mw-form-block input:focus { border-color: #0d5c63; }
+
+.mw-consent-label {
+    flex-direction: row !important;
+    align-items: flex-start;
+    font-size: 12px;
+    color: #444;
+    gap: 8px !important;
+    cursor: pointer;
+}
+.mw-consent-label input[type="checkbox"] {
+    width: 16px;
+    min-width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    accent-color: #0d5c63;
+}
+
+.mw-counter {
+    font-size: 11px;
+    color: #888;
+    font-style: italic;
+    align-self: flex-end;
+}
+
+.mw-form-error {
+    color: #c0392b;
+    font-size: 12px;
+    min-height: 16px;
+}
+
+.mw-submit-btn {
+    background: #0d5c63;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s;
+    letter-spacing: 0.3px;
+}
+.mw-submit-btn:hover:not(:disabled) { background: #0a474d; }
+.mw-submit-btn:disabled {
+    background: #9abfc2;
+    cursor: not-allowed;
+}
+
+/* ── Mobile ─────────────────────────────────────────────────────────────── */
+@media (max-width: 420px) {
+    #mw-ai-widget-container { right: 12px; bottom: 12px; }
+    #mw-ai-chat-window {
+        width: calc(100vw - 24px);
+        max-height: 75vh;
+        bottom: 52px;
+        right: 0;
+    }
+}
