@@ -17,6 +17,101 @@ class MultiWander_AI_Planner {
         add_action('wp_ajax_nopriv_mw_ai_generate', array($this, 'handle_ai_request'));
         add_action('wp_ajax_mw_ai_send_itinerary', array($this, 'handle_send_itinerary'));
         add_action('wp_ajax_nopriv_mw_ai_send_itinerary', array($this, 'handle_send_itinerary'));
+        add_action('admin_menu', array($this, 'register_admin_menu'));
+        add_action('admin_init', array($this, 'register_settings'));
+    }
+
+    public function register_admin_menu() {
+        add_options_page(
+            'MultiWander AI Planner',
+            'MultiWander AI',
+            'manage_options',
+            'mw-ai-planner',
+            array($this, 'render_admin_page')
+        );
+    }
+
+    public function register_settings() {
+        register_setting('mw_ai_settings', 'mw_openai_api_key',   array('sanitize_callback' => 'sanitize_text_field'));
+        register_setting('mw_ai_settings', 'mw_openai_model',      array('sanitize_callback' => 'sanitize_text_field', 'default' => 'gpt-4o-mini'));
+        register_setting('mw_ai_settings', 'mw_openai_temperature', array('sanitize_callback' => 'floatval', 'default' => 0.7));
+    }
+
+    public function render_admin_page() {
+        if (!current_user_can('manage_options')) return;
+        $saved = get_settings_errors('mw_ai_settings');
+        ?>
+        <div class="wrap">
+            <h1 style="display:flex;align-items:center;gap:10px;">
+                <span style="font-size:24px;">✈️</span> MultiWander AI Planner — Ustawienia
+            </h1>
+
+            <?php settings_errors('mw_ai_settings'); ?>
+
+            <form method="post" action="options.php">
+                <?php settings_fields('mw_ai_settings'); ?>
+
+                <table class="form-table" role="presentation">
+
+                    <tr>
+                        <th scope="row"><label for="mw_openai_api_key">Klucz API OpenAI</label></th>
+                        <td>
+                            <?php $key = get_option('mw_openai_api_key', ''); ?>
+                            <input
+                                type="password"
+                                id="mw_openai_api_key"
+                                name="mw_openai_api_key"
+                                value="<?php echo esc_attr($key); ?>"
+                                class="regular-text"
+                                autocomplete="new-password"
+                                placeholder="sk-..."
+                            />
+                            <p class="description">
+                                Wklej swój klucz z <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
+                                Klucz jest przechowywany w bazie danych WordPress.
+                            </p>
+                            <?php if (!empty($key)): ?>
+                                <p style="color:#3dbf8e;font-weight:600;">✔ Klucz jest zapisany.</p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <th scope="row"><label for="mw_openai_model">Model OpenAI</label></th>
+                        <td>
+                            <?php $model = get_option('mw_openai_model', 'gpt-4o-mini'); ?>
+                            <select id="mw_openai_model" name="mw_openai_model">
+                                <option value="gpt-4o-mini"  <?php selected($model, 'gpt-4o-mini'); ?>>gpt-4o-mini (szybki, tani)</option>
+                                <option value="gpt-4o"       <?php selected($model, 'gpt-4o'); ?>>gpt-4o (najlepsza jakość)</option>
+                                <option value="gpt-3.5-turbo"<?php selected($model, 'gpt-3.5-turbo'); ?>>gpt-3.5-turbo (najszybszy)</option>
+                            </select>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <th scope="row"><label for="mw_openai_temperature">Kreatywność (temperature)</label></th>
+                        <td>
+                            <?php $temp = get_option('mw_openai_temperature', 0.7); ?>
+                            <input
+                                type="range"
+                                id="mw_openai_temperature"
+                                name="mw_openai_temperature"
+                                min="0" max="1" step="0.1"
+                                value="<?php echo esc_attr($temp); ?>"
+                                oninput="document.getElementById('mw_temp_val').textContent=this.value"
+                                style="width:200px;vertical-align:middle;"
+                            />
+                            &nbsp;<strong id="mw_temp_val"><?php echo esc_html($temp); ?></strong>
+                            <p class="description">0 = odpowiedzi deterministyczne, 1 = bardzo kreatywne. Zalecane: 0.7</p>
+                        </td>
+                    </tr>
+
+                </table>
+
+                <?php submit_button('Zapisz ustawienia'); ?>
+            </form>
+        </div>
+        <?php
     }
 
     public function enqueue_assets() {
@@ -62,9 +157,12 @@ class MultiWander_AI_Planner {
         $history       = json_decode(stripslashes($history_raw), true);
         if (!is_array($history)) $history = array();
 
-        $api_key = get_option('mw_openai_api_key');
+        $api_key     = get_option('mw_openai_api_key');
+        $model       = get_option('mw_openai_model', 'gpt-4o-mini');
+        $temperature = floatval(get_option('mw_openai_temperature', 0.7));
+
         if (empty($api_key)) {
-            wp_send_json_error('Brak skonfigurowanego klucza API OpenAI w WordPressie.');
+            wp_send_json_error('Brak skonfigurowanego klucza API OpenAI. Przejdź do Ustawienia → MultiWander AI.');
         }
 
         // Build messages array for OpenAI
@@ -90,9 +188,9 @@ class MultiWander_AI_Planner {
                 'Content-Type'  => 'application/json'
             ),
             'body' => json_encode(array(
-                'model'       => 'gpt-4o-mini',
+                'model'       => $model,
                 'messages'    => $messages,
-                'temperature' => 0.7
+                'temperature' => $temperature
             )),
             'timeout' => 25
         ));
