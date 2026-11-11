@@ -1494,8 +1494,8 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="upd_choice_transfer_surcharge", use_container_width=True):
         st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
         st.rerun()
-    st.caption("Update times on existing supplements, create a new supplement, or delete all "
-               "supplements from every transfer for a supplier in bulk.")
+    st.caption("Create a new supplement on all transfers for a supplier, or delete all "
+               "existing supplements in bulk.")
 
     if st.button(TRANSPORT_INVENTORY_AUDIT_CHOICE, key="upd_choice_tia", use_container_width=True):
         st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
