@@ -132,16 +132,34 @@ class MultiWander_AI_Planner {
         wp_enqueue_style('mw-ai-style', plugin_dir_url(__FILE__) . 'assets/css/widget.css', array(), '2.0.0');
         wp_enqueue_script('mw-ai-script', plugin_dir_url(__FILE__) . 'assets/js/widget.js', array('jquery'), '2.0.0', true);
 
-        // Detect language from URL path: /en/ prefix → English
-        $request_uri = $_SERVER['REQUEST_URI'] ?? '';
-        $is_english  = (strpos($request_uri, '/en/') === 0 || $request_uri === '/en');
-
         wp_localize_script('mw-ai-script', 'mwAI', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'logo_url' => plugin_dir_url(__FILE__) . 'assets/logo.png',
             'nonce'    => wp_create_nonce('mw_ai_nonce'),
-            'lang'     => $is_english ? 'en' : 'pl'
+            'lang'     => $this->detect_language()
         ));
+    }
+
+    private function detect_language(): string {
+        // 1. WPML
+        if (defined('ICL_LANGUAGE_CODE')) {
+            return ICL_LANGUAGE_CODE === 'en' ? 'en' : 'pl';
+        }
+        // 2. Polylang
+        if (function_exists('pll_current_language')) {
+            return pll_current_language() === 'en' ? 'en' : 'pl';
+        }
+        // 3. WordPress locale (en_US, en_GB, etc.)
+        $locale = get_locale();
+        if (strpos($locale, 'en_') === 0) {
+            return 'en';
+        }
+        // 4. URL fallback
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        if (preg_match('#^/en(/|$)#', $uri)) {
+            return 'en';
+        }
+        return 'pl';
     }
 
     public function render_widget() {
