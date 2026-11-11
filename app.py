@@ -1491,6 +1491,12 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     st.caption("Block a date or date range across many products at once — "
                "Transfer, Ticket, ClosedTour, Hotel.")
 
+    if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="upd_choice_transfer_surcharge", use_container_width=True):
+        st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
+        st.rerun()
+    st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
+               "for a supplier in bulk.")
+
     if st.button(TRANSPORT_INVENTORY_AUDIT_CHOICE, key="upd_choice_tia", use_container_width=True):
         st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
         st.rerun()
@@ -1547,12 +1553,6 @@ if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type
                "(e.g. Hotel → Airport once Airport → Hotel already exists). Pick a supplier: "
                "the app lists every route with no reverse-direction pair yet, so you can "
                "create them as a batch — or duplicate one specific Transfer by id instead.")
-
-    if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="pt_choice_transfer_surcharge_bulk", use_container_width=True):
-        st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
-        st.rerun()
-    st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
-               "for a supplier in bulk.")
 
     if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
         st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
