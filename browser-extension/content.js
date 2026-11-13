@@ -1,43 +1,35 @@
-// Momira TC Rollover -- content script v8
-// run_at: document_start -- saves date to sessionStorage BEFORE TC's own
-// router reads the hash and potentially redirects to homepage.
-//
-// Click strategy: calls the button's onclick attribute string directly
-// (new Function + call), which is the exact PrimeFaces JS TC registered.
-// This avoids synthetic MouseEvent issues where PrimeFaces ignores the event.
+// Momira TC Rollover -- content script v9
+// KEY FIX: runs in world: "MAIN" (the page's own JavaScript context).
+// This means el.click() triggers PrimeFaces.ab() correctly because
+// PrimeFaces exists in this world. Previous versions ran in Chrome's
+// "isolated world" where PrimeFaces was undefined, so onclick handlers
+// failed silently and the browser followed the <a href> to TC homepage.
 (function () {
   "use strict";
 
   var STORAGE_KEY = "tcrollover_pending_date";
 
-  // ── Save date immediately (document_start = no body yet) ─────────────────
-  // This runs before TC's JavaScript, so the date is in sessionStorage even
-  // if TC redirects the page away from the idea URL.
+  // ── Save date immediately (document_start = before TC's router) ──────────
   var hash = location.hash || "";
   var earlyMatch = hash.match(/tcrollover=(\d{2}\.\d{2}\.\d{4})/);
   if (earlyMatch) {
     try { sessionStorage.setItem(STORAGE_KEY, earlyMatch[1]); } catch (e) {}
   }
 
-  // ── Decide which date to use ──────────────────────────────────────────────
   var pathname = location.pathname;
   var isIdea = pathname.indexOf("/idea/") > -1;
   var DATE = null;
 
   if (isIdea) {
-    if (earlyMatch) {
-      DATE = earlyMatch[1];
-    } else {
-      try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
-    }
+    DATE = earlyMatch ? earlyMatch[1] : null;
+    if (!DATE) { try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {} }
   } else {
-    // Any other TC page (homepage, booking page, etc.) — read from storage
     try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
   }
 
   if (!DATE) return;
 
-  // ── Status overlay (body may not exist yet at document_start) ────────────
+  // ── Status overlay ───────────────────────────────────────────────────────
   var box = document.createElement("div");
   box.style.cssText =
     "position:fixed;top:12px;right:12px;z-index:2147483647;" +
@@ -46,24 +38,22 @@
     "max-width:440px;min-width:260px;word-break:break-all;";
 
   function say(html) {
-    box.innerHTML = "<b style='font-size:13px;font-family:sans-serif'>TC Rollover v8</b><br>" + html;
+    box.innerHTML = "<b style='font-size:13px;font-family:sans-serif'>TC Rollover v9</b><br>" + html;
   }
   function attach() {
     if (document.body && !box.isConnected) document.body.appendChild(box);
   }
 
-  // Attach as soon as body exists
   document.addEventListener("DOMContentLoaded", function () {
     attach();
     say("Date: <b>" + DATE + "</b><br>" + pathname.substring(0, 70));
   });
 
-  // ── setValue for React / PrimeFaces inputs ───────────────────────────────
+  // ── Set value on PrimeFaces / React input ────────────────────────────────
   function setValue(el, val) {
     try {
-      var proto = Object.getPrototypeOf(el);
-      var desc = Object.getOwnPropertyDescriptor(proto, "value") ||
-                 Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      var desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value") ||
+                 Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       if (desc && desc.set) desc.set.call(el, val);
       else el.value = val;
     } catch (e) { el.value = val; }
@@ -73,26 +63,7 @@
     });
   }
 
-  // ── Click a button: try onclick attribute first (PrimeFaces-safe) ────────
-  function triggerButton(el) {
-    var onclickAttr = el.getAttribute("onclick");
-    if (onclickAttr) {
-      try {
-        // Execute TC's own onclick JavaScript — PrimeFaces.ab(...) or similar
-        var fn = new Function("event", onclickAttr);
-        var synEvt = new MouseEvent("click", { bubbles: true, cancelable: true });
-        fn.call(el, synEvt);
-        return "onclick-attr";
-      } catch (e) { /* fall through */ }
-    }
-    // Fallback: dispatch event (no duplicate el.click())
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
-    return "dispatchEvent";
-  }
-
-  // ── Find "Book directly without changes" ─────────────────────────────────
+  // ── Find "Book directly without changes" button ──────────────────────────
   var BOOK_TEXTS = [
     "book directly without changes",
     "reserva directamente sin cambios",
@@ -101,11 +72,9 @@
   ];
 
   function findBookButton() {
-    // ID-based (most reliable for PrimeFaces)
     var byId = document.querySelector("[id*='directBook']");
     if (byId) return byId;
 
-    // Text match on interactive elements, shortest text = most specific
     var candidates = [];
     var els = document.querySelectorAll("a, button, input[type='submit'], input[type='button']");
     for (var i = 0; i < els.length; i++) {
@@ -143,14 +112,11 @@
       var el = document.querySelector(selectors[i]);
       if (el) return el;
     }
-    // Inside PrimeFaces dialogs / booking widgets
     var containers = document.querySelectorAll(
       ".ui-dialog, [role='dialog'], .ui-panel, [class*='booking'], [class*='search-form']"
     );
     for (var c = 0; c < containers.length; c++) {
-      var inp = containers[c].querySelector(
-        "input[type='text'], input[type='date'], input:not([type='hidden'])"
-      );
+      var inp = containers[c].querySelector("input[type='text'], input[type='date'], input:not([type='hidden'])");
       if (inp) return inp;
     }
     return null;
@@ -161,12 +127,12 @@
     var info = [];
     for (var i = 0; i < inputs.length && i < 10; i++) {
       var el = inputs[i];
-      info.push((el.id || el.name || el.placeholder || el.type || "?").substring(0, 25));
+      info.push((el.id || el.name || el.placeholder || el.type || "?").substring(0, 30));
     }
     return inputs.length + " inputs: " + info.join(" | ");
   }
 
-  // ── Find Search button ───────────────────────────────────────────────────
+  // ── Find Search / Start button ───────────────────────────────────────────
   var SEARCH_TEXTS = ["search", "buscar", "suchen", "start trip", "iniciar"];
 
   function findSearchButton() {
@@ -184,8 +150,8 @@
     return null;
   }
 
-  // ── Wait for DOM ready, then run the right flow ──────────────────────────
-  function runWhenReady(fn) {
+  // ── Wait for DOM ─────────────────────────────────────────────────────────
+  function onReady(fn) {
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", fn);
     } else {
@@ -193,51 +159,49 @@
     }
   }
 
-  // ── Non-idea page: arrived here after TC navigated from idea page ─────────
+  // ── NON-IDEA PAGE (TC navigated here after button click) ─────────────────
   if (!isIdea) {
-    runWhenReady(function () {
+    onReady(function () {
       attach();
       say("Post-navigation page<br>" + pathname.substring(0, 70) +
-          "<br>Looking for date field...<br><small>" + listInputs() + "</small>");
+          "<br>Looking for date field...");
       setTimeout(step2, 2000);
     });
     return;
   }
 
-  // ── Idea page: Step 1 — wait for button, click it ────────────────────────
-  runWhenReady(function () {
+  // ── IDEA PAGE: Step 1 — click "Book directly without changes" ────────────
+  onReady(function () {
     attach();
-    say("Idea page — looking for Book button...");
+    say("Idea page. Looking for Book button...");
     var s1tries = 0;
     var s1iv = setInterval(function () {
       attach();
       var btn = findBookButton();
       if (btn) {
         clearInterval(s1iv);
-        var text = (btn.textContent || btn.value || "").trim().substring(0, 50);
+        var text = (btn.textContent || "").trim().substring(0, 50);
         var href = (btn.href || btn.getAttribute("href") || "none").substring(0, 80);
-        var id   = btn.id || "(no id)";
-        say("Clicking button:<br>" +
+        var id = btn.id || "(no id)";
+        say("CLICKING:<br>" +
             "<small>id=" + id + "<br>text=" + text + "<br>href=" + href + "</small>");
-        var method = triggerButton(btn);
+        // In world: "MAIN", el.click() runs in the page's JS context.
+        // PrimeFaces.ab() is available, onclick handler works correctly,
+        // the widget opens on the same page without navigation.
+        btn.click();
         setTimeout(function () {
-          say("Triggered (" + method + ")<br>URL now: " + location.pathname.substring(0, 70) +
+          say("Clicked (page-world). URL: " + location.pathname.substring(0, 70) +
               "<br>Waiting for widget...");
           setTimeout(step2, 2500);
         }, 600);
       } else if (++s1tries > 100) {
         clearInterval(s1iv);
-        var btns = [];
-        document.querySelectorAll("a, button").forEach(function (el) {
-          var t = (el.textContent || "").trim().substring(0, 40);
-          if (t) btns.push(t);
-        });
-        say("Book button NOT found.<br><small>" + btns.slice(0, 10).join(" | ") + "</small>");
+        say("Book button NOT found on this page.");
       }
     }, 200);
   });
 
-  // ── Step 2 — find and fill date input ────────────────────────────────────
+  // ── Step 2 — find and fill date ──────────────────────────────────────────
   function step2() {
     attach();
     say("Looking for date input...<br><small>" + listInputs() + "</small>");
@@ -247,12 +211,12 @@
       var inp = findDateInput();
       if (inp) {
         clearInterval(s2iv);
-        var info = inp.tagName + "#" + (inp.id || inp.name || inp.placeholder || "?");
-        say("Found: <small>" + info + "</small><br>Setting <b>" + DATE + "</b>...");
+        var info = inp.tagName + "#" + (inp.id || inp.name || "?");
+        say("Found: " + info + "<br>Setting <b>" + DATE + "</b>...");
         inp.focus(); inp.click();
         setTimeout(function () {
           setValue(inp, DATE);
-          say("Date set to <b>" + DATE + "</b>!<br>Clicking Search...");
+          say("Date = <b>" + DATE + "</b>. Clicking Search...");
           setTimeout(step3, 800);
         }, 400);
       } else if (++s2tries > 60) {
@@ -272,7 +236,7 @@
       var btn = findSearchButton();
       if (btn) {
         clearInterval(iv);
-        triggerButton(btn);
+        btn.click();
         say("Search clicked! TC loading...");
         try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
       } else if (++tries > 20) {
