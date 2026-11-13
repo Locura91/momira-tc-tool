@@ -1,9 +1,4 @@
-// Momira TC Rollover -- content script v5
-// Handles two cases:
-//   A) Idea page (#tcrollover=DD.MM.YYYY in hash): clicks "Book directly without changes",
-//      then waits for date field on the same page (or TC navigates — handled by case B)
-//   B) Any subsequent momira.travel page: reads pending date from sessionStorage,
-//      fills the date field, clicks Search (handles post-navigation booking flows)
+// Momira TC Rollover -- content script v6 (debug edition)
 (function () {
   "use strict";
 
@@ -23,7 +18,6 @@
       try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
     }
   } else {
-    // On any other page (TC may have navigated here after the button click)
     try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
   }
 
@@ -33,20 +27,27 @@
   var box = document.createElement("div");
   box.style.cssText =
     "position:fixed;top:12px;right:12px;z-index:2147483647;" +
-    "background:#111;color:#fff;font:13px/1.5 system-ui,sans-serif;" +
-    "padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);" +
-    "max-width:380px;min-width:220px;word-break:break-word;";
+    "background:#111;color:#fff;font:12px/1.5 monospace;" +
+    "padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.5);" +
+    "max-width:420px;min-width:260px;word-break:break-word;";
 
-  function say(html) { box.innerHTML = "TC Rollover<br>" + html; }
+  function say(html) { box.innerHTML = "<b style='font-size:13px'>TC Rollover v6</b><br>" + html; }
   function attach() {
     if (document.body && !box.isConnected) document.body.appendChild(box);
   }
 
-  say("Target: <b>" + DATE + "</b><br>Starting...");
+  say("Date: <b>" + DATE + "</b><br>Page: " + pathname.substring(0, 60));
   if (document.body) attach();
   else document.addEventListener("DOMContentLoaded", attach);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function elInfo(el) {
+    if (!el) return "null";
+    return (el.tagName || "?") + "#" + (el.id || "-") +
+           " ." + (el.className || "-").toString().split(" ")[0] +
+           ' "' + (el.textContent || el.value || "").trim().substring(0, 30) + '"';
+  }
 
   function fireClick(el) {
     el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
@@ -101,42 +102,53 @@
     return null;
   }
 
-  // ── Find departure date input (broad search) ─────────────────────────────
+  // ── Find departure date input ────────────────────────────────────────────
 
   function findDateInput() {
-    // Ordered from most specific to broadest
     var selectors = [
-      "[id*='departureDateMultidestination']",
-      "[name*='departureDateMultidestination']",
-      "[id*='departureDate']",
-      "[name*='departureDate']",
-      "[id*='startDate']",
-      "[name*='startDate']",
-      "[id*='travelDate']",
-      "[name*='travelDate']",
-      "[id*='date' i]",
-      "[placeholder*='Departure' i]",
-      "[placeholder*='Start date' i]",
-      "[placeholder*='date' i]",
+      "input[id*='departureDateMultidestination']",
+      "input[name*='departureDateMultidestination']",
+      "input[id*='departureDate']",
+      "input[name*='departureDate']",
+      "input[id*='startDate']",
+      "input[name*='startDate']",
+      "input[id*='travelDate']",
+      "input[name*='travelDate']",
+      "input[id*='date' i]",
+      "input[placeholder*='Departure' i]",
+      "input[placeholder*='Start date' i]",
+      "input[placeholder*='date' i]",
       "input[type='date']"
     ];
     for (var i = 0; i < selectors.length; i++) {
-      var el = document.querySelector("input" + selectors[i]);
+      var el = document.querySelector(selectors[i]);
       if (el) return el;
     }
-    // Look inside PrimeFaces / TC dialogs / panels
+    // Look inside dialogs / widgets
     var containers = document.querySelectorAll(
-      ".ui-dialog, [role='dialog'], .ui-panel, .booking-widget, .search-widget, " +
+      ".ui-dialog, [role='dialog'], .ui-panel, " +
       "[class*='booking'], [class*='search-form'], [class*='travel-search']"
     );
     for (var c = 0; c < containers.length; c++) {
-      var inp = containers[c].querySelector("input[type='text'], input[type='date'], input:not([type='hidden'])");
+      var inp = containers[c].querySelector(
+        "input[type='text'], input[type='date'], input:not([type='hidden'])"
+      );
       if (inp) return inp;
     }
     return null;
   }
 
-  // ── Find Search button ───────────────────────────────────────────────────
+  function listAllInputs() {
+    var inputs = document.querySelectorAll("input:not([type='hidden'])");
+    var info = [];
+    for (var i = 0; i < inputs.length && i < 10; i++) {
+      var el = inputs[i];
+      info.push((el.type || "text") + ":" + (el.id || el.name || el.placeholder || "?").substring(0, 25));
+    }
+    return inputs.length + " inputs: " + (info.join(" | ") || "none");
+  }
+
+  // ── Search button ────────────────────────────────────────────────────────
 
   var SEARCH_TEXTS = ["search", "buscar", "suchen", "start trip", "iniciar", "find"];
 
@@ -155,79 +167,83 @@
     return null;
   }
 
-  // ── List all visible inputs (debug helper) ───────────────────────────────
-
-  function listInputs() {
-    var inputs = document.querySelectorAll("input:not([type='hidden'])");
-    var names = [];
-    for (var i = 0; i < inputs.length && i < 8; i++) {
-      var el = inputs[i];
-      names.push((el.id || el.name || el.placeholder || el.type || "?").substring(0, 30));
-    }
-    return names.length ? names.join(", ") : "none";
-  }
-
-  // ── Main flows ───────────────────────────────────────────────────────────
+  // ── Non-idea page: TC navigated here from idea page ──────────────────────
 
   if (!isIdea) {
-    // We are on a page TC navigated to after clicking the button
-    // Go straight to Step 2: find the date input
-    say("New page detected. Looking for date field...<br><small>URL: " + pathname.substring(0, 60) + "</small>");
-    setTimeout(step2, 1500);
+    say("New page (after navigation)<br>" +
+        "URL: " + pathname.substring(0, 70) + "<br>" +
+        "Looking for date field...");
+    setTimeout(step2, 2000);
     return;
   }
 
-  // Idea page: Step 1 - click the Book button
-  say("Looking for Book directly without changes...");
+  // ── Idea page: Step 1 — find & click the Book button ────────────────────
+
+  say("Idea page. Searching for Book button...");
   var s1tries = 0;
   var s1iv = setInterval(function () {
     attach();
     var btn = findBookButton();
     if (btn) {
       clearInterval(s1iv);
-      var label = (btn.textContent || "").trim().substring(0, 40);
-      say("Clicking: <b>" + label + "</b>");
+      var info = elInfo(btn);
+      say("CLICKING:<br><small>" + info + "</small><br>" +
+          "href=" + (btn.href || "none").substring(0, 60));
+      // Record URL before click to detect navigation
+      var urlBefore = location.href;
       fireClick(btn);
-      // Wait 3 seconds for widget/page to load, then look for date field
       setTimeout(function () {
-        // If TC navigated away, this setTimeout fires on the OLD page and step2 will time out quickly.
-        // The new page's content script instance (triggered by sessionStorage) handles it.
-        say("Waiting for widget / new page...");
-        setTimeout(step2, 1000);
-      }, 2000);
+        var urlAfter = location.href;
+        var navigated = urlAfter !== urlBefore;
+        say("Clicked. Navigated=" + navigated + "<br>" +
+            "URL now: " + location.pathname.substring(0, 70) + "<br>" +
+            "Waiting for widget...");
+        setTimeout(step2, 2000);
+      }, 500);
     } else if (++s1tries > 100) {
       clearInterval(s1iv);
-      say("Book button not found on this page.<br>Click it manually then enter <b>" + DATE + "</b>.");
+      say("Book button NOT found.<br>All buttons on page:<br><small>" + listAllButtons() + "</small>");
     }
   }, 200);
 
-  // Step 2: find date input and fill it
+  function listAllButtons() {
+    var els = document.querySelectorAll("a, button");
+    var info = [];
+    for (var i = 0; i < els.length && i < 8; i++) {
+      var t = (els[i].textContent || "").trim().substring(0, 30);
+      if (t) info.push(t);
+    }
+    return info.join(" | ");
+  }
+
+  // ── Step 2 — find date field ─────────────────────────────────────────────
+
   function step2() {
-    say("Looking for date field...<br><small>Inputs found: " + listInputs() + "</small>");
+    say("Looking for date field...<br><small>" + listAllInputs() + "</small>");
     var s2tries = 0;
     var s2iv = setInterval(function () {
       attach();
       var inp = findDateInput();
       if (inp) {
         clearInterval(s2iv);
-        say("Filling date: <b>" + DATE + "</b>");
+        say("Found date input:<br><small>" + elInfo(inp) + "</small><br>Setting <b>" + DATE + "</b>...");
         inp.focus();
         inp.click();
         setTimeout(function () {
           setValue(inp, DATE);
-          say("Date set! Clicking Search...");
+          say("Date set to <b>" + DATE + "</b>!<br>Clicking Search...");
           setTimeout(step3, 800);
         }, 400);
       } else if (++s2tries > 60) {
         clearInterval(s2iv);
-        say("Date field not found.<br>" +
-            "Inputs on page: <small>" + listInputs() + "</small><br>" +
+        say("Date field NOT found.<br><small>" + listAllInputs() + "</small><br>" +
             "Enter <b>" + DATE + "</b> manually.");
       }
     }, 300);
   }
 
-  // Step 3: click Search
+  // ── Step 3 — click Search ────────────────────────────────────────────────
+
   function step3() {
     attach();
     var tries = 0;
@@ -236,12 +252,13 @@
       var btn = findSearchButton();
       if (btn) {
         clearInterval(iv);
+        say("Clicking Search: <small>" + elInfo(btn) + "</small>");
         fireClick(btn);
-        say("Search clicked! TC is loading...");
+        say("Search clicked! TC loading...");
         try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
       } else if (++tries > 20) {
         clearInterval(iv);
-        say("Date set to <b>" + DATE + "</b>.<br>Click Search to continue.");
+        say("Date = <b>" + DATE + "</b> set.<br>Click Search manually.");
       }
     }, 300);
   }
