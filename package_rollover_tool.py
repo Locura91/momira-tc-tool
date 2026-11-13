@@ -357,33 +357,44 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     st.write("")
     st.markdown(f"New departure date: **`{chosen_str}`**")
 
-    if st.button("🚀  Start rollover in Travel Compositor", key=f"{key_prefix}_start_now",
-                 type="primary", use_container_width=True):
-        from rollover_executor import execute_rollover
-        with st.spinner("Opening TC, logging in, clicking 'Book directly without changes', "
-                        f"setting date to {chosen_str} and starting trip…"):
-            result = execute_rollover(package_url, chosen_str)
-        if result.get("success"):
-            st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
-            st.link_button("🔗 Open trip summary", result["url"])
-        else:
-            st.error(f"❌ {result.get('error', 'Unknown error')}")
-            if result.get("detail"):
-                with st.expander("Technical detail"):
-                    st.code(result["detail"])
+    # Opens TC idea page in a new tab. The Chrome extension reads rollover
+    # data from localStorage and automates: click Book, set date, click Search.
+    import streamlit.components.v1 as components
+    import json as _json
 
-    open_url = f"{package_url}#tcrollover={chosen_str}"
-    with st.expander("Manual fallback: open in browser"):
+    _rd = _json.dumps({"ideaId": pkg_id, "date": chosen_str, "timestamp": "PLACEHOLDER"})
+    _rd = _rd.replace('"PLACEHOLDER"', "Date.now()")
+
+    _bid = f"{key_prefix}_rollover_btn"
+    components.html(
+        '<button id="' + _bid + '" style="'
+        "background:#FF4B4B;color:white;border:none;border-radius:8px;"
+        "padding:12px 24px;font-size:16px;cursor:pointer;width:100%;"
+        'font-weight:600;"'
+        ' onmouseover="this.style.background=\'#E03E3E\'"'
+        ' onmouseout="this.style.background=\'#FF4B4B\'">'
+        "&#128640;  Start rollover in Travel Compositor"
+        "</button>"
+        "<script>"
+        'document.getElementById("' + _bid + '").addEventListener("click",function(){'
+        'localStorage.setItem("tcRollover",JSON.stringify(' + _rd + '));'
+        'window.open("' + package_url + '","_blank");'
+        "});"
+        "</script>",
+        height=55,
+    )
+
+    with st.expander("Manual fallback"):
         st.link_button(
-            "Open package in Travel Compositor →",
-            open_url,
+            "Open package in Travel Compositor",
+            package_url,
             use_container_width=True,
         )
         st.markdown(
             f"On the TC page:\n\n"
-            f"1. Click **“Reserva directamente sin cambios”** (Book directly without changes)\n"
+            f"1. Click **Book directly without changes**\n"
             f"2. Set the start date to **`{chosen_str}`**\n"
-            f"3. Click **Start trip** — you'll land on the trip summary to review"
+            f"3. Click **Start trip / Search**"
         )
 
 
