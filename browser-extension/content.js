@@ -1,74 +1,74 @@
-// Momira TC Rollover — content script v2
+// Momira TC Rollover -- content script v3
 // Runs on every momira.travel page.
-//
-// FLOW on idea page:
+// Flow on idea page:
 //   1. Detect #tcrollover=DD.MM.YYYY in URL hash
-//   2. Wait for "Book directly without changes" button → click it
+//   2. Wait for "Book directly without changes" button -> click it
 //   3. Wait for the booking widget / date input to appear
 //   4. Fill the departure date
 //   5. Click the Search button
-//
-// FLOW on travel-map page:
-//   Restore saved date from sessionStorage and fill the date field.
 (function () {
   "use strict";
 
   var STORAGE_KEY = "tcrollover_pending_date";
   var pathname = location.pathname;
-  var hash     = location.hash || "";
+  var hash = location.hash || "";
 
-  var isIdea = /\/idea\//.test(pathname);
-  var isMap  = /travel-map/.test(pathname);
+  var isIdea = pathname.indexOf("/idea/") > -1;
+  var isMap  = pathname.indexOf("travel-map") > -1;
 
-  // ── Detect date ──────────────────────────────────────────────────────────
+  // Detect date from hash or sessionStorage
   var DATE = null;
 
   if (isIdea) {
-    var m = hash.match(/tcrollover=([0-9]{2}\.[0-9]{2}\.[0-9]{4})/);
-    if (!m) return;
-    DATE = m[1];
-    try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch (e) {}
+    var m = hash.match(/tcrollover=(\d{2}\.\d{2}\.\d{4})/);
+    if (m) {
+      DATE = m[1];
+      try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch (e) {}
+    } else {
+      try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
+    }
   } else if (isMap) {
     try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
-    if (!DATE) return;
-  } else {
-    return;
   }
 
-  // ── Status overlay ───────────────────────────────────────────────────────
+  if (!DATE) return;
+
+  // Status overlay
   var box = document.createElement("div");
   box.style.cssText =
     "position:fixed;top:12px;right:12px;z-index:2147483647;" +
-    "background:#111;color:#fff;font:13px/1.5 system-ui,Segoe UI,sans-serif;" +
+    "background:#111;color:#fff;font:13px/1.5 system-ui,sans-serif;" +
     "padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);" +
     "max-width:360px;min-width:220px;";
 
   function say(html) {
-    box.innerHTML = "🔁 <b>TC Rollover</b><br>" + html;
+    box.innerHTML = "TC Rollover<br>" + html;
   }
   function attach() {
     if (document.body && !box.isConnected) document.body.appendChild(box);
   }
 
-  say("Target date: <b>" + DATE + "</b><br>Starting…");
-  if (document.body) attach();
-  else document.addEventListener("DOMContentLoaded", attach);
+  say("Target date: <b>" + DATE + "</b><br>Starting...");
+  if (document.body) {
+    attach();
+  } else {
+    document.addEventListener("DOMContentLoaded", attach);
+  }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  // Sets a value on an input in a way that React / PrimeFaces pick up.
+  // Sets a value on a React/PrimeFaces input
   function setValue(el, val) {
     try {
       var proto = Object.getPrototypeOf(el);
-      var desc  = Object.getOwnPropertyDescriptor(proto, "value") ||
-                  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-      if (desc && desc.set) desc.set.call(el, val);
-      else el.value = val;
+      var desc = Object.getOwnPropertyDescriptor(proto, "value") ||
+                 Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      if (desc && desc.set) { desc.set.call(el, val); }
+      else { el.value = val; }
     } catch (e) { el.value = val; }
     el.value = val;
-    ["focus", "input", "change", "keyup", "blur"].forEach(function (t) {
-      el.dispatchEvent(new Event(t, { bubbles: true }));
-    });
+    var events = ["focus", "input", "change", "keyup", "blur"];
+    for (var i = 0; i < events.length; i++) {
+      el.dispatchEvent(new Event(events[i], { bubbles: true }));
+    }
   }
 
   var BOOK_TEXTS = [
@@ -76,20 +76,18 @@
     "reserva directamente sin cambios",
     "book directly",
     "reservar directamente",
-    "direkt buchen ohne",
+    "direkt buchen"
   ];
 
   function findBookButton() {
-    // Try text match on all clickable elements
-    var els = Array.from(
-      document.querySelectorAll("a, button, span[role='button'], div[role='button'], input[type='submit']")
-    );
-    var found = els.find(function (el) {
-      var t = (el.textContent || el.value || "").trim().toLowerCase();
-      return BOOK_TEXTS.some(function (n) { return t.indexOf(n) > -1; });
-    });
-    if (found) return found;
-    // Fallback: id-based
+    var all = document.querySelectorAll("a, button, span, div");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var t = (el.textContent || "").trim().toLowerCase();
+      for (var j = 0; j < BOOK_TEXTS.length; j++) {
+        if (t.indexOf(BOOK_TEXTS[j]) > -1) return el;
+      }
+    }
     return document.querySelector("[id*='directBook']");
   }
 
@@ -106,21 +104,23 @@
     );
   }
 
-  var SEARCH_TEXTS = ["search", "buscar", "suchen", "start trip", "iniciar viaje", "empezar"];
+  var SEARCH_TEXTS = ["search", "buscar", "suchen", "start trip", "iniciar"];
 
   function findSearchButton() {
-    var els = Array.from(
-      document.querySelectorAll("button, a, input[type='submit'], span[role='button']")
-    );
-    return els.find(function (el) {
+    var all = document.querySelectorAll("button, a, input[type='submit']");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
       var t = (el.textContent || el.value || "").trim().toLowerCase();
-      return SEARCH_TEXTS.some(function (n) { return t === n || t.indexOf(n) > -1; });
-    });
+      for (var j = 0; j < SEARCH_TEXTS.length; j++) {
+        if (t.indexOf(SEARCH_TEXTS[j]) > -1 && !el.disabled) return el;
+      }
+    }
+    return null;
   }
 
-  // ── travel-map flow ──────────────────────────────────────────────────────
+  // travel-map flow: just fill the date
   if (isMap) {
-    say("On travel map — filling departure date…");
+    say("On travel map -- filling date...");
     var mapTries = 0;
     var mapIv = setInterval(function () {
       attach();
@@ -128,84 +128,75 @@
       if (inp) {
         clearInterval(mapIv);
         setValue(inp, DATE);
-        say("Date set to <b>" + DATE + "</b> ✅<br>Review and confirm.");
+        say("Date set to <b>" + DATE + "</b> OK");
         try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
       } else if (++mapTries > 80) {
         clearInterval(mapIv);
-        say("Date field not found.<br>Enter <b>" + DATE + "</b> manually.");
+        say("Date field not found. Enter <b>" + DATE + "</b> manually.");
       }
     }, 250);
     return;
   }
 
-  // ── Idea page flow ───────────────────────────────────────────────────────
-  // Step 1: Find and click "Book directly without changes"
-  say("Looking for \"Book directly without changes\"…");
+  // Idea page flow:
+  // Step 1 -- find and click "Book directly without changes"
+  say("Looking for the Book button...");
   var step1Tries = 0;
-
   var step1Iv = setInterval(function () {
     attach();
     var btn = findBookButton();
     if (btn) {
       clearInterval(step1Iv);
-      say("Clicking \"Book directly without changes\"…");
+      say("Clicking Book directly without changes...");
       btn.click();
-      // Step 2: Wait for date widget to appear
       startStep2();
     } else if (++step1Tries > 100) {
       clearInterval(step1Iv);
-      say(
-        "\"Book directly without changes\" button not found.<br>" +
-        "Click it manually, then enter <b>" + DATE + "</b> in the date field."
-      );
+      say("Book button not found.<br>Click it manually, then enter <b>" + DATE + "</b>.");
     }
   }, 200);
 
+  // Step 2 -- wait for date widget, fill date, click Search
   function startStep2() {
-    say("Widget opening — waiting for date field…");
+    say("Widget opening -- waiting for date field...");
     var step2Tries = 0;
-
     var step2Iv = setInterval(function () {
       attach();
       var inp = findDateInput();
-      if (inp && inp.offsetParent !== null) {  // visible
+      if (inp && inp.offsetParent !== null) {
         clearInterval(step2Iv);
-        say("Setting date to <b>" + DATE + "</b>…");
+        say("Setting date to <b>" + DATE + "</b>...");
         inp.focus();
         inp.click();
         setTimeout(function () {
           setValue(inp, DATE);
-          say("Date set ✅ — clicking Search…");
+          say("Date set OK -- clicking Search...");
           setTimeout(startStep3, 600);
         }, 300);
       } else if (++step2Tries > 80) {
         clearInterval(step2Iv);
-        say("Date field not found in widget.<br>Enter <b>" + DATE + "</b> manually.");
+        say("Date field not found. Enter <b>" + DATE + "</b> manually.");
       }
     }, 300);
   }
 
+  // Step 3 -- click Search
   function startStep3() {
     attach();
-    var searchBtn = findSearchButton();
-    if (searchBtn && !searchBtn.disabled) {
-      searchBtn.click();
-      say("Search clicked ✅ — TC is loading results.");
-    } else {
-      // Retry a few times in case Search is briefly disabled
-      var tries = 0;
-      var iv = setInterval(function () {
-        attach();
-        var btn = findSearchButton();
-        if (btn && !btn.disabled) {
-          clearInterval(iv);
-          btn.click();
-          say("Search clicked ✅ — TC is loading results.");
-        } else if (++tries > 20) {
-          clearInterval(iv);
-          say("Date set to <b>" + DATE + "</b> ✅<br>Click <b>Search</b> to continue.");
-        }
-      }, 300);
-    }
+    var tries = 0;
+    var iv = setInterval(function () {
+      attach();
+      var btn = findSearchButton();
+      if (btn) {
+        clearInterval(iv);
+        btn.click();
+        say("Search clicked -- TC is loading results!");
+        try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      } else if (++tries > 20) {
+        clearInterval(iv);
+        say("Date set to <b>" + DATE + "</b> OK<br>Click Search to continue.");
+      }
+    }, 300);
   }
+
 })();
