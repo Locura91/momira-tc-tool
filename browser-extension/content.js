@@ -1,34 +1,43 @@
-// Momira TC Rollover -- content script v7
-// Key fixes vs v6:
-//  - fireClick: removed duplicate el.click() (caused double-trigger on PrimeFaces buttons,
-//    second call bypassed preventDefault and followed the href to TC homepage)
-//  - findBookButton: skips any <a> whose href points to /home or home?
-//    (those are the wrong "Customize & Book" links that navigate to homepage)
-//  - Debug box still shows full href + element info
+// Momira TC Rollover -- content script v8
+// run_at: document_start -- saves date to sessionStorage BEFORE TC's own
+// router reads the hash and potentially redirects to homepage.
+//
+// Click strategy: calls the button's onclick attribute string directly
+// (new Function + call), which is the exact PrimeFaces JS TC registered.
+// This avoids synthetic MouseEvent issues where PrimeFaces ignores the event.
 (function () {
   "use strict";
 
   var STORAGE_KEY = "tcrollover_pending_date";
-  var pathname = location.pathname;
-  var hash = location.hash || "";
-  var isIdea = pathname.indexOf("/idea/") > -1;
 
+  // ── Save date immediately (document_start = no body yet) ─────────────────
+  // This runs before TC's JavaScript, so the date is in sessionStorage even
+  // if TC redirects the page away from the idea URL.
+  var hash = location.hash || "";
+  var earlyMatch = hash.match(/tcrollover=(\d{2}\.\d{2}\.\d{4})/);
+  if (earlyMatch) {
+    try { sessionStorage.setItem(STORAGE_KEY, earlyMatch[1]); } catch (e) {}
+  }
+
+  // ── Decide which date to use ──────────────────────────────────────────────
+  var pathname = location.pathname;
+  var isIdea = pathname.indexOf("/idea/") > -1;
   var DATE = null;
+
   if (isIdea) {
-    var m = hash.match(/tcrollover=(\d{2}\.\d{2}\.\d{4})/);
-    if (m) {
-      DATE = m[1];
-      try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch (e) {}
+    if (earlyMatch) {
+      DATE = earlyMatch[1];
     } else {
       try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
     }
   } else {
+    // Any other TC page (homepage, booking page, etc.) — read from storage
     try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch (e) {}
   }
 
   if (!DATE) return;
 
-  // ── Status overlay ───────────────────────────────────────────────────────
+  // ── Status overlay (body may not exist yet at document_start) ────────────
   var box = document.createElement("div");
   box.style.cssText =
     "position:fixed;top:12px;right:12px;z-index:2147483647;" +
@@ -36,32 +45,20 @@
     "padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.5);" +
     "max-width:440px;min-width:260px;word-break:break-all;";
 
-  function say(html) { box.innerHTML = "<b style='font-size:13px;font-family:sans-serif'>TC Rollover v7</b><br>" + html; }
-  function attach() { if (document.body && !box.isConnected) document.body.appendChild(box); }
-  say("Date: <b>" + DATE + "</b><br>" + pathname.substring(0, 70));
-  if (document.body) attach();
-  else document.addEventListener("DOMContentLoaded", attach);
-
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  function elInfo(el) {
-    if (!el) return "null";
-    return el.tagName + "#" + (el.id || "-") +
-           " [" + (el.className || "").toString().split(" ").slice(0, 2).join(" ") + "]" +
-           " href=" + ((el.href || "").substring(0, 80) || "none") +
-           '\n"' + (el.textContent || el.value || "").trim().substring(0, 50) + '"';
+  function say(html) {
+    box.innerHTML = "<b style='font-size:13px;font-family:sans-serif'>TC Rollover v8</b><br>" + html;
+  }
+  function attach() {
+    if (document.body && !box.isConnected) document.body.appendChild(box);
   }
 
-  // Single-fire click — does NOT call el.click() to avoid double-trigger.
-  // PrimeFaces <a> buttons: first dispatchEvent fires onclick (which opens the widget
-  // and returns false to prevent navigation). A second el.click() would re-fire onclick
-  // and bypass the preventDefault, causing the browser to follow href to homepage.
-  function fireClick(el) {
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
-  }
+  // Attach as soon as body exists
+  document.addEventListener("DOMContentLoaded", function () {
+    attach();
+    say("Date: <b>" + DATE + "</b><br>" + pathname.substring(0, 70));
+  });
 
+  // ── setValue for React / PrimeFaces inputs ───────────────────────────────
   function setValue(el, val) {
     try {
       var proto = Object.getPrototypeOf(el);
@@ -76,14 +73,26 @@
     });
   }
 
-  // Returns true if href points to TC homepage (wrong button)
-  function isHomeLink(el) {
-    var href = el.href || el.getAttribute("href") || "";
-    return href.indexOf("/home") > -1 || href.indexOf("home?") > -1 || href === "#" && false;
+  // ── Click a button: try onclick attribute first (PrimeFaces-safe) ────────
+  function triggerButton(el) {
+    var onclickAttr = el.getAttribute("onclick");
+    if (onclickAttr) {
+      try {
+        // Execute TC's own onclick JavaScript — PrimeFaces.ab(...) or similar
+        var fn = new Function("event", onclickAttr);
+        var synEvt = new MouseEvent("click", { bubbles: true, cancelable: true });
+        fn.call(el, synEvt);
+        return "onclick-attr";
+      } catch (e) { /* fall through */ }
+    }
+    // Fallback: dispatch event (no duplicate el.click())
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    el.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
+    el.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
+    return "dispatchEvent";
   }
 
-  // ── Find "Book directly without changes" button ──────────────────────────
-
+  // ── Find "Book directly without changes" ─────────────────────────────────
   var BOOK_TEXTS = [
     "book directly without changes",
     "reserva directamente sin cambios",
@@ -92,16 +101,15 @@
   ];
 
   function findBookButton() {
-    // 1. ID-based — most reliable for PrimeFaces; skip if href is a home link
+    // ID-based (most reliable for PrimeFaces)
     var byId = document.querySelector("[id*='directBook']");
-    if (byId && !isHomeLink(byId)) return byId;
+    if (byId) return byId;
 
-    // 2. Text match on <a> and <button>, skip homepage links, sort shortest-text-first
+    // Text match on interactive elements, shortest text = most specific
     var candidates = [];
     var els = document.querySelectorAll("a, button, input[type='submit'], input[type='button']");
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
-      if (isHomeLink(el)) continue;
       var t = (el.textContent || el.value || "").trim().toLowerCase();
       for (var j = 0; j < BOOK_TEXTS.length; j++) {
         if (t.indexOf(BOOK_TEXTS[j]) > -1) { candidates.push(el); break; }
@@ -113,22 +121,10 @@
       });
       return candidates[0];
     }
-
-    // 3. Last resort: include home links (maybe the href IS the booking page)
-    // — log a warning so we can spot this in the debug box
-    if (byId) return byId;
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      var t = (el.textContent || el.value || "").trim().toLowerCase();
-      for (var j = 0; j < BOOK_TEXTS.length; j++) {
-        if (t.indexOf(BOOK_TEXTS[j]) > -1) return el;
-      }
-    }
     return null;
   }
 
   // ── Find departure date input ────────────────────────────────────────────
-
   function findDateInput() {
     var selectors = [
       "input[id*='departureDateMultidestination']",
@@ -147,28 +143,30 @@
       var el = document.querySelector(selectors[i]);
       if (el) return el;
     }
+    // Inside PrimeFaces dialogs / booking widgets
     var containers = document.querySelectorAll(
       ".ui-dialog, [role='dialog'], .ui-panel, [class*='booking'], [class*='search-form']"
     );
     for (var c = 0; c < containers.length; c++) {
-      var inp = containers[c].querySelector("input[type='text'], input[type='date'], input:not([type='hidden'])");
+      var inp = containers[c].querySelector(
+        "input[type='text'], input[type='date'], input:not([type='hidden'])"
+      );
       if (inp) return inp;
     }
     return null;
   }
 
-  function listAllInputs() {
+  function listInputs() {
     var inputs = document.querySelectorAll("input:not([type='hidden'])");
     var info = [];
     for (var i = 0; i < inputs.length && i < 10; i++) {
       var el = inputs[i];
       info.push((el.id || el.name || el.placeholder || el.type || "?").substring(0, 25));
     }
-    return inputs.length + ": " + info.join(" | ");
+    return inputs.length + " inputs: " + info.join(" | ");
   }
 
   // ── Find Search button ───────────────────────────────────────────────────
-
   var SEARCH_TEXTS = ["search", "buscar", "suchen", "start trip", "iniciar"];
 
   function findSearchButton() {
@@ -186,69 +184,86 @@
     return null;
   }
 
-  // ── Non-idea page (TC navigated here) ────────────────────────────────────
+  // ── Wait for DOM ready, then run the right flow ──────────────────────────
+  function runWhenReady(fn) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fn);
+    } else {
+      fn();
+    }
+  }
 
+  // ── Non-idea page: arrived here after TC navigated from idea page ─────────
   if (!isIdea) {
-    say("New page after navigation<br>Path: " + pathname.substring(0, 70) + "<br>Looking for date field...");
-    setTimeout(step2, 2000);
+    runWhenReady(function () {
+      attach();
+      say("Post-navigation page<br>" + pathname.substring(0, 70) +
+          "<br>Looking for date field...<br><small>" + listInputs() + "</small>");
+      setTimeout(step2, 2000);
+    });
     return;
   }
 
-  // ── Idea page: Step 1 — find & click the Book button ────────────────────
-
-  say("Searching for Book button...");
-  var s1tries = 0;
-  var s1iv = setInterval(function () {
+  // ── Idea page: Step 1 — wait for button, click it ────────────────────────
+  runWhenReady(function () {
     attach();
-    var btn = findBookButton();
-    if (btn) {
-      clearInterval(s1iv);
-      var info = elInfo(btn);
-      var homeWarn = isHomeLink(btn) ? "<br><span style='color:#f90'>WARNING: href points to /home!</span>" : "";
-      say("CLICKING:<br><pre style='font-size:10px;white-space:pre-wrap'>" + info + "</pre>" + homeWarn);
-      fireClick(btn);
-      setTimeout(function () {
-        say("Clicked. URL now: " + location.pathname.substring(0, 70) +
-            "<br>Waiting for widget / new page...");
-        setTimeout(step2, 2500);
-      }, 600);
-    } else if (++s1tries > 100) {
-      clearInterval(s1iv);
-      var btns = [];
-      document.querySelectorAll("a, button").forEach(function (el) {
-        var t = (el.textContent || "").trim().substring(0, 40);
-        if (t) btns.push(t);
-      });
-      say("Book button NOT FOUND.<br><small>Buttons: " + btns.slice(0, 8).join(" | ") + "</small>");
-    }
-  }, 200);
+    say("Idea page — looking for Book button...");
+    var s1tries = 0;
+    var s1iv = setInterval(function () {
+      attach();
+      var btn = findBookButton();
+      if (btn) {
+        clearInterval(s1iv);
+        var text = (btn.textContent || btn.value || "").trim().substring(0, 50);
+        var href = (btn.href || btn.getAttribute("href") || "none").substring(0, 80);
+        var id   = btn.id || "(no id)";
+        say("Clicking button:<br>" +
+            "<small>id=" + id + "<br>text=" + text + "<br>href=" + href + "</small>");
+        var method = triggerButton(btn);
+        setTimeout(function () {
+          say("Triggered (" + method + ")<br>URL now: " + location.pathname.substring(0, 70) +
+              "<br>Waiting for widget...");
+          setTimeout(step2, 2500);
+        }, 600);
+      } else if (++s1tries > 100) {
+        clearInterval(s1iv);
+        var btns = [];
+        document.querySelectorAll("a, button").forEach(function (el) {
+          var t = (el.textContent || "").trim().substring(0, 40);
+          if (t) btns.push(t);
+        });
+        say("Book button NOT found.<br><small>" + btns.slice(0, 10).join(" | ") + "</small>");
+      }
+    }, 200);
+  });
 
-  // ── Step 2 — find date field ─────────────────────────────────────────────
-
+  // ── Step 2 — find and fill date input ────────────────────────────────────
   function step2() {
-    say("Looking for date input...<br>" + listAllInputs());
+    attach();
+    say("Looking for date input...<br><small>" + listInputs() + "</small>");
     var s2tries = 0;
     var s2iv = setInterval(function () {
       attach();
       var inp = findDateInput();
       if (inp) {
         clearInterval(s2iv);
-        say("Found: <small>" + elInfo(inp) + "</small><br>Setting <b>" + DATE + "</b>...");
+        var info = inp.tagName + "#" + (inp.id || inp.name || inp.placeholder || "?");
+        say("Found: <small>" + info + "</small><br>Setting <b>" + DATE + "</b>...");
         inp.focus(); inp.click();
         setTimeout(function () {
           setValue(inp, DATE);
-          say("Date set to <b>" + DATE + "</b>! Clicking Search...");
+          say("Date set to <b>" + DATE + "</b>!<br>Clicking Search...");
           setTimeout(step3, 800);
         }, 400);
       } else if (++s2tries > 60) {
         clearInterval(s2iv);
-        say("Date field NOT found.<br>" + listAllInputs() + "<br>Enter <b>" + DATE + "</b> manually.");
+        say("Date field NOT found.<br><small>" + listInputs() + "</small><br>" +
+            "Enter <b>" + DATE + "</b> manually.");
       }
     }, 300);
   }
 
   // ── Step 3 — click Search ────────────────────────────────────────────────
-
   function step3() {
     attach();
     var tries = 0;
@@ -257,7 +272,7 @@
       var btn = findSearchButton();
       if (btn) {
         clearInterval(iv);
-        fireClick(btn);
+        triggerButton(btn);
         say("Search clicked! TC loading...");
         try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
       } else if (++tries > 20) {

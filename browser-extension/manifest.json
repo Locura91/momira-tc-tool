@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Momira TC Rollover",
-  "version": "3.0.0",
-  "description": "Automates package rollover on momira.travel: clicks Book directly without changes, fills the new departure date, and starts the trip.",
+  "version": "4.0.0",
+  "description": "Automates package rollover on momira.travel: clicks Book directly without changes, fills departure date, starts search.",
   "content_scripts": [
     {
       "matches": ["https://momira.travel/*", "https://www.momira.travel/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ]
 }
