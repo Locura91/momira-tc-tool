@@ -1357,6 +1357,24 @@ def flat_price_modalities(route: Dict[str, Any]) -> List[str]:
     return flat
 
 
+def _auto_detect_base_bracket(options: list) -> Optional[Tuple[int, int]]:
+    """Auto-detect which modality is the base price bracket.
+
+    The base modality is the one with NO price supplement entries (empty ``prices`` array
+    in the raw option data). If exactly one modality has no supplements, return its
+    (min_pax, max_pax) tuple. Otherwise return None (ambiguous / not detectable).
+    """
+    no_supplement = []
+    for o in options:
+        raw = o.get("raw") or {}
+        prices = raw.get("prices") or []
+        if not prices:
+            no_supplement.append((o["min_pax"], o["max_pax"]))
+    if len(no_supplement) == 1:
+        return no_supplement[0]
+    return None
+
+
 def build_proposals(routes: List[Dict[str, Any]],
                     findings: Dict[int, Dict[str, Any]],
                     scoped_brackets: Optional[List[Tuple[int, int]]] = None
@@ -1442,20 +1460,14 @@ def build_proposals(routes: List[Dict[str, Any]],
             else:
                 status = "unchanged"
         else:
-            # CONFIRMED FINAL TRANSPORT PRICE-STRUCTURE MODEL (product owner, 2026-09-11, full
-            # 8-question Q&A - see claude/ project docs for the transcript). A transport's real
-            # sell price for any modality is ONE shared Vehicle/baseAdultPrice number at the
-            # PARENT level plus that modality's OWN price supplement - and which modality is
-            # "the vehicle-price one" is a HUMAN decision made per round, never auto-detected
-            # (Travel Compositor's API is confirmed to under-report a real supplement as 0.0, and
-            # this app's own prior update run is confirmed to have zeroed out real supplements by
-            # trusting that read - see _current_base_option's docstring). So: when a route has
-            # two or more live brackets, a designation is REQUIRED (route["base_bracket_override"]
-            # - the human's answer to app.py's "Which modality is the BASE/vehicle price?"
-            # question) before anything is proposed at all. A single-bracket route has nothing to
-            # designate - that one bracket is trivially the vehicle price.
+            # Transport price model: real sell price = shared baseAdultPrice/vehiclePrice at
+            # PARENT level + modality's own price supplement. The base modality (vehicle price)
+            # is auto-detected when exactly one modality has NO price supplement entries in TC.
+            # Falls back to manual base_bracket_override if auto-detection is ambiguous.
             live_brackets = sorted({(o["min_pax"], o["max_pax"]) for o in usable_options})
             base_bracket = route.get("base_bracket_override")
+            if base_bracket is None and len(live_brackets) >= 2:
+                base_bracket = _auto_detect_base_bracket(usable_options)
             needs_base_designation = len(live_brackets) >= 2 and base_bracket is None
             if needs_base_designation:
                 status = "blocked_needs_base_designation"
@@ -1906,15 +1918,12 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
     if not changes:
         return {"transport": None, "options": [], "blocked": "Nothing to write."}
 
-    # CONFIRMED REAL REQUEST (product owner, 2026-09-11): the human's own answer to "which
-    # modality is the vehicle/base price this round?" - stashed on the route dict itself rather
-    # than threaded through every caller's signature, since every caller of this function already
-    # receives the SAME route object build_proposals was given. A route with two or more live
-    # brackets and no designation is refused here too (belt-and-braces with build_proposals'
-    # identical refusal) - there is no "auto-detect" fallback left in this write path at all, per
-    # the product owner's explicit instruction: no more silently guessing which modality is base.
+    # Base bracket: auto-detected from which modality has no price supplement entries,
+    # with manual base_bracket_override as fallback. Blocks if neither works.
     live_brackets = sorted({(o["min_pax"], o["max_pax"]) for o in options})
     base_bracket = route.get("base_bracket_override")
+    if base_bracket is None and len(live_brackets) >= 2:
+        base_bracket = _auto_detect_base_bracket(options)
     if len(live_brackets) >= 2 and base_bracket is None:
         return {"transport": None, "options": [],
                 "blocked": "Which modality is the vehicle/base price was not designated for this route."}
