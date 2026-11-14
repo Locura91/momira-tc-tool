@@ -1495,7 +1495,7 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
         st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
         st.rerun()
     st.caption("Scan all Transports for a supplier and flag any modality whose inventory "
-               "differs from the others, or whose end date is not 2049-12-31. Read-only.")
+               "or price supplement end date is not 2049-12-31. Can fix price dates directly.")
 
     st.stop()
 

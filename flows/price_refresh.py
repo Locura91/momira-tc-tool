@@ -762,20 +762,120 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                     "Compositor, so there's nothing to price by hand yet. "
                                     "Re-run the price refresh and try again.")
 
+    # ── Price supplement date range check (Transport only) ─────────────
+    _EXPECTED_END = "2049-12-31"
+    if kind == price_refresh.KIND_TRANSPORT:
+        routes = st.session_state.get("pr_routes") or []
+        date_issues = []
+        for route in routes:
+            for opt in route.get("options", []):
+                raw_opt = opt.get("raw")
+                if not isinstance(raw_opt, dict):
+                    continue
+                for pi, price in enumerate(raw_opt.get("prices") or []):
+                    p_end = price.get("endDate") or ""
+                    if p_end and p_end != _EXPECTED_END:
+                        date_issues.append({
+                            "transport_id": route["id"],
+                            "transport_name": route["name"],
+                            "option_code": opt["code"],
+                            "option_name": opt.get("name", opt["code"]),
+                            "price_index": pi,
+                            "price_name": price.get("name", ""),
+                            "current_start": price.get("startDate", ""),
+                            "current_end": p_end,
+                        })
+
+        if date_issues:
+            st.markdown("---")
+            st.subheader(f"Price supplement date ranges ({len(date_issues)} issue(s))")
+            st.info(
+                f"These modality price supplements have an end date other than **{_EXPECTED_END}**. "
+                f"Select the ones to fix — they will be updated together with the price changes below."
+            )
+            new_end = st.date_input(
+                "New end date for selected supplements",
+                value=__import__("datetime").date(2049, 12, 31),
+                key="pr_date_fix_end",
+            )
+            new_end_str = new_end.strftime("%Y-%m-%d") if new_end else _EXPECTED_END
+
+            pr_date_selections = {}
+            for i, issue in enumerate(date_issues):
+                label = (
+                    f"{issue['transport_name']} — {issue['option_name']}: "
+                    f"'{issue['price_name']}' "
+                    f"({issue['current_start']} -> **{issue['current_end']}**)"
+                )
+                pr_date_selections[i] = st.checkbox(label, value=True, key=f"pr_datefix_{i}")
+
+            chosen_date_fixes = [date_issues[i] for i, sel in pr_date_selections.items() if sel]
+            st.session_state.pr_date_fixes = chosen_date_fixes
+            st.session_state.pr_date_fix_end = new_end_str
+        else:
+            st.session_state.pop("pr_date_fixes", None)
+
+    st.markdown("---")
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
-               f"{supplier_id}. Nothing else is touched — validity dates stay as they are, even "
-               f"where they run to 2049 or 2099.")
-    if st.button(f"\U0001f680 Update {len(accepted)} {kind.lower()}(s)", type="primary",
-                 disabled=not accepted, key="pr_apply"):
-        bar = st.progress(0.0, text="Updating…")
+    date_fixes = st.session_state.get("pr_date_fixes") or []
+    date_fix_end = st.session_state.get("pr_date_fix_end", _EXPECTED_END)
+    if date_fixes:
+        st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** and fixes "
+                   f"**{len(date_fixes)} price supplement date(s)** for supplier {supplier_id}.")
+    else:
+        st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
+                   f"{supplier_id}. Nothing else is touched.")
+    has_work = accepted or date_fixes
+    btn_label = f"Update {len(accepted)} {kind.lower()}(s)" if accepted else "Apply date fixes only"
+    if date_fixes and accepted:
+        btn_label = f"Update {len(accepted)} {kind.lower()}(s) + fix {len(date_fixes)} date(s)"
+    if st.button(btn_label, type="primary", disabled=not has_work, key="pr_apply"):
+        bar = st.progress(0.0, text="Updating...")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
 
-        st.session_state.pr_result = price_refresh.apply_proposals(
-            client, supplier_id, proposals, progress=_tick2)
+        if accepted:
+            st.session_state.pr_result = price_refresh.apply_proposals(
+                client, supplier_id, proposals, progress=_tick2)
+        else:
+            st.session_state.pr_result = {"updated": [], "failed": [], "skipped": []}
+
+        if date_fixes:
+            date_fix_results = []
+            by_option = {}
+            for fix in date_fixes:
+                key = (fix["transport_id"], fix["option_code"])
+                by_option.setdefault(key, []).append(fix)
+            for (t_id, opt_code), _ in by_option.items():
+                try:
+                    opt = client.get_transport_option(supplier_id, t_id, opt_code)
+                except Exception as e:
+                    date_fix_results.append({"option_code": opt_code, "ok": False, "detail": str(e)})
+                    continue
+                changed = False
+                for price in (opt.get("prices") or []):
+                    p_end = price.get("endDate") or ""
+                    if p_end and p_end != date_fix_end:
+                        price["endDate"] = date_fix_end
+                        changed = True
+                if not changed:
+                    date_fix_results.append({"option_code": opt_code, "ok": True, "detail": "already correct"})
+                    continue
+                try:
+                    resp = client.update_transport_option(supplier_id, t_id, opt)
+                except Exception as e:
+                    date_fix_results.append({"option_code": opt_code, "ok": False, "detail": str(e)})
+                    continue
+                if isinstance(resp, dict) and "error" in resp:
+                    date_fix_results.append({"option_code": opt_code, "ok": False,
+                                             "detail": str(resp.get("message") or resp.get("error"))})
+                else:
+                    date_fix_results.append({"option_code": opt_code, "ok": True,
+                                             "detail": f"endDate -> {date_fix_end}"})
+            st.session_state.pr_date_fix_results = date_fix_results
+
         bar.empty()
         st.rerun()
 
@@ -814,8 +914,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 if f.get("debug"):
                     with st.expander(f"\U0001f50d Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
+
+        date_fix_results = st.session_state.get("pr_date_fix_results")
+        if date_fix_results:
+            st.markdown("---")
+            st.subheader("Date fix results")
+            ok_fixes = [r for r in date_fix_results if r["ok"]]
+            failed_fixes = [r for r in date_fix_results if not r["ok"]]
+            if ok_fixes:
+                st.success(f"{len(ok_fixes)} price supplement date(s) fixed.")
+                for r in ok_fixes:
+                    st.write(f"- Option `{r['option_code']}`: {r['detail']}")
+            if failed_fixes:
+                st.error(f"{len(failed_fixes)} date fix(es) failed:")
+                for r in failed_fixes:
+                    st.write(f"- Option `{r['option_code']}`: {r['detail']}")
+
         if st.button("\U0001f195 Start again", key="pr_new"):
-            for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
+            for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result",
+                         "pr_date_fixes", "pr_date_fix_end", "pr_date_fix_results"):
                 st.session_state.pop(key, None)
             st.rerun()
 
