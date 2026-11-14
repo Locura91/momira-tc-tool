@@ -601,11 +601,27 @@ def load_supplier_tickets(client, supplier_id: str,
     total_modalities = sum(len(t.get("modalityCodes") or []) for t in tickets) or 1
     out = []
     done = 0
+    ticket_datasheets: Dict[str, dict] = {}
     for ticket in tickets:
         ticket_code = ticket.get("code")
         ticket_name = ticket.get("name") or ((ticket.get("datasheets") or {}).get("EN") or {}).get("name", "") \
             or ticket_code
         currency = ticket.get("currency") or "EUR"
+        # Fetch full ticket once per code to get datasheets (description/includes/excludes)
+        if ticket_code and ticket_code not in ticket_datasheets:
+            try:
+                full_ticket = client.get_ticket(supplier_id, ticket_code)
+                ds_en = ((full_ticket or {}).get("datasheets") or {}).get("EN") or {}
+                ticket_datasheets[ticket_code] = {
+                    "description": ds_en.get("description") or "",
+                    "includes": ds_en.get("includes") or [],
+                    "excludes": ds_en.get("excludes") or [],
+                    "raw_ticket": full_ticket,
+                }
+            except Exception:
+                ticket_datasheets[ticket_code] = {
+                    "description": "", "includes": [], "excludes": [], "raw_ticket": None,
+                }
         for modality_code in (ticket.get("modalityCodes") or []):
             done += 1
             if progress:
@@ -626,6 +642,7 @@ def load_supplier_tickets(client, supplier_id: str,
                 adult_options, child_options = _ticket_distribution_options(opt)
             else:
                 adult_options, child_options = _ticket_occupancy_options(opt)
+            _ds = ticket_datasheets.get(ticket_code) or {}
             out.append({
                 "kind": KIND_TICKET,
                 "id": f"{ticket_code}/{modality_code}",
@@ -638,6 +655,10 @@ def load_supplier_tickets(client, supplier_id: str,
                 "options": adult_options,
                 "child_options": child_options,
                 "raw": opt,
+                "tc_description": _ds.get("description", ""),
+                "tc_includes": _ds.get("includes", []),
+                "tc_excludes": _ds.get("excludes", []),
+                "raw_ticket": _ds.get("raw_ticket"),
             })
     return out, None
 
@@ -1095,6 +1116,143 @@ def lookup_ticket_prices(routes: List[Dict[str, Any]], raw_text: str,
         for idx in code_to_indices[code]:
             findings[idx] = finding
     return findings
+
+
+# ----------------------------------------------------------------------
+# Ticket itinerary change detection
+# ----------------------------------------------------------------------
+
+TICKET_ITINERARY_LOOKUP_PROMPT = """You are reading a supplier's rate sheet or product document to find the
+DESCRIPTION, INCLUDES and EXCLUDES for tickets/excursions that already exist in a booking system.
+
+You will be given a numbered list of TICKETS, each with its own CODE and name. For each ticket, find the
+matching section in the document and extract its description (the tour/excursion description text),
+includes list, and excludes list.
+
+RULES:
+- Match tickets by their CODE (e.g. "ALX-01", "SHM-04" — match exactly, ignoring case/whitespace).
+- "description": the full tour description/itinerary text as it appears in the document. Preserve the
+  original wording. If the document provides no description for this ticket, set to empty string.
+- "includes": a list of strings, each one inclusion item. If none found, empty list.
+- "excludes": a list of strings, each one exclusion item. If none found, empty list.
+- If the document is purely a price list with no descriptive text at all, set "has_content": false
+  for every ticket — do not fabricate descriptions.
+- If you cannot find a specific ticket's section, set "has_content": false for that one.
+
+Output ONLY valid JSON, no markdown fences:
+{
+  "routes": [
+    {"index": 0,
+     "has_content": true,
+     "description": "the full tour description text",
+     "includes": ["item 1", "item 2"],
+     "excludes": ["item 1"]}
+  ]
+}
+Report every ticket you were given, in the same order."""
+
+
+TICKET_ITINERARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "routes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "has_content": {"type": "boolean"},
+                    "description": {"type": "string"},
+                    "includes": {"type": "array", "items": {"type": "string"}},
+                    "excludes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["index", "has_content"],
+            },
+        }
+    },
+    "required": ["routes"],
+}
+
+
+def lookup_ticket_itinerary(routes: List[Dict[str, Any]], raw_text: str,
+                            model: str = "claude-sonnet-5") -> Dict[int, Dict[str, Any]]:
+    """Extract description/includes/excludes per ticket from the document. Returns {route index: itinerary}.
+
+    Dedupes by ticket_code (same as lookup_ticket_prices) since the description is ticket-level."""
+    if not routes or not (raw_text or "").strip():
+        return {}
+    code_to_indices: Dict[str, List[int]] = {}
+    codes_seen: List[str] = []
+    for i, route in enumerate(routes):
+        code = route.get("ticket_code") or ""
+        if not code:
+            continue
+        code_to_indices.setdefault(code, []).append(i)
+        if code not in codes_seen:
+            codes_seen.append(code)
+    if not codes_seen:
+        return {}
+
+    described = []
+    for ci, code in enumerate(codes_seen):
+        first_route = routes[code_to_indices[code][0]]
+        described.append(f"{ci}. code: {code} | name: {first_route.get('name') or '(unnamed)'}")
+    user_content = ("TICKETS TO CHECK:\n" + "\n".join(described) +
+                    f"\n\n--- DOCUMENT ---\n{raw_text}")
+    data = ai_extractor._call_claude(TICKET_ITINERARY_LOOKUP_PROMPT, user_content, model,
+                                     max_tokens=8192, input_schema=TICKET_ITINERARY_SCHEMA) or {}
+    by_code_index = {}
+    for item in (data.get("routes") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ci = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= ci < len(codes_seen)):
+            continue
+        by_code_index[ci] = {
+            "has_content": bool(item.get("has_content")),
+            "description": str(item.get("description") or "").strip(),
+            "includes": [str(x).strip() for x in (item.get("includes") or []) if str(x).strip()],
+            "excludes": [str(x).strip() for x in (item.get("excludes") or []) if str(x).strip()],
+        }
+    findings = {}
+    for ci, code in enumerate(codes_seen):
+        finding = by_code_index.get(ci) or {"has_content": False, "description": "", "includes": [], "excludes": []}
+        for idx in code_to_indices[code]:
+            findings[idx] = finding
+    return findings
+
+
+def _strip_html(text: str) -> str:
+    """Crude HTML tag removal for comparison purposes."""
+    import re
+    return re.sub(r'<[^>]+>', '', text).strip()
+
+
+def compare_ticket_itinerary(route: Dict[str, Any], doc_itinerary: Dict[str, Any]) -> Dict[str, Any]:
+    """Compare live TC itinerary with document extraction. Returns a diff dict."""
+    if not doc_itinerary.get("has_content"):
+        return {"has_changes": False, "reason": "no_content_in_document"}
+
+    changes = {}
+    tc_desc = _strip_html(route.get("tc_description") or "")
+    doc_desc = _strip_html(doc_itinerary.get("description") or "")
+    if doc_desc and tc_desc != doc_desc:
+        changes["description"] = {"old": route.get("tc_description", ""), "new": doc_itinerary["description"]}
+
+    tc_inc = sorted(route.get("tc_includes") or [])
+    doc_inc = sorted(doc_itinerary.get("includes") or [])
+    if doc_inc and tc_inc != doc_inc:
+        changes["includes"] = {"old": tc_inc, "new": doc_inc}
+
+    tc_exc = sorted(route.get("tc_excludes") or [])
+    doc_exc = sorted(doc_itinerary.get("excludes") or [])
+    if doc_exc and tc_exc != doc_exc:
+        changes["excludes"] = {"old": tc_exc, "new": doc_exc}
+
+    return {"has_changes": bool(changes), "changes": changes}
 
 
 # ----------------------------------------------------------------------
@@ -1726,18 +1884,72 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
     return payload
 
 
+def _apply_ticket_itinerary_updates(client, supplier_id: str,
+                                    itinerary_changes: Dict[int, Dict[str, Any]],
+                                    routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Update ticket datasheets (description/includes/excludes) for accepted itinerary changes.
+    Groups by ticket_code to avoid updating the same ticket twice."""
+    results = []
+    done_codes: set = set()
+    for ri, diff_data in itinerary_changes.items():
+        if ri >= len(routes):
+            continue
+        route = routes[ri]
+        ticket_code = route.get("ticket_code") or ""
+        if not ticket_code or ticket_code in done_codes:
+            continue
+        done_codes.add(ticket_code)
+        raw_ticket = route.get("raw_ticket")
+        if not raw_ticket:
+            results.append({"ticket_code": ticket_code, "ok": False,
+                            "detail": "No raw ticket data available"})
+            continue
+        payload = json.loads(json.dumps(raw_ticket))
+        ds = payload.setdefault("datasheets", {}).setdefault("EN", {})
+        changes = diff_data.get("changes") or {}
+        if "description" in changes:
+            ds["description"] = changes["description"]["new"]
+        if "includes" in changes:
+            ds["includes"] = changes["includes"]["new"]
+        if "excludes" in changes:
+            ds["excludes"] = changes["excludes"]["new"]
+        try:
+            res = client.update_ticket(supplier_id, payload)
+            if isinstance(res, dict) and "error" in res:
+                results.append({"ticket_code": ticket_code, "ok": False,
+                                "detail": str(res.get("message") or res.get("error"))})
+            else:
+                results.append({"ticket_code": ticket_code, "ok": True,
+                                "detail": "itinerary updated"})
+        except Exception as e:
+            results.append({"ticket_code": ticket_code, "ok": False,
+                            "detail": f"{type(e).__name__}: {e}"})
+    return results
+
+
 def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, Any]],
                            progress: Optional[Callable[[int, int, str], None]] = None,
                            new_end_date: Optional[str] = None,
-                           new_start_date: Optional[str] = None) -> Dict[str, Any]:
+                           new_start_date: Optional[str] = None,
+                           itinerary_changes: Optional[Dict[int, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Push the accepted Ticket price proposals by DUPLICATING each modality.
 
     CONFIRMED PRODUCT-OWNER REQUEST (2026-11-09): never overwrite the existing modality.
     Instead, create a NEW modality (POST) that is a copy of the original with the new prices
     and new date range.  The original stays untouched so its prices remain valid until its
-    own endDate.  Two or more modalities within one ticket coexist with no problem."""
+    own endDate.  Two or more modalities within one ticket coexist with no problem.
+
+    When itinerary_changes is given, also updates the ticket's datasheets (description/includes/
+    excludes) before creating the new modality."""
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted)}
+    out = {"updated": [], "failed": [], "skipped": len(proposals) - len(accepted),
+           "itinerary_results": []}
+
+    # Apply itinerary changes first (ticket-level, before modality creation)
+    if itinerary_changes:
+        routes = [p.get("route") or {} for p in proposals]
+        out["itinerary_results"] = _apply_ticket_itinerary_updates(
+            client, supplier_id, itinerary_changes, routes)
     for n, proposal in enumerate(accepted):
         route = proposal["route"]
         if progress:
