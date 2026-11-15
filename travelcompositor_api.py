@@ -515,6 +515,12 @@ class TravelCompositorAPI(TravelCompositorHTTPBase):
         res = self._request("PUT", url, json=payload)
         return self._handle_response(res, ok_codes=(200, 201))
 
+    def add_hotel_supplement(self, supplier_id: str, provider_code: str, payload: dict) -> Dict[str, Any]:
+        """Executes POST /hotel/supplement/{supplierId}/{providerCode} — adds a supplement to a hotel contract."""
+        url = f"{self.api_base_url}/hotel/supplement/{supplier_id}/{provider_code}"
+        res = self._request("POST", url, json=payload)
+        return self._handle_response(res, ok_codes=(200, 201))
+
     # ---- Holiday Packages / Ideas (lang-parameter pattern) --------------
     def get_holiday_package_info(self, microsite_id: str, holiday_package_id: str, lang: str = "EN") -> Dict[str, Any]:
         """Executes GET /package/{micrositeId}/info/{holidayPackageId}?lang= — flat title/description for ONE language."""

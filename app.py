@@ -751,6 +751,9 @@ from flows.cancellation import render_transport_cancellation_bulk_flow, render_g
 
 from flows.transfer_image_bulk import render_transfer_image_bulk_flow
 from flows.transfer_surcharge_bulk import render_transfer_surcharge_bulk_flow
+from flows.ticket_supplement_bulk import render_ticket_supplement_bulk_flow
+from flows.closedtour_supplement_bulk import render_closedtour_supplement_bulk_flow
+from flows.hotel_supplement_bulk import render_hotel_supplement_bulk_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
@@ -1229,6 +1232,9 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # currently reviewing. See transfer_image_bulk.py's own docstring for how this differs from
 # supplier_images.py's per-direction "applies to future builds" feature.
 TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer surcharges"
+TICKET_SUPPLEMENT_BULK_CHOICE = "Bulk Ticket supplements"
+CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE = "Bulk Closed Tour supplements"
+HOTEL_SUPPLEMENT_BULK_CHOICE = "Bulk Hotel supplements"
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
 TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality consistency)"
@@ -1554,6 +1560,21 @@ if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type
     st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
                "for a supplier in bulk.")
 
+    if st.button(TICKET_SUPPLEMENT_BULK_CHOICE, key="pt_choice_ticket_supplement_bulk", use_container_width=True):
+        st.session_state.product_type = TICKET_SUPPLEMENT_BULK_CHOICE
+        st.rerun()
+    st.caption("Update or create supplements on ticket modalities for a supplier in bulk.")
+
+    if st.button(CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE, key="pt_choice_closedtour_supplement_bulk", use_container_width=True):
+        st.session_state.product_type = CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE
+        st.rerun()
+    st.caption("Update or create supplements on closed tours for a supplier in bulk.")
+
+    if st.button(HOTEL_SUPPLEMENT_BULK_CHOICE, key="pt_choice_hotel_supplement_bulk", use_container_width=True):
+        st.session_state.product_type = HOTEL_SUPPLEMENT_BULK_CHOICE
+        st.rerun()
+    st.caption("Create supplements on hotels for a supplier in bulk (via dedicated POST endpoint).")
+
     if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
         st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
         st.rerun()
@@ -1604,6 +1625,18 @@ if st.session_state.product_type == TRANSFER_DUPLICATE_AND_CREATE_CHOICE:
 
 if st.session_state.product_type == TRANSFER_SURCHARGE_BULK_CHOICE:
     render_transfer_surcharge_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == TICKET_SUPPLEMENT_BULK_CHOICE:
+    render_ticket_supplement_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE:
+    render_closedtour_supplement_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == HOTEL_SUPPLEMENT_BULK_CHOICE:
+    render_hotel_supplement_bulk_flow(client)
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:
