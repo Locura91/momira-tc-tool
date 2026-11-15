@@ -754,6 +754,8 @@ from flows.transfer_surcharge_bulk import render_transfer_surcharge_bulk_flow
 from flows.ticket_supplement_bulk import render_ticket_supplement_bulk_flow
 from flows.closedtour_supplement_bulk import render_closedtour_supplement_bulk_flow
 from flows.hotel_supplement_bulk import render_hotel_supplement_bulk_flow
+from flows.supplement_bulk import render_supplement_bulk_flow
+from flows.inventory_audit import render_inventory_audit_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
@@ -1235,9 +1237,19 @@ TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer surcharges"
 TICKET_SUPPLEMENT_BULK_CHOICE = "Bulk Ticket supplements"
 CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE = "Bulk Closed Tour supplements"
 HOTEL_SUPPLEMENT_BULK_CHOICE = "Bulk Hotel supplements"
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-11-15): the four supplement flows above are one
+# menu entry with the product type picked inside (flows/supplement_bulk.py), matching the
+# image-bulk merge. The four constants stay so a bookmarked/restored product_type still
+# dispatches, but they are no longer offered as their own buttons anywhere.
+SUPPLEMENT_BULK_CHOICE = "Bulk supplements"
+# Grouping destination for every "one change, many products" action (2026-11-15).
+BULK_ACTIONS_CHOICE = "Bulk actions"
 TRANSFER_IMAGE_BULK_CHOICE = "Bulk-change Transfer images"
 TRANSPORT_IMAGE_BULK_CHOICE = "Bulk-change Transport images"
 TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality consistency)"
+# Extended 2026-11-15 from Transport-only to Transport · Ticket · Transfer, each with its
+# own checks (flows/inventory_audit.py). The old constant stays for restored sessions.
+INVENTORY_AUDIT_CHOICE = "Inventory audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
 # selector inside the flow itself (flows/image_bulk.py).
@@ -1465,17 +1477,11 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     st.caption("New prices, changed details, a new Modality added to something that already "
                "exists — for any of the five product types.")
 
-    if st.button(CANCELLATION_BULK_CHOICE, key="upd_choice_ctbulk", use_container_width=True):
-        st.session_state.product_type = CANCELLATION_BULK_CHOICE
+    if st.button(BULK_ACTIONS_CHOICE, key="upd_choice_bulkactions", use_container_width=True):
+        st.session_state.product_type = BULK_ACTIONS_CHOICE
         st.rerun()
-    st.caption("Apply one cancellation policy to every (or a chosen subset of) one supplier's "
-               "live services at once. ClosedTour · Ticket · Transfer · Transport · Hotel.")
-
-    if st.button(IMAGE_BULK_CHOICE, key="upd_choice_imagebulk", use_container_width=True):
-        st.session_state.product_type = IMAGE_BULK_CHOICE
-        st.rerun()
-    st.caption("Replace the photo on many already-live Transfers or Transports at once — "
-               "by supplier, by service type, or both. From your computer or a pasted URL.")
+    st.caption("One change applied across many live products at once — cancellation "
+               "policies, images, stop sales, supplements, and the inventory audit.")
 
     if st.button(MIGRATE_SUPPLIER_CHOICE, key="upd_choice_migrate", use_container_width=True):
         st.session_state.product_type = MIGRATE_SUPPLIER_CHOICE
@@ -1491,18 +1497,79 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
                "pickup point, changed cancellation terms — attached automatically to every "
                "future upload of that product type.")
 
-    if st.button(BULK_STOP_SALES_CHOICE, key="upd_choice_bulkss", use_container_width=True):
-        st.session_state.product_type = BULK_STOP_SALES_CHOICE
+    st.stop()
+
+# ======================================================================
+# UPDATE EXISTING PRODUCTS - Bulk actions sub-page.
+# CONFIRMED PRODUCT-OWNER REQUEST (2026-11-15): the Update screen had grown to seven flat
+# buttons, five of which were "do one thing to many products at once". Those five move
+# behind this one "Bulk actions" entry, leaving the Update screen to the three choices
+# that act on a single product or a whole supplier relationship. Same reasoning as the
+# 2026-10-18 image-bulk merge: fewer top-level choices, grouped by what they do.
+# ======================================================================
+if st.session_state.active_tool == TOOL_UPDATE and \
+        st.session_state.get("product_type") == BULK_ACTIONS_CHOICE and \
+        st.session_state.get("bulk_action") is None:
+    st.header("Bulk actions — one change, many products")
+    if st.button("🔙 Back", key="bulk_actions_back"):
+        st.session_state.product_type = None
+        st.rerun()
+    st.caption("Each of these applies a single change across a supplier's live products "
+               "at once, instead of opening them one by one.")
+
+    if st.button(CANCELLATION_BULK_CHOICE, key="bulk_choice_ctbulk", use_container_width=True):
+        st.session_state.bulk_action = CANCELLATION_BULK_CHOICE
+        st.rerun()
+    st.caption("Apply one cancellation policy to every (or a chosen subset of) one supplier's "
+               "live services at once. ClosedTour · Ticket · Transfer · Transport · Hotel.")
+
+    if st.button(IMAGE_BULK_CHOICE, key="bulk_choice_imagebulk", use_container_width=True):
+        st.session_state.bulk_action = IMAGE_BULK_CHOICE
+        st.rerun()
+    st.caption("Replace the photo on many already-live Transfers or Transports at once — "
+               "by supplier, by service type, or both. From your computer or a pasted URL.")
+
+    if st.button(BULK_STOP_SALES_CHOICE, key="bulk_choice_bulkss", use_container_width=True):
+        st.session_state.bulk_action = BULK_STOP_SALES_CHOICE
         st.rerun()
     st.caption("Block a date or date range across many products at once — "
                "Transfer, Ticket, ClosedTour, Hotel.")
 
-    if st.button(TRANSPORT_INVENTORY_AUDIT_CHOICE, key="upd_choice_tia", use_container_width=True):
-        st.session_state.product_type = TRANSPORT_INVENTORY_AUDIT_CHOICE
+    if st.button(SUPPLEMENT_BULK_CHOICE, key="bulk_choice_supplements", use_container_width=True):
+        st.session_state.bulk_action = SUPPLEMENT_BULK_CHOICE
         st.rerun()
-    st.caption("Scan all Transports for a supplier and flag any modality whose inventory "
-               "or price supplement end date is not 2049-12-31. Can fix price dates directly.")
+    st.caption("Add or update supplements and surcharges across many products — "
+               "Transfer · Ticket · ClosedTour · Hotel.")
 
+    if st.button(INVENTORY_AUDIT_CHOICE, key="bulk_choice_tia", use_container_width=True):
+        st.session_state.bulk_action = INVENTORY_AUDIT_CHOICE
+        st.rerun()
+    st.caption("Scan a supplier's live products and flag what looks wrong — expiring "
+               "prices, missing prices, wrong end dates. Transport · Ticket · Transfer.")
+
+    st.stop()
+
+if st.session_state.active_tool == TOOL_UPDATE and \
+        st.session_state.get("product_type") == BULK_ACTIONS_CHOICE:
+    # A bulk action is chosen — dispatch to it, and give the human a way back to the
+    # bulk list that does not drop them all the way out to the Update screen.
+    _bulk = st.session_state.get("bulk_action")
+    if st.button("🔙 Back to bulk actions", key="bulk_action_back"):
+        st.session_state.bulk_action = None
+        for _k in ("image_bulk_product", "supplement_bulk_product", "inv_audit_product"):
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+    if _bulk == CANCELLATION_BULK_CHOICE:
+        render_cancellation_bulk_flow(client)
+    elif _bulk == IMAGE_BULK_CHOICE:
+        render_image_bulk_flow(client)
+    elif _bulk == BULK_STOP_SALES_CHOICE:
+        render_bulk_stop_sales_flow(client)
+    elif _bulk == SUPPLEMENT_BULK_CHOICE:
+        render_supplement_bulk_flow(client)
+    elif _bulk == INVENTORY_AUDIT_CHOICE:
+        render_inventory_audit_flow(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
@@ -1553,27 +1620,6 @@ if st.session_state.active_tool == TOOL_UPLOAD and st.session_state.product_type
                "(e.g. Hotel → Airport once Airport → Hotel already exists). Pick a supplier: "
                "the app lists every route with no reverse-direction pair yet, so you can "
                "create them as a batch — or duplicate one specific Transfer by id instead.")
-
-    if st.button(TRANSFER_SURCHARGE_BULK_CHOICE, key="pt_choice_transfer_surcharge_bulk", use_container_width=True):
-        st.session_state.product_type = TRANSFER_SURCHARGE_BULK_CHOICE
-        st.rerun()
-    st.caption("Update times on existing surcharges OR create a new surcharge on all transfers "
-               "for a supplier in bulk.")
-
-    if st.button(TICKET_SUPPLEMENT_BULK_CHOICE, key="pt_choice_ticket_supplement_bulk", use_container_width=True):
-        st.session_state.product_type = TICKET_SUPPLEMENT_BULK_CHOICE
-        st.rerun()
-    st.caption("Update or create supplements on ticket modalities for a supplier in bulk.")
-
-    if st.button(CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE, key="pt_choice_closedtour_supplement_bulk", use_container_width=True):
-        st.session_state.product_type = CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE
-        st.rerun()
-    st.caption("Update or create supplements on closed tours for a supplier in bulk.")
-
-    if st.button(HOTEL_SUPPLEMENT_BULK_CHOICE, key="pt_choice_hotel_supplement_bulk", use_container_width=True):
-        st.session_state.product_type = HOTEL_SUPPLEMENT_BULK_CHOICE
-        st.rerun()
-    st.caption("Create supplements on hotels for a supplier in bulk (via dedicated POST endpoint).")
 
     if st.button(DUPLICATE_TRANSPORT_CHOICE, key="pt_choice_duplicate_transport", use_container_width=True):
         st.session_state.product_type = DUPLICATE_TRANSPORT_CHOICE
@@ -1637,6 +1683,14 @@ if st.session_state.product_type == CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE:
 
 if st.session_state.product_type == HOTEL_SUPPLEMENT_BULK_CHOICE:
     render_hotel_supplement_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == SUPPLEMENT_BULK_CHOICE:
+    render_supplement_bulk_flow(client)
+    st.stop()
+
+if st.session_state.product_type == INVENTORY_AUDIT_CHOICE:
+    render_inventory_audit_flow(client)
     st.stop()
 
 if st.session_state.product_type == DUPLICATE_TRANSPORT_CHOICE:
