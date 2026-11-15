@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from list_response_utils import normalize_list_response
 
-MODULE_BUILD = "2026-11-15-product-image-bulk"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _WRAPPER_FALLBACKS = ("items", "data", "results", "content")
 

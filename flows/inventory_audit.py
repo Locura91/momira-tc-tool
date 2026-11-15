@@ -41,7 +41,7 @@ import transfer_gap_finder
 from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 from list_response_utils import normalize_list_response
 
-MODULE_BUILD = "2026-11-15-inventory-audit"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 HOUSE_END_DATE = "2049-12-31"
 _WRAPPER_FALLBACKS = ("items", "data", "results", "content")

@@ -16,7 +16,7 @@ import streamlit as st
 import product_image_bulk as pib
 from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 
-MODULE_BUILD = "2026-11-15-product-image-bulk"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 
 def render_product_image_bulk_flow(client, product_type: str):
