@@ -21,8 +21,7 @@ MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _TYPES = [
     ("Transfer", "🚌 Transfer",
-     "Night, weekend and holiday surcharges. Update the times on existing "
-     "surcharges, or add a new one across a supplier's transfers."),
+     "Night, weekend and holiday supplements, by amount or percentage."),
     ("Ticket", "🎟️ Ticket",
      "Adult / children / infant price supplements on each ticket modality, "
      "with their own validity dates."),
@@ -50,7 +49,8 @@ def render_supplement_bulk_flow(client):
         if st.button("🔙 Back", key="supbulk_back"):
             st.session_state.product_type = None
             st.rerun()
-        st.caption("Add or update supplements across many already-live products at once. "
+        st.caption("Create a new supplement across many already-live products at once, "
+                   "or delete all existing supplements in bulk. "
                    "Pick which product type to work on:")
         cols = st.columns(2)
         for i, (key, label, blurb) in enumerate(_TYPES):

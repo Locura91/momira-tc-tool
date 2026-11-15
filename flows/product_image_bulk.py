@@ -14,7 +14,7 @@ successful upload is not proof of that (r2_client.verify_public_url).
 import streamlit as st
 
 import product_image_bulk as pib
-from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
+from app_helpers import _ur_pick_momira_supplier
 
 MODULE_BUILD = "2026-10-24-rollover-ext"
 
@@ -51,23 +51,17 @@ def render_product_image_bulk_flow(client, product_type: str):
             st.rerun()
         return
 
-    suppliers = _load_momira_suppliers(client)
-    if not suppliers:
-        st.error("🚫 No suppliers starting with 'Momira_' were found in this account.")
-        return
-
     # ── 1. Scope ────────────────────────────────────────────────────────
+    # Same Momira_-only supplier picker every other flow uses, rather than a typed
+    # numeric ID (product owner, 2026-11-15: dropdown everywhere).
     st.subheader(f"1 — Which {label}s?")
-    supplier_labels = [f"{s['name']} — ID {s['id']}" for s in suppliers]
-    choice = st.selectbox("Supplier", [None] + supplier_labels,
-                          format_func=lambda c: "— Choose a supplier —" if c is None else c,
-                          key=f"{ns}_supplier")
-    if choice is None:
+    supplier_id = _ur_pick_momira_supplier(client, key_prefix=ns)
+    if not supplier_id:
         st.warning(f"⚠️ Pick a supplier — applying to every live {label} in the whole "
                    f"account isn't offered here.")
         return
-    chosen = suppliers[supplier_labels.index(choice)]
-    st.caption(f"Scope: every live {label} of **{chosen['name']}**.")
+    chosen = {"id": supplier_id, "name": supplier_id}
+    st.caption(f"Scope: every live {label} of the chosen supplier.")
 
     # ── 2. New image ────────────────────────────────────────────────────
     st.subheader("2 — New image")

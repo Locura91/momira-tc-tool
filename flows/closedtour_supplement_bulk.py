@@ -1,36 +1,46 @@
 """
 Bulk closed tour supplement tool — two modes:
 
-1. UPDATE existing supplements: change prices/dates/flags across all or
-   filtered supplements for a supplier's closed tours.
-2. CREATE a new supplement: append a brand-new supplement to every closed tour
-   (or selected ones) for a supplier.
+1. CREATE a new supplement: append a brand-new supplement to every closed tour
+   (or selected tours) for a supplier.
+2. DELETE all supplements: wipe every supplement from every closed tour for a
+   supplier (useful before re-adding supplements from scratch).
 
-Supplements live on ContractClosedTourVO.supplements[] and are updated via
-PUT /closedtours/{supplierId}.
+Both use PUT /closedtours/{supplierId}, which sends the full tour including its
+supplements array.
+
+MODES MATCH THE TRANSFER TOOL ON PURPOSE (product owner, 2026-11-15): "if we developed
+one thing for a specific product, to add it to all the other products as well". The
+transfer tool dropped its update-existing-times mode and gained delete-all; this one
+follows, so all four supplement tools behave the same way.
 """
 import copy
 import streamlit as st
 from datetime import date
 
+from app_helpers import _ur_pick_momira_supplier
 from list_response_utils import normalize_list_response
+
+MODULE_BUILD = "2026-10-24-rollover-ext"
+
+_WRAPPER_FALLBACKS = ("items", "data", "results", "content")
 
 
 def _tour_code(t):
-    """ContractClosedTourVO is keyed on `code`; `providerCode` is the DMC's own
-    reference and does not resolve on GET /closedtours/{supplierId}/{code}."""
+    """ContractClosedTourVO is keyed on `code`; `providerCode` is the DMC's own reference
+    and does not resolve on GET /closedtours/{supplierId}/{code}."""
     return t.get("code") or t.get("providerCode") or ""
 
 
 def _load_closed_tours(client, supplier_id):
-    """Fetch all closed tours, re-fetching each individually for full data."""
+    """Fetch all closed tours, re-fetching each individually for full supplement data."""
     try:
-        resp = client.get_closed_tours(supplier_id)
+        resp = client.get_closed_tours(supplier_id, first=0, limit=200)
     except Exception as e:
         st.error(f"Failed to fetch closed tours: {e}")
         return None
-    tours = normalize_list_response(resp, ("closedTour", "closedTours",
-                                           "items", "data", "results", "content"))
+    tours = normalize_list_response(resp, ("closedTour", "closedTours") + _WRAPPER_FALLBACKS)
+    tours = [t for t in tours if isinstance(t, dict)]
     if not tours:
         st.warning("No closed tours found for this supplier.")
         return None
@@ -38,121 +48,32 @@ def _load_closed_tours(client, supplier_id):
     full_tours = []
     progress = st.progress(0, text="Loading closed tour details…")
     for i, t in enumerate(tours):
-        code = _tour_code(t)
         try:
-            full = client.get_closed_tour(supplier_id, code)
-            full_tours.append(full)
+            full = client.get_closed_tour(supplier_id, _tour_code(t))
         except Exception:
-            full_tours.append(t)
+            full = None
+        full_tours.append(full if isinstance(full, dict) and "error" not in full else t)
         progress.progress((i + 1) / len(tours))
     progress.empty()
     return full_tours
 
 
-def _collect_supplement_rows(tours):
-    """Flatten all supplements across all closed tours."""
-    rows = []
-    for t in tours:
-        code = _tour_code(t)
-        name = t.get("name") or code
-        for idx, s in enumerate(t.get("supplements") or []):
-            trans = s.get("translations") or {}
-            name_parts = []
-            for lang, tr in trans.items():
-                n = tr.get("name") or ""
-                if n:
-                    name_parts.append(f"{lang}:{n}")
-            sname = " / ".join(name_parts) if name_parts else f"Supplement #{idx+1}"
-
-            price = s.get("price") or {}
-            rows.append({
-                "tour_code": code,
-                "tour_name": name,
-                "supp_idx": idx,
-                "name": sname,
-                "mandatory": s.get("mandatory", False),
-                "free": s.get("free", False),
-                "singlePrice": price.get("singlePrice", 0),
-                "doublePrice": price.get("doublePrice", 0),
-                "triplePrice": price.get("triplePrice", 0),
-                "quadruplePrice": price.get("quadruplePrice", 0),
-                "travelWindows": s.get("travelWindows") or [],
-                "modalityCodes": s.get("modalityCodes") or [],
-            })
-    return rows
-
-
-def _render_update_mode(tours):
-    """UI for updating existing closed tour supplements."""
-    rows = _collect_supplement_rows(tours)
-    if not rows:
-        st.warning(f"None of the {len(tours)} closed tours have any supplements.")
-        return None
-
-    st.success(f"Found **{len(rows)}** supplement(s) across **{len(tours)}** closed tours.")
-
-    unique_names = sorted({r["name"] for r in rows if r["name"]})
-    scope = st.radio("Which supplements to update?",
-                     ["All supplements", "Only supplements with a specific name"],
-                     key="ctsb_scope")
-    selected = rows
-    if scope == "Only supplements with a specific name" and unique_names:
-        pick = st.multiselect("Supplement name(s)", unique_names, key="ctsb_name_filter")
-        if pick:
-            selected = [r for r in rows if r["name"] in pick]
-        else:
-            st.info("Pick at least one supplement name.")
-            return None
-
-    st.info(f"**{len(selected)}** supplement(s) will be updated.")
-
-    with st.expander(f"Preview ({len(selected)} supplements)", expanded=False):
-        for r in selected:
-            tw = ", ".join(f"{w.get('startDate','?')}→{w.get('endDate','?')}" for w in r["travelWindows"])
-            st.text(f"{r['tour_name']}  |  {r['name']}  |  "
-                    f"S:{r['singlePrice']} D:{r['doublePrice']} T:{r['triplePrice']} Q:{r['quadruplePrice']}  |  "
-                    f"travel: {tw or 'none'}")
-
-    st.subheader("New distribution prices")
-    st.caption("Leave at 0 to keep unchanged. Remember: single >= double >= triple >= quadruple.")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        new_single = st.number_input("Single", min_value=0.0, step=0.5, key="ctsb_single")
-    with c2:
-        new_double = st.number_input("Double", min_value=0.0, step=0.5, key="ctsb_double")
-    with c3:
-        new_triple = st.number_input("Triple", min_value=0.0, step=0.5, key="ctsb_triple")
-    with c4:
-        new_quad = st.number_input("Quadruple", min_value=0.0, step=0.5, key="ctsb_quad")
-
-    update_travel = st.checkbox("Also update travel window", key="ctsb_update_tw")
-    new_tw_start = new_tw_end = None
-    if update_travel:
-        today = date.today()
-        dc1, dc2 = st.columns(2)
-        with dc1:
-            new_tw_start = st.date_input("Travel window start", value=today, key="ctsb_tw_start")
-        with dc2:
-            new_tw_end = st.date_input("Travel window end",
-                                       value=date(today.year + 1, today.month, today.day),
-                                       key="ctsb_tw_end")
-
-    affected = {}
-    for r in selected:
-        affected.setdefault(r["tour_code"], []).append(r["supp_idx"])
-
-    return ("update", affected, new_single, new_double, new_triple, new_quad,
-            new_tw_start, new_tw_end, len(selected))
+def _supp_label(s, idx):
+    trans = s.get("translations") or {}
+    parts = [f"{lang}:{t.get('name')}" for lang, t in trans.items()
+             if isinstance(t, dict) and t.get("name")]
+    return " / ".join(parts) if parts else f"Supplement #{idx + 1}"
 
 
 def _render_create_mode(tours):
     """UI for creating a new supplement on closed tours."""
-    st.success(f"Loaded **{len(tours)}** closed tours.")
-
     st.subheader("New supplement details")
 
     name_en = st.text_input("Supplement name (EN)", key="ctsb_c_name_en",
                             help="e.g. Christmas Supplement, Peak Season Surcharge")
+    if not name_en:
+        st.warning("Enter a supplement name.")
+        return None
 
     mandatory = st.checkbox("Mandatory", value=True, key="ctsb_c_mandatory")
     free = st.checkbox("Free (no charge)", value=False, key="ctsb_c_free")
@@ -170,12 +91,15 @@ def _render_create_mode(tours):
     with c4:
         quad_p = st.number_input("Quadruple price", min_value=0.0, step=0.5, key="ctsb_c_quad")
 
+    # House rule (CLAUDE.md): a quad booking is two double rooms, so an unstated quadruple
+    # price follows the double rather than being left at zero.
     if quad_p == 0 and double_p > 0:
         quad_p = double_p
-        st.caption(f"Quadruple defaults to double price: {quad_p}")
+        st.caption(f"Quadruple not set — defaulting to the double price: {quad_p}")
 
     if single_p and double_p and single_p < double_p:
-        st.warning("Single price should be >= double price (fewer people sharing = higher cost).")
+        st.warning("Single price should be >= double price "
+                   "(fewer people sharing = higher per-person cost).")
 
     st.markdown("**Travel window**")
     today = date.today()
@@ -187,28 +111,25 @@ def _render_create_mode(tours):
                                value=date(today.year + 1, today.month, today.day),
                                key="ctsb_c_tw_end")
 
-    # Modality code scoping
     all_modality_codes = set()
     for t in tours:
         for mc in t.get("modalityCodes") or []:
             if mc:
                 all_modality_codes.add(mc)
 
-    scope_modalities = st.checkbox("Scope to specific modality codes", key="ctsb_c_scope_mod")
     selected_mod_codes = []
-    if scope_modalities and all_modality_codes:
+    if all_modality_codes and st.checkbox("Scope to specific modality codes",
+                                          key="ctsb_c_scope_mod"):
         selected_mod_codes = st.multiselect("Modality codes", sorted(all_modality_codes),
                                             key="ctsb_c_mod_codes")
 
     st.divider()
-    tour_scope = st.radio("Add to which closed tours?",
-                          ["All closed tours", "Select specific tours"],
-                          key="ctsb_c_scope")
+    scope = st.radio("Add to which closed tours?",
+                     ["All closed tours", "Select specific tours"], key="ctsb_c_scope")
 
     selected_codes = None
-    if tour_scope == "Select specific tours":
-        options = {_tour_code(t): (t.get("name") or _tour_code(t))
-                   for t in tours}
+    if scope == "Select specific tours":
+        options = {_tour_code(t): (t.get("name") or _tour_code(t)) for t in tours}
         picks = st.multiselect("Select tours", list(options.keys()),
                                format_func=lambda c: f"{options[c]} ({c})",
                                key="ctsb_c_tour_pick")
@@ -230,10 +151,10 @@ def _render_create_mode(tours):
             "triplePrice": triple_p,
             "quadruplePrice": quad_p if quad_p else double_p,
         },
-        "travelWindows": [{"startDate": tw_start.isoformat(), "endDate": tw_end.isoformat()}],
+        "travelWindows": [{"startDate": tw_start.isoformat(),
+                           "endDate": tw_end.isoformat()}],
+        "translations": {"EN": {"name": name_en}},
     }
-    if name_en:
-        new_supp["translations"] = {"EN": {"name": name_en}}
     if selected_mod_codes:
         new_supp["modalityCodes"] = selected_mod_codes
 
@@ -247,19 +168,55 @@ def _render_create_mode(tours):
     return ("create", new_supp, selected_codes, target_count)
 
 
+def _render_delete_mode(tours):
+    """UI for deleting every supplement from every closed tour."""
+    with_supps = [t for t in tours if (t.get("supplements") or [])]
+    total_supps = sum(len(t.get("supplements") or []) for t in tours)
+
+    if not total_supps:
+        st.info("None of these closed tours have any supplements — nothing to delete.")
+        return None
+
+    st.warning(
+        f"This will **delete all {total_supps} supplement(s)** from "
+        f"**{len(with_supps)}** closed tour(s). "
+        f"The remaining {len(tours) - len(with_supps)} tour(s) have no supplements and "
+        f"will not be touched.")
+
+    with st.expander(f"Show all supplements to be deleted ({total_supps})", expanded=False):
+        for t in with_supps:
+            tname = t.get("name") or _tour_code(t)
+            for idx, s in enumerate(t.get("supplements") or []):
+                price = s.get("price") or {}
+                st.text(f"{tname}  |  {_supp_label(s, idx)}  |  "
+                        f"S:{price.get('singlePrice', 0)} D:{price.get('doublePrice', 0)} "
+                        f"T:{price.get('triplePrice', 0)} Q:{price.get('quadruplePrice', 0)}")
+
+    if not st.checkbox("Yes, I want to delete all supplements from all closed tours for "
+                       "this supplier", key="ctsb_d_confirm"):
+        return None
+
+    return ("delete", len(with_supps), total_supps)
+
+
 def render_closedtour_supplement_bulk_flow(client):
     st.header("Bulk Closed Tour supplements")
 
-    supplier_id = st.text_input("Supplier ID", key="ctsb_supplier_id")
+    supplier_id = _ur_pick_momira_supplier(client, key_prefix="ctsb")
     if not supplier_id:
-        st.info("Enter a supplier ID to start.")
         return
+
+    if st.session_state.get("ctsb_last_supplier_id") != supplier_id:
+        st.session_state.ctsb_last_supplier_id = supplier_id
+        st.session_state.ctsb_tours = None
+        st.session_state.ctsb_applied_once = False
 
     if st.button("Load closed tours", key="ctsb_load"):
         with st.spinner("Fetching closed tours…"):
             result = _load_closed_tours(client, supplier_id)
             if result:
                 st.session_state.ctsb_tours = result
+                st.session_state.ctsb_applied_once = False
         st.rerun()
 
     tours = st.session_state.get("ctsb_tours")
@@ -269,76 +226,43 @@ def render_closedtour_supplement_bulk_flow(client):
     st.info(f"**{len(tours)}** closed tours loaded.")
 
     mode = st.radio("What do you want to do?",
-                    ["Update existing supplement prices/dates", "Create a new supplement on tours"],
+                    ["Create a new supplement on tours", "Delete all supplements"],
                     key="ctsb_mode")
     st.divider()
 
-    if mode == "Update existing supplement prices/dates":
-        result = _render_update_mode(tours)
-    else:
+    if mode == "Create a new supplement on tours":
         result = _render_create_mode(tours)
+    else:
+        result = _render_delete_mode(tours)
 
     if not result:
         return
 
     st.divider()
-    if result[0] == "update":
-        _, affected, ns, nd, nt, nq, tw_s, tw_e, supp_count = result
-        label = f"Update {supp_count} supplement(s) on {len(affected)} tour(s)"
-    else:
+    if result[0] == "create":
         _, new_supp, selected_codes, target_count = result
         label = f"Add supplement to {target_count} tour(s)"
+    else:
+        _, tours_with_supps, total_supps = result
+        label = f"⚠️ Delete all {total_supps} supplement(s) from {tours_with_supps} tour(s)"
 
+    if st.session_state.get("ctsb_applied_once") and result[0] == "create":
+        st.button(label, key="ctsb_apply", type="primary", disabled=True)
+        st.caption("✅ Supplement already added — reload tours to add again or switch mode.")
+        return
     if not st.button(label, key="ctsb_apply", type="primary"):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    tour_map = {_tour_code(t): t for t in tours}
     progress = st.progress(0, text="Applying…")
     ok_count = 0
     err_count = 0
     errors = []
 
-    if result[0] == "update":
-        _, affected, ns, nd, nt, nq, tw_s, tw_e, _ = result
-        items = list(affected.items())
-        for i, (code, supp_indices) in enumerate(items):
-            t = tour_map.get(code)
-            if not t:
-                err_count += 1
-                errors.append(f"{code}: not found")
-                continue
-            payload = copy.deepcopy(t)
-            supplements = payload.get("supplements") or []
-            for idx in supp_indices:
-                if idx < len(supplements):
-                    price = supplements[idx].get("price") or {}
-                    if ns:
-                        price["singlePrice"] = ns
-                    if nd:
-                        price["doublePrice"] = nd
-                    if nt:
-                        price["triplePrice"] = nt
-                    if nq:
-                        price["quadruplePrice"] = nq
-                    supplements[idx]["price"] = price
-                    if tw_s and tw_e:
-                        supplements[idx]["travelWindows"] = [
-                            {"startDate": tw_s.isoformat(), "endDate": tw_e.isoformat()}
-                        ]
-            try:
-                client.update_closed_tour(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{code}: {e}")
-            progress.progress((i + 1) / len(items))
-    else:
-        targets = tours if selected_codes is None else [
-            t for t in tours if _tour_code(t) in selected_codes
-        ]
+    if result[0] == "create":
+        targets = [t for t in tours
+                   if selected_codes is None or _tour_code(t) in selected_codes]
         for i, t in enumerate(targets):
-            code = _tour_code(t)
             payload = copy.deepcopy(t)
             supplements = payload.get("supplements") or []
             supplements.append(copy.deepcopy(new_supp))
@@ -348,7 +272,21 @@ def render_closedtour_supplement_bulk_flow(client):
                 ok_count += 1
             except Exception as e:
                 err_count += 1
-                errors.append(f"{code}: {e}")
+                errors.append(f"{_tour_code(t)}: {e}")
+            progress.progress((i + 1) / len(targets))
+        if ok_count:
+            st.session_state.ctsb_applied_once = True
+    else:
+        targets = [t for t in tours if (t.get("supplements") or [])]
+        for i, t in enumerate(targets):
+            payload = copy.deepcopy(t)
+            payload["supplements"] = []
+            try:
+                client.update_closed_tour(supplier_id, payload)
+                ok_count += 1
+            except Exception as e:
+                err_count += 1
+                errors.append(f"{_tour_code(t)}: {e}")
             progress.progress((i + 1) / len(targets))
 
     progress.empty()
