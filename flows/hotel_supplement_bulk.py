@@ -14,10 +14,10 @@ no delete endpoint exists — the supplements array is emptied and the record wr
 MODES MATCH THE TRANSFER TOOL ON PURPOSE (product owner, 2026-11-15): "if we developed
 one thing for a specific product, to add it to all the other products as well".
 """
-import copy
 import streamlit as st
 from datetime import date
 
+import supplement_apply
 from app_helpers import _ur_pick_momira_supplier
 from list_response_utils import normalize_list_response
 
@@ -280,45 +280,28 @@ def render_hotel_supplement_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    progress = st.progress(0, text="Applying…")
-    ok_count = 0
-    err_count = 0
-    errors = []
+    # Create goes through the dedicated POST endpoint; delete empties the array and PUTs
+    # the record back, since hotel supplements have no delete endpoint. Both live in
+    # supplement_apply.PRODUCT_SPECS.
+    bar = st.progress(0, text="Applying…")
+
+    def _prog(done, total):
+        bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
 
     if result[0] == "create":
-        targets = [h for h in hotels
-                   if selected_codes is None or _hotel_code(h) in selected_codes]
-        for i, h in enumerate(targets):
-            pcode = _hotel_code(h)
-            try:
-                client.add_hotel_supplement(supplier_id, pcode, new_supp)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{pcode}: {e}")
-            progress.progress((i + 1) / len(targets))
-        if ok_count:
+        res = supplement_apply.apply_create(
+            client, supplier_id, "Hotel", hotels, new_supp,
+            selected_labels=selected_codes, progress=_prog)
+        if res["ok"]:
             st.session_state.hsb_applied_once = True
     else:
-        # No delete endpoint exists for hotel supplements, so the array is emptied and
-        # the whole record written back.
-        targets = [h for h in hotels if (h.get("supplements") or [])]
-        for i, h in enumerate(targets):
-            pcode = _hotel_code(h)
-            payload = copy.deepcopy(h)
-            payload["supplements"] = []
-            try:
-                client.update_hotel(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{pcode}: {e}")
-            progress.progress((i + 1) / len(targets))
+        res = supplement_apply.apply_delete_all(
+            client, supplier_id, "Hotel", hotels, progress=_prog)
 
-    progress.empty()
-    if ok_count:
-        st.success(f"Done — **{ok_count}** hotel(s) updated successfully.")
-    if err_count:
-        st.error(f"**{err_count}** hotel(s) failed:")
-        for err in errors:
+    bar.empty()
+    if res["ok"]:
+        st.success(f"Done — **{res['ok']}** hotel(s) updated successfully.")
+    if res["failed"]:
+        st.error(f"**{res['failed']}** hotel(s) failed:")
+        for err in res["errors"]:
             st.text(err)

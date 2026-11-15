@@ -14,10 +14,10 @@ one thing for a specific product, to add it to all the other products as well". 
 transfer tool dropped its update-existing-times mode and gained delete-all; this one
 follows, so all four supplement tools behave the same way.
 """
-import copy
 import streamlit as st
 from datetime import date
 
+import supplement_apply
 from app_helpers import _ur_pick_momira_supplier
 from list_response_utils import normalize_list_response
 
@@ -254,45 +254,25 @@ def render_closedtour_supplement_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    progress = st.progress(0, text="Applying…")
-    ok_count = 0
-    err_count = 0
-    errors = []
+    bar = st.progress(0, text="Applying…")
+
+    def _prog(done, total):
+        bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
 
     if result[0] == "create":
-        targets = [t for t in tours
-                   if selected_codes is None or _tour_code(t) in selected_codes]
-        for i, t in enumerate(targets):
-            payload = copy.deepcopy(t)
-            supplements = payload.get("supplements") or []
-            supplements.append(copy.deepcopy(new_supp))
-            payload["supplements"] = supplements
-            try:
-                client.update_closed_tour(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{_tour_code(t)}: {e}")
-            progress.progress((i + 1) / len(targets))
-        if ok_count:
+        res = supplement_apply.apply_create(
+            client, supplier_id, "ClosedTour", tours, new_supp,
+            selected_labels=selected_codes, progress=_prog)
+        if res["ok"]:
             st.session_state.ctsb_applied_once = True
     else:
-        targets = [t for t in tours if (t.get("supplements") or [])]
-        for i, t in enumerate(targets):
-            payload = copy.deepcopy(t)
-            payload["supplements"] = []
-            try:
-                client.update_closed_tour(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{_tour_code(t)}: {e}")
-            progress.progress((i + 1) / len(targets))
+        res = supplement_apply.apply_delete_all(
+            client, supplier_id, "ClosedTour", tours, progress=_prog)
 
-    progress.empty()
-    if ok_count:
-        st.success(f"Done — **{ok_count}** closed tour(s) updated successfully.")
-    if err_count:
-        st.error(f"**{err_count}** closed tour(s) failed:")
-        for err in errors:
+    bar.empty()
+    if res["ok"]:
+        st.success(f"Done — **{res['ok']}** closed tour(s) updated successfully.")
+    if res["failed"]:
+        st.error(f"**{res['failed']}** closed tour(s) failed:")
+        for err in res["errors"]:
             st.text(err)
