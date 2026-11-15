@@ -32,11 +32,11 @@ that once real contract end dates are in use a supplier can be audited against i
 date instead. A transfer whose endDate is already in the PAST is reported separately as
 expired, since that is a different problem from not matching the house date.
 """
-import re
 from datetime import date, timedelta
 
 import streamlit as st
 
+import price_validity
 import transfer_gap_finder
 from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 from list_response_utils import normalize_list_response
@@ -71,17 +71,14 @@ def audit_ticket(ticket: dict, modalities: list, today: str, soon_cutoff: str) -
     # "might be for the tickets, but this is not sure". Read it when present, never
     # require it. Unlike transfers, a ticket modality's own endDate is already a real
     # seasonal date, so the code is a second opinion rather than the only signal.
-    validity = parse_validity_code(name)
-    if validity is False:
-        issues.append("The bracketed code in the name is not a real date — "
-                      "expected a year, month and day, e.g. (20271231)")
-    elif validity:
+    validity = parse_validity_code(ticket, "Ticket")
+    if validity:
         if validity < today:
-            issues.append(f"Pricing EXPIRED on {validity} per the code in the name")
-            expired.append({"modality_code": "(from name)", "end": validity})
+            issues.append(f"Pricing EXPIRED on {validity} per the validity code")
+            expired.append({"modality_code": "(validity code)", "end": validity})
         elif validity <= soon_cutoff:
-            issues.append(f"Pricing runs out on {validity} per the code in the name")
-            expiring.append({"modality_code": "(from name)", "end": validity})
+            issues.append(f"Pricing runs out on {validity} per the validity code")
+            expiring.append({"modality_code": "(validity code)", "end": validity})
 
     if not modalities:
         issues.append("Ticket has no modalities at all — nothing is sellable")
@@ -129,39 +126,38 @@ def audit_ticket(ticket: dict, modalities: list, today: str, soon_cutoff: str) -
 
 # ── the bracketed validity code ──────────────────────────────────────────────
 
-_VALIDITY_CODE_RE = re.compile(r"\((\d{4})[-./]?(\d{2})[-./]?(\d{2})\)")
+def parse_validity_code(service: dict, product_type: str):
+    """Reads the "(YYYYMMDD)" price-validity code off a live record, returning an ISO date
+    string, or None when the record carries no code.
 
+    DELEGATES to price_validity.py rather than parsing here. That module has owned this
+    code since 2026-09-08 and knows two things a fresh parser gets wrong:
 
-def parse_validity_code(name: str):
-    """Reads the real price-validity end date out of a bracketed code in a product name,
-    e.g. "Airport → Hotel (20271231)" → "2027-12-31". Returns None when there is no code.
+      WHICH FIELD. The code lives in VOUCHER REMARKS for Ticket/Transfer and in
+      DESCRIPTION for Transport — never in the product name. Transport having no
+      voucherRemarks field at all is settled by real production evidence: a 2026-09-10
+      claim that it did was reverted on 2026-09-11 after every write to it was silently
+      dropped by Travel Compositor. Reading the name instead would find nothing on real
+      data, which is the kind of failure that looks like "no problems found".
 
-    PRODUCT-OWNER EXPLANATION (2026-11-15, verbatim): "the code that we will add in the
-    future in the brackets with the year, month, and date, which looks like a random
-    number for any person who doesn't know, will be added for the transfers and the
-    transports for sure. Also, might be for the tickets, but this is not sure. And this is
-    just because a transfer and transport are in the system until 2049."
+      WHICH MATCH. extract_price_validity_date returns the LAST plausible code, not the
+      first, because a record hand-edited outside this app can carry a stale one and the
+      most recently stated date must win. It also ignores a parenthetical 8-digit number
+      that is not a plausible date (a phone number, a booking reference), rather than
+      reporting it as a broken code.
 
-    So the record's own endDate is NOT the real answer for these types — it is deliberately
-    2049-12-31 ("in the system until 2049") and should stay that way. The date that
-    actually matters is written into the name. An audit that only read endDate would call
-    every transfer healthy right up to the day its real pricing ran out.
-
-    Not every product carries a code yet (it is being introduced, and may never apply to
-    tickets), so a missing code is NOT an error — it just means there is nothing extra to
-    check beyond the endDate rule.
+    PRODUCT-OWNER CONTEXT (2026-11-15, verbatim): "the code ... will be added for the
+    transfers and the transports for sure. Also, might be for the tickets, but this is not
+    sure. And this is just because a transfer and transport are in the system until 2049."
+    That is why the audit cannot read endDate alone for these types: endDate is
+    deliberately the house 2049 date and stays that way, while the code says when pricing
+    actually stops being valid. A missing code is never an error.
     """
-    if not name:
+    if not isinstance(service, dict):
         return None
-    m = _VALIDITY_CODE_RE.search(name)
-    if not m:
-        return None
-    year, month, day = m.groups()
-    # A malformed code is worse than no code: report it rather than guessing a date.
-    try:
-        return date(int(year), int(month), int(day)).isoformat()
-    except ValueError:
-        return False  # sentinel: a code is present but is not a real date
+    found = price_validity.extract_price_validity_date(
+        price_validity._voucher_text_of(service, product_type))
+    return found.isoformat() if found else None
 
 
 # ── shared date-range helpers ────────────────────────────────────────────────
@@ -352,22 +348,17 @@ def audit_transfer(transfer: dict, expected_end: str, today: str,
         issues.append(f"End date is {end} — expected {expected_end}")
         end_date_fix = {"current_end": end}
 
-    # The real price validity, when the name carries a code for it.
-    validity = parse_validity_code(name)
-    validity_end = None
+    # The real price validity, when the record's voucher remarks carry a code for it.
+    validity_end = parse_validity_code(transfer, "Transfer")
     expired = False
     expiring = False
-    if validity is False:
-        issues.append("The bracketed code in the name is not a real date — "
-                      "expected a year, month and day, e.g. (20271231)")
-    elif validity:
-        validity_end = validity
-        if validity < today:
-            issues.append(f"Pricing EXPIRED on {validity} per the code in the name "
+    if validity_end:
+        if validity_end < today:
+            issues.append(f"Pricing EXPIRED on {validity_end} per the validity code "
                           f"(the {end} end date is the house 2049 date, not the real one)")
             expired = True
-        elif soon_cutoff and validity <= soon_cutoff:
-            issues.append(f"Pricing runs out on {validity} per the code in the name")
+        elif soon_cutoff and validity_end <= soon_cutoff:
+            issues.append(f"Pricing runs out on {validity_end} per the validity code")
             expiring = True
 
     if missing_reverse:
