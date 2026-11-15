@@ -1,130 +1,229 @@
-// Momira TC Rollover — content script.
-// Runs on every momira.travel page.
-// On the idea page: reads #tcrollover=DD.MM.YYYY, saves date to sessionStorage,
-//   clicks "Book directly without changes", waits for the date modal OR the
-//   redirect to travel-map.xhtml, then fills the date.
-// On travel-map.xhtml: reads the saved date from sessionStorage and fills it in.
+// Momira TC Rollover -- content script v10
+// Runs in world: "MAIN" so PrimeFaces.ab() is accessible when clicking buttons.
+// Reads rollover data from localStorage (set by the Streamlit tool before opening this tab).
+// Uses real TC CSS selectors: a.button-select-idea, input.departure-date, a.dev-button-startTrip
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "tcrollover_pending_date";
-  var isIdea     = /\/idea\//.test(location.pathname);
-  var isMap      = location.pathname.indexOf("travel-map") > -1;
+  var LS_KEY = "tcRollover";
 
-  // ── On the idea page: read hash and save date ────────────────────────────────────────
-  var DATE = null;
-  if (isIdea) {
-    var m = (location.hash || "").match(/tcrollover=([0-9]{2}\.[0-9]{2}\.[0-9]{4})/);
-    if (!m) return;
-    DATE = m[1];
-    try { sessionStorage.setItem(STORAGE_KEY, DATE); } catch(e) {}
-  }
+  // ── Read rollover data from localStorage ─────────────────────────────────
+  var raw;
+  try { raw = localStorage.getItem(LS_KEY); } catch (e) { return; }
+  if (!raw) return;
 
-  // ── On travel-map: restore saved date ───────────────────────────────────────
-  if (isMap) {
-    try { DATE = sessionStorage.getItem(STORAGE_KEY); } catch(e) {}
-    if (!DATE) return;
-  }
+  var data;
+  try { data = JSON.parse(raw); } catch (e) { return; }
 
-  if (!DATE) return;
-
-  // ---- visible status overlay ---------------------------------------------
-  var box = document.createElement("div");
-  box.style.cssText =
-    "position:fixed;top:12px;right:12px;z-index:2147483647;" +
-    "background:#111;color:#fff;font:13px/1.45 system-ui,Segoe UI,sans-serif;" +
-    "padding:11px 14px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.35);" +
-    "max-width:340px;";
-  function say(html) { box.innerHTML = "🔁 <b>TC Rollover</b><br>" + html; }
-  function attach() {
-    if (document.body && !box.isConnected) document.body.appendChild(box);
-  }
-  say("Target date: <b>" + DATE + "</b><br>Starting…");
-  attach();
-
-  // Native value setter — works for PrimeFaces/React-controlled inputs
-  function setValue(el, val) {
-    try {
-      var proto = Object.getPrototypeOf(el);
-      var desc = Object.getOwnPropertyDescriptor(proto, "value") ||
-                 Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-      if (desc && desc.set) desc.set.call(el, val); else el.value = val;
-    } catch (e) { el.value = val; }
-    ["input", "change", "keyup", "blur"].forEach(function (t) {
-      el.dispatchEvent(new Event(t, { bubbles: true }));
-    });
-  }
-
-  function findDateInput(root) {
-    root = root || document;
-    return root.querySelector('input[name*="departureDateMultidestination"]') ||
-           root.querySelector('input[name*="startDate"]') ||
-           root.querySelector('input[name*="departureDate"]') ||
-           root.querySelector('input[id*="departureDate"]') ||
-           root.querySelector('input[id*="startDate"]') ||
-           root.querySelector('input[placeholder*="date" i]');
-  }
-
-  function buttonByText(needles, root) {
-    root = root || document;
-    var els = [].slice.call(
-      root.querySelectorAll('button, a, input[type="submit"], span[role="button"]')
-    );
-    return els.find(function (b) {
-      var t = (b.textContent || b.value || "").trim().toLowerCase();
-      return needles.some(function (n) { return t.indexOf(n) > -1; });
-    });
-  }
-
-  var BOOK = ["book directly without changes", "reserva directamente sin cambios",
-              "book directly", "reservar directamente"];
-  // GO: only non-generic terms — no "search" to avoid page-level search buttons
-  var GO   = ["start trip", "iniciar viaje", "empezar viaje", "empezar"];
-
-  // ── travel-map flow: date picker is on this page ─────────────────────────────────
-  if (isMap) {
-    say("On travel map. Looking for the departure date field…");
-    var mapTries = 0;
-    var mapIv = setInterval(function () {
-      attach();
-      var inp = findDateInput();
-      if (inp) {
-        clearInterval(mapIv);
-        setValue(inp, DATE);
-        say("Date set to <b>" + DATE + "</b> ✅<br>Review the trip, then confirm when ready.");
-        try { sessionStorage.removeItem(STORAGE_KEY); } catch(e) {}
-      } else if (++mapTries > 60) {
-        clearInterval(mapIv);
-        say("Couldn't find the date field on this page.<br>Please enter <b>" + DATE + "</b> manually.");
-      }
-    }, 250);
+  // Ignore stale entries (older than 2 minutes)
+  if (!data.date || !data.timestamp || Date.now() - data.timestamp > 120000) {
+    try { localStorage.removeItem(LS_KEY); } catch (e) {}
     return;
   }
 
-  // ── idea page flow ──────────────────────────────────────────────────────────────────────
-  // Correct order: set the departure date FIRST (field exists on the page before clicking),
-  // then click “Book directly without changes”. TC uses the date that's already in the field
-  // when the button is clicked — waiting for a modal after the click doesn't work because TC
-  // redirects straight to travel-map.xhtml without showing a date picker modal.
-  var tries = 0;
-  var iv0 = setInterval(function () {
-    attach();
-    var inp = document.querySelector('input[name*=”departureDateMultidestination”]');
-    var book = buttonByText(BOOK);
-    if (inp && book) {
-      clearInterval(iv0);
-      say(“Setting departure date to <b>” + DATE + “</b>…”);
-      setValue(inp, DATE);
-      // Short pause so TC can process the date change before the button click.
-      setTimeout(function () {
-        say(“Date set ✅ — clicking “Book directly without changes”…”);
-        book.click();
-        // The rest (confirming the trip) is done by the human.
-      }, 300);
-    } else if (++tries > 60) {
-      clearInterval(iv0);
-      say(“Couldn't find the date field or “Book directly without changes” on this page.<br>” +
-          “Make sure you're on the package idea page, then reload.”);
+  // Clear immediately so it doesn't re-trigger on refresh
+  try { localStorage.removeItem(LS_KEY); } catch (e) {}
+
+  var DATE = data.date; // DD.MM.YYYY
+
+  // ── Status overlay ───────────────────────────────────────────────────────
+  var box = document.createElement("div");
+  box.style.cssText =
+    "position:fixed;top:12px;right:12px;z-index:2147483647;" +
+    "background:#111;color:#fff;font:12px/1.5 system-ui,sans-serif;" +
+    "padding:14px 18px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.5);" +
+    "max-width:380px;min-width:240px;word-break:break-word;";
+
+  function say(html) {
+    box.innerHTML = "<b>TC Rollover</b><br>" + html;
+  }
+  function attach() {
+    if (document.body && !box.isConnected) document.body.appendChild(box);
+  }
+
+  function onReady(fn) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fn);
+    } else {
+      fn();
     }
-  }, 200);
+  }
+
+  // ── Set value on PrimeFaces / jQuery UI datepicker input ─────────────────
+  function setDateValue(el, dateStr) {
+    // Try jQuery UI datepicker first (TC uses it)
+    if (typeof jQuery !== "undefined" && jQuery.fn.datepicker) {
+      try {
+        var parts = dateStr.split(".");
+        var dateObj = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        jQuery(el).datepicker("setDate", dateObj);
+        jQuery(el).trigger("change");
+        return;
+      } catch (e) { /* fall through to manual */ }
+    }
+    // Manual: React-safe value setter + events
+    try {
+      var desc = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(el), "value"
+      ) || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      if (desc && desc.set) desc.set.call(el, dateStr);
+      else el.value = dateStr;
+    } catch (e) { el.value = dateStr; }
+    el.value = dateStr;
+    ["focus", "input", "change", "keyup", "blur"].forEach(function (n) {
+      el.dispatchEvent(new Event(n, { bubbles: true }));
+    });
+  }
+
+  // ── Find elements using real TC selectors + fallbacks ────────────────────
+
+  function findBookButton() {
+    // Real TC selector first
+    var btn = document.querySelector("a.button-select-idea");
+    if (btn) return btn;
+    // Fallback: PrimeFaces ID
+    btn = document.querySelector("[id*='directBook']");
+    if (btn) return btn;
+    // Fallback: text match
+    var texts = ["book directly without changes", "book directly",
+                 "reserva directamente sin cambios", "reservar directamente"];
+    var candidates = [];
+    document.querySelectorAll("a, button").forEach(function (el) {
+      var t = (el.textContent || "").trim().toLowerCase();
+      for (var i = 0; i < texts.length; i++) {
+        if (t.indexOf(texts[i]) > -1) { candidates.push(el); break; }
+      }
+    });
+    if (candidates.length > 0) {
+      candidates.sort(function (a, b) {
+        return (a.textContent || "").length - (b.textContent || "").length;
+      });
+      return candidates[0];
+    }
+    return null;
+  }
+
+  function findDateInput() {
+    // Real TC selector first
+    var inp = document.querySelector("input.departure-date");
+    if (inp) return inp;
+    // Fallbacks
+    var selectors = [
+      "input[id*='departureDateMultidestination']",
+      "input[name*='departureDateMultidestination']",
+      "input[id*='departureDate']",
+      "input[name*='departureDate']",
+      "input[id*='startDate']",
+      "input[name*='startDate']",
+      "input[placeholder*='Departure' i]",
+      "input[placeholder*='Start date' i]",
+      "input[placeholder*='date' i]",
+      "input[type='date']"
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var el = document.querySelector(selectors[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function findSearchButton() {
+    // Real TC selector first
+    var btn = document.querySelector("a.dev-button-startTrip");
+    if (btn) return btn;
+    // Fallback: PrimeFaces ID
+    btn = document.querySelector("[id*='startTrip'], [id*='searchBtn'], [id*='searchButton']");
+    if (btn && !btn.disabled) return btn;
+    // Fallback: text match
+    var texts = ["search", "start trip", "buscar", "suchen", "iniciar"];
+    var els = document.querySelectorAll("button, a, input[type='submit']");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.disabled) continue;
+      var t = (el.textContent || el.value || "").trim().toLowerCase();
+      for (var j = 0; j < texts.length; j++) {
+        if (t === texts[j] || t.indexOf(texts[j]) > -1) return el;
+      }
+    }
+    return null;
+  }
+
+  function listInputs() {
+    var inputs = document.querySelectorAll("input:not([type='hidden'])");
+    var info = [];
+    for (var i = 0; i < inputs.length && i < 10; i++) {
+      var el = inputs[i];
+      info.push((el.className || el.id || el.name || el.type || "?").substring(0, 30));
+    }
+    return inputs.length + " inputs: " + info.join(" | ");
+  }
+
+  // ── Main flow ────────────────────────────────────────────────────────────
+
+  onReady(function () {
+    attach();
+    say("Date: <b>" + DATE + "</b><br>Looking for Book button...");
+
+    // Step 1: Find and click "Book directly without changes"
+    var s1tries = 0;
+    var s1iv = setInterval(function () {
+      attach();
+      var btn = findBookButton();
+      if (btn) {
+        clearInterval(s1iv);
+        var label = (btn.textContent || "").trim().substring(0, 40);
+        say("Clicking: <b>" + label + "</b>");
+        // world: MAIN — btn.click() runs in TC's JS context, PrimeFaces works
+        btn.click();
+        // Step 2: wait for the date widget to appear
+        setTimeout(waitForDateField, 2000);
+      } else if (++s1tries > 100) {
+        clearInterval(s1iv);
+        say("Book button not found.<br>Click it manually, then enter <b>" + DATE + "</b>.");
+      }
+    }, 200);
+  });
+
+  function waitForDateField() {
+    say("Widget should be open. Looking for date field...<br><small>" + listInputs() + "</small>");
+    var s2tries = 0;
+    var s2iv = setInterval(function () {
+      attach();
+      var inp = findDateInput();
+      if (inp) {
+        clearInterval(s2iv);
+        var id = inp.className || inp.id || inp.name || "?";
+        say("Found date input: <b>" + id + "</b><br>Setting <b>" + DATE + "</b>...");
+        inp.focus();
+        inp.click();
+        setTimeout(function () {
+          setDateValue(inp, DATE);
+          say("Date set to <b>" + DATE + "</b>!<br>Clicking Search...");
+          setTimeout(clickSearch, 1000);
+        }, 500);
+      } else if (++s2tries > 60) {
+        clearInterval(s2iv);
+        say("Date field not found.<br><small>" + listInputs() + "</small><br>" +
+            "Enter <b>" + DATE + "</b> manually.");
+      }
+    }, 300);
+  }
+
+  function clickSearch() {
+    attach();
+    var tries = 0;
+    var iv = setInterval(function () {
+      attach();
+      var btn = findSearchButton();
+      if (btn) {
+        clearInterval(iv);
+        btn.click();
+        say("Search clicked! TC is loading results...");
+      } else if (++tries > 20) {
+        clearInterval(iv);
+        say("Date = <b>" + DATE + "</b>.<br>Click Search/Start Trip manually.");
+      }
+    }, 300);
+  }
+
 })();

@@ -354,64 +354,48 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     )
     chosen_str = chosen.strftime("%d.%m.%Y")
 
-    # The date rides along in the URL hash. With the "Momira TC Rollover"
-    # browser extension installed, opening this URL auto-fills the date and
-    # clicks through "Book directly without changes" → Start trip, in the
-    # operator's own logged-in browser (past Cloudflare, real session).
-    open_url = f"{package_url}#tcrollover={chosen_str}"
-
     st.write("")
-    st.link_button(
-        "🚀  Start rollover in Travel Compositor  →",
-        open_url,
-        type="primary",
-        use_container_width=True,
-    )
-    st.caption(
-        f"With the rollover extension installed, this auto-sets **{chosen_str}** and "
-        f"starts the trip. Without it, do steps 1–3 below manually."
-    )
-    st.markdown(
-        f"On the TC page:\n\n"
-        f"1. Click **“Reserva directamente sin cambios”** (Book directly without changes)\n"
-        f"2. Set the start date to **`{chosen_str}`**\n"
-        f"3. Click **Start trip** — you'll land on the trip summary to review"
+    st.markdown(f"New departure date: **`{chosen_str}`**")
+
+    # Opens TC idea page in a new tab. The Chrome extension reads rollover
+    # data from localStorage and automates: click Book, set date, click Search.
+    import streamlit.components.v1 as components
+    import json as _json
+
+    _rd = _json.dumps({"ideaId": pkg_id, "date": chosen_str, "timestamp": "PLACEHOLDER"})
+    _rd = _rd.replace('"PLACEHOLDER"', "Date.now()")
+
+    _bid = f"{key_prefix}_rollover_btn"
+    components.html(
+        '<button id="' + _bid + '" style="'
+        "background:#FF4B4B;color:white;border:none;border-radius:8px;"
+        "padding:12px 24px;font-size:16px;cursor:pointer;width:100%;"
+        'font-weight:600;"'
+        ' onmouseover="this.style.background=\'#E03E3E\'"'
+        ' onmouseout="this.style.background=\'#FF4B4B\'">'
+        "&#128640;  Start rollover in Travel Compositor"
+        "</button>"
+        "<script>"
+        'document.getElementById("' + _bid + '").addEventListener("click",function(){'
+        'localStorage.setItem("tcRollover",JSON.stringify(' + _rd + '));'
+        'window.open("' + package_url + '","_blank");'
+        "});"
+        "</script>",
+        height=55,
     )
 
-    with st.expander("🧩 One-time setup: install the rollover extension"):
+    with st.expander("Manual fallback"):
+        st.link_button(
+            "Open package in Travel Compositor",
+            package_url,
+            use_container_width=True,
+        )
         st.markdown(
-            "The extension runs the booking clicks in **your own browser**, where "
-            "you're already logged in and past Cloudflare — so the server never "
-            "needs to touch Travel Compositor.\n\n"
-            "**Install once (Chrome or Edge):**\n"
-            "1. Download the `browser-extension` folder from the repo to your computer\n"
-            "2. Open `chrome://extensions` (or `edge://extensions`)\n"
-            "3. Turn on **Developer mode** (top-right)\n"
-            "4. Click **Load unpacked** and select the `browser-extension` folder\n\n"
-            "That's it. From now on, clicking **Start rollover** above fills the date "
-            "and starts the trip automatically. It stops at the trip **summary** page "
-            "so you always review before anything is confirmed — nothing is booked on "
-            "its own."
+            f"On the TC page:\n\n"
+            f"1. Click **Book directly without changes**\n"
+            f"2. Set the start date to **`{chosen_str}`**\n"
+            f"3. Click **Start trip / Search**"
         )
-
-    with st.expander("⚙️ Experimental: try fully-automatic booking from the server"):
-        st.caption(
-            "This attempts the booking headlessly via the server. It usually fails "
-            "because Cloudflare blocks the server from loading the TC page — use the "
-            "button above if it doesn't return a trip link."
-        )
-        if st.button("🚀 Attempt auto-booking", key=f"{key_prefix}_start_now"):
-            from rollover_executor import execute_rollover
-            with st.spinner("Attempting rollover via server…"):
-                result = execute_rollover(package_url, chosen_str)
-            if result.get("success"):
-                st.success(f"✅ Rollover started! Trip ID: {result['trip_id']}")
-                st.link_button("🔗 Open trip summary", result["url"])
-            else:
-                st.error(f"❌ {result.get('error', 'Unknown error')}")
-                if result.get("detail"):
-                    with st.expander("Technical detail"):
-                        st.code(result["detail"])
 
 
 def render_package_rollover_tool():

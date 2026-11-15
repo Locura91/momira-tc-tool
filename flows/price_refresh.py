@@ -762,20 +762,120 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                     "Compositor, so there's nothing to price by hand yet. "
                                     "Re-run the price refresh and try again.")
 
+    # ── Price supplement date range check (Transport only) ─────────────
+    _EXPECTED_END = "2049-12-31"
+    if kind == price_refresh.KIND_TRANSPORT:
+        routes = st.session_state.get("pr_routes") or []
+        date_issues = []
+        for route in routes:
+            for opt in route.get("options", []):
+                raw_opt = opt.get("raw")
+                if not isinstance(raw_opt, dict):
+                    continue
+                for pi, price in enumerate(raw_opt.get("prices") or []):
+                    p_end = price.get("endDate") or ""
+                    if p_end and p_end != _EXPECTED_END:
+                        date_issues.append({
+                            "transport_id": route["id"],
+                            "transport_name": route["name"],
+                            "option_code": opt["code"],
+                            "option_name": opt.get("name", opt["code"]),
+                            "price_index": pi,
+                            "price_name": price.get("name", ""),
+                            "current_start": price.get("startDate", ""),
+                            "current_end": p_end,
+                        })
+
+        if date_issues:
+            st.markdown("---")
+            st.subheader(f"Price supplement date ranges ({len(date_issues)} issue(s))")
+            st.info(
+                f"These modality price supplements have an end date other than **{_EXPECTED_END}**. "
+                f"Select the ones to fix — they will be updated together with the price changes below."
+            )
+            new_end = st.date_input(
+                "New end date for selected supplements",
+                value=__import__("datetime").date(2049, 12, 31),
+                key="pr_date_fix_end",
+            )
+            new_end_str = new_end.strftime("%Y-%m-%d") if new_end else _EXPECTED_END
+
+            pr_date_selections = {}
+            for i, issue in enumerate(date_issues):
+                label = (
+                    f"{issue['transport_name']} — {issue['option_name']}: "
+                    f"'{issue['price_name']}' "
+                    f"({issue['current_start']} -> **{issue['current_end']}**)"
+                )
+                pr_date_selections[i] = st.checkbox(label, value=True, key=f"pr_datefix_{i}")
+
+            chosen_date_fixes = [date_issues[i] for i, sel in pr_date_selections.items() if sel]
+            st.session_state.pr_date_fixes = chosen_date_fixes
+            st.session_state.pr_date_fix_end = new_end_str
+        else:
+            st.session_state.pop("pr_date_fixes", None)
+
+    st.markdown("---")
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
-    st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
-               f"{supplier_id}. Nothing else is touched — validity dates stay as they are, even "
-               f"where they run to 2049 or 2099.")
-    if st.button(f"\U0001f680 Update {len(accepted)} {kind.lower()}(s)", type="primary",
-                 disabled=not accepted, key="pr_apply"):
-        bar = st.progress(0.0, text="Updating…")
+    date_fixes = st.session_state.get("pr_date_fixes") or []
+    date_fix_end = st.session_state.get("pr_date_fix_end", _EXPECTED_END)
+    if date_fixes:
+        st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** and fixes "
+                   f"**{len(date_fixes)} price supplement date(s)** for supplier {supplier_id}.")
+    else:
+        st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
+                   f"{supplier_id}. Nothing else is touched.")
+    has_work = accepted or date_fixes
+    btn_label = f"Update {len(accepted)} {kind.lower()}(s)" if accepted else "Apply date fixes only"
+    if date_fixes and accepted:
+        btn_label = f"Update {len(accepted)} {kind.lower()}(s) + fix {len(date_fixes)} date(s)"
+    if st.button(btn_label, type="primary", disabled=not has_work, key="pr_apply"):
+        bar = st.progress(0.0, text="Updating...")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
 
-        st.session_state.pr_result = price_refresh.apply_proposals(
-            client, supplier_id, proposals, progress=_tick2)
+        if accepted:
+            st.session_state.pr_result = price_refresh.apply_proposals(
+                client, supplier_id, proposals, progress=_tick2)
+        else:
+            st.session_state.pr_result = {"updated": [], "failed": [], "skipped": []}
+
+        if date_fixes:
+            date_fix_results = []
+            by_option = {}
+            for fix in date_fixes:
+                key = (fix["transport_id"], fix["option_code"])
+                by_option.setdefault(key, []).append(fix)
+            for (t_id, opt_code), _ in by_option.items():
+                try:
+                    opt = client.get_transport_option(supplier_id, t_id, opt_code)
+                except Exception as e:
+                    date_fix_results.append({"option_code": opt_code, "ok": False, "detail": str(e)})
+                    continue
+                changed = False
+                for price in (opt.get("prices") or []):
+                    p_end = price.get("endDate") or ""
+                    if p_end and p_end != date_fix_end:
+                        price["endDate"] = date_fix_end
+                        changed = True
+                if not changed:
+                    date_fix_results.append({"option_code": opt_code, "ok": True, "detail": "already correct"})
+                    continue
+                try:
+                    resp = client.update_transport_option(supplier_id, t_id, opt)
+                except Exception as e:
+                    date_fix_results.append({"option_code": opt_code, "ok": False, "detail": str(e)})
+                    continue
+                if isinstance(resp, dict) and "error" in resp:
+                    date_fix_results.append({"option_code": opt_code, "ok": False,
+                                             "detail": str(resp.get("message") or resp.get("error"))})
+                else:
+                    date_fix_results.append({"option_code": opt_code, "ok": True,
+                                             "detail": f"endDate -> {date_fix_end}"})
+            st.session_state.pr_date_fix_results = date_fix_results
+
         bar.empty()
         st.rerun()
 
@@ -814,8 +914,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 if f.get("debug"):
                     with st.expander(f"\U0001f50d Raw request/response for {f.get('name')} (debug)"):
                         st.json(f["debug"])
+
+        date_fix_results = st.session_state.get("pr_date_fix_results")
+        if date_fix_results:
+            st.markdown("---")
+            st.subheader("Date fix results")
+            ok_fixes = [r for r in date_fix_results if r["ok"]]
+            failed_fixes = [r for r in date_fix_results if not r["ok"]]
+            if ok_fixes:
+                st.success(f"{len(ok_fixes)} price supplement date(s) fixed.")
+                for r in ok_fixes:
+                    st.write(f"- Option `{r['option_code']}`: {r['detail']}")
+            if failed_fixes:
+                st.error(f"{len(failed_fixes)} date fix(es) failed:")
+                for r in failed_fixes:
+                    st.write(f"- Option `{r['option_code']}`: {r['detail']}")
+
         if st.button("\U0001f195 Start again", key="pr_new"):
-            for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result"):
+            for key in ("pr_proposals", "pr_routes", "pr_raw_text", "pr_result",
+                         "pr_date_fixes", "pr_date_fix_end", "pr_date_fix_results"):
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -908,10 +1025,23 @@ def render_ticket_price_refresh_flow(client):
                         st.error(f"Couldn't read the document: {friendly_error_message(e)}")
                         findings = None
                 if findings is not None:
+                    # Check for itinerary changes (description/includes/excludes)
+                    with st.spinner("Checking for itinerary changes…"):
+                        try:
+                            itinerary_findings = price_refresh.lookup_ticket_itinerary(routes, raw_text)
+                        except Exception:
+                            itinerary_findings = {}
+                    itinerary_diffs = {}
+                    for ri, itin in itinerary_findings.items():
+                        if ri < len(routes):
+                            diff = price_refresh.compare_ticket_itinerary(routes[ri], itin)
+                            if diff.get("has_changes"):
+                                itinerary_diffs[ri] = {**diff, "doc": itin}
                     st.session_state.tpr_routes = routes
                     st.session_state.tpr_proposals = _stamp_proposal_widget_tokens(
                         price_refresh.build_ticket_proposals(routes, findings))
                     st.session_state.tpr_raw_text = raw_text
+                    st.session_state.tpr_itinerary_diffs = itinerary_diffs
                     st.session_state.pop("tpr_result", None)
                     # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): see the matching fix
                     # in render_price_refresh_flow (Transfer/Transport) - this st.rerun() used to
@@ -1146,11 +1276,70 @@ def render_ticket_price_refresh_flow(client):
                             st.error("This Modality has no occupancy bracket to price by hand. "
                                     "Re-run the price refresh and try again.")
 
+    # ── Itinerary change detection ────────────────────────────────────
+    itinerary_diffs = st.session_state.get("tpr_itinerary_diffs") or {}
+    if itinerary_diffs:
+        st.subheader(f"2b — Itinerary changes detected ({len(itinerary_diffs)})")
+        st.info("The document contains description/includes/excludes text that differs from "
+                "what is currently live in Travel Compositor. Review and confirm which changes "
+                "to apply alongside the new modality.")
+        _itin_accepted = st.session_state.setdefault("tpr_itinerary_accepted", {})
+        for ri, diff_data in itinerary_diffs.items():
+            route = proposals[ri]["route"] if ri < len(proposals) else {}
+            ticket_label = route.get("name") or f"Ticket index {ri}"
+            ticket_code = route.get("ticket_code") or ""
+            with st.expander(f"📝 {ticket_label}", expanded=True):
+                changes = diff_data.get("changes") or {}
+                if "description" in changes:
+                    st.markdown("**Description changed:**")
+                    _old_desc = price_refresh._strip_html(changes["description"]["old"])
+                    _new_desc = price_refresh._strip_html(changes["description"]["new"])
+                    col_old, col_new = st.columns(2)
+                    with col_old:
+                        st.caption("Current (TC)")
+                        st.text_area("", value=_old_desc, height=150,
+                                    disabled=True, key=f"tpr_itin_old_desc_{ri}")
+                    with col_new:
+                        st.caption("New (document)")
+                        st.text_area("", value=_new_desc, height=150,
+                                    disabled=True, key=f"tpr_itin_new_desc_{ri}")
+
+                if "includes" in changes:
+                    st.markdown("**Includes changed:**")
+                    _old_inc = changes["includes"]["old"]
+                    _new_inc = changes["includes"]["new"]
+                    added = [x for x in _new_inc if x not in _old_inc]
+                    removed = [x for x in _old_inc if x not in _new_inc]
+                    if added:
+                        st.markdown("  ".join(f":green[+ {a}]" for a in added))
+                    if removed:
+                        st.markdown("  ".join(f":red[- {r}]" for r in removed))
+
+                if "excludes" in changes:
+                    st.markdown("**Excludes changed:**")
+                    _old_exc = changes["excludes"]["old"]
+                    _new_exc = changes["excludes"]["new"]
+                    added = [x for x in _new_exc if x not in _old_exc]
+                    removed = [x for x in _old_exc if x not in _new_exc]
+                    if added:
+                        st.markdown("  ".join(f":green[+ {a}]" for a in added))
+                    if removed:
+                        st.markdown("  ".join(f":red[- {r}]" for r in removed))
+
+                _itin_accepted[ri] = st.checkbox(
+                    "Apply these itinerary changes", value=_itin_accepted.get(ri, True),
+                    key=f"tpr_itin_accept_{ri}")
+    elif itinerary_diffs is not None:
+        st.caption("✅ No itinerary changes detected — description, includes & excludes match the document.")
+
     st.subheader("3 — Apply")
     accepted = [p for p in proposals if p.get("accepted") and p.get("changes")]
+    _itin_to_apply = {ri: d for ri, d in itinerary_diffs.items()
+                      if st.session_state.get("tpr_itinerary_accepted", {}).get(ri)}
     _date_note = (f" · date range **{tpr_new_start.strftime('%d.%m.%Y')}** – **{tpr_new_end.strftime('%d.%m.%Y')}**"
                   if tpr_update_dates else "")
-    st.warning(f"This will **create {len(accepted)} NEW Modality(ies)**{_date_note} with updated prices "
+    _itin_note = f" · **{len(_itin_to_apply)} itinerary update(s)**" if _itin_to_apply else ""
+    st.warning(f"This will **create {len(accepted)} NEW Modality(ies)**{_date_note}{_itin_note} with updated prices "
                f"for supplier {supplier_id}. Existing modalities stay untouched.")
     if st.button(f"\U0001f680 Create {len(accepted)} new Modality(ies)", type="primary",
                  disabled=not accepted, key="tpr_apply"):
@@ -1163,7 +1352,8 @@ def render_ticket_price_refresh_flow(client):
         _new_start_iso = tpr_new_start.isoformat() if tpr_update_dates else None
         st.session_state.tpr_result = price_refresh.apply_ticket_proposals(
             client, supplier_id, proposals, progress=_tick2,
-            new_end_date=_new_end_iso, new_start_date=_new_start_iso)
+            new_end_date=_new_end_iso, new_start_date=_new_start_iso,
+            itinerary_changes=_itin_to_apply or None)
         bar.empty()
         st.rerun()
 
@@ -1179,7 +1369,20 @@ def render_ticket_price_refresh_flow(client):
             st.error(f"❌ {len(result['failed'])} failed:")
             for f in result["failed"]:
                 st.write(f"- **{f.get('name')}**: {f.get('detail')}")
+        itin_results = result.get("itinerary_results") or []
+        if itin_results:
+            ok_itin = [r for r in itin_results if r["ok"]]
+            fail_itin = [r for r in itin_results if not r["ok"]]
+            if ok_itin:
+                st.success(f"📝 {len(ok_itin)} ticket itinerary(ies) updated.")
+                for r in ok_itin:
+                    st.write(f"- Ticket `{r['ticket_code']}`: {r['detail']}")
+            if fail_itin:
+                st.error(f"📝 {len(fail_itin)} itinerary update(s) failed:")
+                for r in fail_itin:
+                    st.write(f"- Ticket `{r['ticket_code']}`: {r['detail']}")
         if st.button("\U0001f195 Start again", key="tpr_new"):
-            for key in ("tpr_proposals", "tpr_routes", "tpr_raw_text", "tpr_result"):
+            for key in ("tpr_proposals", "tpr_routes", "tpr_raw_text", "tpr_result",
+                         "tpr_itinerary_diffs", "tpr_itinerary_accepted"):
                 st.session_state.pop(key, None)
             st.rerun()

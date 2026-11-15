@@ -512,6 +512,13 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         if current["step"] == "main":
             st.caption("**Step 1 of 2: Main ticket info.** Pricing/Modality comes next, as its own step.")
 
+            if st.button("🔄 Re-extract main info (AI mixed up excursions?)", key=f"mt_reextract_{idx}"):
+                current["data"] = None
+                for _k in list(st.session_state.keys()):
+                    if _k.startswith(f"mt_pexels_{idx}_") or _k.startswith(f"mt_pixabay_{idx}_"):
+                        del st.session_state[_k]
+                st.rerun()
+
             editable_field("Ticket name", data, "ticket_name", widget="text_input", key_suffix=f"_{idx}")
             editable_field("Description", data, "description", widget="html_text_area", height=120, key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER RULE: the AI now retries once if either field comes back

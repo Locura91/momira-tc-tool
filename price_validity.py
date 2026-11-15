@@ -52,6 +52,7 @@ from typing import Any, Dict, List, Optional
 
 import platform_store
 import outreach_email
+from list_response_utils import normalize_list_response
 
 _NAMESPACE = "price_validity_review"
 _STATE_KEY = "state"
@@ -221,17 +222,27 @@ def _list_services(client, supplier_id: str, product_type: str) -> List[Dict[str
     error, an empty account) contributes nothing rather than aborting the whole scan; see
     scan_expiring_services' own per-supplier try/except for the same philosophy at the next level
     up."""
+    # CONFIRMED BUG FIX (2026-11-15, weekly duplicate/error audit): these three used to name
+    # one wrapper key each - "tickets", "transfers", "transports". Travel Compositor returns
+    # the Transfer and Transport lists under the SINGULAR key ("transfer", "transport"), so
+    # both .get() calls returned None, became [], and this scan silently reported zero
+    # expiring Transfers and Transports - the two product types the product owner confirmed
+    # carry the code "for sure" (2026-11-15). Only Ticket happened to match, so the feature
+    # looked like it worked. Identical silent-empty bug to the one fixed in
+    # flows/bulk_stop_sales.py the same day; normalize_list_response accepts either spelling
+    # or a bare list, so neither account/version shape can go quietly empty again.
     try:
         if product_type == "Ticket":
             resp = client.get_tickets(supplier_id, first=0, limit=200)
-            items = resp.get("tickets") if isinstance(resp, dict) else resp
+            keys = ("ticket", "tickets")
         elif product_type == "Transfer":
             resp = client.get_transfers(supplier_id)
-            items = resp.get("transfers") if isinstance(resp, dict) else resp
+            keys = ("transfer", "transfers")
         else:  # Transport
             resp = client.get_transports(supplier_id)
-            items = resp.get("transports") if isinstance(resp, dict) else resp
-        return items if isinstance(items, list) else []
+            keys = ("transport", "transports")
+        return normalize_list_response(
+            resp, keys + ("items", "data", "results", "content"))
     except Exception:
         return []
 
