@@ -9,11 +9,11 @@ Bulk transfer supplement tool — two modes:
 Both use PUT /transfer/{supplierId} which sends the full transfer including
 its supplements array.
 """
-import copy
 import re
 import streamlit as st
 from datetime import date
 
+import supplement_apply
 from app_helpers import _ur_pick_momira_supplier
 
 _TIME_PAT = re.compile(r"^\d{2}:\d{2}$")
@@ -220,50 +220,28 @@ def render_transfer_surcharge_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    transfer_map = {t.get("id"): t for t in transfers}
-    progress = st.progress(0, text="Applying…")
-    ok_count = 0
-    err_count = 0
-    errors = []
+    # Shared with the Ticket/ClosedTour/Hotel tools via supplement_apply, so the
+    # destructive path is covered by tests rather than only reachable through this screen.
+    bar = st.progress(0, text="Applying…")
+
+    def _prog(done, total):
+        bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
 
     if result[0] == "create":
-        targets = [t for t in transfers
-                   if selected_tids is None or t.get("id") in selected_tids]
-        for i, t in enumerate(targets):
-            tid = t.get("id", "")
-            payload = copy.deepcopy(t)
-            supplements = payload.get("supplements") or []
-            supplements.append(copy.deepcopy(new_supp))
-            payload["supplements"] = supplements
-            try:
-                client.update_transfer(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{tid}: {e}")
-            progress.progress((i + 1) / len(targets))
-        if ok_count:
+        res = supplement_apply.apply_create(
+            client, supplier_id, "Transfer", transfers, new_supp,
+            selected_labels=selected_tids, progress=_prog)
+        if res["ok"]:
             st.session_state.tsb_applied_once = True
+    else:
+        res = supplement_apply.apply_delete_all(
+            client, supplier_id, "Transfer", transfers, progress=_prog)
 
-    else:  # delete
-        targets = [t for t in transfers if t.get("supplements")]
-        for i, t in enumerate(targets):
-            tid = t.get("id", "")
-            payload = copy.deepcopy(t)
-            payload["supplements"] = []
-            try:
-                client.update_transfer(supplier_id, payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{tid}: {e}")
-            progress.progress((i + 1) / len(targets))
+    bar.empty()
 
-    progress.empty()
-
-    if ok_count:
-        st.success(f"Done — **{ok_count}** transfer(s) updated successfully.")
-    if err_count:
-        st.error(f"**{err_count}** transfer(s) failed:")
-        for err in errors:
+    if res["ok"]:
+        st.success(f"Done — **{res['ok']}** transfer(s) updated successfully.")
+    if res["failed"]:
+        st.error(f"**{res['failed']}** transfer(s) failed:")
+        for err in res["errors"]:
             st.text(err)

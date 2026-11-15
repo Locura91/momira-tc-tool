@@ -15,10 +15,10 @@ transfer tool dropped its update-existing-times mode and gained delete-all; this
 follows, so all four supplement tools behave the same way rather than each having its own
 idea of what the modes are.
 """
-import copy
 import streamlit as st
 from datetime import date
 
+import supplement_apply
 from app_helpers import _ur_pick_momira_supplier
 from list_response_utils import normalize_list_response
 
@@ -233,46 +233,25 @@ def render_ticket_supplement_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    progress = st.progress(0, text="Applying…")
-    ok_count = 0
-    err_count = 0
-    errors = []
+    bar = st.progress(0, text="Applying…")
+
+    def _prog(done, total):
+        bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
 
     if result[0] == "create":
-        targets = [m for m in modalities
-                   if selected_keys is None
-                   or f"{m['ticket_code']}/{m['option_code']}" in selected_keys]
-        for i, m in enumerate(targets):
-            payload = copy.deepcopy(m["raw"])
-            supplements = payload.get("supplements") or []
-            supplements.append(copy.deepcopy(new_supp))
-            payload["supplements"] = supplements
-            try:
-                client.update_ticket_option(supplier_id, m["ticket_code"], payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{m['ticket_code']}/{m['option_code']}: {e}")
-            progress.progress((i + 1) / len(targets))
-        if ok_count:
+        res = supplement_apply.apply_create(
+            client, supplier_id, "Ticket", modalities, new_supp,
+            selected_labels=selected_keys, progress=_prog)
+        if res["ok"]:
             st.session_state.tksb_applied_once = True
     else:
-        targets = [m for m in modalities if (m["raw"].get("supplements") or [])]
-        for i, m in enumerate(targets):
-            payload = copy.deepcopy(m["raw"])
-            payload["supplements"] = []
-            try:
-                client.update_ticket_option(supplier_id, m["ticket_code"], payload)
-                ok_count += 1
-            except Exception as e:
-                err_count += 1
-                errors.append(f"{m['ticket_code']}/{m['option_code']}: {e}")
-            progress.progress((i + 1) / len(targets))
+        res = supplement_apply.apply_delete_all(
+            client, supplier_id, "Ticket", modalities, progress=_prog)
 
-    progress.empty()
-    if ok_count:
-        st.success(f"Done — **{ok_count}** modality/ies updated successfully.")
-    if err_count:
-        st.error(f"**{err_count}** modality/ies failed:")
-        for err in errors:
+    bar.empty()
+    if res["ok"]:
+        st.success(f"Done — **{res['ok']}** modality/ies updated successfully.")
+    if res["failed"]:
+        st.error(f"**{res['failed']}** modality/ies failed:")
+        for err in res["errors"]:
             st.text(err)

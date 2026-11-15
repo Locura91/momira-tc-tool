@@ -71,8 +71,14 @@ _MAX_PLAUSIBLE_YEAR = 2100
 
 _CODE_RE = re.compile(r"\((\d{8})\)")
 
-# Product types this feature applies to (confirmed scope, 2026-09-08) - not ClosedTour or Hotel.
-PRODUCT_TYPES = ("Ticket", "Transfer", "Transport")
+# Product types this feature applies to. Originally Ticket/Transfer/Transport (confirmed
+# scope, 2026-09-08). EXTENDED 2026-11-15 to ClosedTour and Hotel under the product owner's
+# standing rule: "if we developed one thing for a specific product, to add it to all the
+# other products as well for the long run." The original exclusion was a scope decision,
+# not an API limit - ClosedTourDatasheetVO, ContractHotelCompletedVO and
+# ContractHotelDetailedVO all carry voucherRemarks, so the code has somewhere to live on
+# both, and _voucher_text_of's existing voucherRemarks branch already reads it.
+PRODUCT_TYPES = ("Ticket", "Transfer", "Transport", "ClosedTour", "Hotel")
 
 
 def _parse_iso(value: Any) -> Optional[date]:
@@ -189,32 +195,41 @@ def _voucher_text_of(service: Dict[str, Any], product_type: str) -> str:
     field."""
     if not isinstance(service, dict):
         return ""
-    if product_type == "Transport":
-        datasheet = service.get("datasheet")
-        if isinstance(datasheet, dict):
-            en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
-            if isinstance(en, dict) and en.get("description"):
-                return en["description"]
-        return service.get("description") or ""
-    datasheet = service.get("datasheet")
-    if isinstance(datasheet, dict):
-        en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
-        if isinstance(en, dict):
-            text = en.get("voucherRemarks")
-            if text:
-                return text
-    return service.get("voucherRemarks") or ""
+    field = "description" if product_type == "Transport" else "voucherRemarks"
+    en = _datasheet_en(service)
+    if en.get(field):
+        return en[field]
+    return service.get(field) or ""
+
+
+def _datasheet_en(service: Dict[str, Any]) -> Dict[str, Any]:
+    """The English datasheet, under whichever key this record uses.
+
+    Ticket and Transfer list items were confirmed live as singular 'datasheet', but the
+    API reference spells it 'datasheets' on ContractTicketVO and ContractClosedTourVO, and
+    which one a given endpoint returns has not been confirmed for every type. Both are
+    accepted rather than guessed at: picking wrong here is silent, since a missing key
+    just reads as "this record has no code" and the scan reports nothing for it.
+    """
+    for key in ("datasheet", "datasheets"):
+        sheet = service.get(key)
+        if isinstance(sheet, dict):
+            en = sheet.get("EN") or sheet.get("en") or next(iter(sheet.values()), {}) or {}
+            if isinstance(en, dict) and en:
+                return en
+    return {}
 
 
 def _service_label(service: Dict[str, Any]) -> str:
     if not isinstance(service, dict):
         return "(unknown)"
-    datasheet = service.get("datasheet")
-    if isinstance(datasheet, dict):
-        en = datasheet.get("EN") or next(iter(datasheet.values()), {}) or {}
-        if isinstance(en, dict) and en.get("name"):
-            return en["name"]
-    return service.get("name") or service.get("code") or "(unnamed)"
+    en = _datasheet_en(service)
+    if en.get("name"):
+        return en["name"]
+    # providerCode covers Hotel, which has no plain `code`; without it every hotel in the
+    # weekly alert would read "(unnamed)".
+    return (service.get("name") or service.get("code")
+            or service.get("providerCode") or "(unnamed)")
 
 
 def _list_services(client, supplier_id: str, product_type: str) -> List[Dict[str, Any]]:
@@ -238,6 +253,12 @@ def _list_services(client, supplier_id: str, product_type: str) -> List[Dict[str
         elif product_type == "Transfer":
             resp = client.get_transfers(supplier_id)
             keys = ("transfer", "transfers")
+        elif product_type == "ClosedTour":
+            resp = client.get_closed_tours(supplier_id, first=0, limit=200)
+            keys = ("closedTour", "closedTours")
+        elif product_type == "Hotel":
+            resp = client.get_hotels(supplier_id)
+            keys = ("hotel", "hotels")
         else:  # Transport
             resp = client.get_transports(supplier_id)
             keys = ("transport", "transports")
@@ -277,7 +298,9 @@ def scan_expiring_services(client, suppliers: List[Dict[str, Any]],
                     if days_remaining <= warn_ahead_days:
                         flagged.append({
                             "supplier_id": supplier_id, "supplier_name": supplier_name,
-                            "product_type": product_type, "code": service.get("code") or service.get("id"),
+                            "product_type": product_type,
+                            "code": (service.get("code") or service.get("id")
+                                     or service.get("providerCode")),
                             "label": _service_label(service), "valid_until": valid_until,
                             "days_remaining": days_remaining,
                         })
