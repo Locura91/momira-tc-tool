@@ -581,16 +581,18 @@ DEFAULT_TEMPLATE = {
     "subject": "Partnership Opportunity with Momira Travel – [Country]",
     "textBody": """Dear [SupplierName] Team,
 
-I am reaching out on behalf of Momira Travel, a specialized tour operator focused on [Country]. We would love to feature [SupplierName] in our platform and are ready to move quickly.
+We are Momira Travel, a German-based B2B tour operator with a focus on European travellers. We specialise in [Country] and are looking for reliable local partners who can provide net / B2B contract rates for [FocusKeyword].
 
-To get started, could you send us:
+The workflow is straightforward and completely free for you: you send us your net price list, we load it into our booking system, and from there we can start sending bookings directly to you. No setup costs, no obligations.
 
-- Net Price List / B2B Contract Rates for your [FocusKeyword] offerings
-- Booking Email address
-- General & Emergency Phone Numbers
-- Bank Account Details for payments
+To get started we would need:
 
-Happy to jump on a quick call to walk through everything if that is easier — just let me know.
+- Net price list / B2B contract rates
+- Booking contact (email)
+- Emergency phone number
+- Bank details for payments
+
+If it helps, I am happy to arrange a short 10–15 minute call — I can walk you through how our platform works and answer any questions. Just reply and we will find a time.
 
 Best regards,
 Christian Hitzl

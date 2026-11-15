@@ -1233,7 +1233,7 @@ CANCELLATION_BULK_CHOICE = "Bulk-update Cancellation Policy"
 # above - it acts on many already-identified live records at once, not one record a human is
 # currently reviewing. See transfer_image_bulk.py's own docstring for how this differs from
 # supplier_images.py's per-direction "applies to future builds" feature.
-TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer surcharges"
+TRANSFER_SURCHARGE_BULK_CHOICE = "Bulk Transfer supplements"
 TICKET_SUPPLEMENT_BULK_CHOICE = "Bulk Ticket supplements"
 CLOSEDTOUR_SUPPLEMENT_BULK_CHOICE = "Bulk Closed Tour supplements"
 HOTEL_SUPPLEMENT_BULK_CHOICE = "Bulk Hotel supplements"
