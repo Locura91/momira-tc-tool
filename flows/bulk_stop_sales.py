@@ -35,6 +35,13 @@ import stop_sales_tool as sst
 from ai_extractor import friendly_error_message
 from ui_components import is_active_supplier
 from flows.flow_ui_helpers import load_momira_suppliers
+from list_response_utils import normalize_list_response
+
+# Travel Compositor wraps list responses under a singular or plural key depending on
+# account/version, so every loader below sniffs the shape via normalize_list_response
+# rather than naming one key. Getting this wrong is silent: the call succeeds and the
+# product list just comes back empty.
+_WRAPPER_FALLBACKS = ("items", "data", "results", "content")
 
 _PRODUCT_TYPES = ["Transfer", "Ticket", "ClosedTour", "Hotel"]
 _TYPE_LABELS = {
@@ -62,7 +69,7 @@ def _load_transfers(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]
         return [], friendly_error_message(e)
     if isinstance(data, dict) and "error" in data:
         return [], str(data.get("message") or data.get("error"))
-    items = data.get("transfers", []) if isinstance(data, dict) else (data or [])
+    items = normalize_list_response(data, ("transfer", "transfers") + _WRAPPER_FALLBACKS)
     out = []
     for t in (items or []):
         if not isinstance(t, dict):
@@ -80,7 +87,7 @@ def _load_tickets(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]]:
         return [], friendly_error_message(e)
     if isinstance(data, dict) and "error" in data:
         return [], str(data.get("message") or data.get("error"))
-    tickets = data.get("tickets", []) if isinstance(data, dict) else (data or [])
+    tickets = normalize_list_response(data, ("ticket", "tickets") + _WRAPPER_FALLBACKS)
     out = []
     for t in (tickets or []):
         if not isinstance(t, dict):
@@ -99,14 +106,17 @@ def _load_tours(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]]:
         return [], friendly_error_message(e)
     if isinstance(data, dict) and "error" in data:
         return [], str(data.get("message") or data.get("error"))
-    tours = data.get("closedTours", []) if isinstance(data, dict) else (data or [])
+    tours = normalize_list_response(data, ("closedTour", "closedTours") + _WRAPPER_FALLBACKS)
     out = []
     for t in (tours or []):
         if not isinstance(t, dict):
             continue
-        code = t.get("providerCode") or t.get("code")
+        # ContractClosedTourVO carries both `code` (the TC contract code that
+        # /closedtours/{supplierId}/{code} is keyed on) and `providerCode` (the DMC's
+        # own reference). Only `code` resolves on the GET, so it wins here.
+        code = t.get("code") or t.get("providerCode")
         name = t.get("name") or ((t.get("datasheets") or {}).get("EN") or {}).get("name") or code
-        modalities = t.get("optionCodes") or []
+        modalities = t.get("modalityCodes") or []
         out.append({"id": code, "name": name, "modalities": modalities, "kind": "ClosedTour"})
     return sorted(out, key=lambda x: x["name"]), None
 
@@ -118,7 +128,7 @@ def _load_hotels(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]]:
         return [], friendly_error_message(e)
     if isinstance(data, dict) and "error" in data:
         return [], str(data.get("message") or data.get("error"))
-    hotels = data.get("hotels", []) if isinstance(data, dict) else (data or [])
+    hotels = normalize_list_response(data, ("hotel", "hotels") + _WRAPPER_FALLBACKS)
     out = []
     for h in (hotels or []):
         if not isinstance(h, dict):
@@ -289,6 +299,10 @@ def render_bulk_stop_sales_flow(client):
                     if err:
                         errors.append(f"{_TYPE_LABELS[pt]}: {err}")
                     all_products.extend(items)
+                # Drop checkbox state from a previous load, or boxes ticked for
+                # products that are no longer listed stay ticked behind the scenes.
+                for _k in [k for k in st.session_state if k.startswith("bss_prod_")]:
+                    del st.session_state[_k]
                 _set("bss_products", all_products)
                 _set("bss_load_key", load_key)
                 _set("bss_selected_ids", set())
@@ -306,36 +320,41 @@ def render_bulk_stop_sales_flow(client):
     # ── product selection ─────────────────────────────────────────────────────
     st.markdown(f"**Select products** ({len(all_products)} found)")
 
+    # Each product's checkbox is keyed by kind+id, so the same code appearing as
+    # both (say) a Ticket and a ClosedTour gets its own box. Select all / Clear all
+    # write straight into those widget keys: once a keyed checkbox exists in session
+    # state Streamlit ignores its `value=` argument, so setting a separate id set
+    # would leave every box visually unchanged.
+    def _wkey(p):
+        return f"bss_prod_{p['kind']}_{p['id']}"
+
     sel_cols = st.columns([1, 1])
     with sel_cols[0]:
         if st.button("✅ Select all", key="bss_sel_all"):
-            _set("bss_selected_ids", {p["id"] for p in all_products})
+            for p in all_products:
+                st.session_state[_wkey(p)] = True
             st.rerun()
     with sel_cols[1]:
         if st.button("☐ Clear all", key="bss_sel_none"):
-            _set("bss_selected_ids", set())
+            for p in all_products:
+                st.session_state[_wkey(p)] = False
             st.rerun()
-
-    selected_ids: set = _get("bss_selected_ids") or set()
 
     # Group by type for display
     by_type: Dict[str, List] = {}
     for p in all_products:
         by_type.setdefault(p["kind"], []).append(p)
 
-    new_selected = set()
+    selected_products = []
     for pt in selected_types:
         items = by_type.get(pt, [])
         if not items:
             continue
         with st.expander(f"{_TYPE_LABELS[pt]} ({len(items)})", expanded=True):
             for p in items:
-                checked = p["id"] in selected_ids
-                if st.checkbox(p["name"], value=checked, key=f"bss_prod_{p['id']}"):
-                    new_selected.add(p["id"])
-    _set("bss_selected_ids", new_selected)
-
-    selected_products = [p for p in all_products if p["id"] in new_selected]
+                if st.checkbox(p["name"], key=_wkey(p)):
+                    selected_products.append(p)
+    _set("bss_selected_ids", {p["id"] for p in selected_products})
     if not selected_products:
         st.info("Tick at least one product above.")
         st.stop()

@@ -13,6 +13,8 @@ import copy
 import streamlit as st
 from datetime import date
 
+from list_response_utils import normalize_list_response
+
 
 def _load_ticket_modalities(client, supplier_id):
     """Fetch all tickets then each modality individually for full supplement data."""
@@ -21,37 +23,36 @@ def _load_ticket_modalities(client, supplier_id):
     except Exception as e:
         st.error(f"Failed to fetch tickets: {e}")
         return None
-    tickets = resp.get("tickets") or []
+    tickets = normalize_list_response(resp, ("ticket", "tickets",
+                                             "items", "data", "results", "content"))
     if not tickets:
         st.warning("No tickets found for this supplier.")
         return None
 
+    # ContractTicketVO lists its modalities as a flat `modalityCodes` array of
+    # strings, not as nested option objects — the full modality (with its
+    # supplements) only comes back from the per-modality GET.
     modalities = []
     progress = st.progress(0, text="Loading ticket modalities…")
-    total = sum(len(t.get("options") or []) for t in tickets)
+    total = sum(len(t.get("modalityCodes") or []) for t in tickets)
     i = 0
     for t in tickets:
-        tcode = t.get("ticketCode", "")
-        tname = t.get("name") or tcode
-        for opt in t.get("options") or []:
-            ocode = opt.get("optionCode", "")
+        tcode = t.get("code") or ""
+        tname = (t.get("name")
+                 or ((t.get("datasheets") or {}).get("EN") or {}).get("name")
+                 or tcode)
+        for ocode in t.get("modalityCodes") or []:
             try:
                 full = client.get_ticket_option(supplier_id, tcode, ocode)
-                modalities.append({
-                    "ticket_code": tcode,
-                    "ticket_name": tname,
-                    "option_code": ocode,
-                    "option_name": full.get("name") or ocode,
-                    "raw": full,
-                })
             except Exception:
-                modalities.append({
-                    "ticket_code": tcode,
-                    "ticket_name": tname,
-                    "option_code": ocode,
-                    "option_name": opt.get("name") or ocode,
-                    "raw": opt,
-                })
+                full = {}
+            modalities.append({
+                "ticket_code": tcode,
+                "ticket_name": tname,
+                "option_code": ocode,
+                "option_name": full.get("name") or ocode,
+                "raw": full,
+            })
             i += 1
             progress.progress(i / max(total, 1))
     progress.empty()

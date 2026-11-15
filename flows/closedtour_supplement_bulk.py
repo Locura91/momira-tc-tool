@@ -13,6 +13,14 @@ import copy
 import streamlit as st
 from datetime import date
 
+from list_response_utils import normalize_list_response
+
+
+def _tour_code(t):
+    """ContractClosedTourVO is keyed on `code`; `providerCode` is the DMC's own
+    reference and does not resolve on GET /closedtours/{supplierId}/{code}."""
+    return t.get("code") or t.get("providerCode") or ""
+
 
 def _load_closed_tours(client, supplier_id):
     """Fetch all closed tours, re-fetching each individually for full data."""
@@ -21,7 +29,8 @@ def _load_closed_tours(client, supplier_id):
     except Exception as e:
         st.error(f"Failed to fetch closed tours: {e}")
         return None
-    tours = resp.get("closedTour") or resp.get("closedTours") or []
+    tours = normalize_list_response(resp, ("closedTour", "closedTours",
+                                           "items", "data", "results", "content"))
     if not tours:
         st.warning("No closed tours found for this supplier.")
         return None
@@ -29,7 +38,7 @@ def _load_closed_tours(client, supplier_id):
     full_tours = []
     progress = st.progress(0, text="Loading closed tour details…")
     for i, t in enumerate(tours):
-        code = t.get("closedTourCode", "")
+        code = _tour_code(t)
         try:
             full = client.get_closed_tour(supplier_id, code)
             full_tours.append(full)
@@ -44,7 +53,7 @@ def _collect_supplement_rows(tours):
     """Flatten all supplements across all closed tours."""
     rows = []
     for t in tours:
-        code = t.get("closedTourCode", "")
+        code = _tour_code(t)
         name = t.get("name") or code
         for idx, s in enumerate(t.get("supplements") or []):
             trans = s.get("translations") or {}
@@ -181,8 +190,7 @@ def _render_create_mode(tours):
     # Modality code scoping
     all_modality_codes = set()
     for t in tours:
-        for opt in t.get("options") or []:
-            mc = opt.get("modalityCode") or opt.get("optionCode") or ""
+        for mc in t.get("modalityCodes") or []:
             if mc:
                 all_modality_codes.add(mc)
 
@@ -199,7 +207,7 @@ def _render_create_mode(tours):
 
     selected_codes = None
     if tour_scope == "Select specific tours":
-        options = {t.get("closedTourCode", ""): (t.get("name") or t.get("closedTourCode", ""))
+        options = {_tour_code(t): (t.get("name") or _tour_code(t))
                    for t in tours}
         picks = st.multiselect("Select tours", list(options.keys()),
                                format_func=lambda c: f"{options[c]} ({c})",
@@ -285,7 +293,7 @@ def render_closedtour_supplement_bulk_flow(client):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    tour_map = {t.get("closedTourCode"): t for t in tours}
+    tour_map = {_tour_code(t): t for t in tours}
     progress = st.progress(0, text="Applying…")
     ok_count = 0
     err_count = 0
@@ -327,10 +335,10 @@ def render_closedtour_supplement_bulk_flow(client):
             progress.progress((i + 1) / len(items))
     else:
         targets = tours if selected_codes is None else [
-            t for t in tours if t.get("closedTourCode") in selected_codes
+            t for t in tours if _tour_code(t) in selected_codes
         ]
         for i, t in enumerate(targets):
-            code = t.get("closedTourCode", "")
+            code = _tour_code(t)
             payload = copy.deepcopy(t)
             supplements = payload.get("supplements") or []
             supplements.append(copy.deepcopy(new_supp))

@@ -10,6 +10,8 @@ PUT payload, hotel supplements have their own creation endpoint.
 import streamlit as st
 from datetime import date
 
+from list_response_utils import normalize_list_response
+
 APPLY_TYPES = [
     "LODGING", "MEAL", "LODGING_AND_MEAL",
     "PER_NIGHT", "PER_NIGHT_PERSON", "PER_STAY", "PER_STAY_PERSON",
@@ -25,7 +27,8 @@ def _load_hotels(client, supplier_id):
     except Exception as e:
         st.error(f"Failed to fetch hotels: {e}")
         return None
-    hotels = resp.get("hotel") or resp.get("hotels") or []
+    hotels = normalize_list_response(resp, ("hotel", "hotels",
+                                            "items", "data", "results", "content"))
     if not hotels:
         st.warning("No hotels found for this supplier.")
         return None
