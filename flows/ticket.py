@@ -695,9 +695,6 @@ def render_ticket_flow(client):
                     else:
                         st.caption("✅ AI check: the new document doesn't appear to describe any "
                                   "content change beyond pricing.")
-                editable_field("Prices confirmed valid until (optional - the app adds the "
-                               "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
-                               "price_valid_until_date", widget="text_input")
             else:
                 st.subheader("Extracted Data (click ✏️ to edit)")
                 editable_field("Ticket name", data, "ticket_name", widget="text_input")
@@ -718,11 +715,6 @@ def render_ticket_flow(client):
                 merge_what_to_bring_into_voucher_remarks(data)
                 editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                                "voucher_remarks", widget="text_area", height=100)
-                # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
-                # docstring and this file's other call site for the fuller comment.
-                editable_field("Prices confirmed valid until (optional - the app adds the "
-                               "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
-                               "price_valid_until_date", widget="text_input")
                 # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): Manual Notes removed here too, same
                 # reasoning as the batch flow above - every field is directly editable now.
 
@@ -1401,33 +1393,6 @@ def render_ticket_flow(client):
                                 st.info(f"💡 Adjustments require the Ticket to be ACTIVE - activate `{target_ticket_code}` inside Travel Compositor first.")
                             else:
                                 st.success(f"✅ Option `{modality_code}` under ticket `{target_ticket_code}` updated.")
-                                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-08): "we must exchange
-                                # the code with the correct date" - this is the price-only path
-                                # (see build_ticket_voucher_remarks_only_update's own docstring for
-                                # why it can't reuse the "whole ticket" payload builder). Only
-                                # calls update_ticket at all when the encoded code actually
-                                # changes - a human who left the field alone (or it was already
-                                # correctly prefilled from the live ticket) shouldn't trigger a
-                                # second API call for nothing.
-                                _tk_live_for_voucher = st.session_state.get("tk_fetched_ticket") or {}
-                                if isinstance(_tk_live_for_voucher, dict) and "error" not in _tk_live_for_voucher:
-                                    _tk_live_voucher_text = (
-                                        ((_tk_live_for_voucher.get("datasheets") or {}).get("EN")) or {}
-                                    ).get("voucherRemarks", "")
-                                    _tk_old_pv_code = price_validity.encode_price_validity_code(
-                                        price_validity.extract_price_validity_date(_tk_live_voucher_text))
-                                    _tk_new_pv_code = price_validity.encode_price_validity_code(
-                                        data.get("price_valid_until_date"))
-                                    if _tk_new_pv_code != _tk_old_pv_code:
-                                        _tk_voucher_payload = build_ticket_voucher_remarks_only_update(
-                                            _tk_live_for_voucher, data.get("price_valid_until_date"))
-                                        _tk_voucher_result = client.update_ticket(supplier_id, _tk_voucher_payload)
-                                        if "error" in _tk_voucher_result:
-                                            st.warning(f"⚠️ Pricing was updated, but the price-validity "
-                                                      f"code in Voucher Remarks couldn't be saved: "
-                                                      f"{_tk_voucher_result.get('message', _tk_voucher_result)}")
-                                        else:
-                                            st.caption("✅ Price-validity code in Voucher Remarks updated too.")
                                 st.session_state.tk_just_published_code = target_ticket_code
                                 st.session_state.tk_just_published_supplier_id = supplier_id
                                 st.session_state.tk_just_published_is_inactive = False

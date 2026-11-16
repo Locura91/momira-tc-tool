@@ -3278,16 +3278,9 @@ def build_ticket_payloads(
         # reads) and the display name below (see _ticket_name_with_entrance_fee_notice - never
         # mutates extracted_ticket_data itself, so the editable Name field never grows a second
         # suffix on a rebuild).
-        # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
-        # docstring. Applied LAST, outside entrance-fee-notice (which PREPENDS rather than
-        # appends), so the "(YYYYMMDD)" code always ends up at the very end of the voucher text,
-        # never nested inside other formatting.
-        ticket_cancellation_voucher_text = with_price_validity_code(
-            _with_entrance_fee_notice(
-                _with_manual_notes(
-                    _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
-                    extracted_ticket_data,
-                ),
+        ticket_cancellation_voucher_text = _with_entrance_fee_notice(
+            _with_manual_notes(
+                _with_what_to_bring(_ticket_voucher_base, extracted_ticket_data),
                 extracted_ticket_data,
             ),
             extracted_ticket_data,

@@ -273,18 +273,16 @@ def test_corrected_entrance_included_content_publishes_without_the_old_notice(fa
     assert "Museum entrance ticket" in main["datasheets"]["EN"]["includes"]
 
 
-def test_corrected_content_still_carries_the_new_price_validity_code(fake_api_client):
-    """The SAME publish that corrects the wording must also carry the '(YYYYMMDD)' price-
-    validity code the human set on the renewal screen - build_ticket_payloads bakes this in via
-    with_price_validity_code, so the batch-update flow needs no separate voucher-remarks-only
-    call the way the fast 'Price only' path does."""
+def test_ticket_voucher_remarks_do_not_carry_price_validity_code(fake_api_client):
+    """Updated rule (product owner, 2026-11-16): tickets do not use the (YYYYMMDD) price-
+    validity code - that feature is only for transfers and transports."""
     pre_config = TicketHumanPreConfig(
         supplier_id="48940", ticket_code="CAI-01", currency="EUR",
         modality_code="Standard", on_request=False,
     )
     result = build_ticket_payloads(pre_config, _entrance_included_corrected_data(), fake_api_client)
     voucher_text = result["main_ticket_payload"]["datasheets"]["EN"]["voucherRemarks"]
-    assert "(20271031)" in voucher_text
+    assert "(20271031)" not in voucher_text
 
 
 def test_publishing_onto_the_matched_existing_code_not_a_new_one(fake_api_client):
