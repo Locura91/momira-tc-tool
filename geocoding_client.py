@@ -113,7 +113,7 @@ def _nominatim_search(clean_query: str, limit: int):
         try:
             res = requests.get(
                 NOMINATIM_URL,
-                params={"q": clean_query, "format": "json", "limit": limit, "addressdetails": 0},
+                params={"q": clean_query, "format": "json", "limit": limit, "addressdetails": 0, "accept_language": "en"},
                 headers={"User-Agent": USER_AGENT},
                 timeout=10
             )
@@ -148,7 +148,7 @@ def _photon_search(clean_query: str, limit: int):
     try:
         res = requests.get(
             PHOTON_URL,
-            params={"q": clean_query, "limit": limit},
+            params={"q": clean_query, "limit": limit, "lang": "en"},
             headers={"User-Agent": USER_AGENT},
             timeout=10
         )
