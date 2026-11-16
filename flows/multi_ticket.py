@@ -908,6 +908,10 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                 f"✅ {len(_mt_extra_mods)} additional modalit{'y' if len(_mt_extra_mods) == 1 else 'ies'} "
                 f"detected and will be auto-created:{_mt_extra_list}"
             )
+            for _em_i, _em in enumerate(_mt_extra_mods):
+                _em_data = _em.get("data", {})
+                st.markdown(f"---\n**Modality {_em_i + 2}: {_em.get('name') or _em['code']}** (`{_em['code']}`)")
+                render_ticket_pricing_editor(_em_data, f"mt_{idx}_em{_em_i}", currency, max_passengers)
 
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
         mt_clarify_q = st.text_input("Your message", key=f"mt_clarify_input_{idx}")
