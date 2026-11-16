@@ -789,21 +789,42 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                     st.session_state.pop(f"mt_end_date_{idx}", None)
                     st.session_state.pop(f"mt_{idx}_price_type", None)
                     st.session_state.pop(f"mt_{idx}_service_price", None)
-                # CONFIRMED PRODUCT-OWNER REQUEST: when creating a new Ticket, only ever create
-                # ONE Modality. If the document describes other pricing categories for this same
-                # excursion (e.g. a second price table for another guide language), do NOT
-                # auto-extract or auto-queue them for creation here - just detect and INFORM the
-                # human. Other Modalities get added separately afterward, via "2: Add new Modality
-                # to existing Ticket" (reachable through Update/Refresh existing Service once this
-                # Ticket is published).
+                # UPDATED (2026-11-16): extraction now outputs additional_modalities directly
+                # (up to 2 extra, max 3 total). Auto-populate extra_modalities from the
+                # extraction result so they get created alongside the base modality during
+                # publish, instead of requiring manual "Add new Modality" afterward.
                 if not current.get("modalities_auto_detected"):
-                    try:
-                        detected_mods = detect_ticket_modalities(_extraction_text, variant_hint=variant_hint)
-                    except Exception:
-                        detected_mods = []  # best-effort - informational only
-                    current["other_modalities_detected"] = [
-                        (m.get("label") or "").strip() for m in detected_mods if (m.get("label") or "").strip()
-                    ]
+                    _extra_mods_raw = data.pop("additional_modalities", []) or []
+                    _extra_mods = []
+                    for em in _extra_mods_raw[:2]:
+                        if not isinstance(em, dict) or not em.get("code"):
+                            continue
+                        _extra_mods.append({
+                            "code": _clean_modality_code(str(em.get("code", "")).strip()) or "Extra",
+                            "name": str(em.get("name", "")).strip() or None,
+                            "data": {
+                                "price_type": em.get("price_type", "DISTRIBUTION"),
+                                "base_adult_price": em.get("base_adult_price", 0),
+                                "base_children_price": em.get("base_children_price", 0),
+                                "base_infant_price": em.get("base_infant_price", 0),
+                                "base_service_price": 0,
+                                "occupancy_prices": em.get("occupancy_prices", []),
+                                "child_age_min": em.get("child_age_min", data.get("child_age_min", 2)),
+                                "child_age_max": em.get("child_age_max", data.get("child_age_max", 12)),
+                                "disallow_children": data.get("disallow_children", False),
+                                "disallow_infant": data.get("disallow_infant", False),
+                                "disallow_adult": data.get("disallow_adult", False),
+                                "operational_days": data.get("operational_days", []),
+                                "time_tables": data.get("time_tables", []),
+                                "start_date": data.get("start_date", ""),
+                                "end_date": data.get("end_date", ""),
+                                "stop_sales": data.get("stop_sales", []),
+                                "modality_supplements": data.get("modality_supplements", []),
+                                "languages": ["DE"] if "german" in str(em.get("name", "")).lower() else data.get("languages", ["EN"]),
+                            },
+                        })
+                    current["extra_modalities"] = _extra_mods
+                    current["other_modalities_detected"] = [em["name"] or em["code"] for em in _extra_mods]
                     current["modalities_auto_detected"] = True
                 current["step"] = "modality"
                 st.rerun()
@@ -887,15 +908,12 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
         # via "2: Add new Modality to existing Ticket" (Update/Refresh existing Service -> Ticket).
         if "extra_modalities" not in current:
             current["extra_modalities"] = []
-        _mt_other_mods = current.get("other_modalities_detected") or []
-        if _mt_other_mods:
-            _mt_other_list = "".join(f"\n- {label}" for label in _mt_other_mods)
-            st.info(
-                f"ℹ️ This document also seems to describe other Modalit{'y' if len(_mt_other_mods) == 1 else 'ies'} "
-                f"for {current['label'] or current['ticket_code']}:{_mt_other_list}\n\n"
-                f"This Ticket will be created with just its one Modality above. Add the other one(s) "
-                f"afterward via **Price update to existing Products -> Ticket -> \"2: Add new Modality to "
-                f"existing Ticket\"**."
+        _mt_extra_mods = current.get("extra_modalities") or []
+        if _mt_extra_mods:
+            _mt_extra_list = "".join(f"\n- **{em['code']}** ({em.get('name') or em['code']})" for em in _mt_extra_mods)
+            st.success(
+                f"✅ {len(_mt_extra_mods)} additional modalit{'y' if len(_mt_extra_mods) == 1 else 'ies'} "
+                f"detected and will be auto-created:{_mt_extra_list}"
             )
 
         st.markdown(f"**🤖 Tell AI what to fix - {current['label'] or current['ticket_code']}**")
@@ -1125,7 +1143,8 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
                                 try:
                                     mod_pre_config = TicketHumanPreConfig(
                                         supplier_id=supplier_id, ticket_code=q["ticket_code"], currency=currency,
-                                        modality_code=mod["code"], on_request=on_request,
+                                        modality_code=mod["code"], modality_name=mod.get("name"),
+                                        on_request=on_request,
                                         days_available_before_release=release_days, min_passengers=min_passengers, max_passengers=max_passengers
                                     )
                                     mod_payloads = build_ticket_payloads(mod_pre_config, mod["data"], client)
