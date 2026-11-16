@@ -3793,10 +3793,15 @@ Extract:
   DIFFERENT prices per headcount (larger groups = cheaper per person). If columns "1 Pax" = 3500,
   "2 Pax" = 2100, "3-6 Pax" = 1800, you must output occupancy 1 = 3500, occupancy 2 = 2100,
   occupancy 3-6 = 1800 each. Reading ALL columns as the same price is almost certainly a misread.
-  CHILD PRICES: if the table has separate adult and child rows (e.g. "Adult" row and "Child" row with
-  prices per pax column), include child_amount in each entry: {"occupancy": N, "amount": adult_price,
-  "child_amount": child_price}. IMPORTANT: if the child price for a given occupancy exceeds the adult
-  price, cap child_amount at the adult amount — a child can never cost more than an adult.
+  CHILD PRICES: include child_amount in each occupancy_prices entry whenever the document states a child
+  price. Two common patterns:
+  a) PER-OCCUPANCY child prices (separate child column with different values per pax tier): read each
+     child price from the correct column → {"occupancy": N, "amount": adult_price, "child_amount": child_price_for_N}.
+  b) ONE FLAT child price for ALL occupancies (a single "Child Rate: 2700" column, or one number that
+     does NOT vary by group size): put that SAME flat child_amount on EVERY occupancy row →
+     {"occupancy": 1, "amount": 6500, "child_amount": 2700}, {"occupancy": 2, "amount": 3800, "child_amount": 2700}, etc.
+  IMPORTANT: if the child price for a given occupancy exceeds the adult price, cap child_amount at
+  the adult amount — a child can never cost more than an adult.
   "ON REQUEST" or "NOT AVAILABLE" in a cell means no price for that tier — skip it entirely, do not
   output 0.
   NOTE: real documents commonly show "N/A" for the solo/1-pax column (only 2+ pax pricing is offered).
