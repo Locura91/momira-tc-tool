@@ -465,7 +465,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
         amount = existing_occ.get(n, 0)
         row = {"occupancy": n, "amount": amount}
         if children_allowed:
-            row["child_amount"] = _safe_float(existing_child.get(n, round(amount * child_ratio, 2)))
+            row["child_amount"] = _safe_float(existing_child.get(n, round_up_currency(amount * child_ratio)))
         data["occupancy_prices"] = data["occupancy_prices"] + [row]
 
     with st.expander("💨 Quick-fill: same price for every row"):
@@ -479,7 +479,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
             if st.button("Apply to all rows", key=f"{key_prefix}_occ_quickfill_apply"):
                 data["occupancy_prices"] = [
                     {"occupancy": n, "amount": quick_price,
-                     **({"child_amount": round(quick_price * child_ratio, 2)} if children_allowed else {})}
+                     **({"child_amount": round_up_currency(quick_price * child_ratio)} if children_allowed else {})}
                     for n in range(1, cap + 1)
                 ]
                 st.rerun()
@@ -490,7 +490,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
             if st.button("Reset all Child Price cells to that default", key=f"{key_prefix}_occ_child_reset"):
                 data["occupancy_prices"] = [
                     {"occupancy": o["occupancy"], "amount": o["amount"],
-                     "child_amount": round(o["amount"] * child_ratio, 2)}
+                     "child_amount": round_up_currency(o["amount"] * child_ratio)}
                     for o in data["occupancy_prices"]
                 ]
                 st.rerun()

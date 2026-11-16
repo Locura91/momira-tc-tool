@@ -52,6 +52,7 @@ import fts_transfer_matrix
 import transfer_matcher
 import transport_matcher
 from bulk_notes import normalize_for_put
+from numeric_helpers import round_up_currency
 
 # The product types this flow can refresh. Transport/Transfer are priced per occupancy and both
 # arrive on the same kind of rate sheet, but they store the numbers very differently - see
@@ -734,16 +735,16 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
                 seasons.append({
                     "start_date": str(s.get("start_date") or "").strip() or None,
                     "end_date": str(s.get("end_date") or "").strip() or None,
-                    "price": round(s_price, 2),
-                    "child_price": None if s.get("child_price") is None else round(_num(s.get("child_price")), 2),
-                    "infant_price": None if s.get("infant_price") is None else round(_num(s.get("infant_price")), 2),
+                    "price": round_up_currency(s_price),
+                    "child_price": None if s.get("child_price") is None else round_up_currency(_num(s.get("child_price"))),
+                    "infant_price": None if s.get("infant_price") is None else round_up_currency(_num(s.get("infant_price"))),
                 })
             brackets.append({
                 "min_pax": int(_num(b.get("min_pax"), 1)),
                 "max_pax": int(_num(b.get("max_pax"), 1)),
-                "price": round(price, 2),
-                "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
-                "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+                "price": round_up_currency(price),
+                "child_price": None if b.get("child_price") is None else round_up_currency(_num(b.get("child_price"))),
+                "infant_price": None if b.get("infant_price") is None else round_up_currency(_num(b.get("infant_price"))),
                 "seasons": seasons,
             })
         findings[index] = {
@@ -916,7 +917,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
             # both computed from the document in one round.
             for _label, price, bracket in priced:
                 brackets.append({"min_pax": bracket[0], "max_pax": bracket[1],
-                                 "price": round(price, 2),
+                                 "price": round_up_currency(price),
                                  "child_price": None, "infant_price": None})
         else:
             # CONFIRMED HAZARD (found while building this): a SINGLE bracket cannot safely rely
@@ -940,7 +941,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
                                if (o.get("min_pax"), o.get("max_pax")) == target_bracket), None)
             if live_match is not None:
                 brackets.append({"min_pax": live_match["min_pax"], "max_pax": live_match["max_pax"],
-                                 "price": round(price, 2), "child_price": None, "infant_price": None})
+                                 "price": round_up_currency(price), "child_price": None, "infant_price": None})
                 # See build_proposals' matching "only_option_code" comment - restricts this
                 # finding to the one option it actually has a price for, so a lone bracket can
                 # never overlap-match the OTHER live option this round says nothing about.
@@ -965,7 +966,7 @@ def lookup_prices_from_fts_matrix(routes: List[Dict[str, Any]], sedan_csv_path: 
                     "currency": "",
                     "matched_row": f"{m['departure_name']} -> {m['arrival_name']} (FTS matrix, "
                                    f"match score {best.get('score')})",
-                    "note": (f"Found ${round(price, 2)} for {vehicle_label} in the FTS matrix, "
+                    "note": (f"Found ${round_up_currency(price)} for {vehicle_label} in the FTS matrix, "
                              f"but this transport's live option brackets ({live_brackets}) don't "
                              f"exactly match FTS's {target_bracket[0]}-{target_bracket[1]} pax "
                              f"convention, so it was left unpriced rather than guessed at - fix "
@@ -1095,9 +1096,9 @@ def lookup_ticket_prices(routes: List[Dict[str, Any]], raw_text: str,
             brackets.append({
                 "min_pax": int(_num(b.get("min_pax"), 1)),
                 "max_pax": int(_num(b.get("max_pax"), 1)),
-                "price": round(price, 2),
-                "child_price": None if b.get("child_price") is None else round(_num(b.get("child_price")), 2),
-                "infant_price": None if b.get("infant_price") is None else round(_num(b.get("infant_price")), 2),
+                "price": round_up_currency(price),
+                "child_price": None if b.get("child_price") is None else round_up_currency(_num(b.get("child_price"))),
+                "infant_price": None if b.get("infant_price") is None else round_up_currency(_num(b.get("infant_price"))),
             })
         by_code_index[ci] = {
             "found": bool(item.get("found")) and bool(brackets),
@@ -1845,8 +1846,8 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
     price_type = route.get("price_type") or TICKET_SUPPORTED_PRICE_TYPE
 
     if price_type == TICKET_DISTRIBUTION_PRICE_TYPE:
-        resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
-        resolved_child = {c["code"]: round(float(c["child_new"]), 2)
+        resolved_adult = {c["code"]: round_up_currency(float(c["new"])) for c in changes}
+        resolved_child = {c["code"]: round_up_currency(float(c["child_new"]))
                           for c in changes if c.get("child_new") is not None}
         if "dist_adult" in resolved_adult:
             payload["baseAdultPrice"] = resolved_adult["dist_adult"]
@@ -1856,11 +1857,11 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
             old_adult = _num(route["options"][0]["unit_price"]) if route.get("options") else 0
             if old_adult > 0:
                 ratio = resolved_adult["dist_adult"] / old_adult
-                payload["baseChildrenPrice"] = round(_num(payload.get("baseChildrenPrice")) * ratio, 2)
+                payload["baseChildrenPrice"] = round_up_currency(_num(payload.get("baseChildrenPrice")) * ratio)
         return payload
 
-    resolved_adult = {c["code"]: round(float(c["new"]), 2) for c in changes}
-    resolved_child = {c["code"]: round(float(c["child_new"]), 2)
+    resolved_adult = {c["code"]: round_up_currency(float(c["new"])) for c in changes}
+    resolved_child = {c["code"]: round_up_currency(float(c["child_new"]))
                       for c in changes if c.get("child_new") is not None}
     adult_by_code = {o["code"]: o for o in route["options"]}
 
@@ -1876,7 +1877,7 @@ def rebuild_ticket_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) 
                 row["amount"] = resolved_child[code]
             elif code in resolved_adult and adult_by_code.get(code, {}).get("unit_price", 0) > 0:
                 ratio = resolved_adult[code] / adult_by_code[code]["unit_price"]
-                row["amount"] = round(_num(row.get("amount")) * ratio, 2)
+                row["amount"] = round_up_currency(_num(row.get("amount")) * ratio)
         elif code in resolved_adult:
             row["amount"] = resolved_adult[code]
         new_rows.append(row)
@@ -2186,7 +2187,7 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
         # round writes ONLY the parent's shared base field. No option is read, computed, shown, or
         # written - not even the one this round happens to also be scoped to structurally, since
         # the base bracket IS the vehicle bracket and carries no supplement of its own to touch.
-        new_base = round(_num(vehicle_changes[0]["new"]), 2)
+        new_base = round_up_currency(_num(vehicle_changes[0]["new"]))
         parent[base_field] = new_base
         # Child and infant prices move with the adult price rather than being left at last
         # season's number, which would silently change the child discount. Per-vehicle transports
@@ -2195,7 +2196,7 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
             ratio = new_base / old_base
             for key in ("baseChildrenPrice", "baseInfantPrice"):
                 if _num(parent.get(key)) > 0:
-                    parent[key] = round(_num(parent.get(key)) * ratio, 2)
+                    parent[key] = round_up_currency(_num(parent.get(key)) * ratio)
         return {"transport": parent, "options": [], "write_kind": "vehicle"}
 
     # A supplement round: write ONLY the touched option(s)' own price entries - the parent record
@@ -2420,9 +2421,9 @@ def build_manual_adjustment_proposals(routes: List[Dict[str, Any]], mode: str, v
         base_field = "baseAdultPrice" if per_pax else "vehiclePrice"
         old_base = _num((route.get("raw") or {}).get(base_field))
         if mode == "percentage":
-            new_base = round(old_base * (1.0 + _num(value) / 100.0), 2)
+            new_base = round_up_currency(old_base * (1.0 + _num(value) / 100.0))
         else:
-            new_base = round(old_base + _num(value), 2)
+            new_base = round_up_currency(old_base + _num(value))
         blocked = None
         if route.get("kind") == KIND_TRANSFER:
             # Belt-and-braces only - the UI never offers this mode for Transfer, which has no
@@ -2449,12 +2450,12 @@ def rebuild_manual_adjustment(route: Dict[str, Any], new_base: float) -> Dict[st
     old_base = _num((route.get("raw") or {}).get(base_field))
     parent = json.loads(json.dumps(route["raw"]))
     normalize_for_put(parent, "Transport")
-    parent[base_field] = round(_num(new_base), 2)
+    parent[base_field] = round_up_currency(_num(new_base))
     if per_pax and old_base > 0:
         ratio = _num(new_base) / old_base
         for key in ("baseChildrenPrice", "baseInfantPrice"):
             if _num(parent.get(key)) > 0:
-                parent[key] = round(_num(parent.get(key)) * ratio, 2)
+                parent[key] = round_up_currency(_num(parent.get(key)) * ratio)
     return parent
 
 
