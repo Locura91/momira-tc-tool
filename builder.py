@@ -114,11 +114,11 @@ def _extend_tiers_for_multi_vehicle_pricing(tiers_sorted, price_by_pax, vehicle_
     extended = list(tiers_sorted)
     for occ in range(largest_occ + 1, max_cap + 1):
         vehicles_needed = math.ceil(occ / largest_occ)
-        synthesized = {"occupancy": occ, "price": round(vehicles_needed * largest_price, 2)}
+        synthesized = {"occupancy": occ, "price": round_up_currency(vehicles_needed * largest_price)}
         if largest.get("child_price") is not None:
-            synthesized["child_price"] = round(vehicles_needed * _safe_float(largest.get("child_price")), 2)
+            synthesized["child_price"] = round_up_currency(vehicles_needed * _safe_float(largest.get("child_price")))
         if largest.get("infant_price") is not None:
-            synthesized["infant_price"] = round(vehicles_needed * _safe_float(largest.get("infant_price")), 2)
+            synthesized["infant_price"] = round_up_currency(vehicles_needed * _safe_float(largest.get("infant_price")))
         extended.append(synthesized)
     return extended
 
@@ -4648,10 +4648,10 @@ def _add_minimum_charge_bracket(brackets_sorted, price_per_pax, min_billable_pax
         "max_occupancy": max(1, minimum - 1),
         # Per person, and this bracket holds one person - so the per-person figure IS the
         # minimum-party total.
-        "price": round(unit_price * minimum, 2),
-        "child_price": (round(_safe_float(lowest.get("child_price")) * minimum, 2)
+        "price": round_up_currency(unit_price * minimum),
+        "child_price": (round_up_currency(_safe_float(lowest.get("child_price")) * minimum)
                         if lowest.get("child_price") is not None else None),
-        "infant_price": (round(_safe_float(lowest.get("infant_price")) * minimum, 2)
+        "infant_price": (round_up_currency(_safe_float(lowest.get("infant_price")) * minimum)
                          if lowest.get("infant_price") is not None else None),
         "synthesized_minimum_charge": True,
     }
@@ -4694,10 +4694,10 @@ def _add_transfer_minimum_charge_tier(tiers_sorted, price_per_pax, min_billable_
         "occupancy": 1,
         # Per person, and this tier holds one person - so the per-person figure IS the
         # minimum-party total, same "times the minimum" rule as Transport's version.
-        "price": round(unit_price * minimum, 2),
-        "child_price": (round(_safe_float(base_tier.get("child_price")) * minimum, 2)
+        "price": round_up_currency(unit_price * minimum),
+        "child_price": (round_up_currency(_safe_float(base_tier.get("child_price")) * minimum)
                         if base_tier.get("child_price") is not None else None),
-        "infant_price": (round(_safe_float(base_tier.get("infant_price")) * minimum, 2)
+        "infant_price": (round_up_currency(_safe_float(base_tier.get("infant_price")) * minimum)
                          if base_tier.get("infant_price") is not None else None),
         "synthesized_minimum_charge": True,
     }
@@ -4744,10 +4744,10 @@ def _extend_transport_brackets_for_multi_vehicle_pricing(brackets_sorted, price_
         extended.append({
             "min_occupancy": occ,
             "max_occupancy": bracket_max,
-            "price": round(vehicles_needed * price, 2),
-            "child_price": (round(vehicles_needed * _safe_float(source_child_price), 2)
+            "price": round_up_currency(vehicles_needed * price),
+            "child_price": (round_up_currency(vehicles_needed * _safe_float(source_child_price))
                             if source_child_price is not None else None),
-            "infant_price": (round(vehicles_needed * _safe_float(source_infant_price), 2)
+            "infant_price": (round_up_currency(vehicles_needed * _safe_float(source_infant_price))
                              if source_infant_price is not None else None),
         })
         occ = bracket_max + 1
