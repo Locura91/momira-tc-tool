@@ -500,6 +500,7 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
                 data["occupancy_prices"] = [
                     {"occupancy": n, "amount": quick_price,
                      **({"child_amount": _qf_child(quick_price)} if children_allowed else {})}
+
                     for n in range(1, cap + 1)
                 ]
                 st.rerun()
