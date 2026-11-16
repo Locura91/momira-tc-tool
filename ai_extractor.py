@@ -3821,6 +3821,27 @@ Extract:
   Seat-in-Coach price was found (see occupancy_prices above), or an alternative/on-request option was
   approximated as a modality_supplements entry - see that field's rules above) - explain what, with real
   numbers where available, so a human can review.
+- additional_modalities: array of up to 2 extra modalities detected for this SAME excursion (max 3 total
+  including the base). Each entry: {"code": "short modality code e.g. 'Standard' or 'STANDARD_PRIVATE_GERMAN_CNX011'",
+  "name": "human-readable name e.g. 'Standard' or 'Private German'",
+  "price_type": "DISTRIBUTION" or "OCCUPANCY",
+  "base_adult_price": number, "base_children_price": number, "base_infant_price": number,
+  "occupancy_prices": [], "child_age_min": number, "child_age_max": number}.
+  WHEN TO USE THIS:
+  (a) JOIN-IN / SEAT-IN-COACH: if the source has BOTH private per-pax-count pricing AND a separate
+      join-in/SIC/group-tour flat adult+child price, output the PRIVATE prices as the base modality
+      (OCCUPANCY mode) and the JOIN-IN prices as an additional modality (DISTRIBUTION mode) with
+      code "Standard" and name "Standard". Set base_adult_price/base_children_price from the join-in
+      columns. "NOT AVAILABLE" in the join-in column = skip this additional modality entirely.
+  (b) GERMAN-SPEAKING GUIDE SUPPLEMENT: if the source shows a flat per-party supplement for a
+      German-speaking guide (e.g. "2,000 THB per party"), this becomes a SECOND private modality.
+      CRITICAL CALCULATION: the supplement is PER PARTY (flat group price), so divide it by the
+      number of pax and ADD to each occupancy price. Example: English 1-pax = 8000, supplement = 2000
+      -> German 1-pax = 8000 + 2000/1 = 10000. English 2-pax = 5500 -> German 2-pax = 5500 + 2000/2
+      = 6500. Round UP to nearest whole number. Code should be e.g. "STANDARD_PRIVATE_GERMAN_{supplier_code}",
+      name "Private German". Copy the same child prices with the same supplement calculation applied.
+  (c) Any other genuinely separate pricing category with its own complete price set.
+  Empty array if only one modality exists (the most common case).
 - release_days_mentions: a list of integers - ANY explicit booking/reservation deadline or "release period"
   mentioned anywhere in the source (e.g. "must be booked at least 45 days before", "release period: 60
   days", "reservations required 30 days in advance"). DIFFERENT from a cancellation policy (e.g.
@@ -3858,7 +3879,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "supplements": [],
   "modality_supplements": [], "pricing_notes": "", "languages": ["EN"], "min_pax_guaranteed_departure": null,
-  "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": ""
+  "release_days_mentions": [], "cancellation_policy_tiers": [], "cancellation_policy_text": "",
+  "additional_modalities": []
 }"""
 
 
@@ -3966,7 +3988,7 @@ def extract_ticket_data(raw_text: str, model: str = "claude-sonnet-5", variant_h
         "pricing_notes": "", "stop_sales": [], "image_urls": [], "languages": ["EN"],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [], "release_days_mentions": [],
         "cancellation_policy_tiers": [], "cancellation_policy_text": "", "voucher_remarks": "",
-        "min_pax_guaranteed_departure": None,
+        "min_pax_guaranteed_departure": None, "additional_modalities": [],
     }
 
     # 16384 (up from a previous 8192) for the same headroom reason as the
@@ -4567,6 +4589,16 @@ Extract:
   into occupancy_prices. State it clearly in pricing_notes with the exact SIC price found.
 - pricing_notes: leave empty UNLESS something had to be approximated - explain what, with real numbers
   where available, so a human can review.
+- additional_modalities: array of up to 2 extra modalities detected for this SAME excursion (max 3 total
+  including the base). Each entry: {"code": "short modality code", "name": "human-readable name",
+  "price_type": "DISTRIBUTION" or "OCCUPANCY",
+  "base_adult_price": number, "base_children_price": number, "base_infant_price": number,
+  "occupancy_prices": [], "child_age_min": number, "child_age_max": number}.
+  WHEN TO USE: (a) JOIN-IN prices alongside private occupancy prices -> additional modality with
+  code "Standard", name "Standard", price_type "DISTRIBUTION". (b) GERMAN-SPEAKING GUIDE flat
+  per-party supplement -> additional OCCUPANCY modality where each occupancy price = English price +
+  (supplement / pax count), rounded up. Code e.g. "STANDARD_PRIVATE_GERMAN_{supplier_code}",
+  name "Private German". Empty array if only one modality.
 
 Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this shape:
 {
@@ -4576,7 +4608,8 @@ Respond with ONLY valid JSON (no markdown fences, no preamble), exactly this sha
   "schedule_notes": "", "time_tables": [], "start_date": "", "end_date": "",
   "adult_taxes_amount": 0, "child_taxes_amount": 0, "infant_taxes_amount": 0, "languages": ["EN"],
   "modality_supplements": [], "pricing_notes": "", "min_pax_guaranteed_departure": null,
-  "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": []
+  "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
+  "additional_modalities": []
 }"""
 
 
@@ -4619,6 +4652,7 @@ def extract_ticket_modality_data(raw_text: str, model: str = "claude-sonnet-5", 
         "modality_supplements": [], "pricing_notes": "", "stop_sales": [],
         "price_type": "OCCUPANCY", "base_service_price": 0, "occupancy_prices": [],
         "supplements": [], "min_pax_guaranteed_departure": None,
+        "additional_modalities": [],
     }
     data = _call_claude(TICKET_MODALITY_SYSTEM_PROMPT, user_content, model, max_tokens=16384,
                        input_schema=_required_keys_schema(defaults))
