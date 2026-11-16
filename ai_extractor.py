@@ -3500,24 +3500,16 @@ Extract:
   variant-detection step) so it ends up on the Modality Code instead, not duplicated into the
   client-facing title. That code exists so the supplier can match automatic booking emails back to
   their own records, not as customer-facing copy.
-- description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
-  natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
-  a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
-  actually present in the source - never invent details, ratings, superlatives, or claims that aren't
-  there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
-  true. Format: <p>paragraph(s)</p>.
-  LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap): aim for
-  4-6 paragraphs - use the fuller end of that range whenever the source gives enough real material,
-  rather than defaulting to the shorter end. This is meaningfully more substantial than a summary - the
-  goal is SEO-substantial copy, not a brief blurb. Expand by drawing out and elaborating on what the
-  source DOES state (what the experience involves moment to moment, the character of the location, why a
-  stop or inclusion matters) - never by adding facts, numbers, or claims that aren't there.
-  SEO CRAFT (CONFIRMED, product owner, 2026-08-22): naturally work the excursion's key place names and
-  activity names into the prose more than once across the paragraphs (reuse the specific name rather than
-  relying only on pronouns after the first mention) - this is genuine, natural phrasing, never
-  keyword-stuffing (no unnatural repetition, no dropping a name into a sentence where it doesn't fit).
-  Vary sentence openers rather than starting every paragraph the same way. If the source mentions a
-  notable nearby landmark, region, or context, weave that in as color rather than dropping it.
+- description: a SINGLE HTML block (not day-by-day) describing what the experience involves. Keep it
+  simple, factual, and easy to read. Use ONLY facts, places, and activities actually present in the
+  source - never invent details, ratings, superlatives, or claims that aren't there. Never change the
+  overall meaning of the source document. Format: <p>paragraph(s)</p>.
+  LENGTH TARGET (UPDATED, product owner, 2026-11-16): aim for 2-3 short paragraphs. Keep sentences
+  short and clear. State what the tour does, where it goes, and what's included - no flowery or
+  romantic language, no elaborate scene-setting. If the source document already provides a description,
+  use it as the basis - simplify and clean it up but preserve its meaning and key facts.
+  Naturally mention the excursion's key place names and activity names where they fit, but do not
+  force repetition or keyword-stuff. Vary sentence openers.
   NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
   with no marketing copy still states enough real facts to write from - the activity itself, the city,
   what's included, the duration, the schedule, the meeting point. Build honest paragraphs from whatever
@@ -4170,24 +4162,16 @@ Extract:
   variant-detection step) so it ends up on the Modality Code instead, not duplicated into the
   client-facing title. That code exists so the supplier can match automatic booking emails back to
   their own records, not as customer-facing copy.
-- description: a SINGLE HTML block (not day-by-day) describing what the experience involves, written as
-  natural, engaging, SEO-strong prose - the goal is compelling copy that reads well and ranks well, NOT
-  a bare fact list. However, it must never lie or exaggerate: use ONLY facts, places, and activities
-  actually present in the source - never invent details, ratings, superlatives, or claims that aren't
-  there. Good SEO writing and factual accuracy are not in tension - rewrite HOW it's said, never WHAT is
-  true. Format: <p>paragraph(s)</p>.
-  LENGTH TARGET (CONFIRMED, product owner, 2026-08-22 - raised from an earlier, too-short cap): aim for
-  4-6 paragraphs - use the fuller end of that range whenever the source gives enough real material,
-  rather than defaulting to the shorter end. This is meaningfully more substantial than a summary - the
-  goal is SEO-substantial copy, not a brief blurb. Expand by drawing out and elaborating on what the
-  source DOES state (what the experience involves moment to moment, the character of the location, why a
-  stop or inclusion matters) - never by adding facts, numbers, or claims that aren't there.
-  SEO CRAFT (CONFIRMED, product owner, 2026-08-22): naturally work the excursion's key place names and
-  activity names into the prose more than once across the paragraphs (reuse the specific name rather than
-  relying only on pronouns after the first mention) - this is genuine, natural phrasing, never
-  keyword-stuffing (no unnatural repetition, no dropping a name into a sentence where it doesn't fit).
-  Vary sentence openers rather than starting every paragraph the same way. If the source mentions a
-  notable nearby landmark, region, or context, weave that in as color rather than dropping it.
+- description: a SINGLE HTML block (not day-by-day) describing what the experience involves. Keep it
+  simple, factual, and easy to read. Use ONLY facts, places, and activities actually present in the
+  source - never invent details, ratings, superlatives, or claims that aren't there. Never change the
+  overall meaning of the source document. Format: <p>paragraph(s)</p>.
+  LENGTH TARGET (UPDATED, product owner, 2026-11-16): aim for 2-3 short paragraphs. Keep sentences
+  short and clear. State what the tour does, where it goes, and what's included - no flowery or
+  romantic language, no elaborate scene-setting. If the source document already provides a description,
+  use it as the basis - simplify and clean it up but preserve its meaning and key facts.
+  Naturally mention the excursion's key place names and activity names where they fit, but do not
+  force repetition or keyword-stuff. Vary sentence openers.
   NEVER LEAVE THIS EMPTY. A blank description is never an acceptable answer. Even a bare-bones rate sheet
   with no marketing copy still states enough real facts to write from - the activity itself, the city,
   what's included, the duration, the schedule, the meeting point. Build honest paragraphs from whatever
