@@ -1691,6 +1691,26 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
         st.caption(f"👶 Children are **{low}–{high}**; under {low} counts as an infant. Raise the "
                    f"minimum if the document states one (e.g. \"children from 7 years\" → 7).")
 
+    dcol1, dcol2 = st.columns(2)
+    with dcol1:
+        data["disallow_children"] = st.checkbox(
+            "Children not allowed",
+            value=bool(data.get("disallow_children", False)),
+            key=f"{key_prefix}_disallow_children",
+            help="Check if the source says no child pricing / children pay adult rate / not suitable for children.")
+    with dcol2:
+        data["disallow_infant"] = st.checkbox(
+            "Infants not allowed",
+            value=bool(data.get("disallow_infant", False)),
+            key=f"{key_prefix}_disallow_infant",
+            help="Check if the source says infants / very young children are not accepted on this tour.")
+    if data.get("disallow_children") and not data.get("disallow_infant"):
+        st.caption("ℹ️ Children not allowed → no child pricing column. Under-{low}s still count as infants.".format(low=low))
+    elif data.get("disallow_infant") and not data.get("disallow_children"):
+        st.caption(f"ℹ️ Infants not allowed → children {low}–{high} are accepted, but under-{low}s cannot join.")
+    elif data.get("disallow_children") and data.get("disallow_infant"):
+        st.caption("ℹ️ Both children and infants not allowed → adults only.")
+
 
 def render_extra_child_notice(data, key_prefix):
     """"Extra child allowed" + per-occupancy max-extra-child numbers for ONE ClosedTour Modality -

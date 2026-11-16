@@ -3652,8 +3652,17 @@ Extract:
   use whichever is most specific to what's actually stated. This has been missed before, so actively
   look for it anywhere in the source (a "Good to know" section counts, not just a pricing table), else
   2/12 as the standard default (infant = 0-2, child = 2-12) - same convention used for ClosedTours.
-- disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
-  type isn't allowed (rare) - otherwise all false.
+- disallow_adult, disallow_children, disallow_infant: set to true when the source says a passenger type
+  is not allowed, not recommended, or not suitable. Common patterns to watch for:
+  * "Children younger than X are NOT recommended" / "not suitable for children under X" / "minimum age: X"
+    → if X >= 3: set disallow_infant=true AND set child_age_min=X (children start at X, infants below X
+    are not accepted). If X >= 12: also set disallow_children=true (no child pricing at all).
+  * "NO DISCOUNT FOR CHILDREN" / "no child rate" / "children pay adult price" → set disallow_children=true
+    (TC will charge adult price for all ages; there is no separate child price to offer).
+  * "Adults only" / "18+" / "minimum age 18" → disallow_children=true AND disallow_infant=true.
+  Actively search the ENTIRE source for age restrictions - they often appear in remarks, footnotes, or
+  "good to know" sections, not just the pricing table. Default all false only when truly no restriction
+  is mentioned.
 - operational_days: list of uppercase weekday names this is available. CRITICAL - THIS IS OFTEN MISSED:
   actively search the ENTIRE source for weekday schedule information (not just an obvious "Schedule"
   section) - phrases like "operated ... as following schedules:", "departs on", "available every", or a
@@ -4467,8 +4476,17 @@ Extract:
   eligibility restriction (e.g. "children must be at least 12"). Both kinds of language should populate
   these fields. Actively look anywhere in the source (a "Good to know" section counts, not just a
   pricing table), else 2/12 as the standard default.
-- disallow_adult, disallow_children, disallow_infant: true only if the source explicitly says a passenger
-  type isn't allowed (rare) - otherwise all false.
+- disallow_adult, disallow_children, disallow_infant: set to true when the source says a passenger type
+  is not allowed, not recommended, or not suitable. Common patterns to watch for:
+  * "Children younger than X are NOT recommended" / "not suitable for children under X" / "minimum age: X"
+    → if X >= 3: set disallow_infant=true AND set child_age_min=X (children start at X, infants below X
+    are not accepted). If X >= 12: also set disallow_children=true (no child pricing at all).
+  * "NO DISCOUNT FOR CHILDREN" / "no child rate" / "children pay adult price" → set disallow_children=true
+    (TC will charge adult price for all ages; there is no separate child price to offer).
+  * "Adults only" / "18+" / "minimum age 18" → disallow_children=true AND disallow_infant=true.
+  Actively search the ENTIRE source for age restrictions - they often appear in remarks, footnotes, or
+  "good to know" sections, not just the pricing table. Default all false only when truly no restriction
+  is mentioned.
 - operational_days: list of uppercase weekday names this is available. Actively search the ENTIRE source
   for weekday schedule information - phrases like "operated ... as following schedules:", "departs on",
   "available every", or a bare list of weekday names all count. Only fall back to all 7 days if the
