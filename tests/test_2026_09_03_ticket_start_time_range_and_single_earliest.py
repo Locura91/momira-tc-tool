@@ -86,15 +86,19 @@ def test_a_range_reaching_the_builder_whole_is_published_as_one_clean_earliest_t
     result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
     assert result["main_ticket_error"] is None
     assert result["ticket_option_error"] is None
-    assert result["ticket_option_payload"]["timeTables"] == ["07:45"]
+    assert result["ticket_option_payload"]["timeTables"] == ["07:45", "07:50"]
 
 
-def test_several_genuinely_distinct_times_still_collapse_to_just_the_earliest(fake_api_client):
-    """Product-owner rule: "just use the earliest time of all mentioned and just one" - applies
-    even when the times aren't a malformed range, e.g. two clean HH:MM entries."""
-    data = minimal_ticket_data(time_tables=["14:00", "09:00"])
+def test_up_to_four_distinct_start_times_are_kept_sorted(fake_api_client):
+    data = minimal_ticket_data(time_tables=["14:00", "09:00", "08:00", "13:00"])
     result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
-    assert result["ticket_option_payload"]["timeTables"] == ["09:00"]
+    assert result["ticket_option_payload"]["timeTables"] == ["08:00", "09:00", "13:00", "14:00"]
+
+
+def test_more_than_four_start_times_keeps_only_the_earliest_four(fake_api_client):
+    data = minimal_ticket_data(time_tables=["18:00", "14:00", "09:00", "08:00", "13:00"])
+    result = build_ticket_payloads(make_pre_config(), data, fake_api_client)
+    assert result["ticket_option_payload"]["timeTables"] == ["08:00", "09:00", "13:00", "14:00"]
 
 
 def test_no_time_stated_publishes_an_empty_list(fake_api_client):

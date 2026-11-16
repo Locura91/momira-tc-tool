@@ -3148,14 +3148,9 @@ def build_ticket_payloads(
         normalize_time_hhmm(t) for t in (extracted_ticket_data.get("time_tables", []) or [])
         if t and str(t).strip() and str(t).strip().lower() not in ("none", "nan")
     ]
-    # CONFIRMED business rule (product owner, 2026-09-03): "If mentioned a start time, just use
-    # the earliest time of all mentioned and just one" - whatever the document or the human typed
-    # in (one window restated across several lines, several genuinely distinct times, a stray
-    # duplicate), a Ticket only ever gets ONE start time published: the single earliest of
-    # everything extracted. Dropping this down to at most one entry here, after each entry is
-    # already a clean zero-padded "HH:MM" (see normalize_time_hhmm), means a plain lexicographic
-    # sort picks the true earliest time correctly.
-    time_tables_list = sorted(set(time_tables_list))[:1]
+    # UPDATED business rule (product owner, 2026-11-16): a ticket can have up to 4 distinct
+    # start times per day. Deduplicated and sorted earliest-first.
+    time_tables_list = sorted(set(time_tables_list))[:4]
 
     effective_release_days = resolve_release_days(
         pre_config.days_available_before_release, extracted_ticket_data.get("release_days_mentions")
