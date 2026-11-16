@@ -52,7 +52,7 @@ def test_occupancy_rows_with_zero_or_missing_occupancy_are_skipped():
 def test_price_type_supported_only_for_occupancy():
     assert _ticket_price_type_supported("OCCUPANCY") is True
     assert _ticket_price_type_supported(None) is True  # default assumed OCCUPANCY
-    assert _ticket_price_type_supported("DISTRIBUTION") is False
+    assert _ticket_price_type_supported("DISTRIBUTION") is True  # added 2026-10-20
     assert _ticket_price_type_supported("SERVICE") is False
 
 
@@ -226,11 +226,12 @@ def test_blocked_unreadable_status_for_a_modality_that_failed_to_fetch():
     assert proposals[0]["unreadable_options"] == ["MOD-A"]
 
 
-def test_unsupported_price_type_status_for_distribution_modality():
+def test_distribution_price_type_is_now_supported():
+    """DISTRIBUTION was added as a supported price type on 2026-10-20. A DISTRIBUTION
+    modality with no options is 'no_finding', not 'unsupported_price_type'."""
     route = _route("ALX-01", "MOD-A", [], price_type="DISTRIBUTION")
     proposals = build_ticket_proposals([route], {})
-    assert proposals[0]["status"] == "unsupported_price_type"
-    assert proposals[0]["accepted"] is False
+    assert proposals[0]["status"] != "unsupported_price_type"
 
 
 def test_child_price_from_document_is_reported_on_the_change():

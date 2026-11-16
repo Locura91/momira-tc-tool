@@ -328,5 +328,10 @@ def test_the_home_screen_banner_and_button_have_been_removed():
 
 def test_module_carries_a_build_stamp_matching_the_app():
     src = _app_source()
-    app_version = re.search(r'^BUILD_VERSION = "2026-10-20-fix-draft-restore-widget-crash"]+)"', src, flags=re.M).group(1)
+    # The capture group here was once clobbered by a find/replace that substituted a literal
+    # build string into the pattern, leaving an unbalanced-parenthesis regex that raised
+    # before it could assert anything.
+    match = re.search(r'^BUILD_VERSION = "([^"]+)"', src, flags=re.M)
+    assert match, "app.py no longer declares a BUILD_VERSION"
+    app_version = match.group(1)
     assert hotel_automap.MODULE_BUILD == app_version
