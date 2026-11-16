@@ -460,12 +460,26 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
                       for o in (data.get("occupancy_prices") or []) if isinstance(o, dict)
                       and _safe_int(o.get("occupancy", 1), fallback=1) <= cap
                       and o.get("child_amount") not in (None, "")}
+    # Detect flat child rate: if all extracted child_amounts are the same value, the document
+    # states one flat child price for all occupancies — use it as the default for missing rows
+    # instead of ratio-based calculation (which wrongly scales the flat rate down for cheaper
+    # adult tiers).
+    _child_vals = [_safe_float(v) for v in existing_child.values() if v not in (None, "")]
+    _flat_child = _child_vals[0] if _child_vals and len(set(_child_vals)) == 1 else None
+    _base_child = _safe_float(data.get("base_children_price", 0))
     data["occupancy_prices"] = []
     for n in range(1, cap + 1):
         amount = existing_occ.get(n, 0)
         row = {"occupancy": n, "amount": amount}
         if children_allowed:
-            row["child_amount"] = _safe_float(existing_child.get(n, round_up_currency(amount * child_ratio)))
+            if n in existing_child:
+                row["child_amount"] = _safe_float(existing_child[n])
+            elif _flat_child is not None:
+                row["child_amount"] = min(_flat_child, amount) if amount > 0 else _flat_child
+            elif _base_child > 0 and child_ratio == 1.0:
+                row["child_amount"] = min(_base_child, amount) if amount > 0 else _base_child
+            else:
+                row["child_amount"] = round_up_currency(amount * child_ratio)
         data["occupancy_prices"] = data["occupancy_prices"] + [row]
 
     with st.expander("💨 Quick-fill: same price for every row"):
@@ -477,9 +491,15 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
         with qcol2:
             st.write("")
             if st.button("Apply to all rows", key=f"{key_prefix}_occ_quickfill_apply"):
+                def _qf_child(qp):
+                    if _flat_child is not None:
+                        return min(_flat_child, qp) if qp > 0 else _flat_child
+                    if _base_child > 0 and child_ratio == 1.0:
+                        return min(_base_child, qp) if qp > 0 else _base_child
+                    return round_up_currency(qp * child_ratio)
                 data["occupancy_prices"] = [
                     {"occupancy": n, "amount": quick_price,
-                     **({"child_amount": round_up_currency(quick_price * child_ratio)} if children_allowed else {})}
+                     **({"child_amount": _qf_child(quick_price)} if children_allowed else {})}
                     for n in range(1, cap + 1)
                 ]
                 st.rerun()
@@ -488,9 +508,15 @@ def render_ticket_pricing_editor(data, key_prefix, currency, max_passengers):
                       f"(age {child_age_min}-{child_age_max}) - edit any row's Child Price directly "
                       f"below to override.")
             if st.button("Reset all Child Price cells to that default", key=f"{key_prefix}_occ_child_reset"):
+                def _reset_child(amt):
+                    if _flat_child is not None:
+                        return min(_flat_child, amt) if amt > 0 else _flat_child
+                    if _base_child > 0 and child_ratio == 1.0:
+                        return min(_base_child, amt) if amt > 0 else _base_child
+                    return round_up_currency(amt * child_ratio)
                 data["occupancy_prices"] = [
                     {"occupancy": o["occupancy"], "amount": o["amount"],
-                     "child_amount": round_up_currency(o["amount"] * child_ratio)}
+                     "child_amount": _reset_child(o["amount"])}
                     for o in data["occupancy_prices"]
                 ]
                 st.rerun()
