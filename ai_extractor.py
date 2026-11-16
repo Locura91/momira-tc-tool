@@ -3628,8 +3628,14 @@ Extract:
   experience/activity itself lasts (NOT how many days a pass is valid for - that's
   start_date/end_date on the modality). Pick whichever unit the source actually used (e.g. "45
   minutes" -> duration 45, duration_type "MINUTES"; "3 days" -> 3, "DAYS"; "2.5 hours" -> 2.5,
-  "HOURS") rather than always converting to hours. NOT a required field: if the source states no
-  duration at all, use 0/"HOURS" - leave it at that rather than guessing one.
+  "HOURS") rather than always converting to hours.
+  SCHEDULE-BASED DURATION: if the source gives a schedule with start and end times (e.g.
+  "Daily : 7:30-12:00", "09:00 - 17:30", "Dep. 08:00 / Return 14:00") but does NOT state an
+  explicit duration, COMPUTE it from the time range: end minus start, in HOURS. For example
+  "7:30-12:00" = 4.5 HOURS, "09:00-17:30" = 8.5 HOURS. Do NOT default to "1 day" just because
+  a schedule exists - calculate the actual hours. Only use DAYS when the source explicitly says
+  "days" (e.g. "3 days tour"). NOT a required field: if the source states no
+  duration at all AND no schedule times, use 0/"HOURS" - leave it at that rather than guessing one.
 - activity_type: a short category label if the source suggests one (e.g. "Tickets", "Tours"), else omit.
 - is_private: true if the source describes this as a PRIVATE experience (e.g. "private tour", "private
   transfers", "private guide", "exclusively for your group") as opposed to a joint/shared/group/public
@@ -3781,6 +3787,18 @@ Extract:
   price (e.g. "3-5" = $87), EXPAND it into one entry per exact number: {"occupancy":3,"amount":87},
   {"occupancy":4,"amount":87}, {"occupancy":5,"amount":87}. Infants are always free and excluded from
   occupancy counts - don't create entries for them. Leave empty for standard Distribution-mode pricing.
+  CRITICAL TABLE-READING RULE: each column header in the price table (e.g. "1 Pax", "2 Pax", "3-6 Pax",
+  "7-9 Pax") has its OWN distinct price - you MUST read the actual price value under EACH column
+  separately. Do NOT copy the 1-pax price to all rows. Real supplier documents almost always have
+  DIFFERENT prices per headcount (larger groups = cheaper per person). If columns "1 Pax" = 3500,
+  "2 Pax" = 2100, "3-6 Pax" = 1800, you must output occupancy 1 = 3500, occupancy 2 = 2100,
+  occupancy 3-6 = 1800 each. Reading ALL columns as the same price is almost certainly a misread.
+  CHILD PRICES: if the table has separate adult and child rows (e.g. "Adult" row and "Child" row with
+  prices per pax column), include child_amount in each entry: {"occupancy": N, "amount": adult_price,
+  "child_amount": child_price}. IMPORTANT: if the child price for a given occupancy exceeds the adult
+  price, cap child_amount at the adult amount — a child can never cost more than an adult.
+  "ON REQUEST" or "NOT AVAILABLE" in a cell means no price for that tier — skip it entirely, do not
+  output 0.
   NOTE: real documents commonly show "N/A" for the solo/1-pax column (only 2+ pax pricing is offered).
   If the source has no 1-pax price, do NOT invent one - just extract what's given, and mention in
   pricing_notes that a solo/1-pax price is missing and needs to be manually confirmed, since it can't be
