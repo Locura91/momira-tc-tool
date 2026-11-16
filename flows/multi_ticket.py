@@ -542,13 +542,6 @@ def render_multi_ticket_flow(client, supplier_id, currency, on_request, release_
             merge_what_to_bring_into_voucher_remarks(data)
             editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                            "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
-            # Price-validity code (product owner, 2026-09-08) - see price_validity.py's own
-            # docstring. Blank by default; when set, the app appends "(YYYYMMDD)" to Voucher
-            # Remarks automatically at publish time (build_ticket_payloads -> with_price_validity_
-            # code) - no need to type the code by hand.
-            editable_field("Prices confirmed valid until (optional - the app adds the "
-                           "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
-                           "price_valid_until_date", widget="text_input", key_suffix=f"_{idx}")
             # CONFIRMED PRODUCT-OWNER RULE (2026-08-12): the separate Manual Notes box is no longer
             # needed for Tickets - every field (Voucher Remarks, Condition, Stop Sales, Modality
             # Supplements, etc.) is now directly editable with its own pencil/text box, so a human
@@ -1826,14 +1819,6 @@ def render_multi_ticket_update_flow(client, supplier_id, on_request, release_day
             merge_what_to_bring_into_voucher_remarks(data)
             editable_field("Voucher Remarks (shown to the customer, includes what to bring)", data,
                            "voucher_remarks", widget="text_area", height=100, key_suffix=f"_{idx}")
-            # Price-validity code (product owner, 2026-09-08) - build_ticket_payloads already
-            # bakes this into voucher_remarks via with_price_validity_code, same as the
-            # single-ticket "Whole ticket" update path - no separate voucher-remarks-only call
-            # needed here since this flow always republishes the full ticket payload anyway.
-            editable_field("Prices confirmed valid until (optional - the app adds the "
-                           "\"(YYYYMMDD)\" marker to Voucher Remarks automatically)", data,
-                           "price_valid_until_date", widget="text_input", key_suffix=f"_{idx}")
-
             st.markdown(f"**📍 Location for {current['label'] or current['target_ticket_code']}**")
             mtu_city = data.get("city", "")
             if (data.get("manual_latitude") is not None and data.get("manual_longitude") is not None
