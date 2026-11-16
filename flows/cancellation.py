@@ -16,7 +16,7 @@ same late-binding pattern used by the earlier flows modules.
 import streamlit as st
 import cancellation_bulk_transport
 
-from app import _ur_pick_momira_supplier
+from app_helpers import _ur_pick_momira_supplier
 
 
 def render_transport_cancellation_bulk_flow(client):
