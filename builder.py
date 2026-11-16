@@ -1400,6 +1400,22 @@ def _strip_bullet_points(text):
     return "\n".join(lines)
 
 
+def _sentences_from_lines(text):
+    """Converts multi-line text into a single line of properly punctuated sentences.
+    Each non-empty line becomes a sentence ending with a period, separated by a space."""
+    if not text:
+        return text
+    parts = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line[-1] not in ".!?:":
+            line += "."
+        parts.append(line)
+    return " ".join(parts)
+
+
 def _with_entrance_fee_notice(voucher_text, extracted_data):
     """Same rule as _ticket_name_with_entrance_fee_notice above, for the Voucher Remarks side:
     "...and it shall be displayed as a bullet point at the Voucher Remark, as this information
@@ -3453,10 +3469,14 @@ def build_ticket_payloads(
             occ_n = _safe_int(o.get("occupancy", 1), fallback=1)
             if occ_n > effective_occupancy_cap:
                 continue
-            occupancy_prices.append({"occupancy": occ_n, "amount": round_up_currency(_safe_float(o.get("amount", 0)))})
+            adult_amount = round_up_currency(_safe_float(o.get("amount", 0)))
+            occupancy_prices.append({"occupancy": occ_n, "amount": adult_amount})
             if children_allowed_for_pricing and o.get("child_amount") not in (None, ""):
+                child_amount = round_up_currency(_safe_float(o.get("child_amount", 0)))
+                if child_amount > adult_amount:
+                    child_amount = adult_amount
                 occupancy_prices.append({
-                    "occupancy": occ_n, "amount": round_up_currency(_safe_float(o.get("child_amount", 0))),
+                    "occupancy": occ_n, "amount": child_amount,
                     "ageRange": {"min": occ_child_age_min, "max": occ_child_age_max},
                 })
         if selected_price_type != "DISTRIBUTION":
@@ -3473,9 +3493,10 @@ def build_ticket_payloads(
         if selected_price_type != "OCCUPANCY":
             occupancy_prices = []
 
+        _today_str = datetime.date.today().isoformat()
         combined_ticket_stop_sales = [
             s for s in (extracted_ticket_data.get("stop_sales", []) or [])
-            if isinstance(s, dict) and s.get("start") and s.get("end")
+            if isinstance(s, dict) and s.get("start") and s.get("end") and s.get("end") >= _today_str
         ]
         if is_indonesia:
             combined_ticket_stop_sales = _merge_stop_sales(combined_ticket_stop_sales, indonesia_holiday_stop_sales())
@@ -3501,7 +3522,7 @@ def build_ticket_payloads(
             # docstring for exactly what keeps its bullets (Voucher Remarks) vs. what doesn't
             # (this field).
             remarks={"EN": TicketRemark(name=pre_config.modality_name or pre_config.modality_code,
-                                        remarks=_strip_bullet_points(ticket_cancellation_voucher_text)[:255])},
+                                        remarks=_sentences_from_lines(_strip_bullet_points(ticket_cancellation_voucher_text))[:255])},
             supplements=supplements_list,
             stopSales=combined_ticket_stop_sales,
             ticketsPerDay=99,
