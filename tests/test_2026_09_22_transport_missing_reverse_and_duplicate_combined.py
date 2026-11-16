@@ -47,9 +47,13 @@ class _FakeClient:
     empty optionCodes -> Options -> link+activate) can be asserted on directly."""
 
     def __init__(self, resolve_names=None, option_fetch_ok=True, create_transport_result=None,
-                 create_option_result=None, update_transport_result=None):
+                 create_option_result=None, update_transport_result=None,
+                 transport_full=None):
         self.resolve_names = resolve_names or {}
         self.option_fetch_ok = option_fetch_ok
+        # transport_full: what GET /transport/{id} returns. None means "the fetch failed",
+        # which production treats as non-fatal and carries on with the list record.
+        self.transport_full = transport_full
         self.create_transport_result = create_transport_result if create_transport_result is not None else {"id": "TRANSPORT-NEW-1"}
         self.create_option_result = create_option_result if create_option_result is not None else {"code": "OPT-NEW"}
         self.update_transport_result = update_transport_result if update_transport_result is not None else {"id": "TRANSPORT-NEW-1"}
@@ -59,6 +63,16 @@ class _FakeClient:
         if code in self.resolve_names:
             return {"valid": True, "name": self.resolve_names[code], "code": code}
         return {"valid": True, "name": code, "code": code}
+
+    def get_transport(self, supplier_id, transport_id):
+        """Added 2026-11-15: the gap finder re-fetches the full transport before building
+        the swap, because the list endpoint omits datasheets and the new transport's name
+        comes from datasheets.EN.name. This stub was written before that step existed, so
+        every test here died on AttributeError rather than on anything real."""
+        self.calls.append(("get_transport", transport_id))
+        if self.transport_full is None:
+            return {"error": True, "message": "fetch failed"}
+        return self.transport_full
 
     def get_transport_option(self, supplier_id, transport_id, opt_code):
         self.calls.append(("get_transport_option", transport_id, opt_code))
@@ -367,3 +381,47 @@ def test_duplicate_transport_flow_still_publishes_via_the_same_two_phase_sequenc
     assert 'create_payload["optionCodes"] = []' in src
     assert 'create_payload["active"] = False' in src
     assert "draft_autosave.clear_on_publish_success()" in src
+
+
+# ── the full-record refetch the stub was missing (2026-11-15) ────────────────
+# The gap finder re-fetches the full transport before building the swap, because the list
+# endpoint omits datasheets and the new transport's name comes from datasheets.EN.name.
+# _FakeClient had no get_transport at all, so every test above died on AttributeError
+# before reaching what it meant to assert. These two pin the step itself, so a stub that
+# merely silences the error cannot pass for a working refetch.
+
+def test_the_full_transport_is_refetched_before_building_the_swap():
+    client = _FakeClient(option_fetch_ok=True)
+    source = _transport("TRANSPORT-1", "CAI", "HTL1", option_codes=["OPT-OLD"])
+    transfer_gap_finder.create_duplicate_transport(client, "SUP1", source)
+    assert ("get_transport", "TRANSPORT-1") in client.calls
+
+
+def test_the_refetched_datasheet_is_what_the_new_transport_is_built_from():
+    """The point of the refetch: the list endpoint omits datasheets, so without it the
+    new transport would be built from a record that has none.
+
+    The swapped NAME is derived from the location codes rather than the datasheet's own
+    name, so the datasheet's contribution shows in the description — that is what
+    distinguishes "the refetch happened and was used" from "the refetch was skipped".
+    """
+    source = _transport("TRANSPORT-1", "CAI", "HTL1", option_codes=["OPT-OLD"])
+    full = dict(source)
+    full["datasheets"] = {"EN": {"name": "Cairo Airport - Hotel Nile",
+                                 "description": "From the full record."}}
+    client = _FakeClient(option_fetch_ok=True, transport_full=full)
+    transfer_gap_finder.create_duplicate_transport(client, "SUP1", source)
+    created = [c for c in client.calls if c[0] == "create_transport"][0][1]
+    sheet = (created.get("datasheets") or {}).get("EN") or {}
+    assert sheet.get("description") == "From the full record."
+    # Name comes from the swapped route codes, not the datasheet's human name.
+    assert sheet.get("name") == "HTL1 - CAI"
+
+
+def test_a_failed_refetch_is_not_fatal_and_the_duplicate_still_publishes():
+    """Production treats the refetch as best-effort; a transient GET failure must not
+    abort a whole batch of gap fills."""
+    client = _FakeClient(option_fetch_ok=True, transport_full=None)
+    source = _transport("TRANSPORT-1", "CAI", "HTL1", option_codes=["OPT-OLD"])
+    outcome = transfer_gap_finder.create_duplicate_transport(client, "SUP1", source)
+    assert outcome["status"] == "created"

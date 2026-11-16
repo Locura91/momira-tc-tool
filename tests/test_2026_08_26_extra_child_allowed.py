@@ -90,8 +90,16 @@ def test_wired_into_build_closed_tour_payloads(fake_api_client):
     plan = result["extra_child_plan"]
     assert plan["allowed"] is True
     labels = {b["label"] for b in plan["brackets"]}
-    # minimal_extracted_data's own default price_list only prices Single/Double.
-    assert labels == {"Single", "Double"}
+    # QUADRUPLE APPEARS BY DESIGN (product owner, 2026-11-07; builder.py's own
+    # "QUADRUPLE PRICE DEFAULT" block and CLAUDE.md): the fixture's price_list states only
+    # Single and Double, but a quad booking is two double rooms, so builder defaults
+    # quadruplePrice to doublePrice when it is absent. The tour therefore really does sell
+    # a Quadruple occupancy by the time the plan is computed, and the plan is right to
+    # offer it. This assertion used to read {"Single", "Double"} and has been failing
+    # since that rule landed.
+    assert labels == {"Single", "Double", "Quadruple"}
+    # Triple is NOT defaulted - only quadruple has a documented stand-in.
+    assert "Triple" not in labels
 
 
 def test_defaults_to_allowed_when_extraction_omits_the_field(fake_api_client):

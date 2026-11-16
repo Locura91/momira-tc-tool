@@ -13,7 +13,7 @@ Flow:
 import os
 import re
 
-MODULE_BUILD = "2026-11-11-playwright"
+MODULE_BUILD = "2026-10-24-rollover-ext"
 
 _BASE = "https://momira.travel"
 _LOGIN_URL = f"{_BASE}/login.xhtml"

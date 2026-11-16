@@ -88,10 +88,29 @@ def test_rewrite_falls_back_to_the_original_text_when_the_model_returns_nothing(
     assert result == "Original description."
 
 
-def test_rewrite_returns_empty_text_unchanged_without_calling_the_model():
+# BEHAVIOUR CHANGED since this file was written: empty source text no longer means "do
+# nothing". The function gained a generate-from-scratch path - when there is no text to
+# rewrite but BOTH new direction names are known, it writes a fresh description instead of
+# returning empty. Returning unchanged is now reserved for the case where it has neither
+# text to work from nor both names to generate from.
+def test_rewrite_generates_from_scratch_when_text_is_empty_but_both_names_are_known():
     calls = []
     ax._get_anthropic_client = lambda: calls.append("called") or object()
+    ax._stream_claude_message = (
+        lambda client, model, max_tokens, system_prompt, user_content:
+        ("A one-way private transfer from B to A.", "end_turn"))
     result = ax.rewrite_route_description_for_new_direction("", "A", "B", "B", "A")
+    assert result == "A one-way private transfer from B to A."
+    assert calls == ["called"]
+
+
+@pytest.mark.parametrize("new_dep,new_arr", [("", "A"), ("B", ""), ("", "")])
+def test_rewrite_returns_empty_text_unchanged_when_it_cannot_generate(new_dep, new_arr):
+    """No text to rewrite AND no complete destination pair to generate from - there is
+    nothing the model could be asked, so it must not be called at all."""
+    calls = []
+    ax._get_anthropic_client = lambda: calls.append("called") or object()
+    result = ax.rewrite_route_description_for_new_direction("", "A", "B", new_dep, new_arr)
     assert result == ""
     assert calls == []
 
