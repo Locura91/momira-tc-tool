@@ -4,7 +4,7 @@ Multi-transfer product flow, split out of app.py (Phase 1 restructure, zero beha
 render_multi_transfer_flow moved here verbatim. Everything it references that is defined at
 app.py's own top level is imported back from app via the same late-binding pattern used by the
 earlier flows modules: app.py imports this module only after all of those names are already
-defined in its own namespace, so `from app import ...` resolves correctly despite the circular
+defined in app_helpers, so `from app_helpers import ...` avoids the circular
 import shape. Every needed internal name here is defined earlier in app.py's file order than this
 function's own original position, so the import-back line stays at that original position.
 `render_direction_image_section` is shared with flows/multi_transport.py (module 5) - it stays in
@@ -31,7 +31,7 @@ from ui_components import (
     _safe_float, _safe_int,
 )
 
-from app import (
+from app_helpers import (
     CURRENCY_OPTIONS, SHARED_WIDGET_STATE_PREFIXES, _clear_batch_widget_state,
     _fetch_url_text_safe, _warn_stale_images, ensure_return_candidates,
     render_batch_bulk_controls, render_candidate_filter, render_detection_diagnosis,
