@@ -601,15 +601,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # Called live (not read from p["supplement_examples"]) so a hand-edit to the "new
             # price" number above is reflected immediately. One line per changed PERIOD, not per
             # modality - see supplement_calculation_examples' own docstring.
-            for _ex in price_refresh.supplement_calculation_examples(route, p["changes"]):
-                _sign = "+" if _ex["supplement"] >= 0 else "−"
-                _ex_period = (f" ({_ex['start_date']} → {_ex['end_date']})"
-                             if _ex.get("start_date") or _ex.get("end_date") else "")
-                st.caption(
-                    f"\U0001f9ee **{_ex['name']}**'s new price{_ex_period} will be stored as base "
-                    f"({_ex['base_name']}: {_ex['base_price']}) {_sign} a price supplement of "
-                    f"**{abs(_ex['supplement'])} {_ccy}** = {_ex['new_price']} {_ccy} — this is "
-                    f"exactly what gets written to the price supplement field on Publish.")
+            _examples = price_refresh.supplement_calculation_examples(route, p["changes"])
+            if _examples:
+                _base_ex = _examples[0]
+                _base_price = _base_ex["base_price"]
+                _base_name = _base_ex["base_name"]
+                _rows = []
+                for c in p["changes"]:
+                    _ex = next((_e for _e in _examples if _e["code"] == c["code"]), None)
+                    if _ex:
+                        _rows.append(f"| {c['min_pax']}–{c['max_pax']} pax | **{c['new']}** {_ccy} | "
+                                     f"{_base_price} | +{_ex['supplement']} | {_ex['name']} |")
+                    else:
+                        _rows.append(f"| {c['min_pax']}–{c['max_pax']} pax | **{c['new']}** {_ccy} | "
+                                     f"{c['new']} | — *(base)* | {_base_name} |")
+                st.markdown(
+                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
+                    f"|---------|---------------|------------|------------|----------|\n"
+                    + "\n".join(_rows)
+                )
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
