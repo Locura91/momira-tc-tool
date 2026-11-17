@@ -1498,12 +1498,6 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
                "pickup point, changed cancellation terms — attached automatically to every "
                "future upload of that product type.")
 
-    if st.button(PRICE_AUDIT_CHOICE, key="upd_choice_price_audit", use_container_width=True):
-        st.session_state.product_type = PRICE_AUDIT_CHOICE
-        st.rerun()
-    st.caption("Upload a supplier's latest rate sheet (Excel, multi-sheet supported) and compare "
-               "it against current Travel Compositor prices. Shows differences — does not change anything.")
-
     st.stop()
 
 # ======================================================================
