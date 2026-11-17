@@ -2937,10 +2937,20 @@ def build_closed_tour_payloads(
             f"should have been auto-split into its own Modality already; if you're seeing this, "
             f"please split it manually before publishing.")
     _price_list_overlap_notes.extend(_deep_nesting_notes)
+    _ct_disallow_children = bool(extracted_dmc_data.get("disallow_children", False))
+    _ct_price_list_raw = fix_touching_season_boundaries(extracted_dmc_data.get("price_list", []))
+    if _ct_disallow_children:
+        for _row in _ct_price_list_raw:
+            if isinstance(_row, dict) and "price" in _row and isinstance(_row["price"], dict):
+                for _dk in ("singleChildPercentageDiscount", "doubleChildPercentageDiscount",
+                            "tripleChildPercentageDiscount", "quadrupleChildPercentageDiscount"):
+                    _row["price"].pop(_dk, None)
     _tour_price_list_sorted = sorted(
-        normalize_price_list(fix_touching_season_boundaries(extracted_dmc_data.get("price_list", [])),
+        normalize_price_list(_ct_price_list_raw,
                               pre_config.currency,
-                              fallback_child_discount_percentage=extracted_dmc_data.get("child_discount_percentage"),
+                              fallback_child_discount_percentage=(
+                                  0 if _ct_disallow_children
+                                  else extracted_dmc_data.get("child_discount_percentage")),
                               notes=_child_discount_clamp_notes,
                               max_occupancy=extracted_dmc_data.get("max_occupancy")),
         key=lambda p: p.get("startDate", ""))

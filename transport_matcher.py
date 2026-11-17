@@ -1,272 +1,40 @@
 """
-transport_matcher.py
+transport_matcher.py — thin wrapper around route_matcher for Transport products.
 
-Solves the same "recognize the correct existing record for an update" problem
-already solved for Transfer (see transfer_matcher.py) - Travel Compositor's
-Transport schema also has NO human-assigned code anywhere, only a TC-generated
-id like "TRANSPORT-412579". Mirrors transfer_matcher.py's confirmed approach:
-
-  1. PRIMARY - app-tracked id: once this app creates (or a human confirms a
-     match for) a transport, it remembers the route -> TC id mapping locally,
-     keyed by supplier. Any future update for the "same" route reuses that id
-     automatically, no human step needed.
-  2. FALLBACK - departure/arrival similarity: for a transport this app has
-     never seen before, score every transport in the supplier's full live
-     list (GET /transport/{supplierId}) by how closely its departure/arrival
-     segment locations match the new route, and present the best candidates
-     to a human. Never decides on its own - a human always explicitly
-     confirms (or rejects) a match before anything gets treated as an
-     update-to-existing rather than a brand-new create. Once confirmed,
-     remember_transport_id() should be called so the same route never needs
-     this fallback step again.
-
-ADDITIONAL PROBLEM UNIQUE TO TRANSPORT (Transfer doesn't have this): per-
-occupancy pricing is modelled as SEPARATE OPTION SUB-RESOURCES, one per
-passenger bracket (see ContractTransportOptionVO's docstring in schemas.py) -
-so recognizing "the existing transport" isn't enough on its own; updating a
-transport's prices also means recognizing WHICH existing option corresponds
-to each bracket in the newly-extracted rate sheet, so that option's price can
-be updated in place rather than a duplicate being created. Real option codes
-are not predictable/derivable (confirmed: "ASWHRG", "PraslinLaDigue12", and
-codes literally equal to the transport's own name all seen in real data), so
-this matches by minPassengers/maxPassengers overlap instead of by code - see
-match_bracket_to_existing_option() below.
-
-Storage: same plain local JSON file approach as transfer_matcher.py (separate
-file so the two don't collide) - safe to lose, worst case falls back to the
-departure/arrival matching step again. Source of truth is always Travel
-Compositor itself (confirmed via get_transport/get_transports).
+All shared logic lives in route_matcher.py. This module re-exports the same
+public API names so no caller needs to change its imports.
 """
-# Stamped on every delivery - see platform_store.py's own header for why. This module never
-# carried a build stamp before (2026-09-13, while consolidating name-normalization into
-# text_normalize.py) - a partial deploy that updated every other file but this one would have
-# gone undetected by app.py's own stale-module check.
 MODULE_BUILD = "2026-10-24-rollover-ext"
 
-import os
-import json
-import re
-import difflib
-from typing import Dict, Any, List, Optional
-
-import platform_store
-from text_normalize import normalize_name
-
-# Kept only so an existing local transport_match_store.json can still be read once and
-# migrated into the shared durable store - see _load_store() below. Nothing writes
-# here any more.
-_LEGACY_STORE_PATH = os.getenv(
-    "TRANSPORT_MATCH_STORE_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "transport_match_store.json"),
+from route_matcher import (
+    RouteMatcher,
+    name_similarity as _name_similarity,
+    expand_airport_codes as _expand_airport_codes,
+    route_key as _route_key,
+    suggest_transport_matches as suggest_existing_transport_matches,
+    resolve_transport_match as _resolve_transport_match,
+    match_bracket_to_existing_option,
+    AIRPORT_CODE_TO_CITY as _AIRPORT_CODE_TO_CITY,
 )
-_NAMESPACE = "transport_match"
+
+_matcher = RouteMatcher(
+    product_type="transport",
+    legacy_env_var="TRANSPORT_MATCH_STORE_PATH",
+    legacy_filename="transport_match_store.json",
+)
 
 
-def _load_store() -> Dict[str, Any]:
-    """Reads the whole supplier -> {route: tc_id} map from the shared durable store.
-
-    MOVED OFF THE LOCAL FILESYSTEM: this used to be a JSON file next to the app, which
-    on Streamlit Cloud is wiped on every redeploy - so every match a human had confirmed
-    was silently forgotten and had to be confirmed again. It now lives in platform_store
-    (Postgres when DATABASE_URL is set), which survives restarts.
-
-    A legacy transport_match_store.json is still read ONCE if present and merged in, so an
-    existing local install doesn't lose what it already knew when this ships."""
-    store = platform_store.get_namespace(_NAMESPACE)
-    if not store and os.path.exists(_LEGACY_STORE_PATH):
-        try:
-            with open(_LEGACY_STORE_PATH, "r") as f:
-                legacy = json.load(f)
-            if legacy:
-                for supplier_key, routes in legacy.items():
-                    platform_store.set(_NAMESPACE, str(supplier_key), routes)
-                print(f"📦 Migrated {len(legacy)} supplier(s) of transport match history "
-                      f"from {_LEGACY_STORE_PATH} into durable storage.")
-                return legacy
-        except Exception as e:
-            print(f"⚠️ Could not read the legacy transport match store ({e}) - starting fresh "
-                  f"(falls back to name matching, nothing breaks).")
-    return store
+def remember_transport_id(supplier_id, departure_name, arrival_name, transport_id):
+    _matcher.remember_id(supplier_id, departure_name, arrival_name, transport_id)
 
 
-def _save_supplier(supplier_key: str, routes: Dict[str, Any]) -> None:
-    if not platform_store.set(_NAMESPACE, str(supplier_key), routes):
-        print("⚠️ Could not save the transport match store - the id -> route mapping just "
-              "learned won't persist to the next session, but nothing about this upload failed.")
+def forget_transport_id(supplier_id, departure_name, arrival_name):
+    _matcher.forget_id(supplier_id, departure_name, arrival_name)
 
 
-def _route_key(departure_name: str, arrival_name: str) -> str:
-    """Normalizes a departure/arrival pair into a stable dict key - same convention as
-    transfer_matcher._route_key(), so trivial formatting differences don't create duplicate
-    tracked entries for what is really the same route. Shares text_normalize.normalize_name with
-    every other matcher in the platform - see transfer_matcher._route_key's docstring for the
-    2026-09-13 fix this closed (an independently-written copy that had fallen behind the
-    2026-08-30 NFKC-Unicode audit fix)."""
-    return f"{normalize_name(departure_name)}::{normalize_name(arrival_name)}"
+def lookup_tracked_transport_id(supplier_id, departure_name, arrival_name):
+    return _matcher.lookup_tracked_id(supplier_id, departure_name, arrival_name)
 
 
-def remember_transport_id(supplier_id: str, departure_name: str, arrival_name: str, transport_id: str) -> None:
-    """Call right after a successful create, OR right after a human explicitly confirms a
-    departure/arrival-matched candidate as the correct existing transport."""
-    if not (supplier_id and departure_name and arrival_name and transport_id):
-        return
-    supplier_key = str(supplier_id)
-    # Only this supplier's row is written, not the whole store - two people working on
-    # different suppliers at the same time can't clobber each other's entry the way a
-    # whole-file rewrite could.
-    routes = platform_store.get(_NAMESPACE, supplier_key) or {}
-    routes[_route_key(departure_name, arrival_name)] = transport_id
-    _save_supplier(supplier_key, routes)
-    print(f"📌 Remembered TC id '{transport_id}' for route '{departure_name}' -> '{arrival_name}' "
-          f"(supplier {supplier_id}) - future updates to this route will auto-match.")
-
-
-def forget_transport_id(supplier_id: str, departure_name: str, arrival_name: str) -> None:
-    """Removes a tracked mapping - e.g. if a human later says a previous auto-match was wrong."""
-    supplier_key = str(supplier_id)
-    routes = platform_store.get(_NAMESPACE, supplier_key)
-    if routes:
-        routes.pop(_route_key(departure_name, arrival_name), None)
-        _save_supplier(supplier_key, routes)
-
-
-def lookup_tracked_transport_id(supplier_id: str, departure_name: str, arrival_name: str) -> Optional[str]:
-    """PRIMARY matching step - returns a TC id if this app has already created/confirmed a
-    match for this exact route before, or None if it isn't tracked yet (caller should then fall
-    back to suggest_existing_transport_matches)."""
-    _load_store()  # triggers a one-time migration of any legacy local file
-    routes = platform_store.get(_NAMESPACE, str(supplier_id)) or {}
-    return routes.get(_route_key(departure_name, arrival_name))
-
-
-# CONFIRMED REAL RULE (product owner): "when Transfer or Transport says a three letter code
-# from Airport, this must be seen as a City name too" - same rule as transfer_matcher.py's own
-# copy of this table (see its docstring for why it's duplicated rather than shared, and why
-# only these codes). Applied to BOTH place names and full route-name strings here (see
-# _half_score below), since Transport's own 'name' field is a full descriptive string that may
-# embed a code, not a bare place name.
-_AIRPORT_CODE_TO_CITY = {
-    "RMF": "Marsa Alam", "HRG": "Hurghada", "SSH": "Sharm El Sheikh", "CAI": "Cairo",
-}
-
-
-def _expand_airport_codes(text: str) -> str:
-    result = text or ""
-    for code, city in _AIRPORT_CODE_TO_CITY.items():
-        result = re.sub(rf"\b{code}\b", city, result, flags=re.IGNORECASE)
-    return result
-
-
-def _name_similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(
-        None, _expand_airport_codes(a).strip().lower(), _expand_airport_codes(b).strip().lower()
-    ).ratio()
-
-
-def suggest_existing_transport_matches(departure_name: str, arrival_name: str, existing_transports: List[dict],
-                                        top_n: int = 5) -> List[Dict[str, Any]]:
-    """
-    FALLBACK matching step - NEVER auto-applied. Scores every transport in `existing_transports`
-    (the full list from a real GET /transport/{supplierId} response) against the new departure/
-    arrival names using text similarity, and returns the top N candidates ranked best-first so a
-    human can explicitly confirm or reject.
-
-    NOTE: unlike Transfer (which has a nested departure/arrival.name field), Transport's location
-    is only available as a raw LOCATION CODE on each segment (e.g. "meet_aswan") - there's no
-    human-readable name on the transport record itself, only on the resolved Transport Base. This
-    matches against the transport's own top-level 'name' field instead (confirmed real examples:
-    "Aswan - Hurghada", "One-way transfer Praslin - La Digue" - route names in practice), scored
-    against BOTH the departure and arrival name individually so a match doesn't require exact
-    word order.
-
-    Each candidate: {"transport_id", "name", "score" (0.0-1.0, higher = more likely the same route)}.
-    """
-    def _half_score(place_name: str, route_name: str) -> float:
-        # A short place name (e.g. "Praslin") against a longer descriptive route name (e.g.
-        # "One-way transfer Praslin - La Digue") scores poorly under plain SequenceMatcher.ratio()
-        # even on a perfect substring match, since ratio is diluted by the length difference of
-        # the two strings - a real risk here since Transport's own 'name' field is typically a
-        # full descriptive route name, not just the bare place name the way Transfer's departure/
-        # arrival.name fields are. Substring containment is checked first and given strong credit;
-        # ratio() is only the fallback for genuinely fuzzy (non-substring) matches.
-        place_clean = _expand_airport_codes(place_name or "").strip().lower()
-        route_clean = _expand_airport_codes(route_name or "").strip().lower()
-        if place_clean and place_clean in route_clean:
-            return 0.9
-        return _name_similarity(place_name, route_name)
-
-    scored = []
-    for t in existing_transports or []:
-        if not isinstance(t, dict):
-            continue
-        t_name = t.get("name", "")
-        dep_score = _half_score(departure_name, t_name)
-        arr_score = _half_score(arrival_name, t_name)
-        score = (dep_score + arr_score) / 2
-        scored.append({"transport_id": t.get("id"), "name": t_name, "score": round(score, 3)})
-    scored.sort(key=lambda c: c["score"], reverse=True)
-    return scored[:top_n]
-
-
-def resolve_transport_match(client, supplier_id: str, departure_name: str, arrival_name: str) -> Dict[str, Any]:
-    """
-    Convenience wrapper combining both matching steps, mirroring transfer_matcher.resolve_transfer_match():
-      {"tracked_id": str or None,       # CONFIRMED REAL RULE (product owner): even a tracked id
-                                         # must NOT be auto-applied silently - the UI must fetch and
-                                         # show the existing record's key details and get an explicit
-                                         # human confirmation before using it, same bar as the
-                                         # fallback_candidates path already had.
-       "fallback_candidates": [...],    # only populated if tracked_id is None - MUST be human-confirmed
-       "fetch_error": dict or None}     # set if get_transports() itself failed
-    """
-    tracked_id = lookup_tracked_transport_id(supplier_id, departure_name, arrival_name)
-    if tracked_id:
-        return {"tracked_id": tracked_id, "fallback_candidates": [], "fetch_error": None}
-
-    result = client.get_transports(supplier_id)
-    if isinstance(result, dict) and "error" in result:
-        return {"tracked_id": None, "fallback_candidates": [], "fetch_error": result}
-
-    existing = result.get("transport", []) if isinstance(result, dict) else (result or [])
-    candidates = suggest_existing_transport_matches(departure_name, arrival_name, existing)
-    return {"tracked_id": None, "fallback_candidates": candidates, "fetch_error": None}
-
-
-def match_bracket_to_existing_option(min_passengers: int, max_passengers: int,
-                                      existing_options: List[dict]) -> Optional[dict]:
-    """
-    UNIQUE TO TRANSPORT (Transfer has no equivalent - its occupancy pricing is one flat array on
-    the single record, fully overwritten on every update). Finds which, if any, existing option
-    (a real ContractTransportOptionVO dict, as returned by get_transport_option) corresponds to a
-    newly-extracted bracket, so its price can be updated in place instead of creating a duplicate.
-
-    Matches by minPassengers/maxPassengers OVERLAP, not by code - real option codes are not
-    predictable or derivable from the bracket (confirmed: "ASWHRG", "PraslinLaDigue12", and codes
-    literally equal to the transport's own name all seen in real data), so code can never be used
-    to recognize "the same bracket" across a rate refresh. Prefers an EXACT min/max match; if none
-    exists, falls back to the existing option with the most overlapping passenger range (handles
-    a rate sheet that reshuffled bracket boundaries, e.g. last year's "5-8 pax" becoming this
-    year's "5-6" + "7-8").
-
-    Returns the matched existing option dict, or None if no existing option overlaps at all (this
-    bracket is genuinely new - create it rather than update).
-    """
-    exact = [
-        o for o in (existing_options or [])
-        if isinstance(o, dict) and o.get("minPassengers") == min_passengers and o.get("maxPassengers") == max_passengers
-    ]
-    if exact:
-        return exact[0]
-
-    def _overlap(o: dict) -> int:
-        o_min, o_max = o.get("minPassengers"), o.get("maxPassengers")
-        if o_min is None or o_max is None:
-            return 0
-        return max(0, min(max_passengers, o_max) - max(min_passengers, o_min) + 1)
-
-    candidates = [(o, _overlap(o)) for o in (existing_options or []) if isinstance(o, dict)]
-    candidates = [(o, overlap) for o, overlap in candidates if overlap > 0]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[1], reverse=True)
-    return candidates[0][0]
+def resolve_transport_match(client, supplier_id, departure_name, arrival_name):
+    return _resolve_transport_match(_matcher, client, supplier_id, departure_name, arrival_name)
