@@ -157,13 +157,10 @@ def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
     en = dict(datasheets.get("EN") or {})
     for field in ("description", "pickupDescription"):
         plain = _html_to_plain_for_editing(en.get(field, ""))
+        original_plain = _html_to_plain_for_editing(
+            ((source.get("datasheets") or {}).get("EN") or {}).get(field, ""))
         field_status = swap_report.get(field)
-        # Always run the AI rewrite when there is text to rewrite (or to generate from scratch).
-        # The literal swap only exchanges place names verbatim — it cannot understand direction
-        # (e.g. "We pick you up from the airport and take you to your hotel" needs the pickup/
-        # drop-off roles reversed, not just city names swapped). The AI call is cheap (Haiku) and
-        # returns the text unchanged when no actual rewrite is needed, so always running it is
-        # correct; skipping it on a "clean" literal swap silently left directional meaning wrong.
+        desc_changed = plain.strip() != original_plain.strip()
         if field_status is not None or plain:
             rewritten = rewrite_route_description_for_new_direction(
                 plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
@@ -171,6 +168,16 @@ def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
             if rewritten.strip() and rewritten.strip() != plain.strip():
                 en[field] = _plain_to_html_for_saving(rewritten)
                 swap_report[field] = "ai"
+            elif not desc_changed and plain.strip():
+                old_dep = route_info.get("old_departure_name", "")
+                old_arr = route_info.get("old_arrival_name", "")
+                if old_dep and old_arr and old_dep in plain and old_arr in plain:
+                    placeholder = "\x00"
+                    forced = (plain.replace(old_dep, placeholder)
+                                  .replace(old_arr, old_dep)
+                                  .replace(placeholder, old_arr))
+                    en[field] = _plain_to_html_for_saving(forced)
+                    swap_report[field] = "forced"
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
@@ -211,17 +218,37 @@ def build_and_rewrite_transport_swap_payload(source: Dict[str, Any], api_client)
     # Cameron Highlands" → "One-way transfer Cameron Highlands- Taman Negara"), preserving the
     # original prefix and format exactly. No AI step needed for the name field.
 
-    # Always run the AI rewrite for the description too — a literal swap cannot understand
+    # Always run the AI rewrite for the description — a literal swap cannot understand
     # directional meaning (e.g. "We pick you up from the airport" needs pickup/drop-off roles
-    # reversed, not just city names swapped). Haiku is cheap and returns text unchanged when
-    # no actual rewrite is needed.
+    # reversed, not just city names swapped).
     plain = _html_to_plain_for_editing(en.get("description", ""))
+    original_plain = _html_to_plain_for_editing(
+        ((source.get("datasheets") or {}).get("EN") or {}).get("description", ""))
+    desc_changed = plain.strip() != original_plain.strip()
     rewritten = rewrite_route_description_for_new_direction(
         plain, route_info.get("old_departure_name", ""), route_info.get("old_arrival_name", ""),
         route_info.get("new_departure_name", ""), route_info.get("new_arrival_name", ""))
     if rewritten.strip() and rewritten.strip() != plain.strip():
         en["description"] = _plain_to_html_for_saving(rewritten)
         swap_report["description"] = "ai"
+    elif not desc_changed and plain.strip():
+        # Neither the literal swap in builder.py nor the AI rewrite changed the description.
+        # Last resort: force-swap city names parsed from the transport Name so the description
+        # at least mentions the correct cities, even without full semantic rewriting.
+        src_name = source.get("name") or ""
+        _frm, _to = _parse_route_cities_from_name(src_name)
+        if _frm and _to and _frm in plain and _to in plain:
+            placeholder = "\x00"
+            forced = (plain.replace(_frm, placeholder)
+                          .replace(_to, _frm)
+                          .replace(placeholder, _to))
+            en["description"] = _plain_to_html_for_saving(forced)
+            swap_report["description"] = "forced"
+            print(f"[info] description force-swapped cities for transport '{src_name}'")
+        else:
+            print(f"[warn] description not rewritten for transport '{src_name}' "
+                  f"(old_dep={route_info.get('old_departure_name')!r}, "
+                  f"old_arr={route_info.get('old_arrival_name')!r})")
     datasheets["EN"] = en
     payload["datasheets"] = datasheets
 
