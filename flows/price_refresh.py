@@ -428,15 +428,18 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                  if c.get("start_date") or c.get("end_date") else "")
                 with pcol2:
                     c["new"] = st.number_input(
-                        f"New price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
+                        f"New adult price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
                         min_value=0.0, step=1.0, value=float(c["new"]),
-                        # Token, not just index+code - see _stamp_proposal_widget_tokens: without
-                        # it, a re-read's corrected price was displayed as (and published as) the
-                        # old one. Periods on the same option/code need their own key too, so the
-                        # date range is folded in.
                         key=f"pr_price_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
                             f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
                         label_visibility="collapsed")
+                    if c.get("child_new") is not None:
+                        c["child_new"] = st.number_input(
+                            f"New child price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
+                            min_value=0.0, step=1.0, value=float(c["child_new"]),
+                            key=f"pr_child_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
+                                f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
+                            label_visibility="collapsed")
                 with pcol1:
                     # CONFIRMED REAL REQUEST (product owner): red when the price to apply
                     # differs from what's already live, green when (after any hand-edit above)
@@ -464,6 +467,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     else:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
+                    # Child price line — shown when present on the change (transport vehicle changes).
+                    if c.get("child_old") is not None or c.get("child_new") is not None:
+                        _co = c.get("child_old", 0.0)
+                        _cn = c.get("child_new", 0.0)
+                        _csrc = c.get("child_source", "")
+                        _csrc_label = " *(from document)*" if _csrc == "document" \
+                            else " *(scaled with adult)*" if _csrc == "scaled" else ""
+                        if abs(_cn - _co) < 0.005:
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: :green[**{_co}**] {_ccy} — *unchanged*")
+                        else:
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: {_co} → :red[**{_cn}**] {_ccy}{_csrc_label}")
+                        if c.get("infant_old") is not None and c["infant_old"] > 0:
+                            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;infant: {c['infant_old']} {_ccy} (scales with adult)")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f'from the row *“{finding["matched_row"]}”*')
@@ -588,7 +604,17 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     _supp_u = "—"
                 _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
                                f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
-            st.markdown(f":green[**{route.get('name')}**]{_id_suffix(route)}")
+            _child_u = round(route.get("base_child", 0.0), 2)
+            _infant_u = round(route.get("base_infant", 0.0), 2)
+            _child_line = ""
+            if route.get("price_per_pax", True) and (_child_u > 0 or _infant_u > 0):
+                _parts = []
+                if _child_u > 0:
+                    _parts.append(f"child: :green[**{_child_u}**]")
+                if _infant_u > 0:
+                    _parts.append(f"infant: {_infant_u}")
+                _child_line = f" · {' · '.join(_parts)} {_ccy_u}"
+            st.markdown(f":green[**{route.get('name')}**]{_id_suffix(route)}{_child_line}")
             if _rows_u:
                 st.markdown(
                     f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"

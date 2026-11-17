@@ -1663,14 +1663,38 @@ def build_proposals(routes: List[Dict[str, Any]],
                         if new_price is None:
                             missing += 1
                             continue
-                        if abs(new_price - option["unit_price"]) < 0.005:
+                        # Child price from the document (explicit) or proportional scaling.
+                        _child_old = round(route.get("base_child", 0.0), 2)
+                        _infant_old = round(route.get("base_infant", 0.0), 2)
+                        _periods = bracket_periods_for(finding, option["min_pax"], option["max_pax"],
+                                                       finding.get("minimum_pax", 1),
+                                                       price_per_pax=per_pax,
+                                                       allow_overlap=allow_overlap or scope is not None)
+                        _doc_child = None
+                        if _periods:
+                            _doc_child = _periods[0].get("child_price")
+                        if _doc_child is not None:
+                            _child_new = round_up_currency(_doc_child)
+                            _child_source = "document"
+                        elif per_pax and option["unit_price"] > 0 and _child_old > 0:
+                            _child_new = round_up_currency(_child_old * new_price / option["unit_price"])
+                            _child_source = "scaled"
+                        else:
+                            _child_new = _child_old
+                            _child_source = "unchanged"
+                        adult_changed = abs(new_price - option["unit_price"]) >= 0.005
+                        child_changed = abs(_child_new - _child_old) >= 0.005
+                        if not adult_changed and not child_changed:
                             unchanged += 1
                             continue
                         changes.append({"code": option["code"], "min_pax": option["min_pax"],
                                         "max_pax": option["max_pax"], "old": option["unit_price"],
                                         "new": new_price, "name": option.get("name", ""),
                                         "write_kind": "vehicle",
-                                        "start_date": None, "end_date": None})
+                                        "start_date": None, "end_date": None,
+                                        "child_old": _child_old, "child_new": _child_new,
+                                        "child_source": _child_source,
+                                        "infant_old": _infant_old})
                         continue
                     # A non-vehicle (supplement) bracket - every SEASON the document states for
                     # it, each written to its own period (product owner, 2026-09-11: "Hiace had
@@ -2194,13 +2218,21 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
                   "vehicle" if vehicle_changes else "supplement"
 
     if vehicle_changes:
-        new_base = round_up_currency(_num(vehicle_changes[0]["new"]))
+        vc = vehicle_changes[0]
+        new_base = round_up_currency(_num(vc["new"]))
         parent[base_field] = new_base
-        if per_pax and old_base > 0:
-            ratio = new_base / old_base
-            for key in ("baseChildrenPrice", "baseInfantPrice"):
-                if _num(parent.get(key)) > 0:
-                    parent[key] = round_up_currency(_num(parent.get(key)) * ratio)
+        if per_pax:
+            # Use the explicit child price from the document/UI when available;
+            # fall back to proportional scaling otherwise.
+            if vc.get("child_new") is not None:
+                parent["baseChildrenPrice"] = round_up_currency(_num(vc["child_new"]))
+            elif old_base > 0 and _num(parent.get("baseChildrenPrice")) > 0:
+                parent["baseChildrenPrice"] = round_up_currency(
+                    _num(parent.get("baseChildrenPrice")) * new_base / old_base)
+            # Infant always scales proportionally (no document extraction).
+            if old_base > 0 and _num(parent.get("baseInfantPrice")) > 0:
+                parent["baseInfantPrice"] = round_up_currency(
+                    _num(parent.get("baseInfantPrice")) * new_base / old_base)
         if not supplement_changes:
             return {"transport": parent, "options": [], "write_kind": "vehicle"}
         # Both base AND supplements changed — write both. The base_for_supplement_calc is
@@ -2464,6 +2496,18 @@ def rebuild_manual_adjustment(route: Dict[str, Any], new_base: float) -> Dict[st
             if _num(parent.get(key)) > 0:
                 parent[key] = round_up_currency(_num(parent.get(key)) * ratio)
     return parent
+
+
+def _bracket_child_price_for(finding: Dict[str, Any], min_pax: int, max_pax: int,
+                             minimum_pax: int, price_per_pax: bool = True,
+                             allow_overlap: bool = True) -> Optional[float]:
+    """The child price from the matched bracket, if the document states one."""
+    periods = bracket_periods_for(finding, min_pax, max_pax, minimum_pax,
+                                  price_per_pax=price_per_pax,
+                                  allow_overlap=allow_overlap)
+    if periods and periods[0].get("child_price") is not None:
+        return round_up_currency(periods[0]["child_price"])
+    return None
 
 
 def apply_manual_adjustments(client, supplier_id: str, proposals: List[Dict[str, Any]],
