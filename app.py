@@ -1169,7 +1169,7 @@ with st.expander("💾 What the platform remembers", expanded=False):
 # entity appears on one side only.
 # ======================================================================
 TOOL_UPLOAD = "📤 Create new products"
-TOOL_UPDATE = "🔧 Update existing products"
+TOOL_UPDATE = "🔧 Update / Check existing products"
 TOOL_TRANSLATE = "🌐 Translate Products"
 TOOL_OUTREACH = "🤝 Find & Contact Suppliers"
 # Reads a supplier's stop-sale email and blocks the dates. Its own tool rather than a
@@ -1250,6 +1250,7 @@ TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality co
 # Extended 2026-11-15 from Transport-only to Transport · Ticket · Transfer, each with its
 # own checks (flows/inventory_audit.py). The old constant stays for restored sessions.
 INVENTORY_AUDIT_CHOICE = "Inventory audit"
+PRICE_AUDIT_CHOICE = "Price audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
 # selector inside the flow itself (flows/image_bulk.py).
@@ -1467,9 +1468,9 @@ if st.session_state.active_tool == TOOL_HOTEL_AUTOMAP:
 # (flows/image_bulk.py) with Transfer/Transport selector inside.
 # ======================================================================
 if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product_type") is None:
-    st.header("Update existing products — what do you want to change?")
-    st.caption("All of these work directly on products already live in Travel Compositor — "
-               "no document needed.")
+    st.header("Update / Check existing products")
+    st.caption("Work directly on products already live in Travel Compositor — update them, "
+               "or check their prices against a supplier document.")
 
     if st.button(UPDATE_REFRESH_CHOICE, key="upd_choice_refresh", use_container_width=True):
         st.session_state.product_type = UPDATE_REFRESH_CHOICE
@@ -1496,6 +1497,12 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
     st.caption("No document at all: record something you know about a supplier — a moved "
                "pickup point, changed cancellation terms — attached automatically to every "
                "future upload of that product type.")
+
+    if st.button(PRICE_AUDIT_CHOICE, key="upd_choice_price_audit", use_container_width=True):
+        st.session_state.product_type = PRICE_AUDIT_CHOICE
+        st.rerun()
+    st.caption("Upload a supplier's latest rate sheet (Excel, multi-sheet supported) and compare "
+               "it against current Travel Compositor prices. Shows differences — does not change anything.")
 
     st.stop()
 
@@ -1655,6 +1662,11 @@ if st.session_state.product_type == MANUAL_INFO_CHOICE:
 
 if st.session_state.product_type == MIGRATE_SUPPLIER_CHOICE:
     render_supplier_migration_flow(client)
+    st.stop()
+
+if st.session_state.product_type == PRICE_AUDIT_CHOICE:
+    from flows.price_audit import render_price_audit_flow
+    render_price_audit_flow(client)
     st.stop()
 
 if st.session_state.product_type == BULK_STOP_SALES_CHOICE:
