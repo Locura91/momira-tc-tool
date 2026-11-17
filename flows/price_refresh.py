@@ -315,7 +315,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
     _pending = st.session_state.get("pr_pending")
     if _pending and _pending.get("type_groups"):
         # Step 2a: transport type picker (shown when supplier has mixed types)
-        st.subheader("2 — Which transport type does this rate sheet cover?")
+        col_hd, col_back = st.columns([4, 1])
+        col_hd.subheader("2 — Which transport type does this rate sheet cover?")
+        if col_back.button("← Back", key="pr_type_back"):
+            st.session_state.pop("pr_pending", None)
+            st.rerun()
         st.caption("This supplier has products of different types. Select the one this rate sheet "
                    "prices — only those products will be shown in the next step and sent to the AI.")
         _type_groups = _pending["type_groups"]
