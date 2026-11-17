@@ -420,11 +420,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
     zero_supplement = [p for p in proposals if p["status"] == "blocked_zero_supplement"]
 
     st.subheader("2 — Check the new prices")
-    st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
-              f"{len(absent)} not found in it."
-              + (f" · {len(blocked)} could not be read" if blocked else "")
-              + (f" · {len(needs_base)} need a base modality designated" if needs_base else "")
-              + (f" · {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
+    _summary_parts = [f"{len(changed)} route(s) would change", f"{len(unchanged)} already match the document"]
+    if absent:
+        _summary_parts.append(f"{len(absent)} not in this document (ignored — only listed routes are compared)")
+    if blocked:
+        _summary_parts.append(f"{len(blocked)} could not be read")
+    if needs_base:
+        _summary_parts.append(f"{len(needs_base)} need a base modality designated")
+    if zero_supplement:
+        _summary_parts.append(f"{len(zero_supplement)} blocked on a zero supplement")
+    st.caption(" · ".join(_summary_parts))
     _scope = st.session_state.get("pr_scope")
     if _scope:
         st.info("\U0001f3af This round is scoped to the "
@@ -677,9 +682,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  ·  "
                            f":green[{price_bits}] {route.get('currency') or ''}")
     if absent:
-        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
-            st.caption("The document may price these under a wording nobody matched, or the supplier "
-                      "may have dropped them. Pick the row's price yourself to update one anyway.")
+        with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
+            st.caption("These routes exist in TC but weren't found in the uploaded document. "
+                      "This is normal when the document only covers one destination. "
+                      "You can still match a price by hand if the document does list them under different wording.")
             for p in absent:
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
@@ -1034,10 +1040,14 @@ def render_ticket_price_refresh_flow(client):
     unsupported = [p for p in proposals if p["status"] == "unsupported_price_type"]
 
     st.subheader("2 — Check the new prices & operational end date")
-    st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
-              f"document · {len(absent)} not found in it."
-              + (f" · {len(blocked)} could not be read" if blocked else "")
-              + (f" · {len(unsupported)} not supported yet (SERVICE pricing)" if unsupported else ""))
+    _tsummary = [f"{len(changed)} Modality(ies) would change", f"{len(unchanged)} already match the document"]
+    if absent:
+        _tsummary.append(f"{len(absent)} not in this document (ignored)")
+    if blocked:
+        _tsummary.append(f"{len(blocked)} could not be read")
+    if unsupported:
+        _tsummary.append(f"{len(unsupported)} not supported yet (SERVICE pricing)")
+    st.caption(" · ".join(_tsummary))
 
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-11-09): ticket price refresh must DUPLICATE the
     # modality (POST) instead of updating in-place (PUT).  The original stays untouched; a new
@@ -1203,10 +1213,10 @@ def render_ticket_price_refresh_flow(client):
         # "not found" section: a ticket the AI didn't match still gets a manual price + "Use"
         # button here, exactly like a transfer/transport route does, instead of being a
         # dead-end read-only list.
-        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
-            st.caption("The document may price these under a code nobody matched, or the "
-                      "supplier may have dropped them. Pick the Modality's price yourself to "
-                      "update one anyway.")
+        with st.expander(f"ℹ️ {len(absent)} TC ticket(s) not in this document — ignored unless you match by hand"):
+            st.caption("These tickets exist in TC but weren't found in the uploaded document. "
+                      "This is normal when the document only covers some products. "
+                      "You can still match a price by hand if the document lists them under different wording.")
             for p in absent:
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
