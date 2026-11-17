@@ -2680,7 +2680,9 @@ def rewrite_route_description_for_new_direction(
             "role like 'your booked accommodation') rather than only swapping place names that "
             "happen to appear literally. Keep every other factual detail EXACTLY as stated (vehicle "
             "type, service availability, included amenities, any codes or qualifiers like airport "
-            "codes) - do not invent, drop, or embellish anything. Keep the same tone, length, and "
+            "codes) - do not invent or embellish anything. If a qualifier like '(Hotel or Airport)' "
+            "or similar only makes sense for one endpoint and not the other in the new direction, "
+            "drop it rather than keeping misleading information. Keep the same tone, length, and "
             "paragraph/list structure as the original (plain text: a blank line between paragraphs; "
             "a bullet list is a blank line before and after it, with each item on its own line "
             "starting with '- ' - keep that '- ' marker on every list item exactly as it appears in "
@@ -2699,7 +2701,8 @@ def rewrite_route_description_for_new_direction(
         raw_response, _stop_reason = _stream_claude_message(client, model, 1024, system_prompt, user_content)
         rewritten = raw_response.strip()
         return rewritten or plain_text
-    except Exception:
+    except Exception as e:
+        print(f"[warn] rewrite_route_description_for_new_direction failed: {e}")
         return plain_text
 
 
