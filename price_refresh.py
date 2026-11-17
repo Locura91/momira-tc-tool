@@ -2190,27 +2190,23 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
     # field that is genuinely still None.
     normalize_for_put(parent, "Transport")
 
-    write_kind = "vehicle" if vehicle_changes else "supplement"
+    write_kind = "both" if (vehicle_changes and supplement_changes) else \
+                  "vehicle" if vehicle_changes else "supplement"
 
     if vehicle_changes:
-        # CONFIRMED REAL PRODUCT DECISION (product owner, 2026-09-11): "but if we only update the
-        # Sedan price whey should the app touches even the Hiace price supplement?" - a vehicle
-        # round writes ONLY the parent's shared base field. No option is read, computed, shown, or
-        # written - not even the one this round happens to also be scoped to structurally, since
-        # the base bracket IS the vehicle bracket and carries no supplement of its own to touch.
         new_base = round_up_currency(_num(vehicle_changes[0]["new"]))
         parent[base_field] = new_base
-        # Child and infant prices move with the adult price rather than being left at last
-        # season's number, which would silently change the child discount. Per-vehicle transports
-        # have no separate child/infant base at all - there is nothing here to scale.
         if per_pax and old_base > 0:
             ratio = new_base / old_base
             for key in ("baseChildrenPrice", "baseInfantPrice"):
                 if _num(parent.get(key)) > 0:
                     parent[key] = round_up_currency(_num(parent.get(key)) * ratio)
-        return {"transport": parent, "options": [], "write_kind": "vehicle"}
+        if not supplement_changes:
+            return {"transport": parent, "options": [], "write_kind": "vehicle"}
+        # Both base AND supplements changed — write both. The base_for_supplement_calc is
+        # already set to the new base price (line above), so supplement arithmetic is correct.
 
-    # A supplement round: write ONLY the touched option(s)' own price entries - the parent record
+    # A supplement round (or a combined round): write the touched option(s)' own price entries.
     # is returned unchanged (still needed by apply_proposals' caller shape) but is never PUT for
     # this write kind (see apply_proposals). Every period this round did NOT touch (including
     # every season on every OTHER, untouched option) survives byte for byte.
@@ -2263,7 +2259,7 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
         payload["code"] = option["code"]
         payload["prices"] = new_entries
         option_payloads.append({"code": option["code"], "payload": payload})
-    return {"transport": parent, "options": option_payloads, "write_kind": "supplement"}
+    return {"transport": parent, "options": option_payloads, "write_kind": write_kind}
 
 
 def supplement_calculation_examples(route: Dict[str, Any],
