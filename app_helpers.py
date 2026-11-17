@@ -3799,7 +3799,7 @@ def render_update_refresh_flow(client):
     # by which point both app.py and every flows/*.py module are fully loaded - is zero
     # behaviour change, same pattern as the dispatcher-stays-in-app.py fix from module 10.
     from flows.price_refresh import render_price_refresh_flow, render_ticket_price_refresh_flow
-    st.header("🔄 Price & operational dates update to existing Products")
+    st.header("🔍 Price audit & operational dates audit")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()

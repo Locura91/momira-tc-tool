@@ -531,14 +531,21 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
                            f"{price_bits} {route.get('currency') or ''} · status: *{p['status']}*")
 
-    # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
-    # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a
-    # single click, which is the one way "accept all" could do damage.
+    def _has_cheaper_price(p):
+        return any(c["new"] < c["old"] for c in p.get("changes", []))
+
+    if changed:
+        st.markdown(f"### 🔴 {len(changed)} route(s) — price difference found")
+
+    # Accept-all with exceptions: only auto-accepts routes where the document price is HIGHER
+    # or equal. Routes with any cheaper price require individual human acceptance (CLAUDE.md
+    # bulk pricing rule: never auto-apply cheaper prices).
     acol1, acol2 = st.columns([1, 4])
     with acol1:
-        if st.button("✅ Accept all", key="pr_accept_all", use_container_width=True):
+        if st.button("✅ Accept all (higher prices only)", key="pr_accept_all", use_container_width=True):
             for p in proposals:
-                p["accepted"] = p["status"] == "changed"
+                if p["status"] == "changed" and not _has_cheaper_price(p):
+                    p["accepted"] = True
             st.rerun()
     with acol2:
         if st.button("Clear all", key="pr_clear_all"):
@@ -604,6 +611,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":green[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}  ·  "
                                    f"*matches the live price*")
+                    elif c["new"] < c["old"]:
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
+                                   f":orange[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}  ·  "
+                                   f"⚠️ *cheaper — requires individual acceptance*")
                     else:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
@@ -673,14 +684,14 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                   "instruction - the current price is left as it was.")
 
     if unchanged:
-        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
-            for p in unchanged:
-                route = p["route"]
-                price_bits = ", ".join(
-                    f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
-                    for o in (route.get("options") or []) if not o.get("fetch_failed"))
-                st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  ·  "
-                           f":green[{price_bits}] {route.get('currency') or ''}")
+        st.markdown(f"### ✅ {len(unchanged)} route(s) — prices correct")
+        for p in unchanged:
+            route = p["route"]
+            price_bits = ", ".join(
+                f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
+                for o in (route.get("options") or []) if not o.get("fetch_failed"))
+            st.markdown(f"- :green[**{route.get('name')}**]{_id_suffix(route)}  ·  "
+                       f":green[{price_bits}] {route.get('currency') or ''}")
     if absent:
         with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
             st.caption("These routes exist in TC but weren't found in the uploaded document. "
