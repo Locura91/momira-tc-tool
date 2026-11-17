@@ -90,26 +90,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # earlier bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
     # correctly): "we must then update in the future in bulk only the pricevehicle or the
     # priceperpax... ignore the modalities... add just for transport an update field so the human
-    # Transport type filter — scope to specific types (e.g. Ferry, Car) BEFORE choosing the mode,
-    # because it affects all three modes (rate sheet, manual adjustment, consistency check) and
-    # is the first scoping decision: "which transports am I updating?" comes before "how?".
-    # Placed here so the mode radio (which exits early for manual/consistency) sees it too.
+    # Transport type scoping: removed the upfront multiselect filter (product owner, 2026-11-17).
+    # Step 2's transport_type_groups picker already asks which type this rate sheet covers when
+    # the supplier has mixed types — the upfront filter was redundant and forced an unnecessary
+    # extra click. Manual adjustment and consistency check still accept transport_types=None
+    # (meaning all types), which is the right default.
     pr_transport_types = None
-    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
-        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
-        _type_choice = st.multiselect(
-            "Transport type (leave empty for all)",
-            _type_labels, default=[], key="pr_transport_type_filter",
-            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
-                 "Leave empty to update every transport type. Only transports of the selected "
-                 "type(s) will appear in the modality list and be updated.")
-        if _type_choice:
-            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
-                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
-            _type_display = ", ".join(_type_choice)
-            st.caption(f"Only **{_type_display}** transports will be updated.")
-        else:
-            st.caption("All transport types will be updated.")
 
     # can manually add a absolute or percentage number." A second, simpler mode alongside the
     # existing document-reading flow (kept for when there IS a rate sheet to read) - added only
@@ -256,24 +242,6 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
-                if pr_transport_types:
-                    pre_filter = len(routes)
-                    routes = [r for r in routes
-                              if (r.get("raw", {}).get("transportType") or "").upper()
-                              in {t.upper() for t in pr_transport_types}]
-                    type_names = ", ".join(
-                        dict(_TRANSPORT_TYPE_OPTIONS).get(t, t) for t in pr_transport_types)
-                    if routes:
-                        st.info(f"Filtered to **{len(routes)}** of {pre_filter} transports "
-                                f"(type: {type_names}).")
-                    else:
-                        st.warning(f"None of this supplier's {pre_filter} transports match "
-                                   f"type **{type_names}**.")
-                    if not routes:
-                        return
-                    type_hint_extra = (f"Focus only on {type_names} transport prices in the "
-                                       f"document — ignore prices for other transport types.")
-                    hint = f"{hint}; {type_hint_extra}" if hint else type_hint_extra
                 # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
                 # human confirmation for the bulk transport price update. So the app detects all
                 # modalities first, and before the AI reads the document, the app asks the human
