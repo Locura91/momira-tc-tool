@@ -719,18 +719,41 @@ def render_price_refresh_flow(client, preselected_kind=None):
         st.warning(f"This changes prices on **{len(accepted)} live {kind.lower()}(s)** for supplier "
                    f"{supplier_id}. Nothing else is touched.")
     has_work = accepted or date_fixes
-    btn_label = f"Update {len(accepted)} {kind.lower()}(s)" if accepted else "Apply date fixes only"
-    if date_fixes and accepted:
-        btn_label = f"Update {len(accepted)} {kind.lower()}(s) + fix {len(date_fixes)} date(s)"
-    if st.button(btn_label, type="primary", disabled=not has_work, key="pr_apply"):
+    _higher_only_accepted = [p for p in accepted
+                             if any(c["new"] > c["old"] for c in p.get("changes", []))]
+    _n_higher = len(_higher_only_accepted)
+    _has_any_cheaper = any(any(c["new"] < c["old"] for c in p.get("changes", []))
+                           for p in accepted)
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
+        btn_label = f"Update {len(accepted)} {kind.lower()}(s)" if accepted else "Apply date fixes only"
+        if date_fixes and accepted:
+            btn_label = f"Update {len(accepted)} {kind.lower()}(s) + fix {len(date_fixes)} date(s)"
+        _btn_all = st.button(btn_label, type="primary", disabled=not has_work, key="pr_apply")
+    with bcol2:
+        _btn_higher = st.button(
+            f"Update only higher prices ({_n_higher} route(s))",
+            disabled=not _higher_only_accepted,
+            key="pr_apply_higher") if _has_any_cheaper else False
+    _do_apply = _btn_all or _btn_higher
+    if _do_apply:
         bar = st.progress(0.0, text="Updating...")
 
         def _tick2(done, total, name):
             bar.progress(min(done / max(total, 1), 1.0), text=f"Updating {name} ({done}/{total})")
 
         if accepted:
+            _apply_proposals = proposals
+            if _btn_higher:
+                import copy
+                _apply_proposals = copy.deepcopy(proposals)
+                for p in _apply_proposals:
+                    if p.get("accepted") and p.get("changes"):
+                        p["changes"] = [c for c in p["changes"] if c["new"] >= c["old"]]
+                        if not p["changes"]:
+                            p["accepted"] = False
             st.session_state.pr_result = price_refresh.apply_proposals(
-                client, supplier_id, proposals, progress=_tick2)
+                client, supplier_id, _apply_proposals, progress=_tick2)
         else:
             st.session_state.pr_result = {"updated": [], "failed": [], "skipped": []}
 
