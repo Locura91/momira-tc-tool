@@ -334,7 +334,22 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
             return None
         return dep_name, arr_name, transport_type
 
+    def _display_name_signature(t):
+        """Fallback signature from the transport's display Name (parsed cities), so two transports
+        using different location codes for the same real city still match when their human-readable
+        names agree — covers the master-data quirk where the same place carries more than one code."""
+        codes = _transport_route_codes(t)
+        if not codes:
+            return None
+        _, _, transport_type = codes
+        src_name = t.get("name") or ((t.get("datasheets") or {}).get("EN") or {}).get("name") or ""
+        frm, to = _parse_route_cities_from_name(src_name)
+        if not frm or not to:
+            return None
+        return normalize_name(frm), normalize_name(to), transport_type
+
     signatures = {sig for sig in (_name_signature(t) for t in live) if sig}
+    display_signatures = {sig for sig in (_display_name_signature(t) for t in live) if sig}
 
     gaps = []
     for t in live:
@@ -343,34 +358,30 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
             continue
         dep_name_norm, arr_name_norm, transport_type = sig
         reverse_signature = (arr_name_norm, dep_name_norm, transport_type)
-        if reverse_signature not in signatures:
-            codes = _transport_route_codes(t)
-            dep_code, arr_code, _ = codes
-            # The route to be created is the reverse of this transport. The reliable, readable
-            # label is the source's own Name with its two cities swapped ("...from Sebatu hotels
-            # to South Bali" -> "...from South Bali hotels to Sebatu") - the pickup codes are not
-            # a reliable source of the city name (some are opaque like "meet_VAI-10"). Fall back
-            # to the resolved/humanised code names only when the Name isn't in the standard
-            # "from ... to ..." wording.
-            src_name = t.get("name") or ((t.get("datasheets") or {}).get("EN") or {}).get("name") or ""
-            _frm, _to = _parse_route_cities_from_name(src_name)
-            missing_name = None
-            if _frm and _to:
-                missing_name = _swap_route_text(src_name, _frm, _to, suffix_on_fallback=False)
-            # Prefer the code-resolved base name when the code resolved cleanly (authoritative for
-            # the city's identity); fall back to the city parsed from the Name only for opaque
-            # codes that don't resolve ("meet_LUMUT-6"). Same reconciliation as
-            # builder.build_transport_swap_payload, so the scan preview and the created transport's
-            # name agree.
-            arr_name, arr_clean = _resolve_name(arr_code)
-            dep_name, dep_clean = _resolve_name(dep_code)
-            gaps.append({
-                "source": t,
-                "missing_name": missing_name,
-                "missing_from_name": arr_name if arr_clean else (_to or arr_name),
-                "missing_to_name": dep_name if dep_clean else (_frm or dep_name),
-                "transport_type": t.get("transportType") or "",
-            })
+        if reverse_signature in signatures:
+            continue
+        # Fallback: check if the reverse exists by display name (different codes, same city)
+        dsig = _display_name_signature(t)
+        if dsig:
+            d_dep, d_arr, d_type = dsig
+            if (d_arr, d_dep, d_type) in display_signatures:
+                continue
+        codes = _transport_route_codes(t)
+        dep_code, arr_code, _ = codes
+        src_name = t.get("name") or ((t.get("datasheets") or {}).get("EN") or {}).get("name") or ""
+        _frm, _to = _parse_route_cities_from_name(src_name)
+        missing_name = None
+        if _frm and _to:
+            missing_name = _swap_route_text(src_name, _frm, _to, suffix_on_fallback=False)
+        arr_name, arr_clean = _resolve_name(arr_code)
+        dep_name, dep_clean = _resolve_name(dep_code)
+        gaps.append({
+            "source": t,
+            "missing_name": missing_name,
+            "missing_from_name": arr_name if arr_clean else (_to or arr_name),
+            "missing_to_name": dep_name if dep_clean else (_frm or dep_name),
+            "transport_type": t.get("transportType") or "",
+        })
     return gaps
 
 
