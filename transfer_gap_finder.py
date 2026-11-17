@@ -450,6 +450,9 @@ def create_duplicate_transport(client, supplier_id: str, source: Dict[str, Any])
         # flows/duplicate_transport.py's own _fetch_source_and_options, which only warns and
         # carries on rather than aborting the whole duplicate.
 
+    source_images = source.get("images") or []
+    if source_images:
+        print(f"[info] source transport '{source.get('name')}' has {len(source_images)} image(s), carrying to duplicate")
     payload, _swap_report, route_info = build_and_rewrite_transport_swap_payload(source, client)
     new_dep_name = route_info.get("new_departure_name", "")
     new_arr_name = route_info.get("new_arrival_name", "")
