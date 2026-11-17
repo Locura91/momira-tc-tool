@@ -94,6 +94,11 @@ MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
   only; the return leg has the same price unless the document says otherwise. Use the same row.
 - Match the SERVICE CLASS too. A document with a "Shuttle" column and a "Private" column prices two
   different products for the same row - take the column that matches the route's own class.
+- Match GUIDE/NO-GUIDE columns using the MODALITY NAMES shown in brackets after each pax range. If the
+  modality names say "no Guide" or "without Guide", use the document's "Without Guide" / "Private Transfer
+  Only" column, NOT the "With Guide" column — even if the guide column is more expensive. The highest-rate
+  rule applies WITHIN a matched column (e.g. 1 pax vs 2 pax), never ACROSS columns that serve different
+  service types.
 - BUNDLED ROUTES: a route name joining several places with "/" or "or" (e.g. "Hurghada / El Gouna or Soma
   Bay") is ONE product combining what the document prices as separate rows. Find each place's row and use
   the HIGHEST of their prices - report "confidence": "high" for this, and briefly say in "note" which
@@ -697,8 +702,9 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
     described = []
     for i, route in enumerate(routes):
         dep, arr = route_places(route)
-        brackets = ", ".join(f"{o.get('min_pax')}-{o.get('max_pax')} pax" for o in route["options"]) \
-            or "no brackets recorded"
+        brackets = ", ".join(
+            f"{o.get('min_pax')}-{o.get('max_pax')} pax ({o.get('name') or o.get('code') or '?'})"
+            for o in route["options"]) or "no brackets recorded"
         described.append(
             f"{i}. {dep} to {arr} | class: {route.get('name') or '(unnamed)'} | "
             f"brackets: {brackets} | currency now: {route.get('currency') or '?'} | "
