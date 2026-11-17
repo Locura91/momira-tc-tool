@@ -5498,7 +5498,7 @@ _ROUTE_NAME_NO_FROM_RE = re.compile(
 # space-both-sides-only) pattern silently failed on the rest and the scan fell back to the
 # opaque "meet_LUMUT-6 → meet_KualaLumpur" itinerary codes instead of the real city names.
 _ROUTE_NAME_DASH_RE = re.compile(
-    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(.+?)(?:\s+-\s*|\s*-\s+|\s*[–—]\s*)(.+?)\s*$",
+    r"^(?:one[- ]way\s+(?:transfer\s+|transport\s+)?|transfer\s+|transport\s+)?(?:from\s+)?(.+?)(?:\s+-\s*|\s*-\s+|\s*[–—]\s*)(.+?)\s*$",
     re.IGNORECASE)
 _TRAILING_HOTELS_RE = re.compile(r"\s+hotels?$", re.IGNORECASE)
 
