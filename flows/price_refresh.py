@@ -120,7 +120,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv", "html", "htm", "png", "jpg", "jpeg", "webp"],
                              accept_multiple_files=True, key="pr_files")
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
@@ -951,7 +951,7 @@ def render_ticket_price_refresh_flow(client):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="tpr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv", "html", "htm", "png", "jpg", "jpeg", "webp"],
                              accept_multiple_files=True, key="tpr_files")
     hint = st.text_input("Instruction (optional)", key="tpr_hint",
                          placeholder="e.g. only the Alexandria tours section")
