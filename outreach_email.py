@@ -583,7 +583,14 @@ DEFAULT_TEMPLATE = {
 
 We are Momira Travel, a German-based B2B tour operator specialising in [Country]. As long as you are a licensed company with a valid tourist certificate, we would very much like to work with you.
 
-What we need are individual products (transfers, tours, tickets, transports) with net prices — no packages, just single services we can integrate into our booking system.
+What we need are individual products with net prices, such as:
+
+- Transfers (airport, hotel-to-hotel)
+- Excursions / day tours (tickets)
+- Multi-day tours
+- Transports (ferries, domestic flights, shuttles)
+
+No packages — just single services we can integrate into our booking system.
 
 If you are interested, I would be happy to arrange a short call where I can introduce you to what we do and explain how we could integrate your products. Just reply and we will find a time.
 
