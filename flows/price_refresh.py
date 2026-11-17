@@ -254,18 +254,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 # not by type. The type picker was removed (product owner, 2026-11-17):
                 # "the AI must read what is what from the title of the transfer sheets."
                 _groups = price_refresh.modality_groups(routes) if kind == price_refresh.KIND_TRANSPORT else []
-                    if len(_groups) > 1:
-                        st.session_state.pr_pending = {
-                            "routes": routes, "raw_text": raw_text, "hint": hint,
-                            "fts_csv_tmp_paths": fts_csv_tmp_paths, "groups": _groups,
-                        }
-                        st.rerun()
-                    # Single-modality supplier (or a Transfer): nothing to confirm, read straight
-                    # through exactly as before. The rerun stays conditional on a real result - see
-                    # the 2026-09-01 audit fix it preserves: an unconditional rerun here used to wipe
-                    # the error message a failed read had just put on screen.
-                    elif _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
-                        st.rerun()
+                if len(_groups) > 1:
+                    st.session_state.pr_pending = {
+                        "routes": routes, "raw_text": raw_text, "hint": hint,
+                        "fts_csv_tmp_paths": fts_csv_tmp_paths, "groups": _groups,
+                    }
+                    st.rerun()
+                # Single-modality supplier (or a Transfer): nothing to confirm, read straight
+                # through exactly as before.
+                elif _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
+                    st.rerun()
 
     # The confirmation steps. Rendered only while a read is paused waiting for them.
     _pending = st.session_state.get("pr_pending")
