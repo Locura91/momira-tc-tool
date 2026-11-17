@@ -414,11 +414,29 @@ def gather_source_content(url, uploaded_files, *, url_label="product page",
         else:
             st.warning(f"⚠️ Couldn't fetch the {url_label} URL: {page_text_err}.")
 
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
     for uploaded in (uploaded_files or []):
-        suffix = os.path.splitext(uploaded.name)[1]
+        suffix = os.path.splitext(uploaded.name)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded.getbuffer())
             tmp_path = tmp.name
+
+        if suffix in _IMAGE_EXTS:
+            img_bytes = uploaded.getbuffer().tobytes()
+            ext = suffix.lstrip(".")
+            doc_raw_images.append((uploaded.name, img_bytes))
+            if collect_images:
+                try:
+                    new_urls, _upload_errors = upload_images_r2_with_errors([(img_bytes, ext)])
+                    doc_image_urls.extend(new_urls)
+                    _warn_page_image_upload_errors(_upload_errors)
+                except Exception as e:
+                    st.warning(f"⚠️ Couldn't upload image '{uploaded.name}': {e}")
+            combined_parts.append(f"--- SOURCE: UPLOADED IMAGE ({uploaded.name}) ---\n[image attached]")
+            os.remove(tmp_path)
+            continue
+
         _doc_text = extract_raw_text(tmp_path)
         _scan_warning = document_reader_scanned_warning(tmp_path, _doc_text)
         if _scan_warning:
@@ -3781,7 +3799,7 @@ def render_update_refresh_flow(client):
     # by which point both app.py and every flows/*.py module are fully loaded - is zero
     # behaviour change, same pattern as the dispatcher-stays-in-app.py fix from module 10.
     from flows.price_refresh import render_price_refresh_flow, render_ticket_price_refresh_flow
-    st.header("🔄 Price & operational dates update to existing Products")
+    st.header("🔍 Price audit & operational dates audit")
     if st.button("🔙 Back to Step 1", key="ur_back"):
         st.session_state.product_type = None
         st.rerun()

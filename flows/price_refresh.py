@@ -90,26 +90,12 @@ def render_price_refresh_flow(client, preselected_kind=None):
     # earlier bulk write into TRANSPORT-423137/423138/423142/423134 had actually persisted
     # correctly): "we must then update in the future in bulk only the pricevehicle or the
     # priceperpax... ignore the modalities... add just for transport an update field so the human
-    # Transport type filter — scope to specific types (e.g. Ferry, Car) BEFORE choosing the mode,
-    # because it affects all three modes (rate sheet, manual adjustment, consistency check) and
-    # is the first scoping decision: "which transports am I updating?" comes before "how?".
-    # Placed here so the mode radio (which exits early for manual/consistency) sees it too.
+    # Transport type scoping: removed the upfront multiselect filter (product owner, 2026-11-17).
+    # Step 2's transport_type_groups picker already asks which type this rate sheet covers when
+    # the supplier has mixed types — the upfront filter was redundant and forced an unnecessary
+    # extra click. Manual adjustment and consistency check still accept transport_types=None
+    # (meaning all types), which is the right default.
     pr_transport_types = None
-    if kind == price_refresh.KIND_TRANSPORT and supplier_id:
-        _type_labels = [label for _key, label in _TRANSPORT_TYPE_OPTIONS]
-        _type_choice = st.multiselect(
-            "Transport type (leave empty for all)",
-            _type_labels, default=[], key="pr_transport_type_filter",
-            help="Pick one or more transport types (e.g. Ferry, Car) to scope the update. "
-                 "Leave empty to update every transport type. Only transports of the selected "
-                 "type(s) will appear in the modality list and be updated.")
-        if _type_choice:
-            pr_transport_types = [_TRANSPORT_TYPE_LABEL_TO_KEY[l] for l in _type_choice
-                                  if l in _TRANSPORT_TYPE_LABEL_TO_KEY]
-            _type_display = ", ".join(_type_choice)
-            st.caption(f"Only **{_type_display}** transports will be updated.")
-        else:
-            st.caption("All transport types will be updated.")
 
     # can manually add a absolute or percentage number." A second, simpler mode alongside the
     # existing document-reading flow (kept for when there IS a rate sheet to read) - added only
@@ -134,7 +120,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="pr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv", "html", "htm", "png", "jpg", "jpeg", "webp"],
                              accept_multiple_files=True, key="pr_files")
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
@@ -256,24 +242,6 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
-                if pr_transport_types:
-                    pre_filter = len(routes)
-                    routes = [r for r in routes
-                              if (r.get("raw", {}).get("transportType") or "").upper()
-                              in {t.upper() for t in pr_transport_types}]
-                    type_names = ", ".join(
-                        dict(_TRANSPORT_TYPE_OPTIONS).get(t, t) for t in pr_transport_types)
-                    if routes:
-                        st.info(f"Filtered to **{len(routes)}** of {pre_filter} transports "
-                                f"(type: {type_names}).")
-                    else:
-                        st.warning(f"None of this supplier's {pre_filter} transports match "
-                                   f"type **{type_names}**.")
-                    if not routes:
-                        return
-                    type_hint_extra = (f"Focus only on {type_names} transport prices in the "
-                                       f"document — ignore prices for other transport types.")
-                    hint = f"{hint}; {type_hint_extra}" if hint else type_hint_extra
                 # CONFIRMED REAL REQUEST (product owner, 2026-09-11): "should we build a separate
                 # human confirmation for the bulk transport price update. So the app detects all
                 # modalities first, and before the AI reads the document, the app asks the human
@@ -452,11 +420,16 @@ def render_price_refresh_flow(client, preselected_kind=None):
     zero_supplement = [p for p in proposals if p["status"] == "blocked_zero_supplement"]
 
     st.subheader("2 — Check the new prices")
-    st.caption(f"{len(changed)} route(s) would change · {len(unchanged)} already match the document · "
-              f"{len(absent)} not found in it."
-              + (f" · {len(blocked)} could not be read" if blocked else "")
-              + (f" · {len(needs_base)} need a base modality designated" if needs_base else "")
-              + (f" · {len(zero_supplement)} blocked on a zero supplement" if zero_supplement else ""))
+    _summary_parts = [f"{len(changed)} route(s) would change", f"{len(unchanged)} already match the document"]
+    if absent:
+        _summary_parts.append(f"{len(absent)} not in this document (ignored — only listed routes are compared)")
+    if blocked:
+        _summary_parts.append(f"{len(blocked)} could not be read")
+    if needs_base:
+        _summary_parts.append(f"{len(needs_base)} need a base modality designated")
+    if zero_supplement:
+        _summary_parts.append(f"{len(zero_supplement)} blocked on a zero supplement")
+    st.caption(" · ".join(_summary_parts))
     _scope = st.session_state.get("pr_scope")
     if _scope:
         st.info("\U0001f3af This round is scoped to the "
@@ -558,14 +531,21 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 st.markdown(f"- **{route.get('name') or route.get('id')}**{_id_suffix(route)} · "
                            f"{price_bits} {route.get('currency') or ''} · status: *{p['status']}*")
 
-    # Accept-all with exceptions: the product owner's own choice. Only rows that genuinely
-    # CHANGED are ever ticked - a route the document never mentioned must not be swept up by a
-    # single click, which is the one way "accept all" could do damage.
+    def _has_cheaper_price(p):
+        return any(c["new"] < c["old"] for c in p.get("changes", []))
+
+    if changed:
+        st.markdown(f"### 🔴 {len(changed)} route(s) — price difference found")
+
+    # Accept-all with exceptions: only auto-accepts routes where the document price is HIGHER
+    # or equal. Routes with any cheaper price require individual human acceptance (CLAUDE.md
+    # bulk pricing rule: never auto-apply cheaper prices).
     acol1, acol2 = st.columns([1, 4])
     with acol1:
-        if st.button("✅ Accept all", key="pr_accept_all", use_container_width=True):
+        if st.button("✅ Accept all (higher prices only)", key="pr_accept_all", use_container_width=True):
             for p in proposals:
-                p["accepted"] = p["status"] == "changed"
+                if p["status"] == "changed" and not _has_cheaper_price(p):
+                    p["accepted"] = True
             st.rerun()
     with acol2:
         if st.button("Clear all", key="pr_clear_all"):
@@ -631,6 +611,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":green[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}  ·  "
                                    f"*matches the live price*")
+                    elif c["new"] < c["old"]:
+                        st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
+                                   f":orange[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}  ·  "
+                                   f"⚠️ *cheaper — requires individual acceptance*")
                     else:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
                                    f":red[**{c['new']}**] {_ccy} *{_basis}*{_kind_label}{_new_period_label}")
@@ -700,18 +684,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                   "instruction - the current price is left as it was.")
 
     if unchanged:
-        with st.expander(f"➖ {len(unchanged)} already at the document's price"):
-            for p in unchanged:
-                route = p["route"]
-                price_bits = ", ".join(
-                    f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
-                    for o in (route.get("options") or []) if not o.get("fetch_failed"))
-                st.markdown(f"- **{route.get('name')}**{_id_suffix(route)}  ·  "
-                           f":green[{price_bits}] {route.get('currency') or ''}")
+        st.markdown(f"### ✅ {len(unchanged)} route(s) — prices correct")
+        for p in unchanged:
+            route = p["route"]
+            price_bits = ", ".join(
+                f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
+                for o in (route.get("options") or []) if not o.get("fetch_failed"))
+            st.markdown(f"- :green[**{route.get('name')}**]{_id_suffix(route)}  ·  "
+                       f":green[{price_bits}] {route.get('currency') or ''}")
     if absent:
-        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
-            st.caption("The document may price these under a wording nobody matched, or the supplier "
-                      "may have dropped them. Pick the row's price yourself to update one anyway.")
+        with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
+            st.caption("These routes exist in TC but weren't found in the uploaded document. "
+                      "This is normal when the document only covers one destination. "
+                      "You can still match a price by hand if the document does list them under different wording.")
             for p in absent:
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])
@@ -983,7 +968,7 @@ def render_ticket_price_refresh_flow(client):
 
     st.subheader("1 — The new rate sheet")
     url = st.text_input("Rate sheet URL (optional)", key="tpr_url")
-    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv"],
+    files = st.file_uploader("Upload the rate sheet", type=["pdf", "docx", "xlsx", "pptx", "csv", "html", "htm", "png", "jpg", "jpeg", "webp"],
                              accept_multiple_files=True, key="tpr_files")
     hint = st.text_input("Instruction (optional)", key="tpr_hint",
                          placeholder="e.g. only the Alexandria tours section")
@@ -1066,10 +1051,14 @@ def render_ticket_price_refresh_flow(client):
     unsupported = [p for p in proposals if p["status"] == "unsupported_price_type"]
 
     st.subheader("2 — Check the new prices & operational end date")
-    st.caption(f"{len(changed)} Modality(ies) would change · {len(unchanged)} already match the "
-              f"document · {len(absent)} not found in it."
-              + (f" · {len(blocked)} could not be read" if blocked else "")
-              + (f" · {len(unsupported)} not supported yet (SERVICE pricing)" if unsupported else ""))
+    _tsummary = [f"{len(changed)} Modality(ies) would change", f"{len(unchanged)} already match the document"]
+    if absent:
+        _tsummary.append(f"{len(absent)} not in this document (ignored)")
+    if blocked:
+        _tsummary.append(f"{len(blocked)} could not be read")
+    if unsupported:
+        _tsummary.append(f"{len(unsupported)} not supported yet (SERVICE pricing)")
+    st.caption(" · ".join(_tsummary))
 
     # CONFIRMED PRODUCT-OWNER REQUEST (2026-11-09): ticket price refresh must DUPLICATE the
     # modality (POST) instead of updating in-place (PUT).  The original stays untouched; a new
@@ -1235,10 +1224,10 @@ def render_ticket_price_refresh_flow(client):
         # "not found" section: a ticket the AI didn't match still gets a manual price + "Use"
         # button here, exactly like a transfer/transport route does, instead of being a
         # dead-end read-only list.
-        with st.expander(f"❓ {len(absent)} not found in the document — match by hand if you want"):
-            st.caption("The document may price these under a code nobody matched, or the "
-                      "supplier may have dropped them. Pick the Modality's price yourself to "
-                      "update one anyway.")
+        with st.expander(f"ℹ️ {len(absent)} TC ticket(s) not in this document — ignored unless you match by hand"):
+            st.caption("These tickets exist in TC but weren't found in the uploaded document. "
+                      "This is normal when the document only covers some products. "
+                      "You can still match a price by hand if the document lists them under different wording.")
             for p in absent:
                 route = p["route"]
                 mcol1, mcol2, mcol3 = st.columns([3, 2, 1])

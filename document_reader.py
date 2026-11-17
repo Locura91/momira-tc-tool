@@ -470,6 +470,28 @@ def _scanned_pages_warning(file_path: str, text: str):
             f"one.")
 
 
+def extract_text_from_html(file_path: str) -> str:
+    from html.parser import HTMLParser
+    class _TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._parts = []
+            self._skip = set()
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "noscript"):
+                self._skip.add(tag)
+        def handle_endtag(self, tag):
+            self._skip.discard(tag)
+        def handle_data(self, data):
+            if not self._skip:
+                self._parts.append(data)
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+    parser = _TextExtractor()
+    parser.feed(raw)
+    return "\n".join(parser._parts)
+
+
 def extract_raw_text(file_path: str) -> str:
     """
     Dispatches to the right extractor based on file extension.
@@ -488,13 +510,17 @@ def extract_raw_text(file_path: str) -> str:
         return extract_text_from_pptx(file_path)
     elif ext == ".csv":
         return extract_text_from_csv(file_path)
+    elif ext in (".html", ".htm"):
+        return extract_text_from_html(file_path)
+    elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        return ""
     elif ext in (".doc", ".xls", ".ppt"):
         raise ValueError(
             f"Legacy '{ext}' format isn't supported directly. "
             f"Please re-save/export the file as '.docx', '.xlsx', or '.pptx' first."
         )
     else:
-        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx, .pptx, .csv")
+        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .pdf, .docx, .xlsx, .pptx, .csv, .html, images")
 
 
 import hashlib
