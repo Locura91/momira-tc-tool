@@ -172,12 +172,24 @@ You will receive:
 1. The raw text of the supplier's document (rate sheet / price list).
 2. A list of CURRENT prices already in the booking system (Travel Compositor) for this supplier's {product_type} products.
 
-Your job: for every product in the CURRENT list, check whether the document contains a price for the same product,
-and if so whether it matches or differs.
+Your job: for every product in the CURRENT list, check whether the document contains a price for the same
+product/route/itinerary, and report whether the TC price matches or differs.
 
 PRODUCT TYPE: {product_type}
 
 {product_type_guidance}
+
+CRITICAL PRICING RULE — HIGHEST RATE WINS:
+Supplier documents often list multiple price tiers for the same itinerary based on group size (e.g. 1-2 pax,
+3-4 pax, 5-9 pax — each with a different per-person rate). In Travel Compositor we use the HIGHEST (most
+expensive) rate from the document for comparison, because we intentionally maintain higher rates for simplicity.
+When comparing:
+- Find ALL price tiers the document lists for the same route/product.
+- Use the HIGHEST per-person rate from the document as the reference price.
+- If a CHEAPER tier also exists, mention it in the details field as informational (e.g. "Document also has a
+  cheaper rate of €X for 5-9 pax") but compare against the highest tier.
+- If TC's price matches the highest document tier: status = "match".
+- If TC's price differs from the highest document tier: status = "mismatch".
 
 Return a JSON object with one key "findings" — an array of objects, one per product in the current list:
 {{
@@ -186,20 +198,20 @@ Return a JSON object with one key "findings" — an array of objects, one per pr
       "product_id": "<id from the current list>",
       "product_name": "<name from the current list>",
       "status": "match" | "mismatch" | "not_in_document",
-      "current_price_summary": "<short text of the current prices>",
-      "document_price_summary": "<what the document states, or empty if not found>",
-      "details": "<explanation of the difference if mismatch, or empty>"
+      "current_price_summary": "<short text: the current TC price>",
+      "document_price_summary": "<the highest-tier document price, or empty if not found>",
+      "details": "<if mismatch: both values and the difference; if cheaper tiers exist: mention them>"
     }}
   ]
 }}
 
 Rules:
 - Compare at the product/modality level. For each product in the current list, look for it in the document.
-- "match" = the document's prices agree (within 1 unit tolerance).
-- "mismatch" = the document has a price but it differs from the current system price. Always note BOTH values.
-- "not_in_document" = the product wasn't found in the uploaded document.
-- If the document contains products NOT in the current system, add them at the end with product_id="NEW" and status="new_in_document".
-- Keep it factual. No recommendations."""
+- "match" = TC price agrees with the document's HIGHEST rate (within 1 unit tolerance).
+- "mismatch" = the document has a price but it differs from the current TC price. Always note BOTH values and the difference.
+- "not_in_document" = the product wasn't found in the uploaded document at all.
+- Do NOT add products that are in the document but not in TC. We only audit what is already in the system.
+- Keep it factual and short. No recommendations."""
 
 _TYPE_GUIDANCE = {
     "Ticket": (
@@ -335,48 +347,45 @@ def render_price_audit_flow(client):
     n_match = sum(1 for f in findings if f.get("status") == "match")
     n_mismatch = sum(1 for f in findings if f.get("status") == "mismatch")
     n_missing = sum(1 for f in findings if f.get("status") == "not_in_document")
-    n_new = sum(1 for f in findings if f.get("status") == "new_in_document")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Matching", n_match)
-    col2.metric("Mismatches", n_mismatch)
+    # summary bar
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Correct", n_match)
+    col2.metric("Price differs", n_mismatch)
     col3.metric("Not in document", n_missing)
-    col4.metric("New in document", n_new)
 
-    # mismatches first
-    if n_mismatch:
-        st.subheader("Price mismatches")
-        for f in findings:
-            if f.get("status") != "mismatch":
-                continue
-            with st.expander(f"⚠️ {f.get('product_name', f.get('product_id', '?'))}", expanded=True):
-                st.write(f"**Current TC:** {f.get('current_price_summary', '—')}")
-                st.write(f"**Document:** {f.get('document_price_summary', '—')}")
+    st.divider()
+
+    # all findings in one list, mismatches first, then missing, then matches
+    ordered = (
+        [f for f in findings if f.get("status") == "mismatch"] +
+        [f for f in findings if f.get("status") == "not_in_document"] +
+        [f for f in findings if f.get("status") == "match"]
+    )
+
+    for f in ordered:
+        status = f.get("status")
+        name = f.get("product_name", f.get("product_id", "?"))
+
+        if status == "mismatch":
+            icon = "🔴"
+            with st.expander(f"{icon} {name}", expanded=True):
+                c1, c2 = st.columns(2)
+                c1.markdown(f"**TC price:** {f.get('current_price_summary', '—')}")
+                c2.markdown(f"**Document:** {f.get('document_price_summary', '—')}")
                 if f.get("details"):
-                    st.write(f"**Details:** {f['details']}")
+                    st.caption(f["details"])
 
-    if n_new:
-        st.subheader("New products in document (not in TC)")
-        for f in findings:
-            if f.get("status") != "new_in_document":
-                continue
-            with st.expander(f"🆕 {f.get('product_name', f.get('product_id', '?'))}"):
-                st.write(f"**Document:** {f.get('document_price_summary', '—')}")
+        elif status == "not_in_document":
+            icon = "⚪"
+            with st.expander(f"{icon} {name} — not in document"):
+                st.markdown(f"**TC price:** {f.get('current_price_summary', '—')}")
+                st.caption("This product exists in TC but was not found in the uploaded document.")
+
+        elif status == "match":
+            icon = "🟢"
+            with st.expander(f"{icon} {name}"):
+                st.markdown(f"**TC price:** {f.get('current_price_summary', '—')}")
+                st.markdown(f"**Document:** {f.get('document_price_summary', '—')}")
                 if f.get("details"):
-                    st.write(f"**Details:** {f['details']}")
-
-    if n_missing:
-        st.subheader("TC products not found in document")
-        for f in findings:
-            if f.get("status") != "not_in_document":
-                continue
-            st.write(f"- {f.get('product_name', f.get('product_id', '?'))} — "
-                     f"TC: {f.get('current_price_summary', '—')}")
-
-    if n_match:
-        with st.expander(f"Matching prices ({n_match})"):
-            for f in findings:
-                if f.get("status") != "match":
-                    continue
-                st.write(f"- {f.get('product_name', f.get('product_id', '?'))}: "
-                         f"{f.get('current_price_summary', '—')}")
+                    st.caption(f["details"])
