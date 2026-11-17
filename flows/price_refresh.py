@@ -489,23 +489,47 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # Called live (not read from p["supplement_examples"]) so a hand-edit to the "new
             # price" number above is reflected immediately. One line per changed PERIOD, not per
             # modality - see supplement_calculation_examples' own docstring.
+            _all_options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+            _changed_codes = {c["code"] for c in p["changes"]}
             _examples = price_refresh.supplement_calculation_examples(route, p["changes"])
-            if _examples:
-                _base_ex = _examples[0]
-                _base_price = _base_ex["base_price"]
-                _base_name = _base_ex["base_name"]
-                _rows = []
-                for c in p["changes"]:
-                    _ex = next((_e for _e in _examples if _e["code"] == c["code"]), None)
-                    if _ex:
-                        _rows.append(f"| {c['min_pax']}–{c['max_pax']} pax | **{c['new']}** {_ccy} | "
-                                     f"{_base_price} | +{_ex['supplement']} | {_ex['name']} |")
+            _base_option = None
+            _base_price = None
+            if len(_all_options) >= 2:
+                _base_option = price_refresh._current_base_option(
+                    _all_options, forced_bracket=route.get("base_bracket_override"))
+                _base_code_in_changes = next((c for c in p["changes"] if c["code"] == _base_option["code"]), None)
+                _base_price = round(float(_base_code_in_changes["new"]) if _base_code_in_changes else _base_option["unit_price"], 2)
+            _rows = []
+            for o in sorted(_all_options, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+                _code = o.get("code") or o.get("name") or "?"
+                _name = o.get("name") or _code
+                _pax_label = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
+                if _code in _changed_codes:
+                    _c = next(c for c in p["changes"] if c["code"] == _code)
+                    _full = _c["new"]
+                    if _base_option and _code == _base_option["code"]:
+                        _supp = "— *(base)*"
+                    elif _base_price is not None:
+                        _supp = f"+{round(_full - _base_price, 2)}"
                     else:
-                        _rows.append(f"| {c['min_pax']}–{c['max_pax']} pax | **{c['new']}** {_ccy} | "
-                                     f"{c['new']} | — *(base)* | {_base_name} |")
+                        _supp = "—"
+                    _status = "🔴 changed" if _full != _c["old"] else "✅"
+                    _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | "
+                                 f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
+                else:
+                    _full = round(float(o.get("unit_price", 0)), 2)
+                    if _base_option and _code == _base_option["code"]:
+                        _supp = "— *(base)*"
+                    elif _base_price is not None:
+                        _supp = f"+{round(_full - _base_price, 2)}"
+                    else:
+                        _supp = "—"
+                    _rows.append(f"| {_pax_label} | {_full} {_ccy} | "
+                                 f"{_base_price or _full} | {_supp} | {_name} | ✅ correct |")
+            if _rows:
                 st.markdown(
-                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
-                    f"|---------|---------------|------------|------------|----------|\n"
+                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality | Status |\n"
+                    f"|---------|---------------|------------|------------|----------|--------|\n"
                     + "\n".join(_rows)
                 )
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
@@ -543,11 +567,34 @@ def render_price_refresh_flow(client, preselected_kind=None):
         st.markdown(f"### ✅ {len(unchanged)} route(s) — prices correct")
         for p in unchanged:
             route = p["route"]
-            price_bits = ", ".join(
-                f"{o['min_pax']}-{o['max_pax']} pax: {o['unit_price']}"
-                for o in (route.get("options") or []) if not o.get("fetch_failed"))
-            st.markdown(f"- :green[**{route.get('name')}**]{_id_suffix(route)}  ·  "
-                       f":green[{price_bits}] {route.get('currency') or ''}")
+            _ccy_u = route.get('currency') or ''
+            _opts_u = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+            _base_u = None
+            _base_price_u = None
+            if len(_opts_u) >= 2:
+                _base_u = price_refresh._current_base_option(
+                    _opts_u, forced_bracket=route.get("base_bracket_override"))
+                _base_price_u = round(float(_base_u.get("unit_price", 0)), 2)
+            _rows_u = []
+            for o in sorted(_opts_u, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+                _full_u = round(float(o.get("unit_price", 0)), 2)
+                _name_u = o.get("name") or o.get("code") or "?"
+                _pax_u = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
+                if _base_u and o.get("code") == _base_u.get("code"):
+                    _supp_u = "— *(base)*"
+                elif _base_price_u is not None:
+                    _supp_u = f"+{round(_full_u - _base_price_u, 2)}"
+                else:
+                    _supp_u = "—"
+                _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
+                               f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
+            st.markdown(f":green[**{route.get('name')}**]{_id_suffix(route)}")
+            if _rows_u:
+                st.markdown(
+                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
+                    f"|---------|---------------|------------|------------|----------|\n"
+                    + "\n".join(_rows_u)
+                )
     if absent:
         with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
             st.caption("These routes exist in TC but weren't found in the uploaded document. "
