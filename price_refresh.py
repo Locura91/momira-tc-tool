@@ -85,9 +85,14 @@ all mean the identical place and must be treated identically. The instruction on
 report as found; it is never a reason to report a route "found": false that the document genuinely prices.
 
 MATCHING A ROUTE TO A ROW - this is the part that goes wrong:
-- The route names PLACES; the document often names AIRPORTS. "RMF Airport" is Marsa Alam, "HRG Airport" is
-  Hurghada, "SSH Airport" is Sharm El Sheikh, "CAI Airport" is Cairo, and in general "<city> Airport" is
-  that city. So the route "Marsa Alam to Hurghada" matches the row "RMF Airport | Hurghada".
+- The route names PLACES; the document often names AIRPORTS — by IATA code, by full airport name, or both.
+  You MUST resolve every airport to its city using your world knowledge. Examples (not exhaustive):
+  "RMF Airport" / "Marsa Alam Airport" = Marsa Alam, "HRG Airport" = Hurghada, "SSH Airport" = Sharm El Sheikh,
+  "CAI Airport" = Cairo, "BKK" / "Suvarnabhumi Airport" = Bangkok, "DMK" / "Don Mueang Airport" = Bangkok,
+  "AGP" / "Aeropuerto de Málaga" = Malaga, "HKT" / "Phuket Airport" = Phuket.
+  This applies to ALL airports worldwide — if you recognize an airport name or IATA code, map it to its city.
+  Similarly, "Bangkok Hotel" or "Phuket Hotel" means that city. A route "Bangkok to Pattaya" matches a row
+  that says "Suvarnabhumi Airport to Pattaya" or "BKK - Pattaya Hotel".
 - A section heading tells you where a block of rows departs from: rows under "Transfer Fees Marsa Allam"
   are Marsa Alam departures even where the cell shows only an airport code.
 - A route may be the REVERSE of the row. Rate sheets are usually priced "per way" and list one direction
