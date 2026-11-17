@@ -175,6 +175,10 @@ You will receive:
 Your job: for every product in the CURRENT list, check whether the document contains a price for the same product,
 and if so whether it matches or differs.
 
+PRODUCT TYPE: {product_type}
+
+{product_type_guidance}
+
 Return a JSON object with one key "findings" — an array of objects, one per product in the current list:
 {{
   "findings": [
@@ -197,11 +201,43 @@ Rules:
 - If the document contains products NOT in the current system, add them at the end with product_id="NEW" and status="new_in_document".
 - Keep it factual. No recommendations."""
 
+_TYPE_GUIDANCE = {
+    "Ticket": (
+        "Ticket prices are per-person occupancy prices (e.g. 1 pax = €50, 2 pax = €45 each). "
+        "Each ticket has modalities (options). Compare the per-person price at each occupancy level. "
+        "Child prices are separate entries — compare them too."
+    ),
+    "Transfer": (
+        "Transfer prices have a base adult price and optional per-occupancy overrides. "
+        "Some transfers are priced per-pax (per person), others per-vehicle. "
+        "Compare the base price and any occupancy-specific prices."
+    ),
+    "Transport": (
+        "Transport prices have a base adult/child/infant price or a vehicle price. "
+        "Each transport can have option codes with per-pax-range pricing. "
+        "Compare base prices and option prices."
+    ),
+    "ClosedTour": (
+        "ClosedTour (multi-day tour) prices are per MODALITY and per DATE RANGE (season). "
+        "Each modality has a price list with date ranges, and within each date range there are "
+        "four room-type prices: singlePrice (1 person in single room), doublePrice (per person "
+        "sharing double room), triplePrice (per person sharing triple room), quadruplePrice "
+        "(per person sharing quadruple room). "
+        "IMPORTANT: singlePrice >= doublePrice >= triplePrice >= quadruplePrice always "
+        "(fewer people sharing = higher per-person cost). "
+        "Compare each room-type price within each date range. "
+        "Documents may show prices as 'per person' with a single supplement — "
+        "in that case singlePrice = doublePrice + single supplement."
+    ),
+}
+
 
 def _run_price_audit_ai(raw_text: str, tc_summary: str, product_type: str,
                          model: str = "claude-sonnet-5") -> Dict[str, Any]:
     from ai_extractor import _call_claude, _required_keys_schema
-    system = _PRICE_AUDIT_PROMPT.format(product_type=product_type)
+    guidance = _TYPE_GUIDANCE.get(product_type, "")
+    system = _PRICE_AUDIT_PROMPT.format(product_type=product_type,
+                                         product_type_guidance=guidance)
     user_msg = (f"=== CURRENT TRAVEL COMPOSITOR PRICES ===\n{tc_summary}\n\n"
                 f"=== SUPPLIER DOCUMENT ===\n{raw_text}")
     defaults = {"findings": []}
