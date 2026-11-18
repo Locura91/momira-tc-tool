@@ -806,7 +806,7 @@ def _html_to_plain_for_editing(html):
     text = re.sub(r"<(strong|b)>(.*?)</\1>", r"**\2**", text, flags=re.I | re.S)
     text = re.sub(r"<(em|i)>(.*?)</\1>", r"*\2*", text, flags=re.I | re.S)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    text = re.sub(r"<p>(.*?)</p>", r"\1\n\n", text, flags=re.I | re.S)
+    text = re.sub(r"<p>(.*?)</p>", r"\1\n", text, flags=re.I | re.S)
     # <ul>/<ol> bullet lists - each <li> becomes its own "- " prefixed line, with a blank line
     # before/after the whole list so it stays a separate block from surrounding paragraphs (see
     # _plain_to_html_for_saving for how the "- " prefix is used to rebuild the list on save).
