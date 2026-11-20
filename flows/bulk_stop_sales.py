@@ -16,7 +16,8 @@ PRODUCT TYPE SUPPORT:
   Ticket     — stopSales on each ContractTicketModalityVO; one PUT per modality.
   ClosedTour — stopSales on each ContractClosedTourOptionVO; one PUT per option.
   Hotel      — stopSales inside each ContractHotelRateVO, grouped per room; PUT whole rate.
-  Transport  — Travel Compositor has NO stopSales field on transport contracts; excluded.
+  Transport  — stopSales on each ContractTransportOptionVO; one PUT per option (all options
+                of a selected transport are updated automatically).
 
 NOTE ON NAMING: Travel Compositor's StopSale schema is {start, end} only — there is no
 name/label field. The "name" field shown in the UI is a local convenience label for the
@@ -43,12 +44,13 @@ from list_response_utils import normalize_list_response
 # product list just comes back empty.
 _WRAPPER_FALLBACKS = ("items", "data", "results", "content")
 
-_PRODUCT_TYPES = ["Transfer", "Ticket", "ClosedTour", "Hotel"]
+_PRODUCT_TYPES = ["Transfer", "Ticket", "ClosedTour", "Hotel", "Transport"]
 _TYPE_LABELS = {
     "Transfer": "Transfer",
     "Ticket": "Ticket",
     "ClosedTour": "Closed Tour",
     "Hotel": "Hotel",
+    "Transport": "Transport",
 }
 
 # ── session-state helpers ────────────────────────────────────────────────────
@@ -138,6 +140,25 @@ def _load_hotels(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]]:
         rooms = h.get("rooms") or []
         room_names = [r if isinstance(r, str) else r.get("name", "") for r in rooms]
         out.append({"id": code, "name": name, "rooms": room_names, "kind": "Hotel"})
+    return sorted(out, key=lambda x: x["name"]), None
+
+
+def _load_transports(client, supplier_id: str) -> Tuple[List[Dict], Optional[str]]:
+    try:
+        data = client.get_transports(supplier_id)
+    except Exception as e:
+        return [], friendly_error_message(e)
+    if isinstance(data, dict) and "error" in data:
+        return [], str(data.get("message") or data.get("error"))
+    items = normalize_list_response(data, ("transport", "transports") + _WRAPPER_FALLBACKS)
+    out = []
+    for t in (items or []):
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        name = t.get("name") or tid or "(unnamed)"
+        option_codes = t.get("optionCodes") or []
+        out.append({"id": tid, "name": name, "options": option_codes, "kind": "Transport"})
     return sorted(out, key=lambda x: x["name"]), None
 
 
@@ -241,6 +262,28 @@ def _apply_hotel(client, supplier_id: str, product: Dict, new_ranges: List[Dict]
     return results
 
 
+def _apply_transport(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
+    """Apply stop sales to ALL options of a transport automatically."""
+    results = []
+    for opt_code in (product.get("options") or []):
+        try:
+            opt = client.get_transport_option(supplier_id, product["id"], opt_code)
+        except Exception as e:
+            results.append({"status": "failed",
+                            "name": f"{product['name']} / {opt_code}",
+                            "detail": friendly_error_message(e)})
+            continue
+        if isinstance(opt, dict) and "error" in opt:
+            results.append({"status": "failed",
+                            "name": f"{product['name']} / {opt_code}",
+                            "detail": str(opt.get("message") or opt.get("error"))})
+            continue
+        r = sst.apply_to_transport_option(client, supplier_id, product["id"], opt, new_ranges)
+        r["name"] = f"{product['name']} / {opt_code}"
+        results.append(r)
+    return results
+
+
 # ── main render function ──────────────────────────────────────────────────────
 
 def render_bulk_stop_sales_flow(client):
@@ -278,8 +321,7 @@ def render_bulk_stop_sales_flow(client):
         st.info("Tick at least one product type above.")
         st.stop()
 
-    st.caption("ℹ️ Transport is not listed — Travel Compositor does not support stop sales "
-               "on Transport contracts.")
+    st.caption("ℹ️ Transport stop sales are applied to ALL options/modalities of each selected transport automatically.")
 
     # ── load products ─────────────────────────────────────────────────────────
     load_key = f"bss_products_{supplier_id}_{'_'.join(sorted(selected_types))}"
@@ -293,6 +335,7 @@ def render_bulk_stop_sales_flow(client):
                     "Ticket": _load_tickets,
                     "ClosedTour": _load_tours,
                     "Hotel": _load_hotels,
+                    "Transport": _load_transports,
                 }
                 for pt in selected_types:
                     items, err = loaders[pt](client, supplier_id)
@@ -619,6 +662,8 @@ def render_bulk_stop_sales_flow(client):
                 all_results.extend(_apply_tour(client, supplier_id, product, new_ranges))
             elif kind == "Hotel":
                 all_results.extend(_apply_hotel(client, supplier_id, product, new_ranges))
+            elif kind == "Transport":
+                all_results.extend(_apply_transport(client, supplier_id, product, new_ranges))
         bar.empty()
         _set("bss_result", all_results)
         st.rerun()

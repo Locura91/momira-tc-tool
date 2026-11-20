@@ -849,6 +849,7 @@ class ContractTransportOptionVO(BaseModel):
     agencyId: Optional[str] = None
     prices: List[ContractTransportOptionPriceVO] = []
     inventories: List[ContractTransportOptionInventoryVO] = []
+    stopSales: List[StopSale] = []
     translations: Dict[str, TransportDataSheetVO] = {}
 
 

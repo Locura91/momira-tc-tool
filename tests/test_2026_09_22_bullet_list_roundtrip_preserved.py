@@ -39,9 +39,10 @@ def test_bullet_list_survives_a_full_round_trip():
     assert "<li>AC First Class Seat</li>" in rebuilt_html
     assert "<li>Sleeper Double Cabin</li>" in rebuilt_html
     assert "<li>Sleeper Single Cabin</li>" in rebuilt_html
-    # the surrounding paragraphs are still real <p> paragraphs, untouched by the list fix
-    assert "<p>Train ticket from Cairo to Aswan." in rebuilt_html
-    assert "<p>Three different categories are available:</p>" in rebuilt_html
+    # Adjacent <p> blocks without spacers merge into a single block (no extra blank lines added);
+    # paragraphs separated by <p><br></p> spacers stay separate (see the full round-trip test below).
+    assert "Train ticket from Cairo to Aswan." in rebuilt_html
+    assert "Three different categories are available:" in rebuilt_html
 
 
 def test_html_to_plain_marks_each_list_item_with_a_leading_dash():
