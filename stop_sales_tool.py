@@ -266,35 +266,6 @@ def apply_to_ticket_option(client, supplier_id: str, ticket_code: str, option: D
             "not_found": result.get("not_found", [])}
 
 
-def apply_to_transport_option(client, supplier_id: str, transport_id: str, option: Dict[str, Any],
-                              new_ranges: List[Dict[str, Any]], is_release: bool = False) -> Dict[str, Any]:
-    """Same merge-or-remove-then-PUT-whole-option logic as apply_to_tour_option, against
-    update_transport_option instead."""
-    live = existing_tour_stop_sales(option)
-    if is_release:
-        result = ssp.remove_stop_sales(live, new_ranges)
-        changed, unchanged_detail = result["removed"], "none of these dates were found live on this option - nothing removed"
-    else:
-        result = ssp.merge_stop_sales(live, new_ranges)
-        changed, unchanged_detail = result["added"], "every date was already blocked on this option"
-    if not changed:
-        return {"status": "unchanged", "code": option.get("code"), "detail": unchanged_detail,
-                "not_found": result.get("not_found", [])}
-    payload = dict(option)
-    payload.pop("_fetch_error", None)
-    payload["stopSales"] = result["merged"]
-    try:
-        res = client.update_transport_option(supplier_id, transport_id, payload)
-    except Exception as e:
-        return {"status": "failed", "code": option.get("code"),
-                "detail": friendly_error_message(e)}
-    if isinstance(res, dict) and "error" in res:
-        return {"status": "failed", "code": option.get("code"),
-                "detail": str(res.get("message") or res.get("error"))}
-    return {"status": "updated", "code": option.get("code"), "changed": changed,
-            "not_found": result.get("not_found", [])}
-
-
 def apply_to_hotel_rate(client, supplier_id: str, provider_code: str, rate: Dict[str, Any],
                         new_ranges: List[Dict[str, Any]], room_names: List[str],
                         is_release: bool = False) -> Dict[str, Any]:
