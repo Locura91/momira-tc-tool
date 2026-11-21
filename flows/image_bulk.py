@@ -44,11 +44,11 @@ def render_image_bulk_flow(client):
                 st.rerun()
             st.caption("By supplier. Writes the Hotel's `images` field.")
         with col2:
-            if st.button("✈️ Transport", key="ibulk_transport", use_container_width=True,
-                         type="primary"):
-                st.session_state.image_bulk_product = "Transport"
-                st.rerun()
-            st.caption("By supplier, by Transport Type (Car / Plane / Van / Combined), or both.")
+            st.button("✈️ Transport", key="ibulk_transport", use_container_width=True,
+                      disabled=True)
+            st.caption("⚠️ Not available — TC stores transport images in an internal media "
+                       "system that the API cannot write to. The API's `images` field is "
+                       "accepted but ignored by TC admin. Set transport images manually.")
             if st.button("🗺️ Closed Tour", key="ibulk_closedtour", use_container_width=True,
                          type="primary"):
                 st.session_state.image_bulk_product = "ClosedTour"
