@@ -325,7 +325,16 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     reliable flow is: open the correct package page in a new tab — where the
     operator is already logged in and already past Cloudflare — and let them
     confirm the booking with one click there. The chosen date is shown big so
-    it's easy to copy into TC's date picker."""
+    it's easy to copy into TC's date picker.
+
+    The chosen date is handed to the browser extension through the opened URL's
+    hash (#tcr=DD.MM.YYYY), NOT localStorage. localStorage is partitioned per
+    origin, so a value this tool (tool.momira.travel) writes is invisible to the
+    extension running on momira.travel — that mismatch is why the tab used to
+    open and then do nothing. The URL is the one channel that crosses the origin
+    boundary. On a laptop with the extension installed, it reads the hash and
+    automates Book → date → Search; on mobile (no extensions) the page just opens
+    with the date shown for manual entry."""
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
@@ -357,13 +366,14 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     st.write("")
     st.markdown(f"New departure date: **`{chosen_str}`**")
 
-    # Opens TC idea page in a new tab. The Chrome extension reads rollover
-    # data from localStorage and automates: click Book, set date, click Search.
+    # Opens the TC idea page in a new tab with the chosen date in the URL hash
+    # (#tcr=DD.MM.YYYY). The Chrome extension on momira.travel reads that hash and
+    # automates: click Book, set date, click Search. The hash — not localStorage —
+    # is what carries the date across the origin boundary (see this function's docstring).
+    from urllib.parse import quote as _quote
     import streamlit.components.v1 as components
-    import json as _json
 
-    _rd = _json.dumps({"ideaId": pkg_id, "date": chosen_str, "timestamp": "PLACEHOLDER"})
-    _rd = _rd.replace('"PLACEHOLDER"', "Date.now()")
+    _rollover_url = package_url + "#tcr=" + _quote(chosen_str)
 
     _bid = f"{key_prefix}_rollover_btn"
     components.html(
@@ -377,17 +387,18 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
         "</button>"
         "<script>"
         'document.getElementById("' + _bid + '").addEventListener("click",function(){'
-        'localStorage.setItem("tcRollover",JSON.stringify(' + _rd + '));'
-        'window.open("' + package_url + '","_blank");'
+        'window.open("' + _rollover_url + '","_blank");'
         "});"
         "</script>",
         height=55,
     )
+    st.caption("💻 Laptop with the extension installed: this runs the booking automatically. "
+               "📱 Phone or no extension: the page opens and you enter the date below by hand.")
 
     with st.expander("Manual fallback"):
         st.link_button(
             "Open package in Travel Compositor",
-            package_url,
+            _rollover_url,
             use_container_width=True,
         )
         st.markdown(
