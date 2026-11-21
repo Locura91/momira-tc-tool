@@ -392,8 +392,9 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
         "</script>",
         height=55,
     )
-    st.caption("💻 Laptop with the extension installed: this runs the booking automatically. "
-               "📱 Phone or no extension: the page opens and you enter the date below by hand.")
+    st.caption("💻 Laptop with the extension installed: this drives the rollover automatically to "
+               "the summary, then stops so you can accept. 📱 Phone or no extension: the page opens "
+               "and you do the steps below by hand.")
 
     with st.expander("Manual fallback"):
         st.link_button(
@@ -405,7 +406,9 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
             f"On the TC page:\n\n"
             f"1. Click **Book directly without changes**\n"
             f"2. Set the start date to **`{chosen_str}`**\n"
-            f"3. Click **Start trip / Search**"
+            f"3. Click **Start trip / Search**\n"
+            f"4. On the summary, click **Save and overwrite the existing package** — "
+            f"**not** *Book the trip*"
         )
 
 
