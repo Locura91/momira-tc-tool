@@ -525,26 +525,26 @@ def render_manual_information_flow(client):
 
         for it in planned["items"]:
             icon = {"will_change": "✏️", "unchanged": "➖", "failed": "❌"}[it["status"]]
-            with st.expander(f"{icon} {it['name']}"
-                             + (f" — {it.get('reason') or it.get('detail','')}"
-                                if it["status"] != "will_change" else ""),
-                             expanded=False):
-                if it["status"] == "will_change":
-                    # Mutating `it` in place is deliberate: `planned` IS
-                    # st.session_state.mi_plan, so this checkbox's value survives reruns
-                    # without a separate session key to keep in sync.
+            if it["status"] == "will_change":
+                _chk_col, _exp_col = st.columns([0.05, 0.95])
+                with _chk_col:
                     it["_include"] = st.checkbox(
-                        "Include this service", value=it.get("_include", True),
-                        key=f"mi_include_{it.get('id')}")
-                    if "changes" in it:
-                        for lang, (before, after) in sorted(it["changes"].items()):
-                            st.caption(f"{lang} — before")
-                            st.code(before or "(empty)")
-                            st.caption(f"{lang} — after")
-                            st.code(after)
-                    elif "old_value" in it:
-                        st.caption(f"Release days: **{it['old_value']}** → **{it['new_value']}**")
-                else:
+                        "incl", value=it.get("_include", True),
+                        key=f"mi_include_{it.get('id')}", label_visibility="collapsed")
+                with _exp_col:
+                    with st.expander(f"{icon} {it['name']}", expanded=False):
+                        if "changes" in it:
+                            for lang, (before, after) in sorted(it["changes"].items()):
+                                st.caption(f"{lang} — before")
+                                st.code(before or "(empty)")
+                                st.caption(f"{lang} — after")
+                                st.code(after)
+                        elif "old_value" in it:
+                            st.caption(f"Release days: **{it['old_value']}** → **{it['new_value']}**")
+            else:
+                with st.expander(f"{icon} {it['name']}"
+                                 + (f" — {it.get('reason') or it.get('detail','')}" if True else ""),
+                                 expanded=False):
                     st.caption(it.get("reason") or it.get("detail") or "")
 
         included_count = sum(1 for it in planned["items"]
