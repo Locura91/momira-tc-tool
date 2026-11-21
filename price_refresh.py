@@ -699,19 +699,21 @@ def route_places(route: Dict[str, Any]) -> Tuple[str, str]:
 # ----------------------------------------------------------------------
 # Asking the document for each route's price
 # ----------------------------------------------------------------------
-def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
-                  model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
-    """Find each known route's price in the document. Returns {route index: finding}."""
-    if not routes or not (raw_text or "").strip():
-        return {}
+_PRICE_LOOKUP_BATCH_SIZE = 50
+
+
+def _lookup_prices_single_batch(routes: List[Dict[str, Any]], raw_text: str,
+                                index_offset: int, model: str, human_hint: str
+                                ) -> Dict[int, Dict[str, Any]]:
+    """AI call for one batch of routes. Returns {global route index: finding}."""
     described = []
-    for i, route in enumerate(routes):
+    for local_i, route in enumerate(routes):
         dep, arr = route_places(route)
         brackets = ", ".join(
             f"{o.get('min_pax')}-{o.get('max_pax')} pax ({o.get('name') or o.get('code') or '?'})"
             for o in route["options"]) or "no brackets recorded"
         described.append(
-            f"{i}. {dep} to {arr} | class: {route.get('name') or '(unnamed)'} | "
+            f"{local_i}. {dep} to {arr} | class: {route.get('name') or '(unnamed)'} | "
             f"brackets: {brackets} | currency now: {route.get('currency') or '?'} | "
             f"{'per person' if route.get('price_per_pax') else 'per vehicle'}")
     instruction = f"OPERATOR INSTRUCTION: {human_hint.strip()}\n\n" if (human_hint or "").strip() else ""
@@ -758,7 +760,8 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
                 "infant_price": None if b.get("infant_price") is None else round_up_currency(_num(b.get("infant_price"))),
                 "seasons": seasons,
             })
-        findings[index] = {
+        global_index = index + index_offset
+        findings[global_index] = {
             "found": bool(item.get("found")) and bool(brackets),
             "matched_row": str(item.get("matched_row") or "").strip(),
             "currency": str(item.get("currency") or "").strip().upper(),
@@ -767,6 +770,24 @@ def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
             "confidence": str(item.get("confidence") or "low").lower(),
             "note": str(item.get("note") or "").strip(),
         }
+    return findings
+
+
+def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
+                  model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
+    """Find each known route's price in the document. Returns {route index: finding}.
+
+    Automatically batches into groups of _PRICE_LOOKUP_BATCH_SIZE to prevent
+    the AI response from overflowing on suppliers with many routes."""
+    if not routes or not (raw_text or "").strip():
+        return {}
+    if len(routes) <= _PRICE_LOOKUP_BATCH_SIZE:
+        return _lookup_prices_single_batch(routes, raw_text, 0, model, human_hint)
+    findings = {}
+    for batch_start in range(0, len(routes), _PRICE_LOOKUP_BATCH_SIZE):
+        batch = routes[batch_start:batch_start + _PRICE_LOOKUP_BATCH_SIZE]
+        batch_findings = _lookup_prices_single_batch(batch, raw_text, batch_start, model, human_hint)
+        findings.update(batch_findings)
     return findings
 
 

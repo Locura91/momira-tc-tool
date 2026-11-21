@@ -208,7 +208,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"read ({fts_err}) — falling back to the normal reading.")
                 findings = None
         if findings is None and (raw_text or "").strip():
-            with st.spinner(f"Looking up prices for {len(routes)} route(s) in the document…"):
+            _n = len(routes)
+            _batch = price_refresh._PRICE_LOOKUP_BATCH_SIZE
+            _label = (f"Looking up prices for {_n} route(s) in the document "
+                      f"({(_n - 1) // _batch + 1} batch(es) of up to {_batch})…"
+                      if _n > _batch
+                      else f"Looking up prices for {_n} route(s) in the document…")
+            with st.spinner(_label):
                 try:
                     findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
                 except Exception as e:
