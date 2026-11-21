@@ -124,6 +124,47 @@ def render_price_refresh_flow(client, preselected_kind=None):
                              accept_multiple_files=True, key="pr_files")
     hint = st.text_input("Instruction (optional)", key="pr_hint",
                          placeholder="e.g. only the Hurghada section, private transfers only")
+    # Destination filter: pre-load routes to let the human pick which cities to check,
+    # so the AI doesn't overflow on suppliers with 200+ routes.
+    _cached_routes_key = f"pr_preloaded_routes_{supplier_id}_{kind}"
+    if supplier_id and st.button("Load destinations for filtering", key="pr_load_destinations",
+                                  type="secondary"):
+        with st.spinner(f"Loading this supplier's {kind.lower()}s…"):
+            _pre_routes, _pre_err = price_refresh.load_supplier_products(
+                client, supplier_id, kind)
+        if _pre_err:
+            st.error(f"Couldn't load: {_pre_err}")
+        elif _pre_routes:
+            st.session_state[_cached_routes_key] = _pre_routes
+            st.rerun()
+
+    _preloaded = st.session_state.get(_cached_routes_key)
+    name_filter = ""
+    if _preloaded:
+        import re as _re_dest
+        _cities = set()
+        for _r in _preloaded:
+            _rname = (_r.get("name") or "")
+            for _sep in ["→", " - ", " – ", " — "]:
+                if _sep in _rname:
+                    for _part in _rname.split(_sep):
+                        _city = _re_dest.sub(r"\s*\([^)]*\)", "", _part).strip()
+                        if _city:
+                            _cities.add(_city)
+                    break
+        _sorted_cities = sorted(_cities)
+        if _sorted_cities:
+            _selected = st.multiselect(
+                f"Filter by destination ({len(_preloaded)} routes total — select cities to narrow down)",
+                _sorted_cities, key="pr_city_filter",
+                placeholder="Leave empty to check all routes")
+            if _selected:
+                name_filter = ""  # handled via _selected below
+                st.session_state["_pr_city_selection"] = _selected
+            else:
+                st.session_state.pop("_pr_city_selection", None)
+        st.caption(f"ℹ️ {len(_preloaded)} route(s) loaded from this supplier. "
+                   f"Select cities above to narrow down, or leave empty to check all.")
 
     def _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, scope, base_bracket=None):
         """Read the document for these already-loaded routes and put the proposals on screen.
@@ -232,9 +273,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
             def _tick(done, total, name):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Reading {name} ({done}/{total})")
 
-            routes, err = price_refresh.load_supplier_products(client, supplier_id, kind,
-                                                               progress=_tick)
-            bar.empty()
+            if _preloaded:
+                routes, err = _preloaded, None
+                bar.empty()
+            else:
+                routes, err = price_refresh.load_supplier_products(client, supplier_id, kind,
+                                                                   progress=_tick)
+                bar.empty()
             if err:
                 st.error(f"Couldn't read this supplier's {kind.lower()}s: {err}")
             elif not routes:
@@ -242,10 +287,26 @@ def render_price_refresh_flow(client, preselected_kind=None):
                            f"**Create & Update Products → {kind}** first; this flow only updates "
                            f"what already exists.")
             else:
+                # Filter routes by selected cities so the AI doesn't overflow on
+                # suppliers with 200+ routes.
+                filtered = routes
+                _city_sel = st.session_state.get("_pr_city_selection")
+                if _city_sel:
+                    _before = len(filtered)
+                    _city_lower = [c.lower() for c in _city_sel]
+                    filtered = [r for r in filtered
+                                if any(c in (r.get("name") or "").lower() for c in _city_lower)]
+                    if filtered:
+                        st.info(f"\U0001f3af Filtered to **{len(filtered)}** of {_before} "
+                                f"route(s) matching: {', '.join(_city_sel)}")
+                    else:
+                        st.warning(f"No routes match the selected cities — "
+                                   f"checking all {_before} route(s) instead.")
+                        filtered = routes
                 # Base modality is auto-detected per route by _current_base_option (the
                 # option with zero supplement). No global modality/base picker needed —
                 # routes can have different numbers of modalities (product owner, 2026-11-17).
-                if _pr_read_and_build(routes, raw_text, fts_csv_tmp_paths, hint, None):
+                if _pr_read_and_build(filtered, raw_text, fts_csv_tmp_paths, hint, None):
                     st.rerun()
 
     proposals = st.session_state.get("pr_proposals")
