@@ -375,8 +375,23 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
             return None
         return normalize_name(frm), normalize_name(to), transport_type
 
+    def _strip_qualifier(name: str) -> str:
+        """Strip parenthetical qualifiers like '(Jetty)', '(Airport / Town)' from a city name
+        for looser matching — 'Koh Lipe (Jetty)' and 'Koh Lipe' are the same place."""
+        return re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+
+    def _base_signature(sig):
+        if not sig:
+            return None
+        dep, arr, tt = sig
+        return _strip_qualifier(dep), _strip_qualifier(arr), tt
+
     signatures = {sig for sig in (_name_signature(t) for t in live) if sig}
     display_signatures = {sig for sig in (_display_name_signature(t) for t in live) if sig}
+    base_signatures = {_base_signature(s) for s in signatures if s}
+    base_display_signatures = {_base_signature(s) for s in display_signatures if s}
+    base_signatures.discard(None)
+    base_display_signatures.discard(None)
 
     gaps = []
     for t in live:
@@ -392,6 +407,12 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
         if dsig:
             d_dep, d_arr, d_type = dsig
             if (d_arr, d_dep, d_type) in display_signatures:
+                continue
+        # Fallback: strip parenthetical qualifiers — "Koh Lipe (Jetty)" matches "Koh Lipe"
+        bsig = _base_signature(sig)
+        if bsig:
+            b_dep, b_arr, b_type = bsig
+            if (b_arr, b_dep, b_type) in base_signatures or (b_arr, b_dep, b_type) in base_display_signatures:
                 continue
         codes = _transport_route_codes(t)
         dep_code, arr_code, _ = codes
