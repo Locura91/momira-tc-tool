@@ -1,30 +1,25 @@
-// Momira TC Rollover -- content script v10
+// Momira TC Rollover -- content script v11
 // Runs in world: "MAIN" so PrimeFaces.ab() is accessible when clicking buttons.
-// Reads rollover data from localStorage (set by the Streamlit tool before opening this tab).
+// Reads the rollover date from the URL hash (#tcr=DD.MM.YYYY), set by the Streamlit tool
+// on the URL it opens. The hash is the ONLY channel that survives the cross-origin jump from
+// the tool (tool.momira.travel) to the booking site (momira.travel): localStorage is
+// partitioned per-origin, so a value written by the tool is invisible here. (This was the bug
+// that made the tab open and then do nothing — the old localStorage read always came back empty.)
 // Uses real TC CSS selectors: a.button-select-idea, input.departure-date, a.dev-button-startTrip
 (function () {
   "use strict";
 
-  var LS_KEY = "tcRollover";
+  // ── Read rollover date from the URL hash ─────────────────────────────────
+  var DATE = null; // DD.MM.YYYY
+  try {
+    var m = (location.hash || "").match(/[#&]tcr=([^&]+)/);
+    if (m) DATE = decodeURIComponent(m[1]);
+  } catch (e) { return; }
+  if (!DATE) return;
 
-  // ── Read rollover data from localStorage ─────────────────────────────────
-  var raw;
-  try { raw = localStorage.getItem(LS_KEY); } catch (e) { return; }
-  if (!raw) return;
-
-  var data;
-  try { data = JSON.parse(raw); } catch (e) { return; }
-
-  // Ignore stale entries (older than 2 minutes)
-  if (!data.date || !data.timestamp || Date.now() - data.timestamp > 120000) {
-    try { localStorage.removeItem(LS_KEY); } catch (e) {}
-    return;
-  }
-
-  // Clear immediately so it doesn't re-trigger on refresh
-  try { localStorage.removeItem(LS_KEY); } catch (e) {}
-
-  var DATE = data.date; // DD.MM.YYYY
+  // Strip the hash immediately so a manual refresh of this tab doesn't re-trigger the
+  // automation (and so the booking flow's own navigations don't carry it forward).
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
 
   // ── Status overlay ───────────────────────────────────────────────────────
   var box = document.createElement("div");
