@@ -147,6 +147,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
     name_filter = ""
     if _preloaded:
         import re as _re_dest
+        _TRANSPORT_PREFIX = _re_dest.compile(
+            r"^(?:one[- ]?way|round[- ]?trip|private|shared|)[\s]*"
+            r"(?:transfer|transport|)[\s]*(?:from\s+)?",
+            re.IGNORECASE,
+        )
         _cities = set()
         for _r in _preloaded:
             _rname = (_r.get("name") or "")
@@ -154,6 +159,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 if _sep in _rname:
                     for _part in _rname.split(_sep):
                         _city = _re_dest.sub(r"\s*\([^)]*\)", "", _part).strip()
+                        _city = _TRANSPORT_PREFIX.sub("", _city).strip()
                         if _city:
                             _cities.add(_city)
                     break
