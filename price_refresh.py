@@ -774,20 +774,33 @@ def _lookup_prices_single_batch(routes: List[Dict[str, Any]], raw_text: str,
 
 
 def lookup_prices(routes: List[Dict[str, Any]], raw_text: str,
-                  model: str = "claude-sonnet-5", human_hint: str = "") -> Dict[int, Dict[str, Any]]:
+                  model: str = "claude-sonnet-5", human_hint: str = "",
+                  progress: Optional[Callable[[int, int], None]] = None
+                  ) -> Dict[int, Dict[str, Any]]:
     """Find each known route's price in the document. Returns {route index: finding}.
 
     Automatically batches into groups of _PRICE_LOOKUP_BATCH_SIZE to prevent
-    the AI response from overflowing on suppliers with many routes."""
+    the AI response from overflowing on suppliers with many routes.
+    progress(done_batches, total_batches) is called after each batch completes."""
     if not routes or not (raw_text or "").strip():
         return {}
     if len(routes) <= _PRICE_LOOKUP_BATCH_SIZE:
         return _lookup_prices_single_batch(routes, raw_text, 0, model, human_hint)
     findings = {}
-    for batch_start in range(0, len(routes), _PRICE_LOOKUP_BATCH_SIZE):
+    total_batches = (len(routes) - 1) // _PRICE_LOOKUP_BATCH_SIZE + 1
+    batch_errors = []
+    for batch_num, batch_start in enumerate(range(0, len(routes), _PRICE_LOOKUP_BATCH_SIZE)):
         batch = routes[batch_start:batch_start + _PRICE_LOOKUP_BATCH_SIZE]
-        batch_findings = _lookup_prices_single_batch(batch, raw_text, batch_start, model, human_hint)
-        findings.update(batch_findings)
+        try:
+            batch_findings = _lookup_prices_single_batch(batch, raw_text, batch_start, model, human_hint)
+            findings.update(batch_findings)
+        except Exception as e:
+            batch_errors.append(f"batch {batch_num + 1} (routes {batch_start}-"
+                                f"{batch_start + len(batch) - 1}): {e}")
+        if progress:
+            progress(batch_num + 1, total_batches)
+    if batch_errors and not findings:
+        raise RuntimeError("All batches failed: " + "; ".join(batch_errors))
     return findings
 
 

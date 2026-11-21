@@ -13,6 +13,7 @@ original position, so the import-back line stays at that original position.
 """
 import os
 import tempfile
+from contextlib import nullcontext as _nullcontext
 import streamlit as st
 
 from fts_transfer_matrix import classify_fts_matrix_file
@@ -138,6 +139,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
             st.session_state[_cached_routes_key] = _pre_routes
             st.rerun()
 
+    # Clear stale city selections from a different supplier/kind
+    for _old_key in [k for k in st.session_state if k.startswith("pr_preloaded_routes_")
+                     and k != _cached_routes_key]:
+        del st.session_state[_old_key]
     _preloaded = st.session_state.get(_cached_routes_key)
     name_filter = ""
     if _preloaded:
@@ -210,16 +215,25 @@ def render_price_refresh_flow(client, preselected_kind=None):
         if findings is None and (raw_text or "").strip():
             _n = len(routes)
             _batch = price_refresh._PRICE_LOOKUP_BATCH_SIZE
-            _label = (f"Looking up prices for {_n} route(s) in the document "
-                      f"({(_n - 1) // _batch + 1} batch(es) of up to {_batch})…"
-                      if _n > _batch
-                      else f"Looking up prices for {_n} route(s) in the document…")
-            with st.spinner(_label):
+            _total_batches = (_n - 1) // _batch + 1 if _n > _batch else 1
+            if _n > _batch:
+                _bar = st.progress(0.0, text=f"Looking up prices… batch 0/{_total_batches}")
+
+                def _ai_tick(done, total):
+                    _bar.progress(min(done / max(total, 1), 1.0),
+                                  text=f"Looking up prices… batch {done}/{total}")
+            else:
+                _bar = None
+                _ai_tick = None
+            with st.spinner(f"Looking up prices for {_n} route(s) in the document…") if _bar is None else _nullcontext():
                 try:
-                    findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint)
+                    findings = price_refresh.lookup_prices(routes, raw_text, human_hint=hint,
+                                                           progress=_ai_tick)
                 except Exception as e:
                     st.error(f"Couldn't read the document: {friendly_error_message(e)}")
                     findings = None
+            if _bar is not None:
+                _bar.empty()
         elif findings is None:
             st.error("Couldn't read prices from the FTS matrix, and there's no other "
                      "document to fall back to.")
