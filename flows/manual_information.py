@@ -104,6 +104,11 @@ def render_manual_information_flow(client):
         _mi_dest_records = st.session_state.get(_mi_dest_cache_key)
         if _mi_dest_records:
             import re as _re_mi
+            _MI_TRANSPORT_PREFIX = _re_mi.compile(
+                r"^(?:one[- ]?way|round[- ]?trip|private|shared|)[\s]*"
+                r"(?:transfer|transport|)[\s]*(?:from\s+)?",
+                _re_mi.IGNORECASE,
+            )
             _mi_cities = set()
             for _r in _mi_dest_records:
                 _rname = _r.get("name") or ""
@@ -111,6 +116,7 @@ def render_manual_information_flow(client):
                     if _sep in _rname:
                         for _part in _rname.split(_sep):
                             _city = _re_mi.sub(r"\s*\([^)]*\)", "", _part).strip()
+                            _city = _MI_TRANSPORT_PREFIX.sub("", _city).strip()
                             if _city:
                                 _mi_cities.add(_city)
                         break
