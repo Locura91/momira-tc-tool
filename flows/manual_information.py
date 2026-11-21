@@ -70,6 +70,7 @@ def render_manual_information_flow(client):
 
     _ANY_TRANSPORT_TYPE = "— All Transport Types —"
     transport_type: str | None = None
+    destination_filter: list | None = None
     if product_type == "Transport":
         type_label_to_key = {TRANSPORT_TYPE_LABELS[t]: t for t in TRANSPORT_TYPES}
         type_labels = [_ANY_TRANSPORT_TYPE] + list(type_label_to_key.keys())
@@ -82,6 +83,45 @@ def render_manual_information_flow(client):
             st.caption(f"Only **{type_choice}** transports will be affected.")
         else:
             st.caption("All Transport Types will be affected.")
+
+        # Destination filter: load transport names to let the human narrow by city.
+        _mi_dest_cache_key = f"mi_destinations_{supplier_id}"
+        if supplier_id and st.button("Load destinations for filtering", key="mi_load_destinations",
+                                      type="secondary"):
+            with st.spinner("Loading transport names…"):
+                _dest_records, _dest_err = bulk_notes.list_services(client, supplier_id, "Transport")
+            if _dest_err:
+                st.warning(f"Couldn't load: {_dest_err}")
+            elif _dest_records:
+                st.session_state[_mi_dest_cache_key] = _dest_records
+                st.rerun()
+
+        # Clean stale caches from other suppliers
+        for _old_k in [k for k in st.session_state if k.startswith("mi_destinations_")
+                       and k != _mi_dest_cache_key]:
+            del st.session_state[_old_k]
+
+        _mi_dest_records = st.session_state.get(_mi_dest_cache_key)
+        if _mi_dest_records:
+            import re as _re_mi
+            _mi_cities = set()
+            for _r in _mi_dest_records:
+                _rname = _r.get("name") or ""
+                for _sep in ["→", " - ", " – ", " — "]:
+                    if _sep in _rname:
+                        for _part in _rname.split(_sep):
+                            _city = _re_mi.sub(r"\s*\([^)]*\)", "", _part).strip()
+                            if _city:
+                                _mi_cities.add(_city)
+                        break
+            _mi_sorted = sorted(_mi_cities)
+            if _mi_sorted:
+                _mi_selected = st.multiselect(
+                    f"Filter by destination ({len(_mi_dest_records)} transports — select to narrow down)",
+                    _mi_sorted, key="mi_city_filter",
+                    placeholder="Leave empty to apply to all transports")
+                if _mi_selected:
+                    destination_filter = _mi_selected
 
     if not supplier_id:
         st.info("Choose a supplier above to write a note.")
@@ -108,6 +148,8 @@ def render_manual_information_flow(client):
         add_mode_options.append("A new Supplement / Additional Service")
     if price_code_available:
         add_mode_options.append("A price-validity code (YYYYMMDD)")
+    add_mode_options.append("Release days (days before departure)")
+    add_release_days = False
     if len(add_mode_options) > 1:
         st.markdown("### 1. What are you adding?")
         add_mode = st.radio(
@@ -116,6 +158,7 @@ def render_manual_information_flow(client):
         )
         add_structured = add_mode.startswith("A new")
         add_price_code = add_mode.startswith("A price-validity")
+        add_release_days = add_mode.startswith("Release days")
 
     if add_structured:
         kind_label = st.selectbox("Which one?", structured_labels, key="mi_structured_kind_label")
@@ -289,6 +332,26 @@ def render_manual_information_flow(client):
                                      placeholder="ASW-CT1\nCAI-CT2")
             codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
         also_future = False
+    elif add_release_days:
+        _rd_field = bulk_notes.RELEASE_FIELD.get(product_type, "release days")
+        st.markdown("### 2. Set the release days")
+        st.caption(f"Sets the release-days field ({_rd_field}) on every matching {product_type} "
+                   "service. This is how many days before departure the booking becomes available.")
+        release_days_value = st.number_input(
+            "Days before departure", min_value=0, step=1, value=5,
+            key="mi_release_days_value",
+            help="0 = available immediately, 5 = released 5 days before departure.")
+        target = None
+        text = None
+        mode = None
+        codes = None
+        if bulk_notes.needs_manual_codes(product_type):
+            st.info("Travel Compositor has no endpoint that lists closed tours, so they can't be "
+                    "found automatically — paste the tour codes, one per line.")
+            raw_codes = st.text_area("ClosedTour codes", key="mi_codes", height=80,
+                                     placeholder="ASW-CT1\nCAI-CT2")
+            codes = [c.strip() for c in (raw_codes or "").splitlines() if c.strip()]
+        also_future = False
     elif add_price_code:
         st.markdown("### 2. Set the price-validity date")
         # REVERTED 2026-09-11 (real production evidence - see bulk_notes.TARGETS["Transport"]'s
@@ -365,13 +428,18 @@ def render_manual_information_flow(client):
     # service so specific ones can be deselected before Send, for both text and structured
     # additions. ClosedTour keeps its pasted-codes list as the primary way to narrow the set,
     # but the checkboxes work there too if a pasted code turns out not to need this after all.
-    if add_structured:
+    _dest_tuple = tuple(sorted(destination_filter)) if destination_filter else ()
+    if add_release_days:
+        preview_disabled = False
+        current_sig = (supplier_id, product_type, transport_type, _dest_tuple,
+                       "release_days", release_days_value, tuple(codes or ()))
+    elif add_structured:
         preview_disabled = not (item_data.get("name") or "").strip()
-        current_sig = (supplier_id, product_type, transport_type, structured_kind,
+        current_sig = (supplier_id, product_type, transport_type, _dest_tuple, structured_kind,
                        tuple(sorted((item_data or {}).items())), tuple(codes or ()))
     else:
         preview_disabled = not (text or "").strip()
-        current_sig = (supplier_id, product_type, transport_type, target, text, mode, tuple(codes or ()))
+        current_sig = (supplier_id, product_type, transport_type, _dest_tuple, target, text, mode, tuple(codes or ()))
 
     pcol1, pcol2 = st.columns([1, 3])
     with pcol1:
@@ -382,14 +450,21 @@ def render_manual_information_flow(client):
                 bar.progress(min(done / max(total, 1), 1.0), text=f"Checking {name} ({done}/{total})")
 
             try:
-                if add_structured:
+                if add_release_days:
+                    st.session_state.mi_plan = bulk_notes.plan_release_days(
+                        client, supplier_id, product_type, release_days_value,
+                        codes=codes, transport_type=transport_type,
+                        destination_filter=destination_filter, progress=_tick)
+                elif add_structured:
                     st.session_state.mi_plan = bulk_notes.plan_structured(
                         client, supplier_id, product_type, structured_kind, item_data,
-                        codes=codes, transport_type=transport_type, progress=_tick)
+                        codes=codes, transport_type=transport_type,
+                        destination_filter=destination_filter, progress=_tick)
                 else:
                     st.session_state.mi_plan = bulk_notes.plan(
                         client, supplier_id, product_type, target, text, mode=mode,
-                        codes=codes, transport_type=transport_type, progress=_tick)
+                        codes=codes, transport_type=transport_type,
+                        destination_filter=destination_filter, progress=_tick)
                 # The signature includes `codes`: without it, previewing tours A+B and then
                 # editing the box to C left Send armed and would have written A+B.
                 st.session_state.mi_plan_sig = current_sig
@@ -461,11 +536,14 @@ def render_manual_information_flow(client):
                     it["_include"] = st.checkbox(
                         "Include this service", value=it.get("_include", True),
                         key=f"mi_include_{it.get('id')}")
-                    for lang, (before, after) in sorted(it["changes"].items()):
-                        st.caption(f"{lang} — before")
-                        st.code(before or "(empty)")
-                        st.caption(f"{lang} — after")
-                        st.code(after)
+                    if "changes" in it:
+                        for lang, (before, after) in sorted(it["changes"].items()):
+                            st.caption(f"{lang} — before")
+                            st.code(before or "(empty)")
+                            st.caption(f"{lang} — after")
+                            st.code(after)
+                    elif "old_value" in it:
+                        st.caption(f"Release days: **{it['old_value']}** → **{it['new_value']}**")
                 else:
                     st.caption(it.get("reason") or it.get("detail") or "")
 
@@ -493,8 +571,12 @@ def render_manual_information_flow(client):
                      if it["status"] == "will_change" and not it.get("_include", True) else it)
                     for it in planned["items"]
                 ]
-                st.session_state.mi_result = bulk_notes.apply(client, supplier_id, to_apply,
-                                                              progress=_tick2)
+                if to_apply.get("kind") == "release_days":
+                    st.session_state.mi_result = bulk_notes.apply_release_days(
+                        client, supplier_id, to_apply, progress=_tick2)
+                else:
+                    st.session_state.mi_result = bulk_notes.apply(
+                        client, supplier_id, to_apply, progress=_tick2)
                 bar.empty()
                 if also_future:
                     st.session_state.mi_future_saved = service_notes.set_standing_note(
@@ -520,7 +602,12 @@ def render_manual_information_flow(client):
         if result["updated"]:
             st.success(f"✅ Sent. {len(result['updated'])} service(s) updated.")
             for u in result["updated"]:
-                st.write(f"- {u['name']} ({', '.join(u['languages'])})")
+                if "languages" in u:
+                    st.write(f"- {u['name']} ({', '.join(u['languages'])})")
+                elif "old_value" in u:
+                    st.write(f"- {u['name']} ({u['old_value']} → {u['new_value']})")
+                else:
+                    st.write(f"- {u['name']}")
                 # CONFIRMED REAL NEED (product owner, 2026-09-11): a real Transport bulk write
                 # reported success here but the field never actually showed the new value in
                 # Travel Compositor - same shape as the earlier price-refresh write-not-

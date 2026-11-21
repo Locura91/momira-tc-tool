@@ -828,6 +828,7 @@ def _apply_transport_supplement(client, supplier_id: str, planned: Dict[str, Any
 def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                     item_data: Dict[str, Any], codes: Optional[List[str]] = None,
                     transport_type: Optional[str] = None,
+                    destination_filter: Optional[List[str]] = None,
                     progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Same job as plan(), for a structured Supplement/Additional Service instead of a text
     field: work out exactly what would change, WITHOUT writing anything. A service that
@@ -900,6 +901,10 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                 continue
         if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
             continue
+        if destination_filter:
+            _rec_name = (record.get("name") or "").lower()
+            if not any(c.lower() in _rec_name for c in destination_filter):
+                continue
 
         existing_list = record.get(field) or []
         existing_names = {_norm(_structured_entry_name(e, kind))
@@ -1261,6 +1266,7 @@ def _items_from(data: Any, keys) -> List[Dict[str, Any]]:
 def plan(client, supplier_id: str, product_type: str, target: str, text: str,
          mode: str = MODE_APPEND, codes: Optional[List[str]] = None,
          transport_type: Optional[str] = None,
+         destination_filter: Optional[List[str]] = None,
          progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Work out exactly what would change, WITHOUT writing anything.
 
@@ -1311,6 +1317,10 @@ def plan(client, supplier_id: str, product_type: str, target: str, text: str,
                 continue
         if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
             continue
+        if destination_filter:
+            _rec_name = (record.get("name") or "").lower()
+            if not any(c.lower() in _rec_name for c in destination_filter):
+                continue
         updated, changes = write_field(record, product_type, target, text, mode)
         status = "will_change" if changes else "unchanged"
         result[status] += 1
@@ -1381,6 +1391,139 @@ def apply(client, supplier_id: str, planned: Dict[str, Any],
             else:
                 out["updated"].append({"name": item.get("name"), "id": item.get("id"),
                                        "languages": sorted(item.get("changes", {}).keys()),
+                                       "debug": debug})
+        except Exception as e:
+            out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                  "detail": f"{type(e).__name__}: {e}", "debug": debug})
+    return out
+
+
+# ----------------------------------------------------------------------
+# Release days — bulk read/set the days-before-departure release field
+# ----------------------------------------------------------------------
+
+RELEASE_FIELD: Dict[str, str] = {
+    "ClosedTour": "daysAvailableBeforeRelease",
+    "Ticket": "daysAvailableBeforeRelease",
+    "Transfer": "releaseContract",
+    "Transport": "releaseContract",
+    "Hotel": "releaseDays",
+}
+
+
+def plan_release_days(
+    client,
+    supplier_id: str,
+    product_type: str,
+    new_days: int,
+    codes: Optional[List[str]] = None,
+    transport_type: Optional[str] = None,
+    destination_filter: Optional[List[str]] = None,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> Dict[str, Any]:
+    """Preview what a bulk release-days update would change, without writing."""
+    cfg = PRODUCTS.get(product_type)
+    if not cfg:
+        return {"items": [], "will_change": 0, "unchanged": 0, "failed": 0,
+                "error": f"Unknown product type {product_type!r}"}
+
+    field = RELEASE_FIELD.get(product_type)
+    if not field:
+        return {"items": [], "will_change": 0, "unchanged": 0, "failed": 0,
+                "error": f"No release-days field for {product_type}"}
+
+    records, err = list_services(client, supplier_id, product_type, codes=codes)
+    items = []
+    will_change = unchanged = failed = 0
+
+    for n, record in enumerate(records):
+        rec_id = record.get(cfg["id_field"], "")
+        name = record.get("name") or record.get("code") or str(rec_id)
+        if progress:
+            progress(n + 1, len(records), name)
+
+        if transport_type:
+            rec_type = (record.get("transportType") or "").upper()
+            if rec_type != transport_type.upper():
+                continue
+
+        if destination_filter:
+            rec_name = (record.get("name") or "").lower()
+            if not any(c.lower() in rec_name for c in destination_filter):
+                continue
+
+        # Transport list entries are unreliable for PUT — re-fetch individually.
+        if not cfg["full_in_list"]:
+            try:
+                record = getattr(client, cfg["fetch_fn"])(supplier_id, rec_id)
+            except Exception as e:
+                items.append({"id": rec_id, "name": name, "status": "failed",
+                              "detail": f"{type(e).__name__}: {e}"})
+                failed += 1
+                continue
+
+        old_val = record.get(field)
+        old_int = None
+        try:
+            old_int = int(old_val) if old_val is not None else None
+        except (ValueError, TypeError):
+            pass
+
+        if old_int == new_days:
+            items.append({"id": rec_id, "name": name, "status": "unchanged",
+                          "reason": f"Already {new_days}"})
+            unchanged += 1
+            continue
+
+        updated = copy.deepcopy(record)
+        updated[field] = new_days
+        normalize_for_put(updated, product_type)
+
+        items.append({
+            "id": rec_id, "name": name, "status": "will_change",
+            "old_value": old_val, "new_value": new_days,
+            "record": updated,
+        })
+        will_change += 1
+
+    return {
+        "product_type": product_type, "kind": "release_days",
+        "items": items, "will_change": will_change,
+        "unchanged": unchanged, "failed": failed,
+        "error": err,
+    }
+
+
+def apply_release_days(
+    client, supplier_id: str, planned: Dict[str, Any],
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> Dict[str, Any]:
+    """Push a release-days plan a human has already seen."""
+    product_type = planned.get("product_type")
+    cfg = PRODUCTS.get(product_type) or {}
+    update_fn = getattr(client, cfg.get("update_fn", ""), None)
+    out = {"updated": [], "failed": [], "skipped": 0}
+    if not update_fn:
+        out["failed"].append({"name": "-", "detail": f"No update endpoint for {product_type}"})
+        return out
+
+    pending = [i for i in planned.get("items", []) if i.get("status") == "will_change"]
+    out["skipped"] = len(planned.get("items", [])) - len(pending)
+    for n, item in enumerate(pending):
+        if progress:
+            progress(n + 1, len(pending), item.get("name", ""))
+        debug = {"request": item.get("record"), "response": None}
+        try:
+            res = update_fn(supplier_id, item["record"])
+            debug["response"] = res
+            if isinstance(res, dict) and "error" in res:
+                out["failed"].append({"name": item.get("name"), "id": item.get("id"),
+                                      "detail": str(res.get("message") or res.get("error")),
+                                      "debug": debug})
+            else:
+                out["updated"].append({"name": item.get("name"), "id": item.get("id"),
+                                       "old_value": item.get("old_value"),
+                                       "new_value": item.get("new_value"),
                                        "debug": debug})
         except Exception as e:
             out["failed"].append({"name": item.get("name"), "id": item.get("id"),
