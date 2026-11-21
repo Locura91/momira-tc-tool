@@ -150,7 +150,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
         _TRANSPORT_PREFIX = _re_dest.compile(
             r"^(?:one[- ]?way|round[- ]?trip|private|shared|)[\s]*"
             r"(?:transfer|transport|)[\s]*(?:from\s+)?",
-            re.IGNORECASE,
+            _re_dest.IGNORECASE,
         )
         _cities = set()
         for _r in _preloaded:
