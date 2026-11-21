@@ -828,6 +828,7 @@ def _apply_transport_supplement(client, supplier_id: str, planned: Dict[str, Any
 def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                     item_data: Dict[str, Any], codes: Optional[List[str]] = None,
                     transport_type: Optional[str] = None,
+                    destination_filter: Optional[List[str]] = None,
                     progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Same job as plan(), for a structured Supplement/Additional Service instead of a text
     field: work out exactly what would change, WITHOUT writing anything. A service that
@@ -900,6 +901,10 @@ def plan_structured(client, supplier_id: str, product_type: str, kind: str,
                 continue
         if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
             continue
+        if destination_filter:
+            _rec_name = (record.get("name") or "").lower()
+            if not any(c.lower() in _rec_name for c in destination_filter):
+                continue
 
         existing_list = record.get(field) or []
         existing_names = {_norm(_structured_entry_name(e, kind))
@@ -1261,6 +1266,7 @@ def _items_from(data: Any, keys) -> List[Dict[str, Any]]:
 def plan(client, supplier_id: str, product_type: str, target: str, text: str,
          mode: str = MODE_APPEND, codes: Optional[List[str]] = None,
          transport_type: Optional[str] = None,
+         destination_filter: Optional[List[str]] = None,
          progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """Work out exactly what would change, WITHOUT writing anything.
 
@@ -1311,6 +1317,10 @@ def plan(client, supplier_id: str, product_type: str, target: str, text: str,
                 continue
         if transport_type and (record.get("transportType") or "").upper() != transport_type.upper():
             continue
+        if destination_filter:
+            _rec_name = (record.get("name") or "").lower()
+            if not any(c.lower() in _rec_name for c in destination_filter):
+                continue
         updated, changes = write_field(record, product_type, target, text, mode)
         status = "will_change" if changes else "unchanged"
         result[status] += 1

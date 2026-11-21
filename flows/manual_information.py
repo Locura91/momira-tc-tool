@@ -70,6 +70,7 @@ def render_manual_information_flow(client):
 
     _ANY_TRANSPORT_TYPE = "— All Transport Types —"
     transport_type: str | None = None
+    destination_filter: list | None = None
     if product_type == "Transport":
         type_label_to_key = {TRANSPORT_TYPE_LABELS[t]: t for t in TRANSPORT_TYPES}
         type_labels = [_ANY_TRANSPORT_TYPE] + list(type_label_to_key.keys())
@@ -82,6 +83,45 @@ def render_manual_information_flow(client):
             st.caption(f"Only **{type_choice}** transports will be affected.")
         else:
             st.caption("All Transport Types will be affected.")
+
+        # Destination filter: load transport names to let the human narrow by city.
+        _mi_dest_cache_key = f"mi_destinations_{supplier_id}"
+        if supplier_id and st.button("Load destinations for filtering", key="mi_load_destinations",
+                                      type="secondary"):
+            with st.spinner("Loading transport names…"):
+                _dest_records, _dest_err = bulk_notes.list_services(client, supplier_id, "Transport")
+            if _dest_err:
+                st.warning(f"Couldn't load: {_dest_err}")
+            elif _dest_records:
+                st.session_state[_mi_dest_cache_key] = _dest_records
+                st.rerun()
+
+        # Clean stale caches from other suppliers
+        for _old_k in [k for k in st.session_state if k.startswith("mi_destinations_")
+                       and k != _mi_dest_cache_key]:
+            del st.session_state[_old_k]
+
+        _mi_dest_records = st.session_state.get(_mi_dest_cache_key)
+        if _mi_dest_records:
+            import re as _re_mi
+            _mi_cities = set()
+            for _r in _mi_dest_records:
+                _rname = _r.get("name") or ""
+                for _sep in ["→", " - ", " – ", " — "]:
+                    if _sep in _rname:
+                        for _part in _rname.split(_sep):
+                            _city = _re_mi.sub(r"\s*\([^)]*\)", "", _part).strip()
+                            if _city:
+                                _mi_cities.add(_city)
+                        break
+            _mi_sorted = sorted(_mi_cities)
+            if _mi_sorted:
+                _mi_selected = st.multiselect(
+                    f"Filter by destination ({len(_mi_dest_records)} transports — select to narrow down)",
+                    _mi_sorted, key="mi_city_filter",
+                    placeholder="Leave empty to apply to all transports")
+                if _mi_selected:
+                    destination_filter = _mi_selected
 
     if not supplier_id:
         st.info("Choose a supplier above to write a note.")
@@ -365,13 +405,14 @@ def render_manual_information_flow(client):
     # service so specific ones can be deselected before Send, for both text and structured
     # additions. ClosedTour keeps its pasted-codes list as the primary way to narrow the set,
     # but the checkboxes work there too if a pasted code turns out not to need this after all.
+    _dest_tuple = tuple(sorted(destination_filter)) if destination_filter else ()
     if add_structured:
         preview_disabled = not (item_data.get("name") or "").strip()
-        current_sig = (supplier_id, product_type, transport_type, structured_kind,
+        current_sig = (supplier_id, product_type, transport_type, _dest_tuple, structured_kind,
                        tuple(sorted((item_data or {}).items())), tuple(codes or ()))
     else:
         preview_disabled = not (text or "").strip()
-        current_sig = (supplier_id, product_type, transport_type, target, text, mode, tuple(codes or ()))
+        current_sig = (supplier_id, product_type, transport_type, _dest_tuple, target, text, mode, tuple(codes or ()))
 
     pcol1, pcol2 = st.columns([1, 3])
     with pcol1:
@@ -385,11 +426,13 @@ def render_manual_information_flow(client):
                 if add_structured:
                     st.session_state.mi_plan = bulk_notes.plan_structured(
                         client, supplier_id, product_type, structured_kind, item_data,
-                        codes=codes, transport_type=transport_type, progress=_tick)
+                        codes=codes, transport_type=transport_type,
+                        destination_filter=destination_filter, progress=_tick)
                 else:
                     st.session_state.mi_plan = bulk_notes.plan(
                         client, supplier_id, product_type, target, text, mode=mode,
-                        codes=codes, transport_type=transport_type, progress=_tick)
+                        codes=codes, transport_type=transport_type,
+                        destination_filter=destination_filter, progress=_tick)
                 # The signature includes `codes`: without it, previewing tours A+B and then
                 # editing the box to C left Send armed and would have written A+B.
                 st.session_state.mi_plan_sig = current_sig
