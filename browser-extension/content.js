@@ -32,7 +32,8 @@
   try {
     var m = (location.hash || "").match(/[#&]tcr=([^&]+)/);
     if (m) {
-      state = { active: true, date: decodeURIComponent(m[1]), phase: "click_book", ts: Date.now() };
+      var seedDate = decodeURIComponent(m[1]);
+      state = { active: true, date: seedDate, originalDate: seedDate, flexDays: 0, phase: "click_book", ts: Date.now() };
       saveState(state);
       // strip so a refresh doesn't re-seed and TC's own navigations don't carry it forward
       try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
@@ -43,6 +44,9 @@
   if (!state.ts || Date.now() - state.ts > MAX_AGE_MS) { clearState(); return; }
 
   var DATE = state.date; // DD.MM.YYYY
+  var DATE_FLEX_DAYS = state.flexDays || 0; // how many days we've shifted forward so far
+  var MAX_FLEX_DAYS = 30; // scan up to +30 days for an available date
+  var ORIGINAL_DATE = state.originalDate || DATE; // the date the user originally chose
 
   function setPhase(p) { state.phase = p; state.ts = Date.now(); saveState(state); }
 
@@ -91,6 +95,100 @@
     ["focus", "input", "change", "keyup", "blur"].forEach(function (n) {
       el.dispatchEvent(new Event(n, { bubbles: true }));
     });
+  }
+
+  // ── date arithmetic helpers ───────────────────────────────────────────────────────────────
+  function parseDDMMYYYY(s) {
+    var p = s.split("."); return new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0]));
+  }
+  function formatDDMMYYYY(d) {
+    var dd = ("0" + d.getDate()).slice(-2), mm = ("0" + (d.getMonth() + 1)).slice(-2);
+    return dd + "." + mm + "." + d.getFullYear();
+  }
+  function addDays(dateStr, n) {
+    var d = parseDDMMYYYY(dateStr); d.setDate(d.getDate() + n); return formatDDMMYYYY(d);
+  }
+
+  // Check if a date is available (clickable) in an open jQuery UI datepicker calendar.
+  // Returns: "available" if the day cell is clickable, "disabled" if greyed out,
+  // "not_visible" if the month shown doesn't contain that day.
+  function checkDateInCalendar(dateStr) {
+    var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div, .hasDatepicker + .ui-datepicker");
+    if (!panel || panel.offsetParent === null) return "no_calendar";
+    var d = parseDDMMYYYY(dateStr);
+    var day = d.getDate(), month = d.getMonth(), year = d.getFullYear();
+    // Find all day cells in the visible calendar
+    var cells = panel.querySelectorAll("td[data-handler='selectDay'], td a[data-date]");
+    // Try matching by data attributes first (PrimeFaces style)
+    for (var i = 0; i < cells.length; i++) {
+      var a = cells[i].tagName === "A" ? cells[i] : cells[i].querySelector("a");
+      if (!a) continue;
+      var cellDay = parseInt(a.getAttribute("data-date") || a.textContent);
+      var cellMonth = parseInt(a.getAttribute("data-month") || "");
+      var cellYear = parseInt(a.getAttribute("data-year") || "");
+      if (cellDay === day && (isNaN(cellMonth) || cellMonth === month) && (isNaN(cellYear) || cellYear === year)) {
+        var td = a.closest("td") || a.parentElement;
+        if (td && td.classList.contains("ui-state-disabled")) return "disabled";
+        if (td && td.classList.contains("ui-datepicker-unselectable")) return "disabled";
+        return "available";
+      }
+    }
+    // Fallback: scan td > a links by text content matching the day number
+    var allTds = panel.querySelectorAll("td");
+    for (var j = 0; j < allTds.length; j++) {
+      var link = allTds[j].querySelector("a, span");
+      if (link && parseInt(link.textContent) === day) {
+        if (allTds[j].classList.contains("ui-state-disabled") || allTds[j].classList.contains("ui-datepicker-unselectable") || link.tagName === "SPAN") return "disabled";
+        return "available";
+      }
+    }
+    return "not_visible";
+  }
+
+  // Navigate the datepicker to show a specific month/year
+  function navigateCalendarTo(dateStr, cb) {
+    var d = parseDDMMYYYY(dateStr);
+    var targetMonth = d.getMonth(), targetYear = d.getFullYear();
+    var attempts = 0;
+    function tryNav() {
+      var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div");
+      if (!panel) { if (++attempts < 10) setTimeout(tryNav, 300); else cb(false); return; }
+      // Read current displayed month/year
+      var monthEl = panel.querySelector(".ui-datepicker-month");
+      var yearEl = panel.querySelector(".ui-datepicker-year");
+      if (!monthEl || !yearEl) { cb(false); return; }
+      var curMonth, curYear;
+      if (monthEl.tagName === "SELECT") curMonth = parseInt(monthEl.value);
+      else curMonth = new Date(Date.parse(monthEl.textContent + " 1")).getMonth();
+      if (yearEl.tagName === "SELECT") curYear = parseInt(yearEl.value);
+      else curYear = parseInt(yearEl.textContent);
+      if (isNaN(curMonth) || isNaN(curYear)) { cb(false); return; }
+      if (curYear === targetYear && curMonth === targetMonth) { cb(true); return; }
+      // Click next/prev to get to the right month
+      var diff = (targetYear - curYear) * 12 + (targetMonth - curMonth);
+      var arrow = diff > 0
+        ? panel.querySelector("a.ui-datepicker-next, .ui-datepicker-next a")
+        : panel.querySelector("a.ui-datepicker-prev, .ui-datepicker-prev a");
+      if (arrow) { arrow.click(); setTimeout(tryNav, 400); }
+      else { cb(false); }
+    }
+    tryNav();
+  }
+
+  // Click a specific day in the open calendar
+  function clickDateInCalendar(dateStr) {
+    var d = parseDDMMYYYY(dateStr);
+    var day = d.getDate();
+    var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div");
+    if (!panel) return false;
+    var allTds = panel.querySelectorAll("td");
+    for (var j = 0; j < allTds.length; j++) {
+      var link = allTds[j].querySelector("a");
+      if (link && parseInt(link.textContent) === day && !allTds[j].classList.contains("ui-state-disabled") && !allTds[j].classList.contains("ui-datepicker-unselectable")) {
+        link.click(); return true;
+      }
+    }
+    return false;
   }
 
   // ── element finders (real TC selectors first, then fallbacks) ─────────────────────────────
@@ -239,14 +337,75 @@
     waitFor(findDateInput, function (inp) {
       inp.focus(); inp.click();
       setTimeout(function () {
-        setDateValue(inp, DATE);
-        say("Date set to <b>" + DATE + "</b>. Looking for Search…");
-        setPhase("click_search");
-        setTimeout(run, 600);
+        // Try to find an available date in the calendar (up to +MAX_FLEX_DAYS)
+        findAvailableDate(inp, DATE, function (finalDate, shifted) {
+          if (shifted) {
+            say("Date <b>" + ORIGINAL_DATE + "</b> not available.<br>Using nearest: <b>" + finalDate + "</b> (+" + DATE_FLEX_DAYS + " days).<br>Looking for Search…");
+          } else {
+            say("Date set to <b>" + finalDate + "</b>. Looking for Search…");
+          }
+          // Update state with the actual date used
+          DATE = finalDate;
+          state.date = finalDate;
+          setPhase("click_search");
+          setTimeout(run, 600);
+        });
       }, 400);
     }, function () {
       say("Date field not found.<br><small>" + listInputs() + "</small><br>Enter <b>" + DATE + "</b> by hand.");
     }, 60, 300);
+  }
+
+  // Smart date finder: checks if the target date is available in the calendar.
+  // If not, scans forward day by day up to +MAX_FLEX_DAYS.
+  // If no calendar is detected (plain text input), just sets the date directly.
+  function findAvailableDate(inp, targetDate, callback) {
+    var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div");
+    if (!panel || panel.offsetParent === null) {
+      // No calendar visible — just type the date (some packages use a plain input)
+      setDateValue(inp, targetDate);
+      callback(targetDate, false);
+      return;
+    }
+
+    function tryDate(candidateDate, dayOffset) {
+      if (dayOffset > MAX_FLEX_DAYS) {
+        // Exhausted all days — fall back to typing the original date
+        say("No available date within +" + MAX_FLEX_DAYS + " days of <b>" + ORIGINAL_DATE + "</b>.<br>Setting original date — TC may reject it.");
+        setDateValue(inp, ORIGINAL_DATE);
+        callback(ORIGINAL_DATE, false);
+        return;
+      }
+
+      navigateCalendarTo(candidateDate, function (ok) {
+        if (!ok) {
+          // Can't navigate calendar — fall back to typing
+          setDateValue(inp, candidateDate);
+          callback(candidateDate, dayOffset > 0);
+          return;
+        }
+
+        setTimeout(function () {
+          var status = checkDateInCalendar(candidateDate);
+          if (status === "available") {
+            DATE_FLEX_DAYS = dayOffset;
+            state.flexDays = dayOffset;
+            clickDateInCalendar(candidateDate);
+            callback(candidateDate, dayOffset > 0);
+          } else if (status === "disabled" || status === "not_visible") {
+            // Try next day
+            var nextDate = addDays(ORIGINAL_DATE, dayOffset + 1);
+            tryDate(nextDate, dayOffset + 1);
+          } else {
+            // No calendar or unexpected state — just type it
+            setDateValue(inp, candidateDate);
+            callback(candidateDate, dayOffset > 0);
+          }
+        }, 300);
+      });
+    }
+
+    tryDate(targetDate, DATE_FLEX_DAYS);
   }
 
   function phaseClickSearch() {
